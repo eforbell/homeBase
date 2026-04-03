@@ -15,6 +15,7 @@ This initial slice delivers:
   - bootstrap dry-run / execution jobs
   - app installation plan generation
   - install dry-run / execution jobs
+  - backup plan generation and restore planning scaffolds
   - generated artifact previews (`.env`, systemd units, nginx snippets)
   - SQLite-backed local state tracking for planned installs and jobs
 

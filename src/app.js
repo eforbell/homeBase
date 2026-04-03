@@ -6,6 +6,8 @@ const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
 const { buildBackupPlan } = require('./services/backup-planner');
+const { listBackups } = require('./services/backup-inventory');
+const { buildRestorePlan } = require('./services/restore-planner');
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
 const { renderHomePage, renderJobPage } = require('./ui');
@@ -205,6 +207,10 @@ function createApp(config) {
         const plan = buildBackupPlan({ appId: backupPlanMatch[1], state, config });
         return sendJson(res, 200, plan);
       }
+      const backupListMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backups$/);
+      if (method === 'GET' && backupListMatch) {
+        return sendJson(res, 200, listBackups({ appId: backupListMatch[1], config }));
+      }
       const backupExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup\/execute$/);
       if (method === 'POST' && backupExecuteMatch) {
         const body = await parseBody(req);
@@ -230,6 +236,51 @@ function createApp(config) {
           ok: true,
           jobId,
           appId: backupExecuteMatch[1],
+          dryRun: body.dryRun !== false,
+        });
+      }
+      const restorePlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restore-plan$/);
+      if (method === 'POST' && restorePlanMatch) {
+        const body = await parseBody(req);
+        const plan = buildRestorePlan({
+          appId: restorePlanMatch[1],
+          backupDir: body.backupDir,
+          state,
+          config,
+        });
+        return sendJson(res, 200, plan);
+      }
+      const restoreExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restore\/execute$/);
+      if (method === 'POST' && restoreExecuteMatch) {
+        const body = await parseBody(req);
+        if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          return sendJson(res, 400, {
+            error: 'Real execution requires confirm=EXECUTE',
+          });
+        }
+        if (body.dryRun === false) {
+          const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
+          if (missing.length) {
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before real restore execution: ${missing.join(', ')}`,
+              missing,
+            });
+          }
+        }
+
+        const plan = buildRestorePlan({
+          appId: restoreExecuteMatch[1],
+          backupDir: body.backupDir,
+          state,
+          config,
+        });
+        const jobId = jobRunner.startRestoreJob(plan, {
+          dryRun: body.dryRun !== false,
+        });
+        return sendJson(res, 202, {
+          ok: true,
+          jobId,
+          appId: restoreExecuteMatch[1],
           dryRun: body.dryRun !== false,
         });
       }

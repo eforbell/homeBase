@@ -46,10 +46,33 @@ class JobRunner {
       plan,
       steps,
       dryRun,
+      extraResult: {
+        archiveDir: plan.backup.archiveDir,
+      },
     });
   }
 
-  startPlanJob({ kind, target, plan, steps, dryRun = true, onComplete = null }) {
+  startRestoreJob(plan, { dryRun = true } = {}) {
+    const steps = [
+      {
+        id: 'restore',
+        title: `Restore ${plan.app.name}`,
+        run: plan.commands,
+      },
+    ];
+    return this.startPlanJob({
+      kind: 'restore',
+      target: plan.app.id,
+      plan,
+      steps,
+      dryRun,
+      extraResult: {
+        archiveDir: plan.restore.archiveDir,
+      },
+    });
+  }
+
+  startPlanJob({ kind, target, plan, steps, dryRun = true, onComplete = null, extraResult = {} }) {
     const createdAt = new Date().toISOString();
     const { id } = this.stateStore.createJob({
       kind,
@@ -61,7 +84,7 @@ class JobRunner {
       planJson: JSON.stringify(plan),
     });
 
-    this.runPlanJob(id, steps, { dryRun, onComplete }).catch((error) => {
+    this.runPlanJob(id, steps, { dryRun, onComplete, extraResult }).catch((error) => {
       this.stateStore.appendJobLog(id, `\n[error] ${error.message}\n`);
       this.stateStore.updateJob(id, {
         status: 'failed',
@@ -73,7 +96,7 @@ class JobRunner {
     return id;
   }
 
-  async runPlanJob(jobId, steps, { dryRun, onComplete = null }) {
+  async runPlanJob(jobId, steps, { dryRun, onComplete = null, extraResult = {} }) {
     this.stateStore.updateJob(jobId, {
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -103,6 +126,7 @@ class JobRunner {
       resultJson: JSON.stringify({
         completedStepCount: steps.length,
         dryRun,
+        ...extraResult,
       }),
     });
   }

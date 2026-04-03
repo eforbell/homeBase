@@ -12,28 +12,26 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
   const installRoot = installation?.installRoot || `${(config.baseInstallDir || '/opt/sovereign-home/apps').replace(/\/$/, '')}/${app.repoKey}`;
   const backupRoot = `${(config.baseBackupDir || '/var/lib/sovereign-home/backups').replace(/\/$/, '')}/${app.id}`;
   const generatedAt = new Date().toISOString();
-
-  const timestampExpr = '$(date -u +%Y%m%dT%H%M%SZ)';
-  const archiveDir = `${backupRoot}/${timestampExpr}`;
+  const archiveName = generatedAt.replaceAll(':', '').replaceAll('-', '').replace('.000', '').replace('.','');
+  const archiveDir = `${backupRoot}/${archiveName}`;
   const commands = [
     `sudo install -d -m 0750 ${backupRoot}`,
-    `ARCHIVE_DIR=${archiveDir}`,
-    'sudo mkdir -p "$ARCHIVE_DIR"',
-    `sudo cp ${installRoot}/.env "$ARCHIVE_DIR/.env.backup"`,
+    `sudo mkdir -p ${archiveDir}`,
+    `sudo cp ${installRoot}/.env ${archiveDir}/.env.backup`,
   ];
 
   if (app.runtime.kind === 'python' && app.id === 'bitcoin-accounting') {
-    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && if [ "$DB_BACKEND" = "postgres" ]; then PGPASSWORD="$PGPASSWORD" pg_dump -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -Fc -f "$ARCHIVE_DIR/database.dump"; fi`);
-    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && if [ "$DB_BACKEND" = "sqlite" ] && [ -n "$SQLITE_DB_PATH" ]; then sudo cp "$SQLITE_DB_PATH" "$ARCHIVE_DIR/sqlite-ledger.db"; fi`);
+    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && if [ "$DB_BACKEND" = "postgres" ]; then PGPASSWORD="$PGPASSWORD" pg_dump -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -Fc -f ${archiveDir}/database.dump; fi`);
+    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && if [ "$DB_BACKEND" = "sqlite" ] && [ -n "$SQLITE_DB_PATH" ]; then sudo cp "$SQLITE_DB_PATH" ${archiveDir}/sqlite-ledger.db; fi`);
   } else {
-    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && pg_dump "$DATABASE_URL" -Fc -f "$ARCHIVE_DIR/database.dump"`);
+    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && pg_dump "$DATABASE_URL" -Fc -f ${archiveDir}/database.dump`);
   }
 
   for (const relativePath of app.storage?.paths || []) {
-    commands.push(`if [ -e ${installRoot}/${relativePath} ]; then sudo tar -C ${installRoot} -czf "$ARCHIVE_DIR/${relativePath.replaceAll('/', '_')}.tgz" ${relativePath}; fi`);
+    commands.push(`if [ -e ${installRoot}/${relativePath} ]; then sudo tar -C ${installRoot} -czf ${archiveDir}/${relativePath.replaceAll('/', '_')}.tgz ${relativePath}; fi`);
   }
 
-  commands.push(`sudo sh -c 'printf "%s\\n" "${generatedAt}" > "$ARCHIVE_DIR/backup-generated-at.txt"'`);
+  commands.push(`sudo sh -c 'printf "%s\\n" "${generatedAt}" > ${archiveDir}/backup-generated-at.txt'`);
 
   return {
     kind: 'backup',
@@ -45,6 +43,7 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
     backup: {
       installRoot,
       backupRoot,
+      archiveDir,
       storagePaths: app.storage?.paths || [],
     },
     commands,

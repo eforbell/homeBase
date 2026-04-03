@@ -191,6 +191,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     throw error;
   }
 
+  const existingInstallation = state.installations && state.installations[appId] ? state.installations[appId] : null;
   const usedPorts = new Set(Object.values(state.installations || {}).map((entry) => entry.port));
   usedPorts.add(config.port || 3080);
 
@@ -345,6 +346,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       health: app.network.health,
     },
     notes: app.updateNotes || [],
+    existingInstallation,
     files,
     executionSteps,
     commands,
