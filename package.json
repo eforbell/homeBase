@@ -1,0 +1,15 @@
+{
+  "name": "home-base",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Home Base control plane prototype for The Sovereign Home",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  }
+}

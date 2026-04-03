@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sovereignhome.app/schemas/managed-app-manifest.schema.json",
+  "title": "Sovereign Home Managed App Manifest",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "repository",
+    "runtime",
+    "network",
+    "database",
+    "service",
+    "config"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "purpose": { "type": "string" },
+    "repository": {
+      "type": "object",
+      "required": ["url", "defaultRef"],
+      "properties": {
+        "url": { "type": "string" },
+        "defaultRef": { "type": "string" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["kind", "installCommand", "startCommand"],
+      "properties": {
+        "kind": { "enum": ["node", "python"] },
+        "installCommand": { "type": "string" },
+        "startCommand": { "type": "string" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "required": ["preferredMountPath", "preferredPort", "health"],
+      "properties": {
+        "preferredMountPath": { "type": "string" },
+        "preferredPort": { "type": "number" },
+        "upstreamBind": { "type": "string" },
+        "health": { "type": "object" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["engine", "bootstrap"],
+      "properties": {
+        "engine": { "type": "string" },
+        "bootstrap": { "type": "string" },
+        "databaseName": { "type": "string" },
+        "databaseUser": { "type": "string" }
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["name", "description"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["env"],
+      "properties": {
+        "env": { "type": "object" }
+      }
+    }
+  }
+}
