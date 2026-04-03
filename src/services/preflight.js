@@ -1,0 +1,52 @@
+const { spawnSync } = require('child_process');
+
+function runShell(command) {
+  const result = spawnSync('/bin/bash', ['-lc', command], {
+    encoding: 'utf8',
+  });
+
+  return {
+    ok: result.status === 0,
+    exitCode: result.status,
+    stdout: (result.stdout || '').trim(),
+    stderr: (result.stderr || '').trim(),
+  };
+}
+
+function buildCheck(id, title, command, hint) {
+  const result = runShell(command);
+  return {
+    id,
+    title,
+    command,
+    ok: result.ok,
+    summary: result.ok ? (result.stdout || 'ok') : (result.stderr || result.stdout || `exit ${result.exitCode}`),
+    hint,
+  };
+}
+
+function runPreflightChecks() {
+  const checks = [
+    buildCheck('os', 'Debian-family host detected', 'test -f /etc/debian_version && . /etc/os-release && echo "$PRETTY_NAME"', 'Home Base currently targets Ubuntu/Debian hosts.'),
+    buildCheck('sudo', 'sudo available', 'command -v sudo', 'Install and configure sudo or run Home Base in a root context.'),
+    buildCheck('systemd', 'systemd available', 'command -v systemctl', 'This host must support systemd-managed services.'),
+    buildCheck('git', 'git installed', 'command -v git && git --version', 'Install git before attempting app installs.'),
+    buildCheck('node', 'Node.js installed', 'command -v node && node --version', 'Install Node.js 18+ for Home Base and Node-managed apps.'),
+    buildCheck('python3', 'Python 3 installed', 'command -v python3 && python3 --version', 'Install Python 3 for Bitcoin Accounting and SQLite state support.'),
+    buildCheck('psql', 'PostgreSQL client installed', 'command -v psql && psql --version', 'Install postgresql-client so Home Base can run schema and backup commands.'),
+    buildCheck('nginx', 'nginx installed', 'command -v nginx && nginx -v', 'Install nginx before enabling routed apps.'),
+    buildCheck('postgres-service', 'PostgreSQL service active', 'systemctl is-active postgresql', 'Start PostgreSQL or finish bootstrap before app installs.'),
+    buildCheck('nginx-config', 'nginx configuration validates', 'nginx -t', 'Fix nginx configuration issues before generating/reloading app routes.'),
+    buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', 'Install Tailscale during bootstrap for private remote access.'),
+  ];
+
+  return {
+    generatedAt: new Date().toISOString(),
+    ok: checks.every((check) => check.ok),
+    checks,
+  };
+}
+
+module.exports = {
+  runPreflightChecks,
+};

@@ -90,3 +90,124 @@ test('bootstrap execute dry-run creates a completed job', async () => {
     await server.close();
   }
 });
+
+test('preflight endpoint returns a structured check list', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-preflight-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const preflightRes = await fetch(`${server.url}/api/preflight`);
+    const preflight = await preflightRes.json();
+    assert.equal(Array.isArray(preflight.checks), true);
+    assert.ok(preflight.checks.some((check) => check.id === 'node'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('install execute dry-run creates a completed install job', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-job-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const executeRes = await fetch(`${server.url}/api/apps/family-help/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true }),
+    });
+    const execute = await executeRes.json();
+    assert.equal(execute.ok, true);
+
+    let job = null;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      job = await jobRes.json();
+      if (job.status === 'completed') break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.equal(job.status, 'completed');
+    assert.match(job.log, /family-help/i);
+  } finally {
+    await server.close();
+  }
+});
+
+test('job detail page renders successfully', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-job-page-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const executeRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true }),
+    });
+    const execute = await executeRes.json();
+
+    const pageRes = await fetch(`${server.url}/jobs/${execute.jobId}`);
+    const html = await pageRes.text();
+    assert.match(html, /Job #/);
+    assert.match(html, /Back to Home Base/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('backup plan endpoint returns backup commands', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-backup-plan-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const planRes = await fetch(`${server.url}/api/apps/family-help/backup-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const plan = await planRes.json();
+    assert.equal(plan.kind, 'backup');
+    assert.match(plan.script, /pg_dump/);
+  } finally {
+    await server.close();
+  }
+});

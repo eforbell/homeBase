@@ -5,8 +5,10 @@ const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
+const { buildBackupPlan } = require('./services/backup-planner');
 const { JobRunner } = require('./services/job-runner');
-const { renderHomePage } = require('./ui');
+const { runPreflightChecks } = require('./services/preflight');
+const { renderHomePage, renderJobPage } = require('./ui');
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
@@ -39,6 +41,10 @@ function parseBody(req) {
   });
 }
 
+function missingCheckIds(preflight, ids) {
+  return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok));
+}
+
 function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   stateStore.init();
@@ -58,15 +64,26 @@ function createApp(config) {
       const pathname = url.pathname;
       const method = req.method || 'GET';
       const state = stateStore.loadState();
+      const preflight = runPreflightChecks();
+      const viewState = { ...state, preflight };
 
       if (method === 'GET' && pathname === '/') {
-        return sendHtml(res, 200, renderHomePage({ catalog, state, config }));
+        return sendHtml(res, 200, renderHomePage({ catalog, state: viewState, config }));
+      }
+      const jobPageMatch = pathname.match(/^\/jobs\/(\d+)$/);
+      if (method === 'GET' && jobPageMatch) {
+        const job = stateStore.getJob(Number(jobPageMatch[1]));
+        if (!job) return notFound(res);
+        return sendHtml(res, 200, renderJobPage({ job, appName: config.appName }));
       }
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });
       }
       if (method === 'GET' && pathname === '/api/state') {
-        return sendJson(res, 200, state);
+        return sendJson(res, 200, viewState);
+      }
+      if (method === 'GET' && pathname === '/api/preflight') {
+        return sendJson(res, 200, preflight);
       }
       if (method === 'GET' && pathname === '/api/jobs') {
         return sendJson(res, 200, { jobs: state.jobs || [] });
@@ -101,6 +118,15 @@ function createApp(config) {
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
+        }
+        if (body.dryRun === false) {
+          const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
+          if (missing.length) {
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before real bootstrap execution: ${missing.join(', ')}`,
+              missing,
+            });
+          }
         }
 
         const plan = buildBootstrapPlan({
@@ -139,6 +165,73 @@ function createApp(config) {
           updatedAt: new Date().toISOString(),
         });
         return sendJson(res, 200, plan);
+      }
+      const executeInstallMatch = pathname.match(/^\/api\/apps\/([^/]+)\/execute$/);
+      if (method === 'POST' && executeInstallMatch) {
+        const body = await parseBody(req);
+        if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          return sendJson(res, 400, {
+            error: 'Real execution requires confirm=EXECUTE',
+          });
+        }
+        if (body.dryRun === false) {
+          const app = getAppById(executeInstallMatch[1]);
+          const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
+          if (app?.runtime?.kind === 'node') required.push('node');
+          if (app?.runtime?.kind === 'python') required.push('python3');
+          const missing = missingCheckIds(preflight, required);
+          if (missing.length) {
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before real install execution: ${missing.join(', ')}`,
+              missing,
+            });
+          }
+        }
+
+        const appId = executeInstallMatch[1];
+        const plan = buildInstallPlan({ appId, state, options: body, config });
+        const jobId = jobRunner.startInstallJob(plan, {
+          dryRun: body.dryRun !== false,
+        });
+        return sendJson(res, 202, {
+          ok: true,
+          jobId,
+          appId,
+          dryRun: body.dryRun !== false,
+        });
+      }
+      const backupPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup-plan$/);
+      if (method === 'POST' && backupPlanMatch) {
+        const plan = buildBackupPlan({ appId: backupPlanMatch[1], state, config });
+        return sendJson(res, 200, plan);
+      }
+      const backupExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup\/execute$/);
+      if (method === 'POST' && backupExecuteMatch) {
+        const body = await parseBody(req);
+        if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          return sendJson(res, 400, {
+            error: 'Real execution requires confirm=EXECUTE',
+          });
+        }
+        if (body.dryRun === false) {
+          const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
+          if (missing.length) {
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before real backup execution: ${missing.join(', ')}`,
+              missing,
+            });
+          }
+        }
+        const plan = buildBackupPlan({ appId: backupExecuteMatch[1], state, config });
+        const jobId = jobRunner.startBackupJob(plan, {
+          dryRun: body.dryRun !== false,
+        });
+        return sendJson(res, 202, {
+          ok: true,
+          jobId,
+          appId: backupExecuteMatch[1],
+          dryRun: body.dryRun !== false,
+        });
       }
 
       return notFound(res);

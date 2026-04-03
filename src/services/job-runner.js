@@ -6,18 +6,62 @@ class JobRunner {
   }
 
   startBootstrapJob(plan, { dryRun = true } = {}) {
-    const createdAt = new Date().toISOString();
-    const { id } = this.stateStore.createJob({
+    return this.startPlanJob({
       kind: 'bootstrap',
       target: 'local-host',
+      plan,
+      steps: plan.steps,
+      dryRun,
+    });
+  }
+
+  startInstallJob(plan, { dryRun = true } = {}) {
+    return this.startPlanJob({
+      kind: 'install',
+      target: plan.app.id,
+      plan,
+      steps: plan.executionSteps || [],
+      dryRun,
+      onComplete: () => {
+        this.stateStore.upsertInstallation({
+          ...plan.stateRecord,
+          updatedAt: new Date().toISOString(),
+          status: dryRun ? 'planned' : 'installed',
+        });
+      },
+    });
+  }
+
+  startBackupJob(plan, { dryRun = true } = {}) {
+    const steps = [
+      {
+        id: 'backup',
+        title: `Backup ${plan.app.name}`,
+        run: plan.commands,
+      },
+    ];
+    return this.startPlanJob({
+      kind: 'backup',
+      target: plan.app.id,
+      plan,
+      steps,
+      dryRun,
+    });
+  }
+
+  startPlanJob({ kind, target, plan, steps, dryRun = true, onComplete = null }) {
+    const createdAt = new Date().toISOString();
+    const { id } = this.stateStore.createJob({
+      kind,
+      target,
       status: 'queued',
       dryRun,
       createdAt,
-      currentStep: plan.steps[0] ? plan.steps[0].id : null,
+      currentStep: steps[0] ? steps[0].id : null,
       planJson: JSON.stringify(plan),
     });
 
-    this.runBootstrapJob(id, plan, { dryRun }).catch((error) => {
+    this.runPlanJob(id, steps, { dryRun, onComplete }).catch((error) => {
       this.stateStore.appendJobLog(id, `\n[error] ${error.message}\n`);
       this.stateStore.updateJob(id, {
         status: 'failed',
@@ -29,13 +73,13 @@ class JobRunner {
     return id;
   }
 
-  async runBootstrapJob(jobId, plan, { dryRun }) {
+  async runPlanJob(jobId, steps, { dryRun, onComplete = null }) {
     this.stateStore.updateJob(jobId, {
       status: 'running',
       startedAt: new Date().toISOString(),
     });
 
-    for (const step of plan.steps) {
+    for (const step of steps) {
       this.stateStore.updateJob(jobId, { currentStep: step.id });
       this.stateStore.appendJobLog(jobId, `\n==> ${step.title}\n`);
 
@@ -49,11 +93,15 @@ class JobRunner {
       }
     }
 
+    if (typeof onComplete === 'function') {
+      onComplete();
+    }
+
     this.stateStore.updateJob(jobId, {
       status: 'completed',
       finishedAt: new Date().toISOString(),
       resultJson: JSON.stringify({
-        completedStepCount: plan.steps.length,
+        completedStepCount: steps.length,
         dryRun,
       }),
     });

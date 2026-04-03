@@ -10,9 +10,11 @@ This initial slice delivers:
 - a managed app manifest schema
 - a built-in catalog for the current Sovereign Home apps
 - a working web UI + JSON API for:
+  - host preflight checks
   - Debian bootstrap plan generation
   - bootstrap dry-run / execution jobs
   - app installation plan generation
+  - install dry-run / execution jobs
   - generated artifact previews (`.env`, systemd units, nginx snippets)
   - SQLite-backed local state tracking for planned installs and jobs
 

@@ -112,6 +112,10 @@ function renderFileWriteCommand(targetPath, content) {
   return `sudo tee ${targetPath} > /dev/null <<'EOF'\n${safe}EOF`;
 }
 
+function makeStep(id, title, commands) {
+  return { id, title, run: commands.filter(Boolean) };
+}
+
 function buildDatabaseCommands(app, ctx) {
   if (!app.database.engine.includes('postgres')) return [];
 
@@ -274,39 +278,49 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
 
   files[`${app.id}.nginx.conf`] = renderNginxSnippet({ mountPath, port, appId: app.id });
 
-  const commands = [];
-  commands.push(`sudo install -d -o ${serviceUser} -g ${serviceUser} ${config.baseInstallDir || '/opt/sovereign-home/apps'}`);
-  commands.push(`if [ ! -d ${installRoot}/.git ]; then sudo -u ${serviceUser} git clone ${app.repository.url} ${installRoot}; fi`);
-  commands.push(`sudo -u ${serviceUser} git -C ${installRoot} fetch origin --prune`);
-  commands.push(`sudo -u ${serviceUser} git -C ${installRoot} checkout ${options.ref || app.repository.defaultRef}`);
-  commands.push(`sudo -u ${serviceUser} git -C ${installRoot} pull --ff-only origin ${options.ref || app.repository.defaultRef}`);
-  commands.push(...buildDatabaseCommands(app, ctx));
-  commands.push(renderFileWriteCommand(`${installRoot}/.env`, files['.env']));
-  commands.push(...buildAppBootstrapCommands(app, ctx));
-  commands.push(renderFileWriteCommand(`/etc/systemd/system/${app.service.name}.service`, files[`${app.service.name}.service`]));
+  const executionSteps = [
+    makeStep('prepare-layout', 'Prepare install directory', [
+      `sudo install -d -o ${serviceUser} -g ${serviceUser} ${config.baseInstallDir || '/opt/sovereign-home/apps'}`,
+    ]),
+    makeStep('git-sync', 'Clone or update application source', [
+      `if [ ! -d ${installRoot}/.git ]; then sudo -u ${serviceUser} git clone ${app.repository.url} ${installRoot}; fi`,
+      `sudo -u ${serviceUser} git -C ${installRoot} fetch origin --prune`,
+      `sudo -u ${serviceUser} git -C ${installRoot} checkout ${options.ref || app.repository.defaultRef}`,
+      `sudo -u ${serviceUser} git -C ${installRoot} pull --ff-only origin ${options.ref || app.repository.defaultRef}`,
+    ]),
+    makeStep('database-bootstrap', 'Create database role and database', buildDatabaseCommands(app, ctx)),
+    makeStep('render-config', 'Render application environment and unit files', [
+      renderFileWriteCommand(`${installRoot}/.env`, files['.env']),
+      renderFileWriteCommand(`/etc/systemd/system/${app.service.name}.service`, files[`${app.service.name}.service`]),
+      renderFileWriteCommand(`/etc/nginx/snippets/${app.id}.conf`, files[`${app.id}.nginx.conf`]),
+    ]),
+    makeStep('app-bootstrap', 'Install dependencies and run app bootstrap', buildAppBootstrapCommands(app, ctx)),
+    makeStep('enable-services', 'Enable and start services', [
+      'sudo systemctl daemon-reload',
+      `sudo systemctl enable --now ${app.service.name}`,
+    ]),
+    makeStep('health-check', 'Validate nginx and application health', [
+      'sudo nginx -t',
+      'sudo systemctl reload nginx',
+      `curl --fail --silent --show-error http://127.0.0.1:${port}${app.network.health.livenessPath}`,
+    ]),
+  ];
+
   if (Array.isArray(app.sidecars)) {
     for (const sidecar of app.sidecars) {
-      commands.push(renderFileWriteCommand(`/etc/systemd/system/${sidecar.name}.service`, files[`${sidecar.name}.service`]));
+      executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${sidecar.name}.service`, files[`${sidecar.name}.service`]));
+      executionSteps[5].run.push(`sudo systemctl enable --now ${sidecar.name}`);
     }
   }
   if (Array.isArray(app.timers)) {
     for (const timer of app.timers) {
-      commands.push(renderFileWriteCommand(`/etc/systemd/system/${timer.serviceName}.service`, files[`${timer.serviceName}.service`]));
-      commands.push(renderFileWriteCommand(`/etc/systemd/system/${timer.timerName}`, files[timer.timerName]));
+      executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.serviceName}.service`, files[`${timer.serviceName}.service`]));
+      executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.timerName}`, files[timer.timerName]));
+      executionSteps[5].run.push(`sudo systemctl enable --now ${timer.timerName}`);
     }
   }
-  commands.push(renderFileWriteCommand(`/etc/nginx/snippets/${app.id}.conf`, files[`${app.id}.nginx.conf`]));
-  commands.push('sudo systemctl daemon-reload');
-  commands.push(`sudo systemctl enable --now ${app.service.name}`);
-  if (Array.isArray(app.sidecars)) {
-    for (const sidecar of app.sidecars) commands.push(`sudo systemctl enable --now ${sidecar.name}`);
-  }
-  if (Array.isArray(app.timers)) {
-    for (const timer of app.timers) commands.push(`sudo systemctl enable --now ${timer.timerName}`);
-  }
-  commands.push('sudo nginx -t');
-  commands.push('sudo systemctl reload nginx');
-  commands.push(`curl --fail --silent --show-error http://127.0.0.1:${port}${app.network.health.livenessPath}`);
+
+  const commands = executionSteps.flatMap((step) => step.run);
 
   const script = `#!/usr/bin/env bash\nset -euo pipefail\n\n# Install ${app.name}\n\n${commands.join('\n')}\n`;
 
@@ -332,6 +346,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     },
     notes: app.updateNotes || [],
     files,
+    executionSteps,
     commands,
     script,
     stateRecord: {
