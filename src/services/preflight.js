@@ -37,6 +37,7 @@ function runPreflightChecks() {
     buildCheck('nginx', 'nginx installed', 'command -v nginx && nginx -v', 'Install nginx before enabling routed apps.'),
     buildCheck('postgres-service', 'PostgreSQL service active', 'systemctl is-active postgresql', 'Start PostgreSQL or finish bootstrap before app installs.'),
     buildCheck('nginx-config', 'nginx configuration validates', 'sudo nginx -t', 'Fix nginx configuration issues before generating/reloading app routes.'),
+    buildCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'sudo nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"', 'Bootstrap should configure the default nginx site to include generated app snippets.'),
     buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', 'Install Tailscale during bootstrap for private remote access.'),
   ];
 

@@ -33,3 +33,23 @@ test('bitcoin accounting plan renders postgres-oriented env and readiness probes
   assert.match(plan.script, /bitcoin-accounting-web-init/);
   assert.equal(plan.install.health.readinessPath, '/api/ready');
 });
+
+test('install planner prefers SSH repository URLs by default', () => {
+  const plan = buildInstallPlan({
+    appId: 'family-help',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: '/opt/sovereign-home/apps',
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+      gitTransport: 'ssh',
+    },
+  });
+
+  assert.equal(plan.app.repoUrl, 'git@github.com:eforbell/familyHelp.git');
+  assert.match(plan.script, /git clone git@github.com:eforbell\/familyHelp.git/);
+  assert.match(plan.script, /Timed out waiting for http:\/\/127.0.0.1:3002/);
+});

@@ -6,6 +6,7 @@ const catalog = [
     purpose: 'Cash flow visibility, budgeting, and household financial awareness.',
     repository: {
       url: 'https://github.com/eforbell/familyPulse.git',
+      sshUrl: 'git@github.com:eforbell/familyPulse.git',
       defaultRef: 'main',
     },
     runtime: {
@@ -84,6 +85,7 @@ const catalog = [
     purpose: 'Household task intake, assignments, reminders, and first-tier help.',
     repository: {
       url: 'https://github.com/eforbell/familyHelp.git',
+      sshUrl: 'git@github.com:eforbell/familyHelp.git',
       defaultRef: 'main',
     },
     runtime: {
@@ -151,6 +153,7 @@ const catalog = [
     purpose: 'Meal planning, recipes, rotation scheduling, and grocery helpers.',
     repository: {
       url: 'https://github.com/eforbell/familyDinner.git',
+      sshUrl: 'git@github.com:eforbell/familyDinner.git',
       defaultRef: 'main',
     },
     runtime: {
@@ -209,6 +212,7 @@ const catalog = [
     purpose: 'Family calendar aggregation, daily briefings, and optional Google writeback.',
     repository: {
       url: 'https://github.com/eforbell/familyPlan.git',
+      sshUrl: 'git@github.com:eforbell/familyPlan.git',
       defaultRef: 'main',
     },
     runtime: {
@@ -273,6 +277,7 @@ const catalog = [
     purpose: 'Treasury management, tax reporting, and attestation for sovereign bitcoin holdings.',
     repository: {
       url: 'https://github.com/eforbell/bitcoinAccounting.git',
+      sshUrl: 'git@github.com:eforbell/bitcoinAccounting.git',
       defaultRef: 'master',
     },
     runtime: {

@@ -3,6 +3,10 @@ const path = require('path');
 const { getAppById } = require('../catalog');
 const { listBackups } = require('./backup-inventory');
 
+function renderWaitForHttpCommand({ url, attempts = 20, sleepSeconds = 1 }) {
+  return `for attempt in $(seq 1 ${attempts}); do curl --fail --silent --show-error ${url} && exit 0; sleep ${sleepSeconds}; done; echo "Timed out waiting for ${url}" >&2; exit 1`;
+}
+
 function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   const app = getAppById(appId);
   if (!app) {
@@ -46,7 +50,9 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   if (installation?.serviceName) {
     commands.push(`sudo systemctl restart ${installation.serviceName}`);
   }
-  commands.push(`curl --fail --silent --show-error http://127.0.0.1:${installation?.port || app.network.preferredPort}${app.network.health.livenessPath}`);
+  commands.push(renderWaitForHttpCommand({
+    url: `http://127.0.0.1:${installation?.port || app.network.preferredPort}${app.network.health.readinessPath || app.network.health.livenessPath}`,
+  }));
 
   return {
     kind: 'restore',

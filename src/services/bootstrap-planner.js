@@ -81,9 +81,30 @@ function buildBootstrapPlan(input = {}) {
         `sudo install -d -o root -g root ${baseConfigDir}`,
         `sudo install -d -o root -g root ${baseConfigDir}/manifests`,
         `sudo install -d -o root -g root ${baseConfigDir}/rendered`,
+        'sudo install -d -o root -g root /etc/nginx/snippets',
       ],
       [`test -d ${baseInstallDir}`],
-      [`sudo ls -ld ${baseInstallDir} ${baseBackupDir} ${baseConfigDir}`]
+      [`sudo ls -ld ${baseInstallDir} ${baseBackupDir} ${baseConfigDir} /etc/nginx/snippets`]
+    ),
+    makeStep(
+      'configure-nginx-gateway',
+      'Ensure nginx includes managed app snippets from the default site',
+      [
+        `sudo python3 - <<'PY'
+from pathlib import Path
+default_site = Path('/etc/nginx/sites-available/default')
+text = default_site.read_text()
+include_line = '    include /etc/nginx/snippets/*.conf;'
+if '/etc/nginx/snippets/*.conf;' not in text:
+    marker = 'server_name _;'
+    if marker not in text:
+        raise SystemExit('Could not find server_name _; in nginx default site')
+    text = text.replace(marker, marker + '\\n\\n' + include_line, 1)
+    default_site.write_text(text)
+PY`,
+      ],
+      [`sudo nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"`],
+      ['sudo nginx -T | grep -n "/etc/nginx/snippets/*.conf;"']
     ),
     makeStep(
       'enable-core-services',

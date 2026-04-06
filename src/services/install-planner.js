@@ -116,6 +116,10 @@ function makeStep(id, title, commands) {
   return { id, title, run: commands.filter(Boolean) };
 }
 
+function renderWaitForHttpCommand({ url, attempts = 20, sleepSeconds = 1 }) {
+  return `for attempt in $(seq 1 ${attempts}); do curl --fail --silent --show-error ${url} && exit 0; sleep ${sleepSeconds}; done; echo "Timed out waiting for ${url}" >&2; exit 1`;
+}
+
 function buildDatabaseCommands(app, ctx) {
   if (!app.database.engine.includes('postgres')) return [];
 
@@ -183,6 +187,13 @@ function resolveEnvTemplate(template, ctx) {
   return resolved;
 }
 
+function resolveRepositoryUrl(app, config = {}) {
+  if (config.gitTransport === 'ssh' && app.repository.sshUrl) {
+    return app.repository.sshUrl;
+  }
+  return app.repository.url;
+}
+
 function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const app = getAppById(appId);
   if (!app) {
@@ -233,6 +244,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     serviceUser,
     sidecarPorts,
   };
+  const repositoryUrl = resolveRepositoryUrl(app, config);
 
   const env = resolveEnvTemplate(app.config.env, ctx);
   const files = {};
@@ -284,7 +296,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       `sudo install -d -o ${serviceUser} -g ${serviceUser} ${config.baseInstallDir || '/opt/sovereign-home/apps'}`,
     ]),
     makeStep('git-sync', 'Clone or update application source', [
-      `if [ ! -d ${installRoot}/.git ]; then sudo -u ${serviceUser} git clone ${app.repository.url} ${installRoot}; fi`,
+      `if [ ! -d ${installRoot}/.git ]; then sudo -u ${serviceUser} git clone ${repositoryUrl} ${installRoot}; fi`,
       `sudo -u ${serviceUser} git -C ${installRoot} fetch origin --prune`,
       `sudo -u ${serviceUser} git -C ${installRoot} checkout ${options.ref || app.repository.defaultRef}`,
       `sudo -u ${serviceUser} git -C ${installRoot} pull --ff-only origin ${options.ref || app.repository.defaultRef}`,
@@ -303,7 +315,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     makeStep('health-check', 'Validate nginx and application health', [
       'sudo nginx -t',
       'sudo systemctl reload nginx',
-      `curl --fail --silent --show-error http://127.0.0.1:${port}${app.network.health.livenessPath}`,
+      renderWaitForHttpCommand({
+        url: `http://127.0.0.1:${port}${app.network.health.readinessPath || app.network.health.livenessPath}`,
+      }),
     ]),
   ];
 
@@ -331,7 +345,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     app: {
       id: app.id,
       name: app.name,
-      repoUrl: app.repository.url,
+      repoUrl: repositoryUrl,
       ref: options.ref || app.repository.defaultRef,
     },
     install: {

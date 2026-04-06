@@ -85,6 +85,9 @@ function validateManifestEntry(entry) {
   if (expectObject(entry.repository, 'repository')) {
     expectString(entry.repository.url, 'repository.url');
     expectString(entry.repository.defaultRef, 'repository.defaultRef');
+    if (entry.repository.sshUrl != null) {
+      expectString(entry.repository.sshUrl, 'repository.sshUrl');
+    }
   }
   if (expectObject(entry.runtime, 'runtime')) {
     expectString(entry.runtime.kind, 'runtime.kind');
