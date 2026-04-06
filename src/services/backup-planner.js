@@ -15,8 +15,8 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
   const archiveName = generatedAt.replaceAll(':', '').replaceAll('-', '').replace('.000', '').replace('.','');
   const archiveDir = `${backupRoot}/${archiveName}`;
   const commands = [
-    `sudo install -d -m 0750 ${backupRoot}`,
-    `sudo mkdir -p ${archiveDir}`,
+    `sudo install -d -m 0750 -o sovereign -g sovereign ${backupRoot}`,
+    `sudo install -d -m 0750 -o sovereign -g sovereign ${archiveDir}`,
     `sudo cp ${installRoot}/.env ${archiveDir}/.env.backup`,
   ];
 

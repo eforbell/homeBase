@@ -36,7 +36,7 @@ function runPreflightChecks() {
     buildCheck('psql', 'PostgreSQL client installed', 'command -v psql && psql --version', 'Install postgresql-client so Home Base can run schema and backup commands.'),
     buildCheck('nginx', 'nginx installed', 'command -v nginx && nginx -v', 'Install nginx before enabling routed apps.'),
     buildCheck('postgres-service', 'PostgreSQL service active', 'systemctl is-active postgresql', 'Start PostgreSQL or finish bootstrap before app installs.'),
-    buildCheck('nginx-config', 'nginx configuration validates', 'nginx -t', 'Fix nginx configuration issues before generating/reloading app routes.'),
+    buildCheck('nginx-config', 'nginx configuration validates', 'sudo nginx -t', 'Fix nginx configuration issues before generating/reloading app routes.'),
     buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', 'Install Tailscale during bootstrap for private remote access.'),
   ];
 
