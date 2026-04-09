@@ -69,5 +69,29 @@ test('install planner prefers SSH repository URLs when explicitly configured', (
 
   assert.equal(plan.app.repoUrl, 'git@github.com:eforbell/familyHelp.git');
   assert.match(plan.script, /git clone git@github.com:eforbell\/familyHelp.git/);
+  assert.match(plan.script, /preserve-env=SSH_AUTH_SOCK/);
   assert.match(plan.script, /Timed out waiting for http:\/\/127.0.0.1:3002/);
+});
+
+test('install planner supports dedicated ssh key mode for founder workflows', () => {
+  const plan = buildInstallPlan({
+    appId: 'family-help',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: '/opt/sovereign-home/apps',
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+      gitTransport: 'ssh-key',
+      gitSshKeyPath: '/opt/sovereign-home/.ssh/id_founder_homebase',
+      gitSshKnownHostsPath: '/opt/sovereign-home/.ssh/known_hosts',
+      gitSshStrictHostKeyChecking: 'accept-new',
+    },
+  });
+
+  assert.equal(plan.app.repoUrl, 'git@github.com:eforbell/familyHelp.git');
+  assert.match(plan.script, /GIT_SSH_COMMAND='ssh -i \/opt\/sovereign-home\/\.ssh\/id_founder_homebase/);
+  assert.match(plan.script, /UserKnownHostsFile=\/opt\/sovereign-home\/\.ssh\/known_hosts/);
 });

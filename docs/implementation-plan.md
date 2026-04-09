@@ -46,3 +46,6 @@
 - friendlier copy and recovery guidance
 - PWA install affordances
 - help text for Tailscale, backup media, and app selection
+
+
+See also: `docs/next-phase-roadmap.md` for the post-VM reliability, UX, and release-gating plan.

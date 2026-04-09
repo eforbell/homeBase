@@ -29,6 +29,21 @@ npm start
 
 Open `http://localhost:3080` by default.
 
+### Founder/private-repo mode
+
+For public-community installs, Home Base now defaults to HTTPS GitHub clone URLs.
+
+If you want founder/private-repo SSH-key auth instead, run Home Base with:
+
+```bash
+export HOME_BASE_GIT_TRANSPORT=ssh-key
+export HOME_BASE_GIT_SSH_KEY_PATH=/opt/sovereign-home/.ssh/id_founder_homebase
+export HOME_BASE_GIT_SSH_KNOWN_HOSTS_PATH=/opt/sovereign-home/.ssh/known_hosts
+PORT=3080 npm start
+```
+
+The SSH key path must be readable by the managed service user because app clone/fetch commands run as that user.
+
 ## Test
 
 ```bash
@@ -43,3 +58,4 @@ npm test
 - `docs/implementation-plan.md`
 - `docs/suite-baselines.md`
 - `docs/vm-next-steps.md`
+- `docs/next-phase-roadmap.md`

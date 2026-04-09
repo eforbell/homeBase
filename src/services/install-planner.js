@@ -116,6 +116,10 @@ function makeStep(id, title, commands) {
   return { id, title, run: commands.filter(Boolean) };
 }
 
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
+}
+
 function renderWaitForHttpCommand({ url, attempts = 20, sleepSeconds = 1 }) {
   return `for attempt in $(seq 1 ${attempts}); do curl --fail --silent --show-error ${url} && exit 0; sleep ${sleepSeconds}; done; echo "Timed out waiting for ${url}" >&2; exit 1`;
 }
@@ -188,10 +192,35 @@ function resolveEnvTemplate(template, ctx) {
 }
 
 function resolveRepositoryUrl(app, config = {}) {
-  if (config.gitTransport === 'ssh' && app.repository.sshUrl) {
+  if ((config.gitTransport === 'ssh' || config.gitTransport === 'ssh-key') && app.repository.sshUrl) {
     return app.repository.sshUrl;
   }
   return app.repository.url;
+}
+
+function renderGitRunPrefix({ serviceUser, app, config = {} }) {
+  const base = `sudo -u ${serviceUser}`;
+  if (config.gitTransport === 'ssh') {
+    return `sudo --preserve-env=SSH_AUTH_SOCK -u ${serviceUser}`;
+  }
+  if (config.gitTransport === 'ssh-key') {
+    if (!config.gitSshKeyPath) {
+      const error = new Error('HOME_BASE_GIT_SSH_KEY_PATH is required when HOME_BASE_GIT_TRANSPORT=ssh-key');
+      error.code = 'GIT_SSH_KEY_PATH_REQUIRED';
+      throw error;
+    }
+    const sshParts = [
+      'ssh',
+      '-i', config.gitSshKeyPath,
+      '-o', 'IdentitiesOnly=yes',
+      '-o', `StrictHostKeyChecking=${config.gitSshStrictHostKeyChecking || 'accept-new'}`,
+    ];
+    if (config.gitSshKnownHostsPath) {
+      sshParts.push('-o', `UserKnownHostsFile=${config.gitSshKnownHostsPath}`);
+    }
+    return `${base} env GIT_SSH_COMMAND=${shellSingleQuote(sshParts.join(' '))}`;
+  }
+  return base;
 }
 
 function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
@@ -245,6 +274,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     sidecarPorts,
   };
   const repositoryUrl = resolveRepositoryUrl(app, config);
+  const gitRunPrefix = renderGitRunPrefix({ serviceUser, app, config });
 
   const env = resolveEnvTemplate(app.config.env, ctx);
   const files = {};
@@ -296,10 +326,10 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       `sudo install -d -o ${serviceUser} -g ${serviceUser} ${config.baseInstallDir || '/opt/sovereign-home/apps'}`,
     ]),
     makeStep('git-sync', 'Clone or update application source', [
-      `if [ ! -d ${installRoot}/.git ]; then sudo -u ${serviceUser} git clone ${repositoryUrl} ${installRoot}; fi`,
-      `sudo -u ${serviceUser} git -C ${installRoot} fetch origin --prune`,
-      `sudo -u ${serviceUser} git -C ${installRoot} checkout ${options.ref || app.repository.defaultRef}`,
-      `sudo -u ${serviceUser} git -C ${installRoot} pull --ff-only origin ${options.ref || app.repository.defaultRef}`,
+      `if [ ! -d ${installRoot}/.git ]; then ${gitRunPrefix} git clone ${repositoryUrl} ${installRoot}; fi`,
+      `${gitRunPrefix} git -C ${installRoot} fetch origin --prune`,
+      `${gitRunPrefix} git -C ${installRoot} checkout ${options.ref || app.repository.defaultRef}`,
+      `${gitRunPrefix} git -C ${installRoot} pull --ff-only origin ${options.ref || app.repository.defaultRef}`,
     ]),
     makeStep('database-bootstrap', 'Create database role and database', buildDatabaseCommands(app, ctx)),
     makeStep('render-config', 'Render application environment and unit files', [

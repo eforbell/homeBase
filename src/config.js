@@ -23,6 +23,9 @@ function loadConfig() {
     defaultHostname: process.env.HOME_BASE_HOSTNAME || 'homebase',
     defaultDomain: process.env.HOME_BASE_DOMAIN || 'tailnet',
     gitTransport: process.env.HOME_BASE_GIT_TRANSPORT || 'https',
+    gitSshKeyPath: process.env.HOME_BASE_GIT_SSH_KEY_PATH || '',
+    gitSshKnownHostsPath: process.env.HOME_BASE_GIT_SSH_KNOWN_HOSTS_PATH || '',
+    gitSshStrictHostKeyChecking: process.env.HOME_BASE_GIT_SSH_STRICT_HOST_KEY_CHECKING || 'accept-new',
   };
 }
 
