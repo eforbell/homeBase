@@ -16,23 +16,27 @@ function safeJsonParse(value) {
   }
 }
 
-function renderHomePage({ catalog, state, config }) {
-  const installationCards = Object.values(state.installations || {}).map((item) => `
+function renderInstallationList(installations) {
+  return Object.values(installations || {}).map((item) => `
     <li>
       <strong>${escapeHtml(item.name)}</strong>
       <div>${escapeHtml(item.mountPath)} → ${escapeHtml(item.externalUrl)}</div>
       <div>port ${escapeHtml(item.port)} · ${escapeHtml(item.status)}</div>
     </li>
-  `).join('');
+  `).join('') || '<li>No planned installs yet.</li>';
+}
 
-  const jobCards = (state.jobs || []).map((job) => `
+function renderJobList(jobs) {
+  return (jobs || []).map((job) => `
     <li>
       <strong><a href="/jobs/${escapeHtml(job.id)}" style="color:#9cc2ff">#${escapeHtml(job.id)}</a></strong>
       <div>${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.dryRun ? ' · dry-run' : ''}</div>
       <div>${escapeHtml(job.currentStep || 'waiting')}</div>
     </li>
-  `).join('');
+  `).join('') || '<li>No jobs yet.</li>';
+}
 
+function renderHomePage({ catalog, state, config }) {
   const preflightSummary = state.preflight
     ? `${state.preflight.checks.filter((check) => check.ok).length}/${state.preflight.checks.length} checks passing`
     : 'Not run yet';
@@ -136,15 +140,15 @@ function renderHomePage({ catalog, state, config }) {
       </article>
       <article class="card">
         <h2>Planned installs</h2>
-        <ul>${installationCards || '<li>No planned installs yet.</li>'}</ul>
+        <ul id="installations-list">${renderInstallationList(state.installations)}</ul>
       </article>
       <article class="card">
         <h2>Recent jobs</h2>
-        <ul>${jobCards || '<li>No jobs yet.</li>'}</ul>
+        <ul id="jobs-list">${renderJobList(state.jobs)}</ul>
       </article>
       <article class="card">
         <h2>Preflight</h2>
-        <p>${escapeHtml(preflightSummary)}</p>
+        <p id="preflight-summary">${escapeHtml(preflightSummary)}</p>
         <button id="preflight-button" type="button">Run preflight checks</button>
       </article>
     </section>
@@ -161,6 +165,9 @@ function renderHomePage({ catalog, state, config }) {
   </main>
   <script>
     const result = document.getElementById('result');
+    const jobsList = document.getElementById('jobs-list');
+    const installationsList = document.getElementById('installations-list');
+    const preflightSummary = document.getElementById('preflight-summary');
 
     async function postJson(url, payload) {
       const response = await fetch(url, {
@@ -187,7 +194,55 @@ function renderHomePage({ catalog, state, config }) {
         dryRun: action !== 'execute',
       });
       result.textContent = JSON.stringify(data, null, 2);
-      if (action !== 'plan') window.location.reload();
+      if (action !== 'plan') {
+        startStatePolling();
+      }
+    }
+
+    function renderInstallations(items) {
+      if (!items.length) return '<li>No planned installs yet.</li>';
+      return items.map((item) =>
+        '<li>' +
+          '<strong>' + item.name + '</strong>' +
+          '<div>' + item.mountPath + ' → ' + item.externalUrl + '</div>' +
+          '<div>port ' + item.port + ' · ' + item.status + '</div>' +
+        '</li>'
+      ).join('');
+    }
+
+    function renderJobs(items) {
+      if (!items.length) return '<li>No jobs yet.</li>';
+      return items.map((job) =>
+        '<li>' +
+          '<strong><a href="/jobs/' + job.id + '" style="color:#9cc2ff">#' + job.id + '</a></strong>' +
+          '<div>' + job.kind + ' · ' + job.status + (job.dryRun ? ' · dry-run' : '') + '</div>' +
+          '<div>' + (job.currentStep || 'waiting') + '</div>' +
+        '</li>'
+      ).join('');
+    }
+
+    let polling = false;
+    async function refreshState() {
+      const data = await getJson('/api/state');
+      installationsList.innerHTML = renderInstallations(Object.values(data.installations || {}));
+      jobsList.innerHTML = renderJobs(data.jobs || []);
+      if (data.preflight) {
+        const passing = data.preflight.checks.filter((check) => check.ok).length;
+        preflightSummary.textContent = passing + '/' + data.preflight.checks.length + ' checks passing';
+      }
+      const hasActiveJob = (data.jobs || []).some((job) => job.status === 'queued' || job.status === 'running');
+      polling = hasActiveJob;
+      if (hasActiveJob) {
+        window.setTimeout(() => refreshState().catch(() => {}), 2000);
+      }
+    }
+
+    function startStatePolling() {
+      if (polling) return;
+      polling = true;
+      refreshState().catch(() => {
+        polling = false;
+      });
     }
 
     async function populateBackups(appId) {
@@ -234,7 +289,8 @@ function renderHomePage({ catalog, state, config }) {
       try {
         const data = await getJson('/api/preflight');
         result.textContent = JSON.stringify(data, null, 2);
-        window.location.reload();
+        const passing = data.checks.filter((check) => check.ok).length;
+        preflightSummary.textContent = passing + '/' + data.checks.length + ' checks passing';
       } catch (error) {
         result.textContent = error.message;
       }
@@ -314,6 +370,10 @@ function renderHomePage({ catalog, state, config }) {
     document.querySelectorAll('[data-backup-select]').forEach((select) => {
       populateBackups(select.dataset.backupSelect);
     });
+
+    if ((JSON.parse(${JSON.stringify(JSON.stringify(state.jobs || []))})).some((job) => job.status === 'queued' || job.status === 'running')) {
+      startStatePolling();
+    }
   </script>
 </body>
 </html>`;

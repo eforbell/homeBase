@@ -130,7 +130,7 @@ PY`,
       'firewall-check',
       'Check firewall posture and allow nginx if ufw is active',
       [
-        'if command -v ufw >/dev/null 2>&1; then sudo ufw allow OpenSSH || true; fi',
+        'if command -v ufw >/dev/null 2>&1; then if sudo ufw app info OpenSSH >/dev/null 2>&1; then sudo ufw allow OpenSSH || true; else sudo ufw allow 22/tcp || true; fi; fi',
         'if command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q "Status: active"; then sudo ufw allow "Nginx Full"; fi',
       ],
       ['true'],

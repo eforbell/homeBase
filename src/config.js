@@ -22,7 +22,7 @@ function loadConfig() {
     baseConfigDir: process.env.HOME_BASE_CONFIG_DIR || '/etc/sovereign-home',
     defaultHostname: process.env.HOME_BASE_HOSTNAME || 'homebase',
     defaultDomain: process.env.HOME_BASE_DOMAIN || 'tailnet',
-    gitTransport: process.env.HOME_BASE_GIT_TRANSPORT || 'ssh',
+    gitTransport: process.env.HOME_BASE_GIT_TRANSPORT || 'https',
   };
 }
 
