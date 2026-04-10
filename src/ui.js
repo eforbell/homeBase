@@ -125,6 +125,11 @@ function renderHomePage({ catalog, state, config }) {
   <main>
     <section class="grid">
       <article class="card">
+        <h2>Install Home Base as a service</h2>
+        <p class="muted">Render the plan for moving Home Base from a shell-launched dev server into a stable systemd-managed service.</p>
+        <button id="runtime-plan-button" type="button">Generate Home Base runtime plan</button>
+      </article>
+      <article class="card">
         <h2>Bootstrap host</h2>
         <form id="bootstrap-form">
           <label>Service user <input name="serviceUser" value="${escapeHtml(config.serviceUser)}"></label>
@@ -280,6 +285,15 @@ function renderHomePage({ catalog, state, config }) {
             confirm: payload.confirm,
           },
         });
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    });
+
+    document.getElementById('runtime-plan-button').addEventListener('click', async () => {
+      try {
+        const data = await postJson('/api/homebase/runtime-plan', {});
+        result.textContent = JSON.stringify(data, null, 2);
       } catch (error) {
         result.textContent = error.message;
       }

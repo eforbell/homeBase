@@ -53,6 +53,35 @@ test('HTTP API exposes catalog and can persist a planned install', async () => {
   }
 });
 
+test('homebase runtime plan endpoint returns service-install scaffolding', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-runtime-plan-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/runtime-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const plan = await res.json();
+    assert.equal(plan.kind, 'homebase-runtime');
+    assert.equal(plan.runtime.serviceName, 'homebase');
+  } finally {
+    await server.close();
+  }
+});
+
 test('bootstrap execute dry-run creates a completed job', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-job-'));
   const server = await startServer({

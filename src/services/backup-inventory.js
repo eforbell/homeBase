@@ -6,7 +6,7 @@ function getBackupRoot(appId, config = {}) {
   return `${(config.baseBackupDir || '/var/lib/sovereign-home/backups').replace(/\/$/, '')}/${appId}`;
 }
 
-function listBackups({ appId, config = {} }) {
+function listBackupsFromDisk({ appId, config = {} }) {
   const app = getAppById(appId);
   if (!app) {
     const error = new Error(`Unknown app id: ${appId}`);
@@ -48,5 +48,5 @@ function listBackups({ appId, config = {} }) {
 
 module.exports = {
   getBackupRoot,
-  listBackups,
+  listBackupsFromDisk,
 };

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getAppById } = require('../catalog');
-const { listBackups } = require('./backup-inventory');
+const { listBackupsFromDisk } = require('./backup-inventory');
 
 function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
@@ -26,7 +26,7 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   const installation = state.installations && state.installations[appId];
   const installRoot = installation?.installRoot || `${(config.baseInstallDir || '/opt/sovereign-home/apps').replace(/\/$/, '')}/${app.repoKey}`;
 
-  const backups = listBackups({ appId, config }).backups;
+  const backups = listBackupsFromDisk({ appId, config }).backups;
   const selectedBackup = backupDir
     ? backups.find((item) => item.archiveDir === backupDir || item.name === backupDir)
     : backups[0];

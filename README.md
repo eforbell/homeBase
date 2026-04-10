@@ -59,3 +59,4 @@ npm test
 - `docs/suite-baselines.md`
 - `docs/vm-next-steps.md`
 - `docs/next-phase-roadmap.md`
+- `docs/homebase-service-runtime-plan.md`

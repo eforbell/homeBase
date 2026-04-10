@@ -71,6 +71,12 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
       installRoot,
       backupRoot,
       archiveDir,
+      expectedFiles: [
+        '.env.backup',
+        'database.dump',
+        'backup-generated-at.txt',
+        ...(app.storage?.paths || []).map((relativePath) => `${relativePath.replaceAll('/', '_')}.tgz`),
+      ],
       storagePaths: app.storage?.paths || [],
     },
     commands,

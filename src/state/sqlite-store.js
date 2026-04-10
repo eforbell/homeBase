@@ -36,6 +36,14 @@ class SqliteStateStore {
   getJob(jobId) {
     return runSqliteOp(this.dbPath, 'get_job', { jobId });
   }
+
+  recordBackup(record) {
+    return runSqliteOp(this.dbPath, 'record_backup', { record });
+  }
+
+  listBackups(appId) {
+    return runSqliteOp(this.dbPath, 'list_backups', { appId });
+  }
 }
 
 module.exports = {

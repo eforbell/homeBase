@@ -46,6 +46,19 @@ class JobRunner {
       plan,
       steps,
       dryRun,
+      onComplete: () => {
+        if (dryRun) return;
+        this.stateStore.recordBackup({
+          appId: plan.app.id,
+          archiveDir: plan.backup.archiveDir,
+          generatedAt: plan.generatedAt,
+          dryRun: false,
+          status: 'completed',
+          includedFiles: plan.backup.expectedFiles || [],
+          jobId: null,
+          createdAt: new Date().toISOString(),
+        });
+      },
       extraResult: {
         archiveDir: plan.backup.archiveDir,
       },

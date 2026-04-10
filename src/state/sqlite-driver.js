@@ -53,6 +53,18 @@ CREATE TABLE IF NOT EXISTS jobs (
   result_json TEXT,
   error_text TEXT
 );
+
+CREATE TABLE IF NOT EXISTS backup_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id TEXT NOT NULL,
+  archive_dir TEXT NOT NULL UNIQUE,
+  generated_at TEXT NOT NULL,
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  included_files_json TEXT NOT NULL DEFAULT '[]',
+  job_id INTEGER,
+  created_at TEXT NOT NULL
+);
 """
 
 def row_to_dict(row):
@@ -106,6 +118,22 @@ elif op == "load_state":
             "SELECT * FROM jobs ORDER BY id DESC LIMIT 20"
         )
     ]
+    backups = [
+        {
+            "id": row["id"],
+            "appId": row["app_id"],
+            "archiveDir": row["archive_dir"],
+            "generatedAt": row["generated_at"],
+            "dryRun": bool(row["dry_run"]),
+            "status": row["status"],
+            "includedFiles": json.loads(row["included_files_json"] or "[]"),
+            "jobId": row["job_id"],
+            "createdAt": row["created_at"],
+        }
+        for row in conn.execute(
+            "SELECT * FROM backup_records ORDER BY generated_at DESC LIMIT 50"
+        )
+    ]
     emit({
         "version": 2,
         "bootstrapPlans": [
@@ -114,6 +142,7 @@ elif op == "load_state":
         ],
         "installations": installations,
         "jobs": jobs,
+        "backups": backups,
     })
 
 elif op == "add_bootstrap_plan":
@@ -241,6 +270,57 @@ elif op == "get_job":
             "resultJson": row["result_json"],
             "error": row["error_text"],
         })
+
+elif op == "record_backup":
+    record = payload["record"]
+    conn.execute(
+        """
+        INSERT INTO backup_records (
+          app_id, archive_dir, generated_at, dry_run, status,
+          included_files_json, job_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(archive_dir) DO UPDATE SET
+          app_id=excluded.app_id,
+          generated_at=excluded.generated_at,
+          dry_run=excluded.dry_run,
+          status=excluded.status,
+          included_files_json=excluded.included_files_json,
+          job_id=excluded.job_id,
+          created_at=excluded.created_at
+        """,
+        (
+            record["appId"],
+            record["archiveDir"],
+            record["generatedAt"],
+            1 if record.get("dryRun") else 0,
+            record["status"],
+            json.dumps(record.get("includedFiles", [])),
+            record.get("jobId"),
+            record["createdAt"],
+        ),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "list_backups":
+    backups = [
+        {
+            "id": row["id"],
+            "appId": row["app_id"],
+            "archiveDir": row["archive_dir"],
+            "generatedAt": row["generated_at"],
+            "dryRun": bool(row["dry_run"]),
+            "status": row["status"],
+            "includedFiles": json.loads(row["included_files_json"] or "[]"),
+            "jobId": row["job_id"],
+            "createdAt": row["created_at"],
+        }
+        for row in conn.execute(
+            "SELECT * FROM backup_records WHERE app_id = ? ORDER BY generated_at DESC",
+            (payload["appId"],),
+        )
+    ]
+    emit(backups)
 
 else:
     raise SystemExit(f"Unsupported sqlite driver op: {op}")

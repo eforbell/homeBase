@@ -53,4 +53,19 @@ test('sqlite state store persists installations and jobs', () => {
 
   const job = store.getJob(id);
   assert.match(job.log, /hello/);
+
+  store.recordBackup({
+    appId: 'family-help',
+    archiveDir: '/var/lib/sovereign-home/backups/family-help/20260410T000000Z',
+    generatedAt: '2026-04-10T00:00:00.000Z',
+    dryRun: false,
+    status: 'completed',
+    includedFiles: ['.env.backup', 'database.dump'],
+    jobId: id,
+    createdAt: '2026-04-10T00:00:00.000Z',
+  });
+
+  const backups = store.listBackups('family-help');
+  assert.equal(backups.length, 1);
+  assert.equal(backups[0].includedFiles[0], '.env.backup');
 });

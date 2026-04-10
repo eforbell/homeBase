@@ -6,8 +6,9 @@ const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
 const { buildBackupPlan } = require('./services/backup-planner');
-const { listBackups } = require('./services/backup-inventory');
+const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { buildRestorePlan } = require('./services/restore-planner');
+const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planner');
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
 const { renderHomePage, renderJobPage } = require('./ui');
@@ -98,6 +99,9 @@ function createApp(config) {
       }
       if (method === 'GET' && pathname === '/api/manifest/schema') {
         return sendJson(res, 200, manifestSchema);
+      }
+      if (method === 'POST' && pathname === '/api/homebase/runtime-plan') {
+        return sendJson(res, 200, buildHomeBaseRuntimePlan(config));
       }
       if (method === 'POST' && pathname === '/api/bootstrap/plan') {
         const body = await parseBody(req);
@@ -209,7 +213,22 @@ function createApp(config) {
       }
       const backupListMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backups$/);
       if (method === 'GET' && backupListMatch) {
-        return sendJson(res, 200, listBackups({ appId: backupListMatch[1], config }));
+        const appId = backupListMatch[1];
+        const dbBackups = stateStore.listBackups(appId);
+        if (dbBackups.length) {
+          return sendJson(res, 200, {
+            app: getAppById(appId) ? { id: getAppById(appId).id, name: getAppById(appId).name } : { id: appId, name: appId },
+            backupRoot: `${(config.baseBackupDir || '/var/lib/sovereign-home/backups').replace(/\/$/, '')}/${appId}`,
+            backups: dbBackups.map((record) => ({
+              name: record.archiveDir.split('/').pop(),
+              archiveDir: record.archiveDir,
+              generatedAt: record.generatedAt,
+              status: record.status,
+              includedFiles: record.includedFiles,
+            })),
+          });
+        }
+        return sendJson(res, 200, listBackupsFromDisk({ appId, config }));
       }
       const backupExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup\/execute$/);
       if (method === 'POST' && backupExecuteMatch) {
