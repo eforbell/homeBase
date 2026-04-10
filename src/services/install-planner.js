@@ -124,6 +124,10 @@ function renderWaitForHttpCommand({ url, attempts = 20, sleepSeconds = 1 }) {
   return `for attempt in $(seq 1 ${attempts}); do curl --fail --silent --show-error ${url} && exit 0; sleep ${sleepSeconds}; done; echo "Timed out waiting for ${url}" >&2; exit 1`;
 }
 
+function renderRunAsServiceUserCommand({ serviceUser, command }) {
+  return `sudo -u ${serviceUser} -H bash -lc ${shellSingleQuote(command)}`;
+}
+
 function buildDatabaseCommands(app, ctx) {
   if (!app.database.engine.includes('postgres')) return [];
 
@@ -137,28 +141,50 @@ function buildAppBootstrapCommands(app, ctx) {
   const commands = [];
 
   if (app.runtime.kind === 'node') {
-    commands.push(`cd ${ctx.installRoot} && ${app.runtime.installCommand}`);
+    commands.push(renderRunAsServiceUserCommand({
+      serviceUser: ctx.serviceUser,
+      command: `cd ${ctx.installRoot} && ${app.runtime.installCommand}`,
+    }));
     if (app.database.bootstrap === 'schema-file' && app.database.schemaCommand) {
-      commands.push(`cd ${ctx.installRoot} && ${app.database.schemaCommand}`);
+      commands.push(renderRunAsServiceUserCommand({
+        serviceUser: ctx.serviceUser,
+        command: `cd ${ctx.installRoot} && ${app.database.schemaCommand}`,
+      }));
     }
     if (app.database.migrationCommand) {
-      commands.push(`cd ${ctx.installRoot} && ${app.database.migrationCommand}`);
+      commands.push(renderRunAsServiceUserCommand({
+        serviceUser: ctx.serviceUser,
+        command: `cd ${ctx.installRoot} && ${app.database.migrationCommand}`,
+      }));
     }
     return commands;
   }
 
-  commands.push(`cd ${ctx.installRoot} && python3 -m venv ${app.runtime.pythonVenv || '.venv'}`);
-  commands.push(`cd ${ctx.installRoot} && .venv/bin/python -m pip install --upgrade pip`);
-  commands.push(`cd ${ctx.installRoot} && ${app.runtime.installCommand}`);
+  commands.push(renderRunAsServiceUserCommand({
+    serviceUser: ctx.serviceUser,
+    command: `cd ${ctx.installRoot} && python3 -m venv ${app.runtime.pythonVenv || '.venv'}`,
+  }));
+  commands.push(renderRunAsServiceUserCommand({
+    serviceUser: ctx.serviceUser,
+    command: `cd ${ctx.installRoot} && .venv/bin/python -m pip install --upgrade pip`,
+  }));
+  commands.push(renderRunAsServiceUserCommand({
+    serviceUser: ctx.serviceUser,
+    command: `cd ${ctx.installRoot} && ${app.runtime.installCommand}`,
+  }));
   if (app.database.bootstrap === 'schema-file' && app.database.schemaCommand) {
-    commands.push(
-      `cd ${ctx.installRoot} && ${app.database.schemaCommand
+    commands.push(renderRunAsServiceUserCommand({
+      serviceUser: ctx.serviceUser,
+      command: `cd ${ctx.installRoot} && ${app.database.schemaCommand
         .replaceAll('{{dbUser}}', ctx.dbUser)
-        .replaceAll('{{dbName}}', ctx.dbName)}`
-    );
+        .replaceAll('{{dbName}}', ctx.dbName)}`,
+    }));
   }
   if (app.database.migrationCommand) {
-    commands.push(`cd ${ctx.installRoot} && ${app.database.migrationCommand}`);
+    commands.push(renderRunAsServiceUserCommand({
+      serviceUser: ctx.serviceUser,
+      command: `cd ${ctx.installRoot} && ${app.database.migrationCommand}`,
+    }));
   }
   return commands;
 }

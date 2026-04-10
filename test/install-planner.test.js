@@ -50,6 +50,7 @@ test('install planner uses HTTPS repository URLs by default', () => {
 
   assert.equal(plan.app.repoUrl, 'https://github.com/eforbell/familyHelp.git');
   assert.match(plan.script, /git clone https:\/\/github.com\/eforbell\/familyHelp.git/);
+  assert.match(plan.script, /sudo -u sovereign -H bash -lc 'cd \/opt\/sovereign-home\/apps\/familyHelp && npm ci --omit=dev'/);
 });
 
 test('install planner prefers SSH repository URLs when explicitly configured', () => {
@@ -70,6 +71,7 @@ test('install planner prefers SSH repository URLs when explicitly configured', (
   assert.equal(plan.app.repoUrl, 'git@github.com:eforbell/familyHelp.git');
   assert.match(plan.script, /git clone git@github.com:eforbell\/familyHelp.git/);
   assert.match(plan.script, /preserve-env=SSH_AUTH_SOCK/);
+  assert.match(plan.script, /sudo -u sovereign -H bash -lc 'cd \/opt\/sovereign-home\/apps\/familyHelp && npm ci --omit=dev'/);
   assert.match(plan.script, /Timed out waiting for http:\/\/127.0.0.1:3002/);
 });
 
