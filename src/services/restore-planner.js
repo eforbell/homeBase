@@ -3,6 +3,14 @@ const path = require('path');
 const { getAppById } = require('../catalog');
 const { listBackups } = require('./backup-inventory');
 
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function renderRunAsServiceUserCommand({ serviceUser, command }) {
+  return `sudo -u ${serviceUser} -H bash -lc ${shellSingleQuote(command)}`;
+}
+
 function renderWaitForHttpCommand({ url, attempts = 20, sleepSeconds = 1 }) {
   return `for attempt in $(seq 1 ${attempts}); do curl --fail --silent --show-error ${url} && exit 0; sleep ${sleepSeconds}; done; echo "Timed out waiting for ${url}" >&2; exit 1`;
 }
@@ -30,21 +38,37 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   }
 
   const archiveDir = selectedBackup.archiveDir;
+  const serviceUser = config.serviceUser || 'sovereign';
   const commands = [
     `sudo test -d ${archiveDir}`,
-    `if [ -f ${archiveDir}/.env.backup ]; then sudo cp ${archiveDir}/.env.backup ${installRoot}/.env; fi`,
+    renderRunAsServiceUserCommand({
+      serviceUser,
+      command: `if [ -f ${archiveDir}/.env.backup ]; then cp ${archiveDir}/.env.backup ${installRoot}/.env; fi`,
+    }),
   ];
 
   if (app.runtime.kind === 'python' && app.id === 'bitcoin-accounting') {
-    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/database.dump ] && [ "$DB_BACKEND" = "postgres" ]; then PGPASSWORD="$PGPASSWORD" pg_restore --clean --if-exists -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" ${archiveDir}/database.dump; fi`);
-    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/sqlite-ledger.db ] && [ "$DB_BACKEND" = "sqlite" ] && [ -n "$SQLITE_DB_PATH" ]; then sudo cp ${archiveDir}/sqlite-ledger.db "$SQLITE_DB_PATH"; fi`);
+    commands.push(renderRunAsServiceUserCommand({
+      serviceUser,
+      command: `cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/database.dump ] && [ "$DB_BACKEND" = "postgres" ]; then PGPASSWORD="$PGPASSWORD" pg_restore --clean --if-exists -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" ${archiveDir}/database.dump; fi`,
+    }));
+    commands.push(renderRunAsServiceUserCommand({
+      serviceUser,
+      command: `cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/sqlite-ledger.db ] && [ "$DB_BACKEND" = "sqlite" ] && [ -n "$SQLITE_DB_PATH" ]; then cp ${archiveDir}/sqlite-ledger.db "$SQLITE_DB_PATH"; fi`,
+    }));
   } else {
-    commands.push(`cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/database.dump ]; then pg_restore --clean --if-exists -d "$DATABASE_URL" ${archiveDir}/database.dump; fi`);
+    commands.push(renderRunAsServiceUserCommand({
+      serviceUser,
+      command: `cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/database.dump ]; then pg_restore --clean --if-exists -d "$DATABASE_URL" ${archiveDir}/database.dump; fi`,
+    }));
   }
 
   for (const relativePath of app.storage?.paths || []) {
     const tarName = `${relativePath.replaceAll('/', '_')}.tgz`;
-    commands.push(`if [ -f ${archiveDir}/${tarName} ]; then sudo rm -rf ${installRoot}/${relativePath} && sudo tar -C ${installRoot} -xzf ${archiveDir}/${tarName}; fi`);
+    commands.push(renderRunAsServiceUserCommand({
+      serviceUser,
+      command: `if [ -f ${archiveDir}/${tarName} ]; then rm -rf ${installRoot}/${relativePath} && tar -C ${installRoot} -xzf ${archiveDir}/${tarName}; fi`,
+    }));
   }
 
   if (installation?.serviceName) {
