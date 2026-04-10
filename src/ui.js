@@ -127,7 +127,14 @@ function renderHomePage({ catalog, state, config }) {
       <article class="card">
         <h2>Install Home Base as a service</h2>
         <p class="muted">Render the plan for moving Home Base from a shell-launched dev server into a stable systemd-managed service.</p>
-        <button id="runtime-plan-button" type="button">Generate Home Base runtime plan</button>
+        <label>Runtime port <input id="runtime-port" type="number" value="${escapeHtml(config.port)}"></label>
+        <label><input id="runtime-start-now" type="checkbox"> Start service immediately after install</label>
+        <label>Confirm execute <input id="runtime-confirm" placeholder="EXECUTE for real run"></label>
+        <div class="button-row">
+          <button id="runtime-plan-button" type="button">Generate runtime plan</button>
+          <button id="runtime-dry-run-button" type="button">Run runtime dry-run</button>
+          <button id="runtime-execute-button" type="button">Run runtime install for real</button>
+        </div>
       </article>
       <article class="card">
         <h2>Bootstrap host</h2>
@@ -292,8 +299,40 @@ function renderHomePage({ catalog, state, config }) {
 
     document.getElementById('runtime-plan-button').addEventListener('click', async () => {
       try {
-        const data = await postJson('/api/homebase/runtime-plan', {});
+        const data = await postJson('/api/homebase/runtime-plan', {
+          port: Number(document.getElementById('runtime-port').value || ${config.port}),
+          startImmediately: document.getElementById('runtime-start-now').checked,
+        });
         result.textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    });
+
+    document.getElementById('runtime-dry-run-button').addEventListener('click', async () => {
+      try {
+        const data = await postJson('/api/homebase/install-self', {
+          port: Number(document.getElementById('runtime-port').value || ${config.port}),
+          startImmediately: document.getElementById('runtime-start-now').checked,
+          dryRun: true,
+        });
+        result.textContent = JSON.stringify(data, null, 2);
+        startStatePolling();
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    });
+
+    document.getElementById('runtime-execute-button').addEventListener('click', async () => {
+      try {
+        const data = await postJson('/api/homebase/install-self', {
+          port: Number(document.getElementById('runtime-port').value || ${config.port}),
+          startImmediately: document.getElementById('runtime-start-now').checked,
+          confirm: document.getElementById('runtime-confirm').value,
+          dryRun: false,
+        });
+        result.textContent = JSON.stringify(data, null, 2);
+        startStatePolling();
       } catch (error) {
         result.textContent = error.message;
       }

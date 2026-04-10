@@ -15,5 +15,6 @@ test('homebase runtime plan renders service install scaffolding', () => {
   assert.equal(plan.runtime.user, 'homebase');
   assert.match(plan.files['homebase.service'], /Description=Home Base Control Plane/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_STATE_DB=\/var\/lib\/sovereign-home\/homebase\/home-base\.sqlite3/);
-  assert.match(plan.script, /systemctl enable --now homebase/);
+  assert.match(plan.script, /systemctl enable homebase/);
+  assert.match(plan.script, /Stop the shell-run instance/);
 });

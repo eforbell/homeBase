@@ -1,4 +1,4 @@
-function renderServiceUnit({ appDir, envFile, user }) {
+function renderServiceUnit({ appDir, envFile, user, port }) {
   return [
     '[Unit]',
     'Description=Home Base Control Plane',
@@ -9,7 +9,7 @@ function renderServiceUnit({ appDir, envFile, user }) {
     `User=${user}`,
     `WorkingDirectory=${appDir}`,
     `EnvironmentFile=${envFile}`,
-    'ExecStart=/usr/bin/env node server.js',
+    `ExecStart=/usr/bin/env PORT=${port} node server.js`,
     'Restart=always',
     'RestartSec=5',
     'KillSignal=SIGTERM',
@@ -32,17 +32,19 @@ function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseC
   ].join('\n');
 }
 
-function buildHomeBaseRuntimePlan(config = {}) {
+function buildHomeBaseRuntimePlan(config = {}, options = {}) {
   const generatedAt = new Date().toISOString();
-  const runtimeUser = config.homeBaseRuntimeUser || 'homebase';
-  const appDir = config.homeBaseAppDir || '/opt/sovereign-home/homebase';
-  const stateDir = config.homeBaseStateDir || '/var/lib/sovereign-home/homebase';
-  const stateDbPath = config.homeBaseRuntimeStateDbPath || `${stateDir}/home-base.sqlite3`;
-  const envFile = config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env';
+  const runtimeUser = options.runtimeUser || config.homeBaseRuntimeUser || 'homebase';
+  const appDir = options.appDir || config.homeBaseAppDir || '/opt/sovereign-home/homebase';
+  const stateDir = options.stateDir || config.homeBaseStateDir || '/var/lib/sovereign-home/homebase';
+  const stateDbPath = options.stateDbPath || config.homeBaseRuntimeStateDbPath || `${stateDir}/home-base.sqlite3`;
+  const envFile = options.envFile || config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env';
   const serviceName = 'homebase';
+  const port = options.port || config.port || 3080;
+  const startImmediately = options.startImmediately === true;
 
   const envContent = renderEnvFile({
-    port: config.port || 3080,
+    port,
     stateDbPath,
     baseInstallDir: config.baseInstallDir || '/opt/sovereign-home/apps',
     baseBackupDir: config.baseBackupDir || '/var/lib/sovereign-home/backups',
@@ -54,9 +56,14 @@ function buildHomeBaseRuntimePlan(config = {}) {
     appDir,
     envFile,
     user: runtimeUser,
+    port,
   });
 
-  const commands = [
+  const executionSteps = [
+    {
+      id: 'prepare-runtime',
+      title: 'Prepare Home Base runtime directories and config',
+      run: [
     `id -u ${runtimeUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${stateDir} --shell /usr/sbin/nologin ${runtimeUser}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${appDir}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
@@ -66,9 +73,23 @@ function buildHomeBaseRuntimePlan(config = {}) {
     `sudo tee /etc/systemd/system/${serviceName}.service > /dev/null <<'EOF'\n${serviceContent}EOF`,
     `sudo -u ${runtimeUser} -H bash -lc 'cd ${appDir} && npm ci --omit=dev'`,
     'sudo systemctl daemon-reload',
-    `sudo systemctl enable --now ${serviceName}`,
-    `curl --fail --silent --show-error http://127.0.0.1:${config.port || 3080}/api/state`,
+    `sudo systemctl enable ${serviceName}`,
+      ],
+    },
+    {
+      id: 'activate-service',
+      title: startImmediately ? 'Start Home Base service now' : 'Defer Home Base service start until shell-run instance stops',
+      run: startImmediately
+        ? [
+            `sudo systemctl restart ${serviceName}`,
+            `for attempt in $(seq 1 20); do curl --fail --silent --show-error http://127.0.0.1:${port}/api/state && exit 0; sleep 1; done; echo "Timed out waiting for Home Base runtime on ${port}" >&2; exit 1`,
+          ]
+        : [
+            `echo "Home Base service installed and enabled. Stop the shell-run instance, then run: sudo systemctl start ${serviceName}"`,
+          ],
+    },
   ];
+  const commands = executionSteps.flatMap((step) => step.run);
 
   return {
     kind: 'homebase-runtime',
@@ -80,11 +101,14 @@ function buildHomeBaseRuntimePlan(config = {}) {
       stateDbPath,
       envFile,
       serviceName,
+      port,
+      startImmediately,
     },
     files: {
       'homebase.env': envContent,
       'homebase.service': serviceContent,
     },
+    executionSteps,
     commands,
     script: `#!/usr/bin/env bash\nset -euo pipefail\n\n${commands.join('\n')}\n`,
   };

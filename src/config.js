@@ -26,6 +26,10 @@ function loadConfig() {
     gitSshKeyPath: process.env.HOME_BASE_GIT_SSH_KEY_PATH || '',
     gitSshKnownHostsPath: process.env.HOME_BASE_GIT_SSH_KNOWN_HOSTS_PATH || '',
     gitSshStrictHostKeyChecking: process.env.HOME_BASE_GIT_SSH_STRICT_HOST_KEY_CHECKING || 'accept-new',
+    homeBaseRuntimeUser: process.env.HOME_BASE_RUNTIME_USER || 'homebase',
+    homeBaseAppDir: process.env.HOME_BASE_APP_DIR || '/opt/sovereign-home/homebase',
+    homeBaseStateDir: process.env.HOME_BASE_RUNTIME_STATE_DIR || '/var/lib/sovereign-home/homebase',
+    homeBaseEnvFile: process.env.HOME_BASE_ENV_FILE || '/etc/sovereign-home/homebase.env',
   };
 }
 

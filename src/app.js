@@ -48,6 +48,39 @@ function missingCheckIds(preflight, ids) {
   return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok));
 }
 
+function getHomeBaseStatus(config) {
+  const fs = require('fs');
+  const { spawnSync } = require('child_process');
+  const runtimeUser = config.homeBaseRuntimeUser || 'homebase';
+  const appDir = config.homeBaseAppDir || '/opt/sovereign-home/homebase';
+  const stateDir = config.homeBaseStateDir || '/var/lib/sovereign-home/homebase';
+  const envFile = config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env';
+  const stateDbPath = config.stateDbPath || `${stateDir}/home-base.sqlite3`;
+  const status = {
+    runtimeUser,
+    appDir,
+    stateDir,
+    stateDbPath,
+    envFile,
+    serviceName: 'homebase',
+    paths: {
+      appDirExists: fs.existsSync(appDir),
+      stateDirExists: fs.existsSync(stateDir),
+      stateDbExists: fs.existsSync(stateDbPath),
+      envFileExists: fs.existsSync(envFile),
+      serviceFileExists: fs.existsSync('/etc/systemd/system/homebase.service'),
+    },
+  };
+
+  const systemctl = spawnSync('/bin/bash', ['-lc', 'command -v systemctl >/dev/null 2>&1 && systemctl is-active homebase || true'], {
+    encoding: 'utf8',
+  });
+  status.systemd = {
+    active: (systemctl.stdout || '').trim() || 'unknown',
+  };
+  return status;
+}
+
 function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   stateStore.init();
@@ -100,8 +133,38 @@ function createApp(config) {
       if (method === 'GET' && pathname === '/api/manifest/schema') {
         return sendJson(res, 200, manifestSchema);
       }
+      if (method === 'GET' && pathname === '/api/homebase/status') {
+        return sendJson(res, 200, getHomeBaseStatus(config));
+      }
       if (method === 'POST' && pathname === '/api/homebase/runtime-plan') {
-        return sendJson(res, 200, buildHomeBaseRuntimePlan(config));
+        const body = await parseBody(req);
+        return sendJson(res, 200, buildHomeBaseRuntimePlan(config, body));
+      }
+      if (method === 'POST' && pathname === '/api/homebase/install-self') {
+        const body = await parseBody(req);
+        if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          return sendJson(res, 400, {
+            error: 'Real execution requires confirm=EXECUTE',
+          });
+        }
+        if (body.dryRun === false) {
+          const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd', 'node']);
+          if (missing.length) {
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before Home Base self-install: ${missing.join(', ')}`,
+              missing,
+            });
+          }
+        }
+        const plan = buildHomeBaseRuntimePlan(config, body);
+        const jobId = jobRunner.startHomeBaseRuntimeJob(plan, {
+          dryRun: body.dryRun !== false,
+        });
+        return sendJson(res, 202, {
+          ok: true,
+          jobId,
+          dryRun: body.dryRun !== false,
+        });
       }
       if (method === 'POST' && pathname === '/api/bootstrap/plan') {
         const body = await parseBody(req);

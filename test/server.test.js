@@ -82,6 +82,62 @@ test('homebase runtime plan endpoint returns service-install scaffolding', async
   }
 });
 
+test('homebase install-self dry-run creates a runtime job', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-runtime-job-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/install-self`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true, port: 3180 }),
+    });
+    const payload = await res.json();
+    assert.equal(payload.ok, true);
+    const jobRes = await fetch(`${server.url}/api/jobs/${payload.jobId}`);
+    const job = await jobRes.json();
+    assert.equal(job.kind, 'homebase-runtime');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase status endpoint returns runtime state summary', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-status-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/status`);
+    const payload = await res.json();
+    assert.equal(payload.runtimeUser, 'homebase');
+    assert.equal(typeof payload.paths.stateDbExists, 'boolean');
+  } finally {
+    await server.close();
+  }
+});
+
 test('bootstrap execute dry-run creates a completed job', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-job-'));
   const server = await startServer({

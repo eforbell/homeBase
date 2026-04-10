@@ -85,6 +85,19 @@ class JobRunner {
     });
   }
 
+  startHomeBaseRuntimeJob(plan, { dryRun = true } = {}) {
+    return this.startPlanJob({
+      kind: 'homebase-runtime',
+      target: 'homebase',
+      plan,
+      steps: plan.executionSteps || [],
+      dryRun,
+      extraResult: {
+        runtime: plan.runtime,
+      },
+    });
+  }
+
   startPlanJob({ kind, target, plan, steps, dryRun = true, onComplete = null, extraResult = {} }) {
     const createdAt = new Date().toISOString();
     const { id } = this.stateStore.createJob({
