@@ -16,12 +16,23 @@ function safeJsonParse(value) {
   }
 }
 
-function renderInstallationList(installations) {
+function joinExternalPath(baseUrl, path) {
+  if (!path) return baseUrl;
+  return `${String(baseUrl || '').replace(/\/$/, '')}/${String(path).replace(/^\//, '')}`;
+}
+
+function renderInstallationList(installations, catalog = []) {
   return Object.values(installations || {}).map((item) => `
     <li>
       <strong>${escapeHtml(item.name)}</strong>
       <div>${escapeHtml(item.mountPath)} → ${escapeHtml(item.externalUrl)}</div>
       <div>port ${escapeHtml(item.port)} · ${escapeHtml(item.status)}</div>
+      <div class="button-row" style="margin-top:.5rem">
+        <a href="${escapeHtml(item.externalUrl)}" target="_blank" rel="noreferrer" style="color:#9cc2ff">Open</a>
+        ${catalog.find((app) => app.id === item.appId)?.onboarding
+          ? `<a href="${escapeHtml(joinExternalPath(item.externalUrl, catalog.find((app) => app.id === item.appId).onboarding.setupPath))}" target="_blank" rel="noreferrer" style="color:#9cc2ff">Set up household</a>`
+          : ''}
+      </div>
     </li>
   `).join('') || '<li>No planned installs yet.</li>';
 }
@@ -50,6 +61,7 @@ function renderHomePage({ catalog, state, config }) {
         <li><strong>Default route:</strong> ${escapeHtml(app.network.preferredMountPath)}</li>
         <li><strong>Default port:</strong> ${escapeHtml(app.network.preferredPort)}</li>
         <li><strong>Health:</strong> ${escapeHtml(app.network.health.livenessPath)}</li>
+        ${app.onboarding ? `<li><strong>First run:</strong> browser setup at ${escapeHtml(app.onboarding.setupPath)}</li>` : ''}
       </ul>
 
       <form class="install-form" data-app-id="${escapeHtml(app.id)}">
@@ -152,7 +164,7 @@ function renderHomePage({ catalog, state, config }) {
       </article>
       <article class="card">
         <h2>Planned installs</h2>
-        <ul id="installations-list">${renderInstallationList(state.installations)}</ul>
+        <ul id="installations-list">${renderInstallationList(state.installations, catalog)}</ul>
       </article>
       <article class="card">
         <h2>Recent jobs</h2>
@@ -211,15 +223,33 @@ function renderHomePage({ catalog, state, config }) {
       }
     }
 
+    const appCatalog = ${JSON.stringify(catalog.map((app) => ({
+      id: app.id,
+      onboarding: app.onboarding || null,
+    })))};
+
+    function joinExternalPathClient(baseUrl, path) {
+      if (!path) return baseUrl;
+      return String(baseUrl || '').replace(/\\/$/, '') + '/' + String(path).replace(/^\\//, '');
+    }
+
     function renderInstallations(items) {
       if (!items.length) return '<li>No planned installs yet.</li>';
-      return items.map((item) =>
-        '<li>' +
+      return items.map((item) => {
+        const app = appCatalog.find((candidate) => candidate.id === item.appId);
+        const setupLink = app && app.onboarding
+          ? '<a href="' + joinExternalPathClient(item.externalUrl, app.onboarding.setupPath) + '" target="_blank" rel="noreferrer" style="color:#9cc2ff">Set up household</a>'
+          : '';
+        return '<li>' +
           '<strong>' + item.name + '</strong>' +
           '<div>' + item.mountPath + ' → ' + item.externalUrl + '</div>' +
           '<div>port ' + item.port + ' · ' + item.status + '</div>' +
-        '</li>'
-      ).join('');
+          '<div class="button-row" style="margin-top:.5rem">' +
+            '<a href="' + item.externalUrl + '" target="_blank" rel="noreferrer" style="color:#9cc2ff">Open</a>' +
+            setupLink +
+          '</div>' +
+        '</li>';
+      }).join('');
     }
 
     function renderJobs(items) {

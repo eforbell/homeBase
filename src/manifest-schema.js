@@ -115,6 +115,11 @@ function validateManifestEntry(entry) {
     expectString(entry.service.name, 'service.name');
     expectString(entry.service.description, 'service.description');
   }
+  if (entry.onboarding != null && expectObject(entry.onboarding, 'onboarding')) {
+    expectString(entry.onboarding.mode, 'onboarding.mode');
+    expectString(entry.onboarding.setupPath, 'onboarding.setupPath');
+    expectString(entry.onboarding.statusPath, 'onboarding.statusPath');
+  }
   if (expectObject(entry.config, 'config')) {
     if (!expectObject(entry.config.env, 'config.env')) {
       // already recorded

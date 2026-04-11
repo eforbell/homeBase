@@ -99,12 +99,12 @@ const catalog = [
       preferredPort: 3002,
       upstreamBind: '127.0.0.1',
       health: {
-        type: 'synthetic-http',
-        livenessPath: '/',
-        readinessPath: '/api/stats',
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/ready',
       },
       notes: [
-        'No dedicated health endpoint yet; combine HTTP probe with systemd status.',
+        'First-run household setup is handled in the browser when family_members is empty.',
       ],
     },
     database: {
@@ -113,7 +113,16 @@ const catalog = [
       databaseName: 'familyhelp',
       databaseUser: 'familyhelp',
       migrationCommand: 'node db/migrate.js',
-      seedPolicy: 'manual-only',
+      seedPolicy: 'app-onboarding',
+    },
+    onboarding: {
+      mode: 'browser',
+      setupPath: '/setup',
+      statusPath: '/api/bootstrap',
+      readyWhen: 'household_initialized',
+      notes: [
+        'No production db/seed.sql is required; app bootstrap creates household and starter content from the browser.',
+      ],
     },
     service: {
       name: 'family-help',
@@ -227,21 +236,30 @@ const catalog = [
       upstreamBind: '127.0.0.1',
       health: {
         type: 'http',
-        livenessPath: '/api/status',
-        readinessPath: '/api/status',
+        livenessPath: '/api/health',
+        readinessPath: '/api/ready',
       },
       notes: [
         'Explicit GOOGLE_REDIRECT_URI is recommended when using a subpath proxy.',
+        'First-run household setup is handled in the browser when family_members is empty.',
       ],
     },
     database: {
       engine: 'postgres',
-      bootstrap: 'schema-file',
+      bootstrap: 'migrations',
       databaseName: 'familyplan',
       databaseUser: 'familyplan',
-      schemaCommand: 'psql "$DATABASE_URL" -f db/schema.sql',
-      migrationCommand: 'echo "runtime schema compat handled by app startup"',
-      seedPolicy: 'manual-only',
+      migrationCommand: 'node db/migrate.js',
+      seedPolicy: 'app-onboarding',
+    },
+    onboarding: {
+      mode: 'browser',
+      setupPath: '/setup',
+      statusPath: '/api/bootstrap',
+      readyWhen: 'household_initialized',
+      notes: [
+        'No production db/seed.sql is required; app bootstrap creates the first household from the browser.',
+      ],
     },
     service: {
       name: 'family-plan',

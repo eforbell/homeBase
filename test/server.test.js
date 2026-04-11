@@ -53,6 +53,35 @@ test('HTTP API exposes catalog and can persist a planned install', async () => {
   }
 });
 
+test('home page exposes setup links for onboarding-aware installed apps', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-setup-link-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-help/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/help/' }),
+    });
+    const res = await fetch(`${server.url}/`);
+    const html = await res.text();
+    assert.match(html, /Set up household/);
+    assert.match(html, /https:\/\/homebase\.tailnet\/help\/setup/);
+  } finally {
+    await server.close();
+  }
+});
+
 test('homebase runtime plan endpoint returns service-install scaffolding', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-runtime-plan-'));
   const server = await startServer({
