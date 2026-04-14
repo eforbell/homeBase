@@ -24,6 +24,7 @@ function renderScript(plan) {
 function buildBootstrapPlan(input = {}) {
   const serviceUser = input.serviceUser || 'sovereign';
   const baseInstallDir = input.baseInstallDir || '/opt/sovereign-home/apps';
+  const serviceUserHome = baseInstallDir.includes('/') ? baseInstallDir.slice(0, baseInstallDir.lastIndexOf('/')) : '/opt/sovereign-home';
   const baseBackupDir = input.baseBackupDir || '/var/lib/sovereign-home/backups';
   const baseConfigDir = input.baseConfigDir || '/etc/sovereign-home';
   const generatedAt = new Date().toISOString();
@@ -67,7 +68,10 @@ function buildBootstrapPlan(input = {}) {
       'ensure-service-user',
       'Create the unprivileged service account used by managed apps',
       [
-        `id -u ${serviceUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir /opt/sovereign-home --shell /usr/sbin/nologin ${serviceUser}`,
+        `id -u ${serviceUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${serviceUserHome} --shell /usr/sbin/nologin ${serviceUser}`,
+        `sudo install -d -m 0755 -o ${serviceUser} -g ${serviceUser} ${serviceUserHome}`,
+        `sudo install -d -m 0755 -o ${serviceUser} -g ${serviceUser} ${serviceUserHome}/.npm`,
+        `sudo install -d -m 0700 -o ${serviceUser} -g ${serviceUser} ${serviceUserHome}/.ssh`,
       ],
       [`id -u ${serviceUser} >/dev/null 2>&1`],
       [`id ${serviceUser}`]

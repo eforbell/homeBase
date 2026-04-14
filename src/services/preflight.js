@@ -25,7 +25,7 @@ function buildCheck(id, title, command, hint) {
   };
 }
 
-function runPreflightChecks() {
+function runPreflightChecks(config = {}) {
   const checks = [
     buildCheck('os', 'Debian-family host detected', 'test -f /etc/debian_version && . /etc/os-release && echo "$PRETTY_NAME"', 'Home Base currently targets Ubuntu/Debian hosts.'),
     buildCheck('sudo', 'sudo available', 'command -v sudo', 'Install and configure sudo or run Home Base in a root context.'),
@@ -40,6 +40,28 @@ function runPreflightChecks() {
     buildCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'sudo nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"', 'Bootstrap should configure the default nginx site to include generated app snippets.'),
     buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', 'Install Tailscale during bootstrap for private remote access.'),
   ];
+
+  if (config.gitTransport === 'ssh-key') {
+    const keyPath = config.gitSshKeyPath || '';
+    const serviceUser = config.serviceUser || 'sovereign';
+    if (keyPath) {
+      checks.push(buildCheck(
+        'git-ssh-key',
+        `SSH key readable by ${serviceUser}`,
+        `sudo -u ${serviceUser} test -r ${keyPath}`,
+        `Place your SSH key at ${keyPath} and run: sudo chown ${serviceUser}:${serviceUser} ${keyPath} && sudo chmod 600 ${keyPath}`
+      ));
+    } else {
+      checks.push({
+        id: 'git-ssh-key',
+        title: 'SSH key path configured',
+        command: '',
+        ok: false,
+        summary: 'HOME_BASE_GIT_SSH_KEY_PATH is not set',
+        hint: 'Set HOME_BASE_GIT_SSH_KEY_PATH to the path of the SSH key that the sovereign user should use for git clones.',
+      });
+    }
+  }
 
   return {
     generatedAt: new Date().toISOString(),

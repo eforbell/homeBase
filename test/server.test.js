@@ -35,7 +35,7 @@ test('HTTP API exposes catalog and can persist a planned install', async () => {
   try {
     const catalogRes = await fetch(`${server.url}/api/catalog`);
     const catalog = await catalogRes.json();
-    assert.equal(catalog.apps.length, 5);
+    assert.equal(catalog.apps.length, 6);
 
     const installRes = await fetch(`${server.url}/api/apps/family-dinner/install`, {
       method: 'POST',

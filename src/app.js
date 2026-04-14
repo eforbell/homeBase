@@ -105,7 +105,7 @@ function createApp(config) {
       const pathname = url.pathname;
       const method = req.method || 'GET';
       const state = stateStore.loadState();
-      const preflight = runPreflightChecks();
+      const preflight = runPreflightChecks(config);
       const viewState = { ...state, preflight };
 
       if (method === 'GET' && pathname === '/') {

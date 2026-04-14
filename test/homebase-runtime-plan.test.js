@@ -5,6 +5,7 @@ const { buildHomeBaseRuntimePlan } = require('../src/services/homebase-runtime-p
 test('homebase runtime plan renders service install scaffolding', () => {
   const plan = buildHomeBaseRuntimePlan({
     port: 3080,
+    serviceUser: 'sovereign',
     baseInstallDir: '/opt/sovereign-home/apps',
     baseBackupDir: '/var/lib/sovereign-home/backups',
     baseConfigDir: '/etc/sovereign-home',
@@ -17,6 +18,7 @@ test('homebase runtime plan renders service install scaffolding', () => {
   assert.match(plan.files['homebase.service'], /Description=Home Base Control Plane/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_STATE_DB=\/var\/lib\/sovereign-home\/homebase\/home-base\.sqlite3/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_ENABLE_PRIVILEGED_JOBS=1/);
+  assert.match(plan.script, /usermod -aG sovereign homebase/);
   assert.match(plan.script, /homebase ALL=\(ALL\) NOPASSWD:ALL/);
   assert.match(plan.script, /visudo -cf \/etc\/sudoers\.d\/homebase/);
   assert.match(plan.script, /systemctl enable homebase/);

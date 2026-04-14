@@ -36,6 +36,7 @@ function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseC
 function buildHomeBaseRuntimePlan(config = {}, options = {}) {
   const generatedAt = new Date().toISOString();
   const runtimeUser = options.runtimeUser || config.homeBaseRuntimeUser || 'homebase';
+  const serviceUser = config.serviceUser || 'sovereign';
   const appDir = options.appDir || config.homeBaseAppDir || '/opt/sovereign-home/homebase';
   const stateDir = options.stateDir || config.homeBaseStateDir || '/var/lib/sovereign-home/homebase';
   const stateDbPath = options.stateDbPath || config.homeBaseRuntimeStateDbPath || `${stateDir}/home-base.sqlite3`;
@@ -71,6 +72,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       title: 'Prepare Home Base runtime directories and config',
       run: [
     `id -u ${runtimeUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${stateDir} --shell /usr/sbin/nologin ${runtimeUser}`,
+    `sudo usermod -aG ${serviceUser} ${runtimeUser}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${appDir}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
     `sudo install -d -m 0755 -o root -g root ${envFile.substring(0, envFile.lastIndexOf('/')) || '/etc'}`,
