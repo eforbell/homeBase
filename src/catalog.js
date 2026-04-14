@@ -364,6 +364,79 @@ const catalog = [
       'PostgreSQL installs must run src/sql/tables.sql before the web init command.',
     ],
   },
+  {
+    id: 'bug-base',
+    repoKey: 'bugBase',
+    name: 'Bug Base',
+    purpose: 'Household bug tracker and feature request log with an MCP sidecar for agent access.',
+    repository: {
+      url: 'https://github.com/eforbell/bugBase.git',
+      sshUrl: 'git@github.com:eforbell/bugBase.git',
+      defaultRef: 'main',
+    },
+    runtime: {
+      kind: 'node',
+      installCommand: 'npm ci --omit=dev',
+      startCommand: 'node server.js',
+      nodeEnv: 'production',
+    },
+    network: {
+      preferredMountPath: '/bugs/',
+      preferredPort: 3005,
+      upstreamBind: '127.0.0.1',
+      health: {
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/health',
+      },
+      notes: [
+        'MCP sidecar runs on a separate port; expose it behind a protected nginx lane if needed.',
+        'Set client_max_body_size 12M in the nginx location block to allow screenshot uploads.',
+      ],
+    },
+    database: {
+      engine: 'postgres',
+      bootstrap: 'migrations',
+      databaseName: 'bugbase',
+      databaseUser: 'bugbase',
+      migrationCommand: 'node db/migrate.js',
+      seedPolicy: 'browser-setup',
+    },
+    service: {
+      name: 'bug-base',
+      description: 'Bug Base App',
+      envFile: '.env',
+    },
+    sidecars: [
+      {
+        name: 'bug-base-mcp',
+        description: 'Bug Base MCP Server',
+        execStart: 'node mcp/server.js',
+        env: {
+          NODE_ENV: 'production',
+        },
+      },
+    ],
+    config: {
+      env: {
+        DATABASE_URL: '{{databaseUrl}}',
+        PORT: '{{port}}',
+        MCP_PORT: '{{sidecar.bug-base-mcp.port}}',
+        MCP_HOST: '127.0.0.1',
+        BUGBASE_AGENT_TOKENS: '',
+        BUGBASE_MCP_AUTH_TOKEN: '',
+        BUGBASE_BROWSER_ACCESS_CODE: '',
+      },
+    },
+    storage: {
+      paths: ['uploads'],
+    },
+    updateNotes: [
+      'Run node db/migrate.js after every deploy — deploy/deploy.sh does this automatically.',
+      'Seed migration (002) inserts family members and app rows; add new apps via additional migrations.',
+      'BUGBASE_BROWSER_ACCESS_CODE is optional; leave blank for open family-LAN access.',
+    ],
+  },
 ];
 
 function getCatalog() {
