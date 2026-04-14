@@ -73,6 +73,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     `id -u ${runtimeUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${stateDir} --shell /usr/sbin/nologin ${runtimeUser}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${appDir}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
+    `sudo install -d -m 0755 -o root -g root ${envFile.substring(0, envFile.lastIndexOf('/')) || '/etc'}`,
     `tar --exclude .git --exclude .data --exclude node_modules -cf - . | sudo tar -C ${appDir} -xf -`,
     `sudo chown -R ${runtimeUser}:${runtimeUser} ${appDir} ${stateDir}`,
     config.stateDbPath && config.stateDbPath !== stateDbPath
@@ -80,7 +81,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       : null,
     `sudo tee ${envFile} > /dev/null <<'EOF'\n${envContent}EOF`,
     `sudo tee /etc/systemd/system/${serviceName}.service > /dev/null <<'EOF'\n${serviceContent}EOF`,
-    `sudo -u ${runtimeUser} -H bash -lc 'cd ${appDir} && npm ci --omit=dev'`,
+    `sudo -u ${runtimeUser} -H bash -lc 'cd ${appDir} && if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi'`,
     'sudo systemctl daemon-reload',
     `sudo systemctl enable ${serviceName}`,
       ].filter(Boolean),
