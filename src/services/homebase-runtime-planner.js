@@ -20,7 +20,7 @@ function renderServiceUnit({ appDir, envFile, user, port }) {
   ].join('\n');
 }
 
-function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseConfigDir, gitTransport }) {
+function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseConfigDir, gitTransport, enablePrivilegedJobs }) {
   return [
     `PORT=${port}`,
     `HOME_BASE_STATE_DB=${stateDbPath}`,
@@ -28,6 +28,7 @@ function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseC
     `HOME_BASE_BACKUP_DIR=${baseBackupDir}`,
     `HOME_BASE_CONFIG_DIR=${baseConfigDir}`,
     `HOME_BASE_GIT_TRANSPORT=${gitTransport}`,
+    `HOME_BASE_ENABLE_PRIVILEGED_JOBS=${enablePrivilegedJobs ? '1' : '0'}`,
     '',
   ].join('\n');
 }
@@ -42,6 +43,10 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
   const serviceName = 'homebase';
   const port = options.port || config.port || 3080;
   const startImmediately = options.startImmediately === true;
+  const enablePrivilegedJobs = options.enablePrivilegedJobs !== undefined
+    ? options.enablePrivilegedJobs === true
+    : config.homeBaseEnablePrivilegedJobs !== false;
+  const sudoersFile = `/etc/sudoers.d/${serviceName}`;
 
   const envContent = renderEnvFile({
     port,
@@ -50,6 +55,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     baseBackupDir: config.baseBackupDir || '/var/lib/sovereign-home/backups',
     baseConfigDir: config.baseConfigDir || '/etc/sovereign-home',
     gitTransport: config.gitTransport || 'https',
+    enablePrivilegedJobs,
   });
 
   const serviceContent = renderServiceUnit({
@@ -69,12 +75,30 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
     `tar --exclude .git --exclude .data --exclude node_modules -cf - . | sudo tar -C ${appDir} -xf -`,
     `sudo chown -R ${runtimeUser}:${runtimeUser} ${appDir} ${stateDir}`,
+    config.stateDbPath && config.stateDbPath !== stateDbPath
+      ? `if [ -f ${config.stateDbPath} ]; then sudo cp ${config.stateDbPath} ${stateDbPath}; sudo chown ${runtimeUser}:${runtimeUser} ${stateDbPath}; fi`
+      : null,
     `sudo tee ${envFile} > /dev/null <<'EOF'\n${envContent}EOF`,
     `sudo tee /etc/systemd/system/${serviceName}.service > /dev/null <<'EOF'\n${serviceContent}EOF`,
     `sudo -u ${runtimeUser} -H bash -lc 'cd ${appDir} && npm ci --omit=dev'`,
     'sudo systemctl daemon-reload',
     `sudo systemctl enable ${serviceName}`,
-      ],
+      ].filter(Boolean),
+    },
+    {
+      id: 'configure-privileges',
+      title: enablePrivilegedJobs
+        ? 'Allow Home Base service user to run host-management jobs'
+        : 'Skip privileged job sudoers configuration',
+      run: enablePrivilegedJobs
+        ? [
+            `sudo tee ${sudoersFile} > /dev/null <<'EOF'\n${runtimeUser} ALL=(ALL) NOPASSWD:ALL\nEOF`,
+            `sudo chmod 0440 ${sudoersFile}`,
+            `sudo visudo -cf ${sudoersFile}`,
+          ]
+        : [
+            `echo "Privileged jobs disabled. Home Base service will serve UI/status only until executor privileges are configured."`,
+          ],
     },
     {
       id: 'activate-service',
@@ -103,6 +127,8 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       serviceName,
       port,
       startImmediately,
+      enablePrivilegedJobs,
+      sudoersFile,
     },
     files: {
       'homebase.env': envContent,

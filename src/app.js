@@ -56,6 +56,8 @@ function getHomeBaseStatus(config) {
   const stateDir = config.homeBaseStateDir || '/var/lib/sovereign-home/homebase';
   const envFile = config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env';
   const stateDbPath = config.stateDbPath || `${stateDir}/home-base.sqlite3`;
+  const serviceFile = '/etc/systemd/system/homebase.service';
+  const sudoersFile = '/etc/sudoers.d/homebase';
   const status = {
     runtimeUser,
     appDir,
@@ -63,12 +65,14 @@ function getHomeBaseStatus(config) {
     stateDbPath,
     envFile,
     serviceName: 'homebase',
+    privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs !== false,
     paths: {
       appDirExists: fs.existsSync(appDir),
       stateDirExists: fs.existsSync(stateDir),
       stateDbExists: fs.existsSync(stateDbPath),
       envFileExists: fs.existsSync(envFile),
-      serviceFileExists: fs.existsSync('/etc/systemd/system/homebase.service'),
+      serviceFileExists: fs.existsSync(serviceFile),
+      sudoersFileExists: fs.existsSync(sudoersFile),
     },
   };
 
@@ -78,6 +82,7 @@ function getHomeBaseStatus(config) {
   status.systemd = {
     active: (systemctl.stdout || '').trim() || 'unknown',
   };
+  status.ok = true;
   return status;
 }
 
@@ -135,6 +140,13 @@ function createApp(config) {
       }
       if (method === 'GET' && pathname === '/api/homebase/status') {
         return sendJson(res, 200, getHomeBaseStatus(config));
+      }
+      if (method === 'GET' && pathname === '/api/homebase/health') {
+        return sendJson(res, 200, {
+          status: 'ok',
+          timestamp: new Date().toISOString(),
+          homebase: getHomeBaseStatus(config),
+        });
       }
       if (method === 'POST' && pathname === '/api/homebase/runtime-plan') {
         const body = await parseBody(req);

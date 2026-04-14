@@ -141,6 +141,7 @@ function renderHomePage({ catalog, state, config }) {
         <p class="muted">Render the plan for moving Home Base from a shell-launched dev server into a stable systemd-managed service.</p>
         <label>Runtime port <input id="runtime-port" type="number" value="${escapeHtml(config.port)}"></label>
         <label><input id="runtime-start-now" type="checkbox"> Start service immediately after install</label>
+        <label><input id="runtime-enable-privileged-jobs" type="checkbox" ${config.homeBaseEnablePrivilegedJobs !== false ? 'checked' : ''}> Allow installed Home Base service to run host-management jobs</label>
         <label>Confirm execute <input id="runtime-confirm" placeholder="EXECUTE for real run"></label>
         <div class="button-row">
           <button id="runtime-plan-button" type="button">Generate runtime plan</button>
@@ -332,6 +333,7 @@ function renderHomePage({ catalog, state, config }) {
         const data = await postJson('/api/homebase/runtime-plan', {
           port: Number(document.getElementById('runtime-port').value || ${config.port}),
           startImmediately: document.getElementById('runtime-start-now').checked,
+          enablePrivilegedJobs: document.getElementById('runtime-enable-privileged-jobs').checked,
         });
         result.textContent = JSON.stringify(data, null, 2);
       } catch (error) {
@@ -344,6 +346,7 @@ function renderHomePage({ catalog, state, config }) {
         const data = await postJson('/api/homebase/install-self', {
           port: Number(document.getElementById('runtime-port').value || ${config.port}),
           startImmediately: document.getElementById('runtime-start-now').checked,
+          enablePrivilegedJobs: document.getElementById('runtime-enable-privileged-jobs').checked,
           dryRun: true,
         });
         result.textContent = JSON.stringify(data, null, 2);
@@ -358,6 +361,7 @@ function renderHomePage({ catalog, state, config }) {
         const data = await postJson('/api/homebase/install-self', {
           port: Number(document.getElementById('runtime-port').value || ${config.port}),
           startImmediately: document.getElementById('runtime-start-now').checked,
+          enablePrivilegedJobs: document.getElementById('runtime-enable-privileged-jobs').checked,
           confirm: document.getElementById('runtime-confirm').value,
           dryRun: false,
         });

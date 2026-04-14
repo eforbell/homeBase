@@ -161,7 +161,33 @@ test('homebase status endpoint returns runtime state summary', async () => {
     const res = await fetch(`${server.url}/api/homebase/status`);
     const payload = await res.json();
     assert.equal(payload.runtimeUser, 'homebase');
+    assert.equal(payload.ok, true);
     assert.equal(typeof payload.paths.stateDbExists, 'boolean');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase health endpoint returns status ok', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-health-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/health`);
+    const payload = await res.json();
+    assert.equal(payload.status, 'ok');
+    assert.equal(payload.homebase.runtimeUser, 'homebase');
   } finally {
     await server.close();
   }

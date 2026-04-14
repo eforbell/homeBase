@@ -5,6 +5,11 @@ function numberFromEnv(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function boolFromEnv(value, fallback) {
+  if (value == null || value === '') return fallback;
+  return !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
+}
+
 function loadConfig() {
   const rootDir = process.cwd();
   const dataDir = process.env.HOME_BASE_DATA_DIR || path.join(rootDir, '.data');
@@ -30,6 +35,7 @@ function loadConfig() {
     homeBaseAppDir: process.env.HOME_BASE_APP_DIR || '/opt/sovereign-home/homebase',
     homeBaseStateDir: process.env.HOME_BASE_RUNTIME_STATE_DIR || '/var/lib/sovereign-home/homebase',
     homeBaseEnvFile: process.env.HOME_BASE_ENV_FILE || '/etc/sovereign-home/homebase.env',
+    homeBaseEnablePrivilegedJobs: boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, true),
   };
 }
 
