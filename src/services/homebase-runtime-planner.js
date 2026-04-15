@@ -20,7 +20,7 @@ function renderServiceUnit({ appDir, envFile, user, port }) {
   ].join('\n');
 }
 
-function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseConfigDir, gitTransport, enablePrivilegedJobs }) {
+function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseConfigDir, gitTransport, enablePrivilegedJobs, defaultHostname, defaultDomain }) {
   return [
     `PORT=${port}`,
     `HOME_BASE_STATE_DB=${stateDbPath}`,
@@ -28,6 +28,8 @@ function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseC
     `HOME_BASE_BACKUP_DIR=${baseBackupDir}`,
     `HOME_BASE_CONFIG_DIR=${baseConfigDir}`,
     `HOME_BASE_GIT_TRANSPORT=${gitTransport}`,
+    `HOME_BASE_DEFAULT_HOSTNAME=${defaultHostname || 'homebase'}`,
+    `HOME_BASE_DEFAULT_DOMAIN=${defaultDomain || 'tailnet'}`,
     `HOME_BASE_ENABLE_PRIVILEGED_JOBS=${enablePrivilegedJobs ? '1' : '0'}`,
     '',
   ].join('\n');
@@ -56,6 +58,8 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     baseBackupDir: config.baseBackupDir || '/var/lib/sovereign-home/backups',
     baseConfigDir: config.baseConfigDir || '/etc/sovereign-home',
     gitTransport: config.gitTransport || 'https',
+    defaultHostname: config.defaultHostname || 'homebase',
+    defaultDomain: config.defaultDomain || 'tailnet',
     enablePrivilegedJobs,
   });
 
