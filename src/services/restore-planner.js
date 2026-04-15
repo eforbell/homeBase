@@ -41,10 +41,7 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   const serviceUser = config.serviceUser || 'sovereign';
   const commands = [
     `sudo test -d ${archiveDir}`,
-    renderRunAsServiceUserCommand({
-      serviceUser,
-      command: `if [ -f ${archiveDir}/.env.backup ]; then cp ${archiveDir}/.env.backup ${installRoot}/.env; fi`,
-    }),
+    `if sudo test -f ${archiveDir}/.env.backup; then sudo cp ${archiveDir}/.env.backup ${installRoot}/.env; fi`,
   ];
 
   if (app.runtime.kind === 'python' && app.id === 'bitcoin-accounting') {
