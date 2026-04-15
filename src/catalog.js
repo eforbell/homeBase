@@ -266,6 +266,15 @@ const catalog = [
       description: 'Family Plan App',
       envFile: '.env',
     },
+    timers: [
+      {
+        serviceName: 'family-plan-reminders',
+        description: 'Family Plan reminder runner',
+        execStart: 'node scripts/send-reminders.js',
+        timerName: 'family-plan-reminders.timer',
+        onCalendar: '*-*-* 07:00:00',
+      },
+    ],
     config: {
       env: {
         DATABASE_URL: '{{databaseUrl}}',
