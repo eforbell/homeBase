@@ -72,7 +72,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       title: 'Prepare Home Base runtime directories and config',
       run: [
     `id -u ${runtimeUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${stateDir} --shell /usr/sbin/nologin ${runtimeUser}`,
-    `sudo usermod -aG ${serviceUser} ${runtimeUser}`,
+    `getent group ${serviceUser} >/dev/null 2>&1 && sudo usermod -aG ${serviceUser} ${runtimeUser} || true`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${appDir}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
     `sudo install -d -m 0755 -o root -g root ${envFile.substring(0, envFile.lastIndexOf('/')) || '/etc'}`,

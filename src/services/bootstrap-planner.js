@@ -72,6 +72,7 @@ function buildBootstrapPlan(input = {}) {
         `sudo install -d -m 0755 -o ${serviceUser} -g ${serviceUser} ${serviceUserHome}`,
         `sudo install -d -m 0755 -o ${serviceUser} -g ${serviceUser} ${serviceUserHome}/.npm`,
         `sudo install -d -m 0700 -o ${serviceUser} -g ${serviceUser} ${serviceUserHome}/.ssh`,
+        `id -u homebase >/dev/null 2>&1 && sudo usermod -aG ${serviceUser} homebase || true`,
       ],
       [`id -u ${serviceUser} >/dev/null 2>&1`],
       [`id ${serviceUser}`]
