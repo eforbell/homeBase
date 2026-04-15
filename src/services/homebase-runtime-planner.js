@@ -80,7 +80,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${appDir}`,
     `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
     `sudo install -d -m 0755 -o root -g root ${envFile.substring(0, envFile.lastIndexOf('/')) || '/etc'}`,
-    `tar --exclude .git --exclude .data --exclude node_modules -cf - . | sudo tar -C ${appDir} -xf -`,
+    `tar --exclude .data --exclude node_modules -cf - . | sudo tar -C ${appDir} -xf -`,
     `sudo chown -R ${runtimeUser}:${runtimeUser} ${appDir} ${stateDir}`,
     config.stateDbPath && config.stateDbPath !== stateDbPath
       ? `if [ -f ${config.stateDbPath} ]; then sudo cp ${config.stateDbPath} ${stateDbPath}; sudo chown ${runtimeUser}:${runtimeUser} ${stateDbPath}; fi`

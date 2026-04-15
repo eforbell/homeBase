@@ -9,6 +9,7 @@ const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { buildRestorePlan } = require('./services/restore-planner');
 const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planner');
+const { buildHomeBaseUpdatePlan } = require('./services/homebase-update-planner');
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
 const { renderHomePage, renderJobPage } = require('./ui');
@@ -151,6 +152,20 @@ function createApp(config) {
       if (method === 'POST' && pathname === '/api/homebase/runtime-plan') {
         const body = await parseBody(req);
         return sendJson(res, 200, buildHomeBaseRuntimePlan(config, body));
+      }
+      if (method === 'GET' && pathname === '/api/homebase/update-plan') {
+        return sendJson(res, 200, buildHomeBaseUpdatePlan(config));
+      }
+      if (method === 'POST' && pathname === '/api/homebase/update-self') {
+        const body = await parseBody(req);
+        if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
+        }
+        const plan = buildHomeBaseUpdatePlan(config, body);
+        const jobId = jobRunner.startHomeBaseUpdateJob(plan, {
+          dryRun: body.dryRun !== false,
+        });
+        return sendJson(res, 202, { ok: true, jobId, dryRun: body.dryRun !== false });
       }
       if (method === 'POST' && pathname === '/api/homebase/install-self') {
         const body = await parseBody(req);

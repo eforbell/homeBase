@@ -85,6 +85,16 @@ class JobRunner {
     });
   }
 
+  startHomeBaseUpdateJob(plan, { dryRun = true } = {}) {
+    return this.startPlanJob({
+      kind: 'homebase-update',
+      target: 'homebase',
+      plan,
+      steps: plan.executionSteps || [],
+      dryRun,
+    });
+  }
+
   startHomeBaseRuntimeJob(plan, { dryRun = true } = {}) {
     return this.startPlanJob({
       kind: 'homebase-runtime',
