@@ -84,6 +84,20 @@ a:hover { text-decoration: underline; }
 .hb-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .hb-btn-primary { background: var(--accent); border-color: transparent; }
 .hb-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.hb-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.hb-table th, .hb-table td {
+  text-align: left;
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.hb-table th { color: var(--muted); font-weight: 600; }
+.hb-ok { color: var(--green); }
+.hb-warn { color: var(--yellow); }
+.hb-err { color: var(--red); }
 
 .hb-app-sidebar {
   display: none;

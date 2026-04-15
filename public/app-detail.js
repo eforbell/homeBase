@@ -22,14 +22,17 @@
   }
 
   async function runBackup(appId, button) {
+    const resultNode = root.querySelector('[data-backup-result]');
     button.disabled = true;
     const prev = button.textContent;
     button.textContent = 'Running...';
     try {
       const payload = await window.HB.postJson(`/api/apps/${appId}/backup/execute`, { dryRun: true });
-      button.innerHTML = `Backup dry-run job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a>`;
+      if (resultNode) {
+        resultNode.innerHTML = `Backup dry-run job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a> started.`;
+      }
     } catch (error) {
-      button.textContent = `Error: ${error.message}`;
+      if (resultNode) resultNode.textContent = error.message;
     } finally {
       setTimeout(() => {
         button.textContent = prev;
@@ -153,6 +156,7 @@
               <div class="hb-actions">
                 <button class="hb-btn" type="button" data-action="backup">Backup dry-run</button>
               </div>
+              <p class="hb-muted" data-backup-result style="margin:0.6rem 0 0;"></p>
               <p class="hb-muted" style="margin:0.6rem 0 0;">
                 Restart: ${actions.restart ? 'Available' : 'Not exposed yet'} ·
                 Update: ${actions.update ? 'Available' : 'Not exposed yet'}
