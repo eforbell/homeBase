@@ -53,7 +53,7 @@ test('HTTP API exposes catalog and can persist a planned install', async () => {
   }
 });
 
-test('home page exposes setup links for onboarding-aware installed apps', async () => {
+test('home page route serves static dashboard shell and state still carries external urls', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-setup-link-'));
   const server = await startServer({
     appName: 'Home Base',
@@ -74,9 +74,12 @@ test('home page exposes setup links for onboarding-aware installed apps', async 
       body: JSON.stringify({ mountPath: '/help/' }),
     });
     const res = await fetch(`${server.url}/`);
-    const html = await res.text();
-    assert.match(html, /Set up household/);
-    assert.match(html, /https:\/\/homebase\.tailnet\/help\/setup/);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/html/);
+
+    const stateRes = await fetch(`${server.url}/api/state`);
+    const state = await stateRes.json();
+    assert.equal(state.installations['family-help'].externalUrl, 'https://homebase.tailnet/help/');
   } finally {
     await server.close();
   }
@@ -168,6 +171,96 @@ test('homebase status endpoint returns runtime state summary', async () => {
   }
 });
 
+test('homebase config endpoint returns defaults and persists validated updates', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-config-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const beforeRes = await fetch(`${server.url}/api/homebase/config`);
+    const before = await beforeRes.json();
+    assert.equal(before.hostname, 'homebase');
+    assert.equal(before.hostnameIsPlaceholder, true);
+    assert.equal(before.gitTransport, 'https');
+
+    const updateRes = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        hostname: 'erebor',
+        domain: 'example.ts.net',
+        gitTransport: 'ssh-key',
+        gitSshKeyPath: '/home/sovereign/.ssh/id_ed25519',
+      }),
+    });
+    assert.equal(updateRes.status, 200);
+    const updated = await updateRes.json();
+    assert.equal(updated.hostname, 'erebor');
+    assert.equal(updated.domain, 'example.ts.net');
+    assert.equal(updated.gitTransport, 'ssh-key');
+    assert.equal(updated.gitSshKeyPath, '/home/sovereign/.ssh/id_ed25519');
+    assert.equal(updated.hostnameIsPlaceholder, false);
+
+    const afterRes = await fetch(`${server.url}/api/homebase/config`);
+    const after = await afterRes.json();
+    assert.equal(after.hostname, 'erebor');
+    assert.equal(after.gitTransport, 'ssh-key');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase config endpoint rejects invalid updates', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-config-invalid-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const badTransport = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ gitTransport: 'ftp' }),
+    });
+    assert.equal(badTransport.status, 400);
+
+    const missingKey = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ gitTransport: 'ssh-key' }),
+    });
+    assert.equal(missingKey.status, 400);
+
+    const unknownField = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ serviceUser: 'root' }),
+    });
+    assert.equal(unknownField.status, 400);
+  } finally {
+    await server.close();
+  }
+});
+
 test('homebase health endpoint returns status ok', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-health-'));
   const server = await startServer({
@@ -250,6 +343,34 @@ test('preflight endpoint returns a structured check list', async () => {
     const preflight = await preflightRes.json();
     assert.equal(Array.isArray(preflight.checks), true);
     assert.ok(preflight.checks.some((check) => check.id === 'node'));
+    assert.ok(preflight.checks.some((check) => check.id === 'os' && check.severity === 'critical'));
+    assert.ok(preflight.checks.some((check) => check.id === 'tailscale' && check.severity === 'warning'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('app actions endpoint documents currently supported operations', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-actions-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/apps/family-plan/actions`);
+    const payload = await res.json();
+    assert.equal(payload.actions.install, true);
+    assert.equal(payload.actions.backup, true);
+    assert.equal(payload.actions.update, false);
+    assert.equal(payload.actions.restart, false);
   } finally {
     await server.close();
   }
@@ -293,7 +414,7 @@ test('install execute dry-run creates a completed install job', async () => {
   }
 });
 
-test('job detail page renders successfully', async () => {
+test('job detail route serves static page shell', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-job-page-'));
   const server = await startServer({
     appName: 'Home Base',
@@ -316,9 +437,35 @@ test('job detail page renders successfully', async () => {
     const execute = await executeRes.json();
 
     const pageRes = await fetch(`${server.url}/jobs/${execute.jobId}`);
-    const html = await pageRes.text();
-    assert.match(html, /Job #/);
-    assert.match(html, /Back to Home Base/);
+    assert.equal(pageRes.status, 200);
+    assert.match(pageRes.headers.get('content-type') || '', /text\/html/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('static assets are served with expected mime types', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-static-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const cssRes = await fetch(`${server.url}/style.css`);
+    assert.equal(cssRes.status, 200);
+    assert.match(cssRes.headers.get('content-type') || '', /text\/css/);
+
+    const jsRes = await fetch(`${server.url}/nav.js`);
+    assert.equal(jsRes.status, 200);
+    assert.match(jsRes.headers.get('content-type') || '', /application\/javascript/);
   } finally {
     await server.close();
   }

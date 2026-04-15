@@ -44,6 +44,14 @@ class SqliteStateStore {
   listBackups(appId) {
     return runSqliteOp(this.dbPath, 'list_backups', { appId });
   }
+
+  getHomeBaseConfig() {
+    return runSqliteOp(this.dbPath, 'get_homebase_config');
+  }
+
+  setHomeBaseConfig(record) {
+    return runSqliteOp(this.dbPath, 'set_homebase_config', { record });
+  }
 }
 
 module.exports = {

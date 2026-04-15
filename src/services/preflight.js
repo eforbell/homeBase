@@ -1,5 +1,7 @@
 const { spawnSync } = require('child_process');
 
+const CRITICAL_CHECK_IDS = new Set(['os', 'sudo', 'systemd', 'nginx-config', 'postgres-service']);
+
 function runShell(command) {
   const result = spawnSync('/bin/bash', ['-lc', command], {
     encoding: 'utf8',
@@ -13,12 +15,17 @@ function runShell(command) {
   };
 }
 
+function getCheckSeverity(id) {
+  return CRITICAL_CHECK_IDS.has(id) ? 'critical' : 'warning';
+}
+
 function buildCheck(id, title, command, hint) {
   const result = runShell(command);
   return {
     id,
     title,
     command,
+    severity: getCheckSeverity(id),
     ok: result.ok,
     summary: result.ok ? (result.stdout || 'ok') : (result.stderr || result.stdout || `exit ${result.exitCode}`),
     hint,
@@ -56,6 +63,7 @@ function runPreflightChecks(config = {}) {
         id: 'git-ssh-key',
         title: 'SSH key path configured',
         command: '',
+        severity: getCheckSeverity('git-ssh-key'),
         ok: false,
         summary: 'HOME_BASE_GIT_SSH_KEY_PATH is not set',
         hint: 'Set HOME_BASE_GIT_SSH_KEY_PATH to the path of the SSH key that the sovereign user should use for git clones.',
@@ -71,5 +79,7 @@ function runPreflightChecks(config = {}) {
 }
 
 module.exports = {
+  CRITICAL_CHECK_IDS,
+  getCheckSeverity,
   runPreflightChecks,
 };

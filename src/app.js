@@ -1,4 +1,6 @@
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
 const { getCatalog, getAppById } = require('./catalog');
 const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
@@ -12,20 +14,83 @@ const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planne
 const { buildHomeBaseUpdatePlan } = require('./services/homebase-update-planner');
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
-const { renderHomePage, renderJobPage } = require('./ui');
+const {
+  mergeHomeBaseConfig,
+  toClientHomeBaseConfig,
+  validateHomeBaseConfigPatch,
+} = require('./homebase-config');
+const { normalizePathname } = require('./setup-gate');
+
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const PUBLIC_MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+};
+const ALLOWED_PUBLIC_EXTENSIONS = new Set(Object.keys(PUBLIC_MIME_TYPES));
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload, null, 2));
 }
 
-function sendHtml(res, statusCode, html) {
-  res.writeHead(statusCode, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(html);
-}
-
 function notFound(res) {
   sendJson(res, 404, { error: 'Not found' });
+}
+
+function sendNotFoundText(res) {
+  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+  res.end('Not found');
+}
+
+function resolvePublicAsset(requestPath) {
+  if (!requestPath || requestPath.includes('\0')) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(requestPath);
+  } catch (_error) {
+    return null;
+  }
+  const sanitized = decoded.replace(/^\/+/, '');
+  if (!sanitized) return null;
+  const ext = path.extname(sanitized).toLowerCase();
+  if (!ALLOWED_PUBLIC_EXTENSIONS.has(ext)) return null;
+  const resolved = path.resolve(PUBLIC_DIR, sanitized);
+  if (!resolved.startsWith(`${PUBLIC_DIR}${path.sep}`)) return null;
+  return resolved;
+}
+
+function serveStaticFile(res, absolutePath) {
+  const ext = path.extname(absolutePath).toLowerCase();
+  const contentType = PUBLIC_MIME_TYPES[ext];
+  if (!contentType) {
+    sendNotFoundText(res);
+    return;
+  }
+  let stat;
+  try {
+    stat = fs.statSync(absolutePath);
+  } catch (_error) {
+    sendNotFoundText(res);
+    return;
+  }
+  if (!stat.isFile()) {
+    sendNotFoundText(res);
+    return;
+  }
+  const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=300';
+  res.writeHead(200, {
+    'content-type': contentType,
+    'cache-control': cacheControl,
+  });
+  fs.createReadStream(absolutePath).pipe(res);
+}
+
+function servePublicPage(res, pageName) {
+  serveStaticFile(res, path.join(PUBLIC_DIR, pageName));
 }
 
 function parseBody(req) {
@@ -106,17 +171,20 @@ function createApp(config) {
       const pathname = url.pathname;
       const method = req.method || 'GET';
       const state = stateStore.loadState();
-      const preflight = runPreflightChecks(config);
+      const homeBaseConfigOverride = stateStore.getHomeBaseConfig() || {};
+      const effectiveConfig = mergeHomeBaseConfig(config, homeBaseConfigOverride);
+      const preflight = runPreflightChecks(effectiveConfig);
       const viewState = { ...state, preflight };
+      const normalizedPath = normalizePathname(pathname);
 
-      if (method === 'GET' && pathname === '/') {
-        return sendHtml(res, 200, renderHomePage({ catalog, state: viewState, config }));
-      }
-      const jobPageMatch = pathname.match(/^\/jobs\/(\d+)$/);
-      if (method === 'GET' && jobPageMatch) {
-        const job = stateStore.getJob(Number(jobPageMatch[1]));
-        if (!job) return notFound(res);
-        return sendHtml(res, 200, renderJobPage({ job, appName: config.appName }));
+      if (method === 'GET') {
+        if (normalizedPath === '/') return servePublicPage(res, 'index.html');
+        if (normalizedPath === '/apps') return servePublicPage(res, 'apps.html');
+        if (normalizedPath === '/jobs') return servePublicPage(res, 'jobs.html');
+        if (normalizedPath === '/setup') return servePublicPage(res, 'setup.html');
+        if (normalizedPath === '/settings') return servePublicPage(res, 'settings.html');
+        if (/^\/apps\/[^/]+$/.test(normalizedPath)) return servePublicPage(res, 'app.html');
+        if (/^\/jobs\/\d+$/.test(normalizedPath)) return servePublicPage(res, 'job.html');
       }
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });
@@ -139,29 +207,46 @@ function createApp(config) {
       if (method === 'GET' && pathname === '/api/manifest/schema') {
         return sendJson(res, 200, manifestSchema);
       }
+      if (method === 'GET' && pathname === '/api/homebase/config') {
+        return sendJson(res, 200, toClientHomeBaseConfig(config, homeBaseConfigOverride));
+      }
+      if (method === 'POST' && pathname === '/api/homebase/config') {
+        const body = await parseBody(req);
+        const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
+        const parsed = validateHomeBaseConfigPatch(body, current);
+        if (parsed.error) {
+          return sendJson(res, 400, { error: parsed.error });
+        }
+        const persisted = {
+          ...parsed.value,
+          updatedAt: new Date().toISOString(),
+        };
+        stateStore.setHomeBaseConfig(persisted);
+        return sendJson(res, 200, toClientHomeBaseConfig(config, persisted));
+      }
       if (method === 'GET' && pathname === '/api/homebase/status') {
-        return sendJson(res, 200, getHomeBaseStatus(config));
+        return sendJson(res, 200, getHomeBaseStatus(effectiveConfig));
       }
       if (method === 'GET' && pathname === '/api/homebase/health') {
         return sendJson(res, 200, {
           status: 'ok',
           timestamp: new Date().toISOString(),
-          homebase: getHomeBaseStatus(config),
+          homebase: getHomeBaseStatus(effectiveConfig),
         });
       }
       if (method === 'POST' && pathname === '/api/homebase/runtime-plan') {
         const body = await parseBody(req);
-        return sendJson(res, 200, buildHomeBaseRuntimePlan(config, body));
+        return sendJson(res, 200, buildHomeBaseRuntimePlan(effectiveConfig, body));
       }
       if (method === 'GET' && pathname === '/api/homebase/update-plan') {
-        return sendJson(res, 200, buildHomeBaseUpdatePlan(config));
+        return sendJson(res, 200, buildHomeBaseUpdatePlan(effectiveConfig));
       }
       if (method === 'POST' && pathname === '/api/homebase/update-self') {
         const body = await parseBody(req);
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
         }
-        const plan = buildHomeBaseUpdatePlan(config, body);
+        const plan = buildHomeBaseUpdatePlan(effectiveConfig, body);
         const jobId = jobRunner.startHomeBaseUpdateJob(plan, {
           dryRun: body.dryRun !== false,
         });
@@ -183,7 +268,7 @@ function createApp(config) {
             });
           }
         }
-        const plan = buildHomeBaseRuntimePlan(config, body);
+        const plan = buildHomeBaseRuntimePlan(effectiveConfig, body);
         const jobId = jobRunner.startHomeBaseRuntimeJob(plan, {
           dryRun: body.dryRun !== false,
         });
@@ -197,14 +282,14 @@ function createApp(config) {
         const body = await parseBody(req);
         const plan = buildBootstrapPlan({
           ...body,
-          serviceUser: body.serviceUser || config.serviceUser,
-          baseInstallDir: body.baseInstallDir || config.baseInstallDir,
-          baseBackupDir: body.baseBackupDir || config.baseBackupDir,
-          baseConfigDir: config.baseConfigDir,
+          serviceUser: body.serviceUser || effectiveConfig.serviceUser,
+          baseInstallDir: body.baseInstallDir || effectiveConfig.baseInstallDir,
+          baseBackupDir: body.baseBackupDir || effectiveConfig.baseBackupDir,
+          baseConfigDir: effectiveConfig.baseConfigDir,
         });
         stateStore.addBootstrapPlan({
           generatedAt: plan.generatedAt,
-          serviceUser: body.serviceUser || config.serviceUser,
+          serviceUser: body.serviceUser || effectiveConfig.serviceUser,
         });
         return sendJson(res, 200, plan);
       }
@@ -227,10 +312,10 @@ function createApp(config) {
 
         const plan = buildBootstrapPlan({
           ...body,
-          serviceUser: body.serviceUser || config.serviceUser,
-          baseInstallDir: body.baseInstallDir || config.baseInstallDir,
-          baseBackupDir: body.baseBackupDir || config.baseBackupDir,
-          baseConfigDir: config.baseConfigDir,
+          serviceUser: body.serviceUser || effectiveConfig.serviceUser,
+          baseInstallDir: body.baseInstallDir || effectiveConfig.baseInstallDir,
+          baseBackupDir: body.baseBackupDir || effectiveConfig.baseBackupDir,
+          baseConfigDir: effectiveConfig.baseConfigDir,
         });
         const jobId = jobRunner.startBootstrapJob(plan, {
           dryRun: body.dryRun !== false,
@@ -242,10 +327,26 @@ function createApp(config) {
         });
       }
 
+      const appActionsMatch = pathname.match(/^\/api\/apps\/([^/]+)\/actions$/);
+      if (method === 'GET' && appActionsMatch) {
+        if (!getAppById(appActionsMatch[1])) return notFound(res);
+        return sendJson(res, 200, {
+          appId: appActionsMatch[1],
+          actions: {
+            install: true,
+            backup: true,
+            restore: true,
+            update: false,
+            restart: false,
+          },
+          note: 'Update/restart are not separate API actions yet; use install execute for deploy operations.',
+        });
+      }
+
       const installPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/install-plan$/);
       if (method === 'POST' && installPlanMatch) {
         const body = await parseBody(req);
-        const plan = buildInstallPlan({ appId: installPlanMatch[1], state, options: body, config });
+        const plan = buildInstallPlan({ appId: installPlanMatch[1], state, options: body, config: effectiveConfig });
         return sendJson(res, 200, plan);
       }
 
@@ -253,7 +354,7 @@ function createApp(config) {
       if (method === 'POST' && installMatch) {
         const body = await parseBody(req);
         const appId = installMatch[1];
-        const plan = buildInstallPlan({ appId, state, options: body, config });
+        const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const app = getAppById(appId);
         stateStore.upsertInstallation({
           ...plan.stateRecord,
@@ -285,7 +386,7 @@ function createApp(config) {
         }
 
         const appId = executeInstallMatch[1];
-        const plan = buildInstallPlan({ appId, state, options: body, config });
+        const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {
           dryRun: body.dryRun !== false,
         });
@@ -298,7 +399,7 @@ function createApp(config) {
       }
       const backupPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup-plan$/);
       if (method === 'POST' && backupPlanMatch) {
-        const plan = buildBackupPlan({ appId: backupPlanMatch[1], state, config });
+        const plan = buildBackupPlan({ appId: backupPlanMatch[1], state, config: effectiveConfig });
         return sendJson(res, 200, plan);
       }
       const backupListMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backups$/);
@@ -308,7 +409,7 @@ function createApp(config) {
         if (dbBackups.length) {
           return sendJson(res, 200, {
             app: getAppById(appId) ? { id: getAppById(appId).id, name: getAppById(appId).name } : { id: appId, name: appId },
-            backupRoot: `${(config.baseBackupDir || '/var/lib/sovereign-home/backups').replace(/\/$/, '')}/${appId}`,
+            backupRoot: `${(effectiveConfig.baseBackupDir || '/var/lib/sovereign-home/backups').replace(/\/$/, '')}/${appId}`,
             backups: dbBackups.map((record) => ({
               name: record.archiveDir.split('/').pop(),
               archiveDir: record.archiveDir,
@@ -318,7 +419,7 @@ function createApp(config) {
             })),
           });
         }
-        return sendJson(res, 200, listBackupsFromDisk({ appId, config }));
+        return sendJson(res, 200, listBackupsFromDisk({ appId, config: effectiveConfig }));
       }
       const backupExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup\/execute$/);
       if (method === 'POST' && backupExecuteMatch) {
@@ -337,7 +438,7 @@ function createApp(config) {
             });
           }
         }
-        const plan = buildBackupPlan({ appId: backupExecuteMatch[1], state, config });
+        const plan = buildBackupPlan({ appId: backupExecuteMatch[1], state, config: effectiveConfig });
         const jobId = jobRunner.startBackupJob(plan, {
           dryRun: body.dryRun !== false,
         });
@@ -355,7 +456,7 @@ function createApp(config) {
           appId: restorePlanMatch[1],
           backupDir: body.backupDir,
           state,
-          config,
+          config: effectiveConfig,
         });
         return sendJson(res, 200, plan);
       }
@@ -381,7 +482,7 @@ function createApp(config) {
           appId: restoreExecuteMatch[1],
           backupDir: body.backupDir,
           state,
-          config,
+          config: effectiveConfig,
         });
         const jobId = jobRunner.startRestoreJob(plan, {
           dryRun: body.dryRun !== false,
@@ -392,6 +493,13 @@ function createApp(config) {
           appId: restoreExecuteMatch[1],
           dryRun: body.dryRun !== false,
         });
+      }
+
+      if (method === 'GET') {
+        const assetPath = resolvePublicAsset(pathname);
+        if (assetPath) {
+          return serveStaticFile(res, assetPath);
+        }
       }
 
       return notFound(res);
