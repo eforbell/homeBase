@@ -36,6 +36,9 @@ function loadConfig() {
     homeBaseStateDir: process.env.HOME_BASE_RUNTIME_STATE_DIR || '/var/lib/sovereign-home/homebase',
     homeBaseEnvFile: process.env.HOME_BASE_ENV_FILE || '/etc/sovereign-home/homebase.env',
     homeBaseEnablePrivilegedJobs: boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, true),
+    homeBaseAutoBootstrap: boolFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP, false),
+    homeBaseAutoBootstrapMode: process.env.HOME_BASE_AUTO_BOOTSTRAP_MODE || 'execute',
+    homeBaseAutoBootstrapDelayMs: numberFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP_DELAY_MS, 5000),
   };
 }
 

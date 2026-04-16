@@ -20,7 +20,20 @@ function renderServiceUnit({ appDir, envFile, user, port }) {
   ].join('\n');
 }
 
-function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseConfigDir, gitTransport, enablePrivilegedJobs, defaultHostname, defaultDomain }) {
+function renderEnvFile({
+  port,
+  stateDbPath,
+  baseInstallDir,
+  baseBackupDir,
+  baseConfigDir,
+  gitTransport,
+  enablePrivilegedJobs,
+  defaultHostname,
+  defaultDomain,
+  autoBootstrap,
+  autoBootstrapMode,
+  autoBootstrapDelayMs,
+}) {
   return [
     `PORT=${port}`,
     `HOME_BASE_STATE_DB=${stateDbPath}`,
@@ -31,6 +44,9 @@ function renderEnvFile({ port, stateDbPath, baseInstallDir, baseBackupDir, baseC
     `HOME_BASE_DEFAULT_HOSTNAME=${defaultHostname || 'homebase'}`,
     `HOME_BASE_DEFAULT_DOMAIN=${defaultDomain || 'tailnet'}`,
     `HOME_BASE_ENABLE_PRIVILEGED_JOBS=${enablePrivilegedJobs ? '1' : '0'}`,
+    `HOME_BASE_AUTO_BOOTSTRAP=${autoBootstrap ? '1' : '0'}`,
+    `HOME_BASE_AUTO_BOOTSTRAP_MODE=${autoBootstrapMode || 'execute'}`,
+    `HOME_BASE_AUTO_BOOTSTRAP_DELAY_MS=${autoBootstrapDelayMs || 5000}`,
     '',
   ].join('\n');
 }
@@ -49,6 +65,11 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
   const enablePrivilegedJobs = options.enablePrivilegedJobs !== undefined
     ? options.enablePrivilegedJobs === true
     : config.homeBaseEnablePrivilegedJobs !== false;
+  const autoBootstrap = options.autoBootstrap !== undefined
+    ? options.autoBootstrap === true
+    : enablePrivilegedJobs && config.homeBaseRuntimeAutoBootstrap !== false;
+  const autoBootstrapMode = options.autoBootstrapMode || config.homeBaseAutoBootstrapMode || 'execute';
+  const autoBootstrapDelayMs = options.autoBootstrapDelayMs || config.homeBaseAutoBootstrapDelayMs || 5000;
   const sudoersFile = `/etc/sudoers.d/${serviceName}`;
 
   const envContent = renderEnvFile({
@@ -61,6 +82,9 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     defaultHostname: config.defaultHostname || 'homebase',
     defaultDomain: config.defaultDomain || 'tailnet',
     enablePrivilegedJobs,
+    autoBootstrap,
+    autoBootstrapMode,
+    autoBootstrapDelayMs,
   });
 
   const serviceContent = renderServiceUnit({
@@ -135,6 +159,9 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       port,
       startImmediately,
       enablePrivilegedJobs,
+      autoBootstrap,
+      autoBootstrapMode,
+      autoBootstrapDelayMs,
       sudoersFile,
     },
     files: {

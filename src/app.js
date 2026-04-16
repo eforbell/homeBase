@@ -19,6 +19,7 @@ const {
   toClientHomeBaseConfig,
   validateHomeBaseConfigPatch,
 } = require('./homebase-config');
+const { scheduleAutoBootstrap } = require('./auto-bootstrap');
 const { normalizePathname } = require('./setup-gate');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -165,6 +166,14 @@ function createApp(config) {
     throw new Error(`Catalog validation failed:\n${validationErrors.join('\n')}`);
   }
 
+  const initialHomeBaseConfigOverride = stateStore.getHomeBaseConfig() || {};
+  const initialEffectiveConfig = mergeHomeBaseConfig(config, initialHomeBaseConfigOverride);
+  const autoBootstrap = scheduleAutoBootstrap({
+    stateStore,
+    jobRunner,
+    config: initialEffectiveConfig,
+  });
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -232,6 +241,12 @@ function createApp(config) {
           status: 'ok',
           timestamp: new Date().toISOString(),
           homebase: getHomeBaseStatus(effectiveConfig),
+        });
+      }
+      if (method === 'GET' && pathname === '/api/homebase/bootstrap-status') {
+        return sendJson(res, 200, {
+          autoBootstrap,
+          latestBootstrapJob: stateStore.getLatestJobByKind('bootstrap'),
         });
       }
       if (method === 'POST' && pathname === '/api/homebase/runtime-plan') {

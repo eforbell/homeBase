@@ -63,7 +63,7 @@
         const dryRun = installSelf.elements.dryRun.checked;
         const payload = { port, dryRun };
         if (!dryRun) {
-          const confirm = window.prompt('Type EXECUTE to run install-self for real.');
+          const confirm = window.prompt('Type EXECUTE to install/enable the Home Base service for real.');
           if (confirm !== 'EXECUTE') return;
           payload.confirm = 'EXECUTE';
         }
@@ -123,11 +123,12 @@
           </section>
           <section class="hb-grid hb-grid-2">
             <article class="hb-card">
-              <h2 style="margin-top:0;">Install self</h2>
+              <h2 style="margin-top:0;">Install/enable Home Base service</h2>
               <form class="hb-form-grid" data-action="install-self">
                 <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(config.port)}"></label>
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-                <button class="hb-btn" type="submit">Run install-self</button>
+                <button class="hb-btn" type="submit">Install/enable service</button>
+                <p class="hb-muted" style="margin:0;">When installed as a systemd service, Home Base can auto-start bootstrap on first service launch.</p>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
             </article>

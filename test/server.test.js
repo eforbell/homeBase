@@ -286,6 +286,39 @@ test('homebase health endpoint returns status ok', async () => {
   }
 });
 
+test('homebase can auto-start bootstrap on service launch when enabled', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-auto-bootstrap-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    homeBaseAutoBootstrap: true,
+    homeBaseAutoBootstrapMode: 'dry-run',
+    homeBaseAutoBootstrapDelayMs: 1,
+  });
+
+  try {
+    let status = null;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const res = await fetch(`${server.url}/api/homebase/bootstrap-status`);
+      status = await res.json();
+      if (status.latestBootstrapJob) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.equal(status.latestBootstrapJob.kind, 'bootstrap');
+    assert.equal(status.latestBootstrapJob.dryRun, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test('bootstrap execute dry-run creates a completed job', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-job-'));
   const server = await startServer({

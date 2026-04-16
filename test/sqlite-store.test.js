@@ -53,6 +53,8 @@ test('sqlite state store persists installations and jobs', () => {
 
   const job = store.getJob(id);
   assert.match(job.log, /hello/);
+  assert.equal(store.getLatestJobByKind('bootstrap').id, id);
+  assert.equal(store.getLatestJobByKind('install'), null);
 
   store.recordBackup({
     appId: 'family-help',

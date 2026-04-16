@@ -280,6 +280,30 @@ elif op == "get_job":
             "error": row["error_text"],
         })
 
+elif op == "get_latest_job_by_kind":
+    row = conn.execute(
+        "SELECT * FROM jobs WHERE kind = ? ORDER BY id DESC LIMIT 1",
+        (payload["kind"],),
+    ).fetchone()
+    if row is None:
+        emit(None)
+    else:
+        emit({
+            "id": row["id"],
+            "kind": row["kind"],
+            "target": row["target"],
+            "status": row["status"],
+            "dryRun": bool(row["dry_run"]),
+            "createdAt": row["created_at"],
+            "startedAt": row["started_at"],
+            "finishedAt": row["finished_at"],
+            "currentStep": row["current_step"],
+            "planJson": row["plan_json"],
+            "log": row["log_text"],
+            "resultJson": row["result_json"],
+            "error": row["error_text"],
+        })
+
 elif op == "record_backup":
     record = payload["record"]
     conn.execute(

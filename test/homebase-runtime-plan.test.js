@@ -18,6 +18,9 @@ test('homebase runtime plan renders service install scaffolding', () => {
   assert.match(plan.files['homebase.service'], /Description=Home Base Control Plane/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_STATE_DB=\/var\/lib\/sovereign-home\/homebase\/home-base\.sqlite3/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_ENABLE_PRIVILEGED_JOBS=1/);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_AUTO_BOOTSTRAP=1/);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_AUTO_BOOTSTRAP_MODE=execute/);
+  assert.equal(plan.runtime.autoBootstrap, true);
   assert.match(plan.script, /usermod -aG sovereign homebase/);
   assert.match(plan.script, /homebase ALL=\(ALL\) NOPASSWD:ALL/);
   assert.match(plan.script, /visudo -cf \/etc\/sudoers\.d\/homebase/);
@@ -37,6 +40,23 @@ test('homebase runtime plan can skip privileged job sudoers wiring', () => {
   });
 
   assert.equal(plan.runtime.enablePrivilegedJobs, false);
+  assert.equal(plan.runtime.autoBootstrap, false);
   assert.doesNotMatch(plan.script, /NOPASSWD:ALL/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_ENABLE_PRIVILEGED_JOBS=0/);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_AUTO_BOOTSTRAP=0/);
+});
+
+test('homebase runtime plan can explicitly defer service auto-bootstrap', () => {
+  const plan = buildHomeBaseRuntimePlan({
+    port: 3080,
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    gitTransport: 'https',
+  }, {
+    autoBootstrap: false,
+  });
+
+  assert.equal(plan.runtime.autoBootstrap, false);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_AUTO_BOOTSTRAP=0/);
 });

@@ -43,13 +43,31 @@
     return `<span class="hb-warn">${warningFail} warning check(s) failing</span>`;
   }
 
+  function renderBootstrapStatus(bootstrapStatus) {
+    const latest = bootstrapStatus.latestBootstrapJob;
+    if (!bootstrapStatus.autoBootstrap?.shouldStart && !latest) {
+      return '<p class="hb-muted" style="margin:0;">Bootstrap has not been started yet.</p>';
+    }
+    if (!latest) {
+      return `<p class="hb-muted" style="margin:0;">Auto-bootstrap scheduled (${window.HB.escapeHtml(bootstrapStatus.autoBootstrap.mode || 'execute')}).</p>`;
+    }
+    return `
+      <div class="hb-row">
+        <a href="/jobs/${window.HB.escapeHtml(latest.id)}">Bootstrap job #${window.HB.escapeHtml(latest.id)}</a>
+        ${window.HB.statusBadge(latest.status)}
+        <span class="hb-muted">${window.HB.escapeHtml(window.HB.formatTimestamp(latest.createdAt))}</span>
+      </div>
+    `;
+  }
+
   async function load() {
     try {
-      const [state, preflight, status, config] = await Promise.all([
+      const [state, preflight, status, config, bootstrapStatus] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/preflight'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/homebase/config'),
+        window.HB.getJson('/api/homebase/bootstrap-status'),
       ]);
       const installations = Object.values(state.installations || {});
       const jobs = Array.isArray(state.jobs) ? state.jobs : [];
@@ -69,6 +87,7 @@
           <section class="hb-card">
             <h2 style="margin-top:0;">System readiness</h2>
             <p style="margin:0;">${preflightSummary(preflight)}</p>
+            <div style="margin-top:0.75rem;">${renderBootstrapStatus(bootstrapStatus)}</div>
           </section>
           <section>
             <div class="hb-row" style="justify-content:space-between;">

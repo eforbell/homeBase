@@ -37,6 +37,10 @@ class SqliteStateStore {
     return runSqliteOp(this.dbPath, 'get_job', { jobId });
   }
 
+  getLatestJobByKind(kind) {
+    return runSqliteOp(this.dbPath, 'get_latest_job_by_kind', { kind });
+  }
+
   recordBackup(record) {
     return runSqliteOp(this.dbPath, 'record_backup', { record });
   }
