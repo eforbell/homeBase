@@ -32,6 +32,7 @@ function buildBootstrapPlan(input = {}) {
     'git',
     'curl',
     'ca-certificates',
+    'ssl-cert',
     'nginx',
     'postgresql',
     'postgresql-client',
@@ -99,17 +100,41 @@ function buildBootstrapPlan(input = {}) {
 from pathlib import Path
 default_site = Path('/etc/nginx/sites-available/default')
 text = default_site.read_text()
-include_line = '    include /etc/nginx/snippets/*.conf;'
-if '/etc/nginx/snippets/*.conf;' not in text:
+lines = text.splitlines()
+
+def has_active_line(fragment):
+    return any(fragment in line and not line.lstrip().startswith('#') for line in lines)
+
+insertions = []
+if not has_active_line('listen 443 ssl default_server;'):
+    insertions.append('    listen 443 ssl default_server;')
+if not has_active_line('listen [::]:443 ssl default_server;'):
+    insertions.append('    listen [::]:443 ssl default_server;')
+if not has_active_line('include snippets/snakeoil.conf;'):
+    insertions.append('    include snippets/snakeoil.conf;')
+if not has_active_line('include /etc/nginx/snippets/*.conf;'):
+    insertions.append('    include /etc/nginx/snippets/*.conf;')
+
+if insertions:
     marker = 'server_name _;'
-    if marker not in text:
-        raise SystemExit('Could not find server_name _; in nginx default site')
-    text = text.replace(marker, marker + '\\n\\n' + include_line, 1)
+    for index, line in enumerate(lines):
+        if marker in line and not line.lstrip().startswith('#'):
+            lines[index:index + 1] = [line, '', *insertions]
+            break
+    else:
+        raise SystemExit('Could not find active server_name _; in nginx default site')
+    text = '\\n'.join(lines) + ('\\n' if text.endswith('\\n') else '')
     default_site.write_text(text)
 PY`,
       ],
-      [`sudo nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"`],
-      ['sudo nginx -T | grep -n "/etc/nginx/snippets/*.conf;"']
+      [
+        `sudo nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"`,
+        `sudo nginx -T 2>/dev/null | grep -Fq "listen 443 ssl default_server;"`,
+      ],
+      [
+        'sudo nginx -T | grep -n "/etc/nginx/snippets/*.conf;"',
+        'sudo nginx -T | grep -n "listen 443 ssl default_server;"',
+      ]
     ),
     makeStep(
       'enable-core-services',

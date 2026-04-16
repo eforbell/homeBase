@@ -62,9 +62,8 @@
 
   async function load() {
     try {
-      const [state, preflight, status, config, bootstrapStatus] = await Promise.all([
+      const [state, status, config, bootstrapStatus] = await Promise.all([
         window.HB.getJson('/api/state'),
-        window.HB.getJson('/api/preflight'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/homebase/bootstrap-status'),
@@ -86,7 +85,7 @@
           </section>
           <section class="hb-card">
             <h2 style="margin-top:0;">System readiness</h2>
-            <p style="margin:0;">${preflightSummary(preflight)}</p>
+            <p data-preflight-summary style="margin:0;"><span class="hb-muted">Checking host readiness…</span></p>
             <div style="margin-top:0.75rem;">${renderBootstrapStatus(bootstrapStatus)}</div>
           </section>
           <section>
@@ -107,6 +106,13 @@
           </section>
         </div>
       `;
+      window.HB.getJson('/api/preflight').then((preflight) => {
+        const node = root.querySelector('[data-preflight-summary]');
+        if (node) node.innerHTML = preflightSummary(preflight);
+      }).catch((error) => {
+        const node = root.querySelector('[data-preflight-summary]');
+        if (node) node.innerHTML = `<span class="hb-warn">${window.HB.escapeHtml(error.message)}</span>`;
+      });
     } catch (error) {
       root.innerHTML = `
         <section class="hb-card">

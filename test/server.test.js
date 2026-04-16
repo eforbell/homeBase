@@ -220,6 +220,51 @@ test('homebase config endpoint returns defaults and persists validated updates',
   }
 });
 
+test('homebase config updates are reflected in existing app launch URLs', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-config-launch-url-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-plan/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/plan/' }),
+    });
+
+    const beforeRes = await fetch(`${server.url}/api/state`);
+    const before = await beforeRes.json();
+    assert.equal(before.installations['family-plan'].externalUrl, 'https://homebase.tailnet/plan/');
+
+    const updateRes = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        hostname: 'test',
+        domain: 'example.ts.net',
+        gitTransport: 'https',
+      }),
+    });
+    assert.equal(updateRes.status, 200);
+
+    const afterRes = await fetch(`${server.url}/api/state`);
+    const after = await afterRes.json();
+    assert.equal(after.installations['family-plan'].externalUrl, 'https://test.example.ts.net/plan/');
+  } finally {
+    await server.close();
+  }
+});
+
 test('homebase config endpoint rejects invalid updates', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-config-invalid-'));
   const server = await startServer({

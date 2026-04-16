@@ -10,6 +10,10 @@ test('bootstrap plan includes Debian host setup essentials', () => {
   assert.ok(plan.steps.some((step) => step.id === 'configure-nginx-gateway'));
   assert.match(plan.script, /apt-get install -y/);
   assert.match(plan.script, /include \/etc\/nginx\/snippets\/\*\.conf;/);
+  assert.match(plan.script, /listen 443 ssl default_server;/);
+  assert.match(plan.script, /listen \[::\]:443 ssl default_server;/);
+  assert.match(plan.script, /include snippets\/snakeoil\.conf;/);
+  assert.match(plan.script, /ssl-cert/);
   assert.match(plan.script, /ufw app info OpenSSH/);
   assert.match(plan.script, /ufw allow 22\/tcp/);
   assert.match(plan.script, /tailscaled/);

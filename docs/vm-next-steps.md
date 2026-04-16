@@ -52,6 +52,7 @@ Before any install/update runs, Home Base should verify:
 - PostgreSQL service state
 - nginx config test passes
 - Tailscale installed / authenticated / hostname known
+- Tailscale Serve publishing status for the prescribed Home Base service topology
 - required ports are free
 
 ### Why this is next
@@ -106,11 +107,14 @@ Test:
 - enable PostgreSQL and nginx
 - install Tailscale
 - generate and validate nginx structure
+- publish the recommended Tailscale Serve config for Home Base and app subpaths
+- verify `tailscale serve get-config --all` matches the prescribed endpoints
 
 Success criteria:
 - rerunning bootstrap is idempotent
 - nothing breaks on second run
 - no unexpected prompts beyond known interactive system steps
+- after Tailscale authentication, service publishing does not require manual Serve command entry
 
 ## Stage B — install Home Base on the VM itself
 

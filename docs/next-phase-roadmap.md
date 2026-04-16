@@ -51,6 +51,7 @@ That is the internal release bar before any wider handoff.
 In practice, that means:
 
 - no manual nginx edits for normal install flows
+- no manual Tailscale Serve wiring for the recommended private-access path
 - no manual git transport fixes for normal repo access
 - no surprise permission bugs in backup/restore
 - retries and health checks are robust enough for normal service startup timing
@@ -81,7 +82,73 @@ Prove the latest Home Base defaults work on a fresh machine without the manual f
 
 ### Exit criteria
 - one fresh VM completes bootstrap + Family Help install + backup + restore without manual code patching
+- Home Base can publish the recommended Tailscale Serve shape without requiring the operator to hand-type the `tailscale serve` commands
 - all failures, if any, are understandable and localized
+
+---
+
+## Milestone 1.5 — make Tailscale service publishing first-class
+
+### Goal
+Home Base should help the operator present Sovereign Home as a named household service on the tailnet, not just as "a host that happens to have apps running on it."
+
+The preferred product posture is:
+- Home Base explains and verifies the tailnet identity.
+- Home Base helps configure Tailscale Serve for the prescribed topology.
+- Users get stable, friendly app URLs such as `https://home.<tailnet>/plan/`, not a collection of ad hoc ports and manually remembered hostnames.
+
+### Recommended prescribed topology
+
+For the single-host private deployment path:
+
+- Home Base UI:
+  - direct service lane: `https://<service-name>.<tailnet>:3080/`
+  - backed by `tailscale serve tcp:3080 http://127.0.0.1:3080`
+- Managed apps:
+  - shared HTTPS service lane: `https://<service-name>.<tailnet>/<app-path>/`
+  - backed by `tailscale serve tcp:443 https+insecure://localhost:443`
+- nginx:
+  - terminates local HTTPS on 443 with a local certificate suitable for Tailscale Serve's `https+insecure` upstream
+  - routes app subpaths through generated snippets
+
+This keeps the user-facing story simple: one named Sovereign Home service, with Home Base on its management port and family apps under clean paths.
+
+### Required work
+
+1. Add a Tailscale publishing wizard or setup step after bootstrap:
+   - detect whether `tailscale` is installed
+   - detect whether the node is authenticated
+   - show MagicDNS / tailnet name / current node name
+   - explain what Home Base is about to publish
+2. Add a Tailscale Serve plan/execute endpoint:
+   - plan-only preview of the exact commands
+   - guarded execution with the same job/result model as bootstrap/install
+   - support "show me current serve config" using `tailscale serve get-config --all`
+3. Add verification:
+   - local nginx `443 ssl` listener present
+   - `sudo nginx -t` passes
+   - `tailscale serve get-config --all` contains the expected `tcp:3080` and `tcp:443` endpoints
+   - generated Home Base app Open links match the configured host/domain
+4. Add recovery UX:
+   - detect mismatched or stale Serve config
+   - offer "repair Tailscale publishing"
+   - keep raw commands visible for advanced operators
+
+### Product constraints
+
+- Authentication to the tailnet may remain an operator-owned step (`sudo tailscale up`) unless/until OAuth/device-flow support is intentionally designed.
+- Home Base should not silently overwrite unrelated Tailscale Serve config; it should preview changes and either merge only its managed service or ask for explicit confirmation.
+- The default path should optimize for private tailnet access, not public internet exposure.
+
+### Exit criteria
+
+- A fresh host can be bootstrapped, published through Tailscale Serve, and opened from another tailnet device without manual Serve command entry.
+- Home Base can distinguish:
+  - Tailscale not installed
+  - installed but not authenticated
+  - authenticated but MagicDNS/serve not ready
+  - Serve configured but inconsistent with Home Base host/domain settings
+- The UI describes the result as a named Sovereign Home service and gives users one copyable base URL.
 
 ---
 

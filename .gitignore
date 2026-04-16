@@ -1,3 +1,4 @@
 .data/
+.omx/
 node_modules/
 .DS_Store

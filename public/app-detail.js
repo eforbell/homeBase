@@ -21,23 +21,29 @@
     `).join('');
   }
 
-  async function runBackup(appId, button) {
-    const resultNode = root.querySelector('[data-backup-result]');
-    button.disabled = true;
-    const prev = button.textContent;
-    button.textContent = 'Running...';
-    try {
-      const payload = await window.HB.postJson(`/api/apps/${appId}/backup/execute`, { dryRun: true });
-      if (resultNode) {
-        resultNode.innerHTML = `Backup dry-run job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a> started.`;
+  async function handleBackup(form) {
+    const dryRun = form.elements.dryRun.checked;
+    const resultNode = form.querySelector('[data-result]');
+    const submitButton = form.querySelector('button[type="submit"]');
+    const payload = { dryRun };
+    if (!dryRun) {
+      const confirm = window.prompt('Type EXECUTE to run backup for real.');
+      if (confirm !== 'EXECUTE') {
+        resultNode.textContent = 'Cancelled (EXECUTE not provided).';
+        return;
       }
+      payload.confirm = 'EXECUTE';
+    }
+    if (submitButton) submitButton.disabled = true;
+    resultNode.textContent = 'Submitting...';
+    try {
+      const response = await window.HB.postJson(`/api/apps/${appId}/backup/execute`, payload);
+      const mode = dryRun ? 'Backup dry-run' : 'Backup';
+      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started.`;
     } catch (error) {
-      if (resultNode) resultNode.textContent = error.message;
+      resultNode.textContent = error.message;
     } finally {
-      setTimeout(() => {
-        button.textContent = prev;
-        button.disabled = false;
-      }, 2500);
+      if (submitButton) submitButton.disabled = false;
     }
   }
 
@@ -92,12 +98,13 @@
   }
 
   function wireActions() {
-    root.addEventListener('click', (event) => {
-      const backupButton = event.target.closest('button[data-action="backup"]');
-      if (!backupButton) return;
-      runBackup(appId, backupButton);
-    });
     root.addEventListener('submit', (event) => {
+      const backupForm = event.target.closest('form[data-action="backup"]');
+      if (backupForm) {
+        event.preventDefault();
+        handleBackup(backupForm);
+        return;
+      }
       const deployForm = event.target.closest('form[data-action="deploy"]');
       if (deployForm) {
         event.preventDefault();
@@ -152,11 +159,14 @@
 
           <section class="hb-grid hb-grid-2">
             <article class="hb-card">
-              <h2 style="margin-top:0;">Actions</h2>
-              <div class="hb-actions">
-                <button class="hb-btn" type="button" data-action="backup">Backup dry-run</button>
-              </div>
-              <p class="hb-muted" data-backup-result style="margin:0.6rem 0 0;"></p>
+              <h2 style="margin-top:0;">Backup</h2>
+              <form class="hb-form-grid" data-action="backup">
+                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                  <input name="dryRun" type="checkbox" checked> Dry-run only
+                </label>
+                <button class="hb-btn" type="submit">Run backup</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
               <p class="hb-muted" style="margin:0.6rem 0 0;">
                 Restart: ${actions.restart ? 'Available' : 'Not exposed yet'} ·
                 Update: ${actions.update ? 'Available' : 'Not exposed yet'}

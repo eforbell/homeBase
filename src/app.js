@@ -115,6 +115,34 @@ function missingCheckIds(preflight, ids) {
   return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok));
 }
 
+function trimTrailingSlash(value) {
+  return String(value || '').replace(/\/$/, '');
+}
+
+function joinExternalPath(baseUrl, mountPath) {
+  return `${trimTrailingSlash(baseUrl)}${String(mountPath || '/').startsWith('/') ? '' : '/'}${String(mountPath || '/')}`;
+}
+
+function projectInstallationsWithCurrentUrls(installations = {}, config = {}) {
+  const hostname = config.defaultHostname || 'homebase';
+  const domain = config.defaultDomain || 'tailnet';
+  const publicBase = `https://${hostname}.${domain}`;
+  return Object.fromEntries(Object.entries(installations).map(([appId, record]) => [
+    appId,
+    {
+      ...record,
+      externalUrl: joinExternalPath(publicBase, record.mountPath),
+    },
+  ]));
+}
+
+function projectStateForClient(state, config) {
+  return {
+    ...state,
+    installations: projectInstallationsWithCurrentUrls(state.installations || {}, config),
+  };
+}
+
 function getHomeBaseStatus(config) {
   const fs = require('fs');
   const { spawnSync } = require('child_process');
@@ -158,6 +186,11 @@ function createApp(config) {
   stateStore.init();
   const jobRunner = new JobRunner(stateStore);
   const catalog = getCatalog();
+  const preflightCache = {
+    key: '',
+    expiresAt: 0,
+    value: null,
+  };
   const validationErrors = catalog.flatMap((entry) =>
     validateManifestEntry(entry).map((error) => `${entry.id}: ${error}`)
   );
@@ -174,6 +207,23 @@ function createApp(config) {
     config: initialEffectiveConfig,
   });
 
+  function getPreflight(effectiveConfig, { force = false } = {}) {
+    const now = Date.now();
+    const cacheKey = JSON.stringify({
+      gitTransport: effectiveConfig.gitTransport || 'https',
+      gitSshKeyPath: effectiveConfig.gitSshKeyPath || '',
+      serviceUser: effectiveConfig.serviceUser || 'sovereign',
+    });
+    if (!force && preflightCache.value && preflightCache.key === cacheKey && preflightCache.expiresAt > now) {
+      return preflightCache.value;
+    }
+    const value = runPreflightChecks(effectiveConfig);
+    preflightCache.key = cacheKey;
+    preflightCache.value = value;
+    preflightCache.expiresAt = now + 30_000;
+    return value;
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -182,8 +232,6 @@ function createApp(config) {
       const state = stateStore.loadState();
       const homeBaseConfigOverride = stateStore.getHomeBaseConfig() || {};
       const effectiveConfig = mergeHomeBaseConfig(config, homeBaseConfigOverride);
-      const preflight = runPreflightChecks(effectiveConfig);
-      const viewState = { ...state, preflight };
       const normalizedPath = normalizePathname(pathname);
 
       if (method === 'GET') {
@@ -199,10 +247,12 @@ function createApp(config) {
         return sendJson(res, 200, { apps: catalog });
       }
       if (method === 'GET' && pathname === '/api/state') {
-        return sendJson(res, 200, viewState);
+        return sendJson(res, 200, projectStateForClient(state, effectiveConfig));
       }
       if (method === 'GET' && pathname === '/api/preflight') {
-        return sendJson(res, 200, preflight);
+        return sendJson(res, 200, getPreflight(effectiveConfig, {
+          force: url.searchParams.get('refresh') === '1',
+        }));
       }
       if (method === 'GET' && pathname === '/api/jobs') {
         return sendJson(res, 200, { jobs: state.jobs || [] });
@@ -275,6 +325,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
+          const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd', 'node']);
           if (missing.length) {
             return sendJson(res, 409, {
@@ -316,6 +367,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
+          const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
             return sendJson(res, 409, {
@@ -391,6 +443,7 @@ function createApp(config) {
           const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
           if (app?.runtime?.kind === 'node') required.push('node');
           if (app?.runtime?.kind === 'python') required.push('python3');
+          const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, required);
           if (missing.length) {
             return sendJson(res, 409, {
@@ -445,6 +498,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
+          const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
             return sendJson(res, 409, {
@@ -484,6 +538,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
+          const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
             return sendJson(res, 409, {

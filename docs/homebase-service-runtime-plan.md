@@ -65,6 +65,13 @@ Document and start designing the shift from:
 to:
 - proper first-run onboarding inside each app
 
+### E. Tailscale service publishing contract
+Document and begin implementing the shift from:
+- "the operator manually knows how to expose this host with Tailscale Serve"
+
+to:
+- Home Base owns a prescribed private-access publishing flow and verifies the resulting named service URLs
+
 ## Out of scope
 - full update/rollback engine implementation
 - full visual redesign of every screen
@@ -97,6 +104,7 @@ This slice is complete when all of the following are true:
 ### Product clarity
 - the roadmap for removing seed.sql dependence is documented
 - the distinction between public HTTPS repo flow and advanced private/staging repo auth is clear
+- the recommended Tailscale Serve topology is documented and visible in setup/publishing UX
 
 ---
 
@@ -236,6 +244,19 @@ Several apps still need seed data to become usable after install. That is accept
 - later add app-specific onboarding flows
 - keep demo/dev seed behavior separate from production onboarding
 
+### Note 5 — Tailscale should feel like service publishing, not host plumbing
+Tailscale is the best default access layer for Sovereign Home because it turns "private remote access" from a networking project into an appliance-like setup step. The current manual `tailscale serve` configuration is useful during testing, but it should not remain a hidden operator ritual.
+
+**Implementation direction:**
+- add a setup/publishing step that detects Tailscale install/auth/MagicDNS status
+- generate a prescribed Serve config for:
+  - Home Base on `tcp:3080` → `http://127.0.0.1:3080`
+  - managed apps on `tcp:443` → `https+insecure://localhost:443`
+- show the expected service identity, e.g. `https://<service-name>.<tailnet>:3080/` for Home Base and `https://<service-name>.<tailnet>/<app>/` for apps
+- verify `tailscale serve get-config --all` after execution
+- detect and repair stale Serve config when hostname/domain settings change
+- preserve an advanced/manual mode for users with pre-existing Serve config
+
 ---
 
 ## 7. Phased execution plan
@@ -279,11 +300,35 @@ Several apps still need seed data to become usable after install. That is accept
 4. app detail pages
 5. Open button for installed apps
 6. structured preflight result screen
+7. Tailscale publishing status card with "configure/repair service publishing" action
 
 ### Acceptance
 - less scrolling
 - next action obvious
 - no raw JSON needed for normal happy path
+
+---
+
+## Phase C.5 — Tailscale publishing automation
+
+### Tasks
+1. add a Tailscale status probe that reports:
+   - CLI installed
+   - daemon active
+   - node authenticated
+   - tailnet/MagicDNS hostname when available
+   - current Serve config
+2. add a Tailscale Serve planner that previews the prescribed commands/config:
+   - Home Base management lane on `tcp:3080`
+   - managed app HTTPS lane on `tcp:443`
+3. add guarded execution as a normal Home Base job
+4. add post-run verification against `tailscale serve get-config --all`
+5. add settings/setup UI to repair stale Serve config after host/domain changes
+
+### Acceptance
+- a normal user does not have to hand-type `tailscale serve` commands for the recommended deployment
+- Home Base can explain exactly what URL family members should use
+- existing non-Home-Base Serve config is not silently overwritten
 
 ---
 
