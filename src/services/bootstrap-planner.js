@@ -21,6 +21,73 @@ function renderScript(plan) {
   return `${lines.join('\n')}\n`;
 }
 
+function renderNginxGatewayRepairPython(defaultSitePath = '/etc/nginx/sites-available/default') {
+  return `from pathlib import Path
+default_site = Path(${JSON.stringify(defaultSitePath)})
+text = default_site.read_text()
+had_trailing_newline = text.endswith('\\n')
+lines = text.splitlines()
+
+def is_commented(line):
+    return line.lstrip().startswith('#')
+
+def has_active_line(fragment):
+    return any(fragment in line and not is_commented(line) for line in lines)
+
+def uncomment_default_line(fragment):
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        indent = line[:len(line) - len(stripped)]
+        if not stripped.startswith('#'):
+            continue
+        uncommented = stripped[1:].lstrip()
+        if uncommented == fragment:
+            lines[index] = indent + fragment
+            return True
+    return False
+
+required_lines = [
+    'listen 443 ssl default_server;',
+    'listen [::]:443 ssl default_server;',
+    'include snippets/snakeoil.conf;',
+    'include /etc/nginx/snippets/*.conf;',
+]
+
+for fragment in required_lines:
+    if not has_active_line(fragment):
+        uncomment_default_line(fragment)
+
+insertions = []
+for fragment in required_lines:
+    if not has_active_line(fragment):
+        insertions.append('    ' + fragment)
+
+if insertions:
+    insert_at = None
+    for index, line in enumerate(lines):
+        if is_commented(line):
+            continue
+        if 'listen [::]:80 default_server;' in line:
+            insert_at = index + 1
+            break
+        if 'listen 80 default_server;' in line:
+            insert_at = index + 1
+    if insert_at is None:
+        for index, line in enumerate(lines):
+            if line.strip() == 'server {':
+                insert_at = index + 1
+                break
+    if insert_at is None:
+        raise SystemExit('Could not find default nginx server block to configure')
+    lines[insert_at:insert_at] = insertions
+
+text = '\\n'.join(lines)
+if had_trailing_newline:
+    text += '\\n'
+default_site.write_text(text)
+`;
+}
+
 function buildBootstrapPlan(input = {}) {
   const serviceUser = input.serviceUser || 'sovereign';
   const baseInstallDir = input.baseInstallDir || '/opt/sovereign-home/apps';
@@ -97,34 +164,7 @@ function buildBootstrapPlan(input = {}) {
       'Ensure nginx includes managed app snippets from the default site',
       [
         `sudo python3 - <<'PY'
-from pathlib import Path
-default_site = Path('/etc/nginx/sites-available/default')
-text = default_site.read_text()
-lines = text.splitlines()
-
-def has_active_line(fragment):
-    return any(fragment in line and not line.lstrip().startswith('#') for line in lines)
-
-insertions = []
-if not has_active_line('listen 443 ssl default_server;'):
-    insertions.append('    listen 443 ssl default_server;')
-if not has_active_line('listen [::]:443 ssl default_server;'):
-    insertions.append('    listen [::]:443 ssl default_server;')
-if not has_active_line('include snippets/snakeoil.conf;'):
-    insertions.append('    include snippets/snakeoil.conf;')
-if not has_active_line('include /etc/nginx/snippets/*.conf;'):
-    insertions.append('    include /etc/nginx/snippets/*.conf;')
-
-if insertions:
-    marker = 'server_name _;'
-    for index, line in enumerate(lines):
-        if marker in line and not line.lstrip().startswith('#'):
-            lines[index:index + 1] = [line, '', *insertions]
-            break
-    else:
-        raise SystemExit('Could not find active server_name _; in nginx default site')
-    text = '\\n'.join(lines) + ('\\n' if text.endswith('\\n') else '')
-    default_site.write_text(text)
+${renderNginxGatewayRepairPython()}
 PY`,
       ],
       [
@@ -190,4 +230,5 @@ PY`,
 
 module.exports = {
   buildBootstrapPlan,
+  renderNginxGatewayRepairPython,
 };

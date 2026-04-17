@@ -1,6 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildBootstrapPlan } = require('../src/services/bootstrap-planner');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const {
+  buildBootstrapPlan,
+  renderNginxGatewayRepairPython,
+} = require('../src/services/bootstrap-planner');
 
 test('bootstrap plan includes Debian host setup essentials', () => {
   const plan = buildBootstrapPlan({ serviceUser: 'sovereign' });
@@ -37,4 +44,43 @@ test('bootstrap plan derives service user home from baseInstallDir', () => {
   assert.match(cmds, /--home-dir \/data\/apps/);
   assert.match(cmds, /\/data\/apps\/.npm/);
   assert.match(cmds, /\/data\/apps\/.ssh/);
+});
+
+test('nginx gateway repair activates Ubuntu default ssl lines in place', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-nginx-default-'));
+  const defaultSite = path.join(tempDir, 'default');
+  fs.writeFileSync(defaultSite, `server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+
+        # SSL configuration
+        #
+        # listen 443 ssl default_server;
+        # listen [::]:443 ssl default_server;
+        #
+        # include snippets/snakeoil.conf;
+
+        root /var/www/html;
+        index index.html index.htm index.nginx-debian.html;
+
+        server_name _;
+
+        location / {
+                try_files $uri $uri/ =404;
+        }
+}
+`);
+
+  const result = spawnSync('python3', ['-c', renderNginxGatewayRepairPython(defaultSite)], {
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const updated = fs.readFileSync(defaultSite, 'utf8');
+  assert.match(updated, /^\s*listen 443 ssl default_server;$/m);
+  assert.match(updated, /^\s*listen \[::\]:443 ssl default_server;$/m);
+  assert.match(updated, /^\s*include snippets\/snakeoil\.conf;$/m);
+  assert.match(updated, /^\s*include \/etc\/nginx\/snippets\/\*\.conf;$/m);
+  assert.doesNotMatch(updated, /^\s*# listen 443 ssl default_server;$/m);
+  assert.doesNotMatch(updated, /^\s*# include snippets\/snakeoil\.conf;$/m);
 });
