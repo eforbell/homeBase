@@ -52,12 +52,48 @@
       return `<p class="hb-muted" style="margin:0;">Auto-bootstrap scheduled (${window.HB.escapeHtml(bootstrapStatus.autoBootstrap.mode || 'execute')}).</p>`;
     }
     return `
-      <div class="hb-row">
-        <a href="/jobs/${window.HB.escapeHtml(latest.id)}">Bootstrap job #${window.HB.escapeHtml(latest.id)}</a>
-        ${window.HB.statusBadge(latest.status)}
-        <span class="hb-muted">${window.HB.escapeHtml(window.HB.formatTimestamp(latest.createdAt))}</span>
+      <div class="hb-stack">
+        <div class="hb-row">
+          <a href="/jobs/${window.HB.escapeHtml(latest.id)}">Bootstrap job #${window.HB.escapeHtml(latest.id)}</a>
+          ${window.HB.statusBadge(latest.status)}
+          <span class="hb-muted">${window.HB.escapeHtml(window.HB.formatTimestamp(latest.createdAt))}</span>
+        </div>
+        ${latest.status === 'failed' ? `
+          <form class="hb-actions" data-action="rerun-bootstrap">
+            <button class="hb-btn" type="submit">Re-run bootstrap</button>
+            <span class="hb-muted" data-result></span>
+          </form>
+        ` : ''}
       </div>
     `;
+  }
+
+  async function rerunBootstrap(form) {
+    const resultNode = form.querySelector('[data-result]');
+    const confirm = window.prompt('Type EXECUTE to re-run host bootstrap for real.');
+    if (confirm !== 'EXECUTE') {
+      if (resultNode) resultNode.textContent = 'Cancelled.';
+      return;
+    }
+    if (resultNode) resultNode.textContent = 'Submitting...';
+    try {
+      const payload = await window.HB.postJson('/api/bootstrap/execute', {
+        dryRun: false,
+        confirm: 'EXECUTE',
+      });
+      window.location.href = `/jobs/${encodeURIComponent(payload.jobId)}`;
+    } catch (error) {
+      if (resultNode) resultNode.textContent = error.message;
+    }
+  }
+
+  function wireEvents() {
+    root.addEventListener('submit', (event) => {
+      const bootstrapForm = event.target.closest('form[data-action="rerun-bootstrap"]');
+      if (!bootstrapForm) return;
+      event.preventDefault();
+      rerunBootstrap(bootstrapForm);
+    });
   }
 
   async function load() {
@@ -106,6 +142,7 @@
           </section>
         </div>
       `;
+      wireEvents();
       window.HB.getJson('/api/preflight').then((preflight) => {
         const node = root.querySelector('[data-preflight-summary]');
         if (node) node.innerHTML = preflightSummary(preflight);

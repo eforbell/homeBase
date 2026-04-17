@@ -43,6 +43,12 @@
             Started: ${window.HB.escapeHtml(window.HB.formatTimestamp(job.startedAt))}<br>
             Finished: ${window.HB.escapeHtml(window.HB.formatTimestamp(job.finishedAt))}
           </p>
+          ${job.kind === 'bootstrap' && job.status === 'failed' ? `
+            <form class="hb-actions" data-action="rerun-bootstrap">
+              <button class="hb-btn" type="submit">Re-run bootstrap</button>
+              <span class="hb-muted" data-result></span>
+            </form>
+          ` : ''}
           <a href="/jobs">← Back to Jobs</a>
         </section>
         <section class="hb-card">
@@ -59,6 +65,34 @@
         </section>
       </div>
     `;
+  }
+
+  async function rerunBootstrap(form) {
+    const resultNode = form.querySelector('[data-result]');
+    const confirm = window.prompt('Type EXECUTE to re-run host bootstrap for real.');
+    if (confirm !== 'EXECUTE') {
+      if (resultNode) resultNode.textContent = 'Cancelled.';
+      return;
+    }
+    if (resultNode) resultNode.textContent = 'Submitting...';
+    try {
+      const payload = await window.HB.postJson('/api/bootstrap/execute', {
+        dryRun: false,
+        confirm: 'EXECUTE',
+      });
+      window.location.href = `/jobs/${encodeURIComponent(payload.jobId)}`;
+    } catch (error) {
+      if (resultNode) resultNode.textContent = error.message;
+    }
+  }
+
+  function wireEvents() {
+    root.addEventListener('submit', (event) => {
+      const bootstrapForm = event.target.closest('form[data-action="rerun-bootstrap"]');
+      if (!bootstrapForm) return;
+      event.preventDefault();
+      rerunBootstrap(bootstrapForm);
+    });
   }
 
   async function loadJob() {
@@ -81,5 +115,6 @@
     }
   }
 
+  wireEvents();
   loadJob();
 }());

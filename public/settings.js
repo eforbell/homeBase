@@ -70,6 +70,19 @@
         triggerHomebaseAction('/api/homebase/install-self', payload, installSelf.querySelector('[data-result]'));
         return;
       }
+      const bootstrapHost = event.target.closest('form[data-action="bootstrap-host"]');
+      if (bootstrapHost) {
+        event.preventDefault();
+        const dryRun = bootstrapHost.elements.dryRun.checked;
+        const payload = { dryRun };
+        if (!dryRun) {
+          const confirm = window.prompt('Type EXECUTE to re-run host bootstrap for real.');
+          if (confirm !== 'EXECUTE') return;
+          payload.confirm = 'EXECUTE';
+        }
+        triggerHomebaseAction('/api/bootstrap/execute', payload, bootstrapHost.querySelector('[data-result]'));
+        return;
+      }
       const updateSelf = event.target.closest('form[data-action="update-self"]');
       if (updateSelf) {
         event.preventDefault();
@@ -123,6 +136,15 @@
           </section>
           <section class="hb-grid hb-grid-2">
             <article class="hb-card">
+              <h2 style="margin-top:0;">Bootstrap / repair host</h2>
+              <form class="hb-form-grid" data-action="bootstrap-host">
+                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+                <button class="hb-btn" type="submit">Run bootstrap</button>
+                <p class="hb-muted" style="margin:0;">Use this to recover from failed auto-bootstrap jobs or re-apply host repair steps such as nginx/Tailscale prerequisites.</p>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+            </article>
+            <article class="hb-card">
               <h2 style="margin-top:0;">Install/enable Home Base service</h2>
               <form class="hb-form-grid" data-action="install-self">
                 <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(config.port)}"></label>
@@ -132,6 +154,8 @@
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
             </article>
+          </section>
+          <section class="hb-grid hb-grid-2">
             <article class="hb-card">
               <h2 style="margin-top:0;">Update self</h2>
               <form class="hb-form-grid" data-action="update-self">

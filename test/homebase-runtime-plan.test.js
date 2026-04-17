@@ -20,12 +20,30 @@ test('homebase runtime plan renders service install scaffolding', () => {
   assert.match(plan.files['homebase.env'], /HOME_BASE_ENABLE_PRIVILEGED_JOBS=1/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_AUTO_BOOTSTRAP=1/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_AUTO_BOOTSTRAP_MODE=execute/);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_REPOSITORY_URL=https:\/\/github\.com\/eforbell\/homeBase\.git/);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_REPOSITORY_SSH_URL=git@github\.com:eforbell\/homeBase\.git/);
   assert.equal(plan.runtime.autoBootstrap, true);
   assert.match(plan.script, /usermod -aG sovereign homebase/);
   assert.match(plan.script, /homebase ALL=\(ALL\) NOPASSWD:ALL/);
   assert.match(plan.script, /visudo -cf \/etc\/sudoers\.d\/homebase/);
   assert.match(plan.script, /systemctl enable homebase/);
   assert.match(plan.script, /Stop the shell-run instance/);
+});
+
+test('homebase runtime plan persists ssh-key git settings for service self-update', () => {
+  const plan = buildHomeBaseRuntimePlan({
+    port: 3080,
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    gitTransport: 'ssh-key',
+    gitSshKeyPath: '/opt/sovereign-home/.ssh/id_founder_homebase',
+    gitSshKnownHostsPath: '/opt/sovereign-home/.ssh/known_hosts',
+  });
+
+  assert.match(plan.files['homebase.env'], /HOME_BASE_GIT_TRANSPORT=ssh-key/);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_GIT_SSH_KEY_PATH=\/opt\/sovereign-home\/\.ssh\/id_founder_homebase/);
+  assert.match(plan.files['homebase.env'], /HOME_BASE_GIT_SSH_KNOWN_HOSTS_PATH=\/opt\/sovereign-home\/\.ssh\/known_hosts/);
 });
 
 test('homebase runtime plan can skip privileged job sudoers wiring', () => {

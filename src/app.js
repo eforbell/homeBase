@@ -34,7 +34,10 @@ const PUBLIC_MIME_TYPES = {
 const ALLOWED_PUBLIC_EXTENSIONS = new Set(Object.keys(PUBLIC_MIME_TYPES));
 
 function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
+  res.writeHead(statusCode, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
   res.end(JSON.stringify(payload, null, 2));
 }
 
@@ -281,6 +284,14 @@ function createApp(config) {
           updatedAt: new Date().toISOString(),
         };
         stateStore.setHomeBaseConfig(persisted);
+        const updatedConfig = mergeHomeBaseConfig(config, persisted);
+        const updatedInstallations = projectInstallationsWithCurrentUrls(stateStore.loadState().installations || {}, updatedConfig);
+        for (const installation of Object.values(updatedInstallations)) {
+          stateStore.upsertInstallation({
+            ...installation,
+            updatedAt: persisted.updatedAt,
+          });
+        }
         return sendJson(res, 200, toClientHomeBaseConfig(config, persisted));
       }
       if (method === 'GET' && pathname === '/api/homebase/status') {

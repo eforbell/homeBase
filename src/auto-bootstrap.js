@@ -7,7 +7,7 @@ function getAutoBootstrapDecision({ config, latestBootstrapJob }) {
   if (config.homeBaseEnablePrivilegedJobs === false) {
     return { shouldStart: false, reason: 'privileged-jobs-disabled' };
   }
-  if (latestBootstrapJob) {
+  if (latestBootstrapJob && latestBootstrapJob.status !== 'failed') {
     return {
       shouldStart: false,
       reason: 'bootstrap-job-exists',
@@ -21,6 +21,7 @@ function getAutoBootstrapDecision({ config, latestBootstrapJob }) {
     shouldStart: true,
     mode,
     dryRun: mode === 'dry-run',
+    retryOfJobId: latestBootstrapJob?.status === 'failed' ? latestBootstrapJob.id : null,
     delayMs: Number.isFinite(config.homeBaseAutoBootstrapDelayMs)
       ? Math.max(0, config.homeBaseAutoBootstrapDelayMs)
       : 5000,
@@ -46,7 +47,7 @@ function scheduleAutoBootstrap({ stateStore, jobRunner, config, logger = console
   const timer = setTimeout(() => {
     try {
       const latest = stateStore.getLatestJobByKind('bootstrap');
-      if (latest) {
+      if (latest && latest.status !== 'failed') {
         logger.info?.(`Home Base auto-bootstrap skipped; bootstrap job ${latest.id} already exists (${latest.status}).`);
         return;
       }

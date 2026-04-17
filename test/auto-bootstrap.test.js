@@ -44,3 +44,17 @@ test('auto-bootstrap decision supports dry-run mode', () => {
   assert.equal(decision.mode, 'dry-run');
   assert.equal(decision.dryRun, true);
 });
+
+test('auto-bootstrap decision retries a failed bootstrap job', () => {
+  const decision = getAutoBootstrapDecision({
+    config: {
+      homeBaseAutoBootstrap: true,
+      homeBaseAutoBootstrapMode: 'execute',
+    },
+    latestBootstrapJob: { id: 9, status: 'failed' },
+  });
+
+  assert.equal(decision.shouldStart, true);
+  assert.equal(decision.retryOfJobId, 9);
+  assert.equal(decision.dryRun, false);
+});

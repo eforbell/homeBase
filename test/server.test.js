@@ -258,6 +258,7 @@ test('homebase config updates are reflected in existing app launch URLs', async 
     assert.equal(updateRes.status, 200);
 
     const afterRes = await fetch(`${server.url}/api/state`);
+    assert.match(afterRes.headers.get('cache-control') || '', /no-store/);
     const after = await afterRes.json();
     assert.equal(after.installations['family-plan'].externalUrl, 'https://test.example.ts.net/plan/');
   } finally {

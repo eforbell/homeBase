@@ -2,7 +2,14 @@ function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
 }
 
-function buildGitPrefix(runtimeUser, config) {
+function resolveRepositoryUrl(config) {
+  if (config.gitTransport === 'ssh' || config.gitTransport === 'ssh-key') {
+    return config.homeBaseRepositorySshUrl || 'git@github.com:eforbell/homeBase.git';
+  }
+  return config.homeBaseRepositoryUrl || 'https://github.com/eforbell/homeBase.git';
+}
+
+function renderGitCommandPrefix(config, { needsSshKey = false } = {}) {
   if (config.gitTransport === 'ssh-key' && config.gitSshKeyPath) {
     const sshParts = [
       'ssh',
@@ -13,12 +20,20 @@ function buildGitPrefix(runtimeUser, config) {
     if (config.gitSshKnownHostsPath) {
       sshParts.push('-o', `UserKnownHostsFile=${config.gitSshKnownHostsPath}`);
     }
-    return `sudo -u ${runtimeUser} env GIT_SSH_COMMAND=${shellSingleQuote(sshParts.join(' '))}`;
+    // Run key-based Home Base self-update git operations as root. The runtime
+    // service user intentionally does not need read access to the founder/app
+    // SSH key, and root must write into the runtime checkout when recovering
+    // a copied, non-git app directory.
+    return `sudo env GIT_SSH_COMMAND=${shellSingleQuote(sshParts.join(' '))}`;
   }
   if (config.gitTransport === 'ssh') {
-    return `sudo --preserve-env=SSH_AUTH_SOCK -u ${runtimeUser}`;
+    return 'sudo --preserve-env=SSH_AUTH_SOCK';
   }
-  return `sudo -u ${runtimeUser}`;
+  return needsSshKey ? 'sudo' : `sudo -u ${config.homeBaseRuntimeUser || 'homebase'}`;
+}
+
+function renderGit(config, appDir, args, { needsSshKey = false } = {}) {
+  return `${renderGitCommandPrefix(config, { needsSshKey })} git -c safe.directory=${shellSingleQuote(appDir)} -C ${appDir} ${args}`;
 }
 
 function buildHomeBaseUpdatePlan(config = {}, options = {}) {
@@ -28,16 +43,20 @@ function buildHomeBaseUpdatePlan(config = {}, options = {}) {
   const serviceName = 'homebase';
   const port = config.port || 3080;
   const ref = options.ref || 'main';
-  const gitPrefix = buildGitPrefix(runtimeUser, config);
+  const repositoryUrl = resolveRepositoryUrl(config);
+  const runGitAsPrivilegedUser = config.gitTransport === 'ssh-key';
 
   const executionSteps = [
     {
       id: 'git-pull',
       title: 'Pull latest Home Base source',
       run: [
-        `${gitPrefix} git -C ${appDir} fetch origin --prune`,
-        `${gitPrefix} git -C ${appDir} checkout ${ref}`,
-        `${gitPrefix} git -C ${appDir} pull --ff-only origin ${ref}`,
+        `if [ ! -d ${appDir}/.git ]; then ${renderGit(config, appDir, 'init', { needsSshKey: runGitAsPrivilegedUser })}; fi`,
+        `${renderGit(config, appDir, `remote add origin ${shellSingleQuote(repositoryUrl)}`, { needsSshKey: runGitAsPrivilegedUser })} || ${renderGit(config, appDir, `remote set-url origin ${shellSingleQuote(repositoryUrl)}`, { needsSshKey: runGitAsPrivilegedUser })}`,
+        `${renderGit(config, appDir, 'fetch origin --prune', { needsSshKey: runGitAsPrivilegedUser })}`,
+        `${renderGit(config, appDir, `reset --hard origin/${shellSingleQuote(ref)}`, { needsSshKey: runGitAsPrivilegedUser })}`,
+        `${renderGit(config, appDir, `checkout -B ${shellSingleQuote(ref)} origin/${shellSingleQuote(ref)}`, { needsSshKey: runGitAsPrivilegedUser })}`,
+        `sudo chown -R ${runtimeUser}:${runtimeUser} ${appDir}`,
       ],
     },
     {
@@ -62,7 +81,7 @@ function buildHomeBaseUpdatePlan(config = {}, options = {}) {
   return {
     kind: 'homebase-update',
     generatedAt,
-    update: { runtimeUser, appDir, serviceName, port, ref },
+    update: { runtimeUser, appDir, serviceName, port, ref, repositoryUrl },
     executionSteps,
     commands,
     script: `#!/usr/bin/env bash\nset -euo pipefail\n\n${commands.join('\n')}\n`,

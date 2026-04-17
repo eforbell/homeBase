@@ -31,6 +31,8 @@ function loadConfig() {
     gitSshKeyPath: process.env.HOME_BASE_GIT_SSH_KEY_PATH || '',
     gitSshKnownHostsPath: process.env.HOME_BASE_GIT_SSH_KNOWN_HOSTS_PATH || '',
     gitSshStrictHostKeyChecking: process.env.HOME_BASE_GIT_SSH_STRICT_HOST_KEY_CHECKING || 'accept-new',
+    homeBaseRepositoryUrl: process.env.HOME_BASE_REPOSITORY_URL || 'https://github.com/eforbell/homeBase.git',
+    homeBaseRepositorySshUrl: process.env.HOME_BASE_REPOSITORY_SSH_URL || 'git@github.com:eforbell/homeBase.git',
     homeBaseRuntimeUser: process.env.HOME_BASE_RUNTIME_USER || 'homebase',
     homeBaseAppDir: process.env.HOME_BASE_APP_DIR || '/opt/sovereign-home/homebase',
     homeBaseStateDir: process.env.HOME_BASE_RUNTIME_STATE_DIR || '/var/lib/sovereign-home/homebase',
