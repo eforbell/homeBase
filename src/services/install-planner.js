@@ -287,7 +287,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const installRoot = `${(options.baseInstallDir || config.baseInstallDir || '/opt/sovereign-home/apps').replace(/\/$/, '')}/${app.repoKey}`;
   const dbName = options.dbName || app.database.databaseName || app.id.replace(/-/g, '_');
   const dbUser = options.dbUser || app.database.databaseUser || dbName;
-  const dbPassword = options.dbPassword || `change-me-${dbUser}`;
+  const dbPassword = options.dbPassword || crypto.randomBytes(24).toString('base64url');
   const secret1 = crypto.randomBytes(32).toString('hex');
   const secret2 = crypto.randomBytes(32).toString('hex');
   const secret3 = crypto.randomBytes(32).toString('hex');
