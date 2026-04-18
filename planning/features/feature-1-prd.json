@@ -1,18 +1,18 @@
 {
   "branchName": "feature/app-operations-ux-parity",
   "projectName": "App Operations UX Parity",
-  "description": "Make installed app management match the backend capabilities Homebase already has: clear Open, Details, Backup, Restore, and first-backup paths without forcing the operator to remember hidden app-detail routes or curl endpoints.",
+  "description": "Make installed app management match the backend capabilities Homebase already has: clear Open, Details, Backup, Restore, and failed-job rerun paths without forcing the operator to remember hidden routes or curl endpoints.",
   "timing": {
     "draftedOn": "2026-04-18",
     "plannedEarliestExecution": "2026-04-18",
-    "gatingCondition": "Can proceed immediately. Backend backup/restore execution endpoints already exist; scope is mostly UI and small API quality improvements."
+    "gatingCondition": "Can proceed immediately. Backend backup/restore execution and bootstrap rerun endpoints already exist; scope is mostly UI and small API quality improvements."
   },
   "principles": [
     "Installed app cards should summarize and route, not become a crowded operator console",
     "App Detail is the canonical operations center",
     "Backup and restore must be discoverable before founder trust is possible",
-    "Dry-run stays the safe default, with real execution guarded by EXECUTE",
-    "Show recovery actions where the operator naturally looks"
+    "Failed operations should show recovery actions where the operator naturally looks",
+    "Dry-run stays the safe default, with real execution guarded by EXECUTE"
   ],
   "techStack": {
     "language": "Node.js + vanilla browser JavaScript",
@@ -62,6 +62,34 @@
       "estimatedLines": "+220/-20",
       "testStrategy": "SQLite backup record tests plus manual VM browser verification after taking a real backup",
       "passes": false
+    },
+    {
+      "id": "OPS-004",
+      "title": "Failed jobs can be rerun from the UI",
+      "acceptanceCriteria": [
+        "Failed bootstrap jobs expose rerun controls on dashboard and job detail",
+        "Failed install/backup/restore jobs expose a context-aware rerun path or an explicit reason rerun is unavailable",
+        "Rerun creates a new job and links/navigates to the new job detail",
+        "Real reruns remain guarded by EXECUTE"
+      ],
+      "priority": 4,
+      "estimatedLines": "+180/-30",
+      "testStrategy": "UI source assertions plus manual rerun from failed-job fixture/VM failure",
+      "passes": false
+    },
+    {
+      "id": "OPS-005",
+      "title": "Backup destination risk is visible before launch",
+      "acceptanceCriteria": [
+        "App cards or backup sections identify whether backups are local-only",
+        "Local-only backups show a warning that they do not protect against VM/disk loss",
+        "Feature-5 is linked as the off-host destination follow-up when no off-host target is configured",
+        "The warning is visible before a founder could mistake local backup for disaster recovery"
+      ],
+      "priority": 5,
+      "estimatedLines": "+90/-10",
+      "testStrategy": "UI source assertions and manual browser verification on a VM with default local backup path",
+      "passes": false
     }
   ],
   "riskAssessment": {
@@ -79,15 +107,17 @@
     "Choose card action pattern: inline Backup panel vs route to #backup",
     "Choose Restore card behavior: route to #restore unless a single backup can be safely preselected",
     "Confirm latest-backup data source and whether /api/state should include backup summary or /apps should fetch per-app backups",
+    "Confirm failed-job rerun scope beyond bootstrap for first pass",
     "Confirm mobile layout for action buttons"
   ],
   "metrics": {
-    "estimatedTotalLines": "+560/-110",
-    "storiesCount": 3,
+    "estimatedTotalLines": "+740/-150",
+    "storiesCount": 5,
     "filesLikelyModified": [
       "public/apps.js",
       "public/app-detail.js",
       "public/dashboard.js",
+      "public/job-detail.js",
       "public/style.css",
       "src/app.js",
       "test/homebase-ui-actions.test.js",

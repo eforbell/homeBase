@@ -1,31 +1,29 @@
-# Feature-7: Suite Onboarding Baseline Convergence
+# Feature-7: Managed App Update and Rollback
 
 ## Purpose
 
-Make the managed app suite easier for Homebase to install, monitor, back up, and recover by converging on common contracts.
+Make app updates safe enough that the founder is willing to update their own household server through Homebase.
 
 ## Why This Is Worth Shipping
 
-Homebase should not remain a pile of app-specific assumptions. The closer each app gets to standard health/readiness/onboarding/manifest behavior, the less brittle Homebase becomes.
+Install without rollback is acceptable during VM rehearsal. Update without rollback is not acceptable for a real household server. Rollback must be honest: safe rollback restores pre-update data as well as code, or it is clearly labeled unsafe/code-only.
 
 ## Scope
 
-1. Standard health/readiness/meta endpoints.
-2. First-run onboarding instead of required production seed data.
-3. Repo-owned managed app manifests.
+1. Require pre-update backup and record update metadata.
+2. Execute update with a post-update health gate.
+3. Offer rollback that restores code and pre-update backup by default.
 
-## Recommended Execution
+## Recommended UX
 
-Proceed app by app:
-
-1. Family Help
-2. Family Dinner
-3. Family Plan
-4. Bitcoin Accounting
-5. Family Pulse
+- Start with explicit ref/commit updates.
+- Show backup, previous ref, target ref, and health result in the job summary.
+- Make rollback visible when update fails.
+- Never present code-only rollback as safe if data migrations or state changes may have occurred.
 
 ## Definition of Done
 
-- Homebase can tell whether each app is alive, ready, and/or needing setup.
-- Fresh installs do not depend on manual production seed SQL.
-- Manifest data becomes authoritative enough to reduce Homebase hard-coded catalog drift.
+- One managed app can be updated and rolled back in a VM without shell improvisation.
+- Update jobs never skip the backup requirement.
+- Safe rollback restores both code and pre-update data/files where applicable.
+- Failure leaves a clear next action.

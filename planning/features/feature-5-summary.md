@@ -1,27 +1,28 @@
-# Feature-5: Managed App Update and Rollback
+# Feature-5: Backup Destination and Retention Confidence
 
 ## Purpose
 
-Make app updates safe enough that the founder is willing to update their own household server through Homebase.
+Make backup protection honest. Same-VM backups are useful for app state mistakes, but they do not protect against VM loss, disk loss, or accidental host deletion.
 
 ## Why This Is Worth Shipping
 
-Install without rollback is acceptable during VM rehearsal. Update without rollback is not acceptable for a real household server. This feature turns update from a risky shell action into a guarded Homebase workflow.
+For a product called Sovereign Home, backup confidence is a launch blocker. Homebase should not let the founder mistake local backups for disaster recovery.
 
 ## Scope
 
-1. Require pre-update backup and record update metadata.
-2. Execute update with a post-update health gate.
-3. Offer rollback to previous known-good state.
+1. Identify and warn on local-only backup state.
+2. Add one supported off-host backup destination path.
+3. Show retention and restore confidence clearly.
 
 ## Recommended UX
 
-- Start with explicit ref/commit updates.
-- Show backup, previous ref, target ref, and health result in the job summary.
-- Make rollback visible when update fails.
+- Label local-only backups plainly.
+- Start with one boring destination rather than a plugin system.
+- Show latest local and off-host backup timestamps.
+- Preserve restore usability as the real proof.
 
 ## Definition of Done
 
-- One managed app can be updated and rolled back in a VM without shell improvisation.
-- Update jobs never skip the backup requirement.
-- Failure leaves a clear next action.
+- Founder knows whether backups are local-only.
+- At least one off-host destination path can be configured and verified.
+- Restore picker and app cards can distinguish local and replicated backup state.

@@ -1,95 +1,99 @@
 {
-  "branchName": "feature/suite-onboarding-baselines",
-  "projectName": "Suite Onboarding Baseline Convergence",
-  "description": "Reduce Homebase special cases by converging managed apps toward standard health, readiness, metadata, manifest, and first-run onboarding contracts.",
+  "branchName": "feature/managed-app-update-rollback",
+  "projectName": "Managed App Update and Rollback",
+  "description": "Bring app update operations to the same maturity as install/backup/restore by requiring pre-update backups, recording known-good refs, running health gates, and offering rollback with honest data semantics when an update fails.",
   "timing": {
     "draftedOn": "2026-04-18",
-    "plannedEarliestExecution": "Parallelizable after core Homebase operations are stable",
-    "gatingCondition": "Requires app-by-app branches and acceptance tests in each managed repo."
+    "plannedEarliestExecution": "After backup/restore UX, health visibility, and backup destination confidence are reliable",
+    "gatingCondition": "Requires health/readiness probes and backup metadata to be trustworthy enough to gate updates."
   },
   "principles": [
-    "Homebase should manage contracts, not infer repo quirks forever",
-    "Fresh install should not depend on production seed.sql",
-    "Every app should tell Homebase whether it is alive, ready, and needs setup",
-    "Converge one app at a time",
-    "Keep demo data separate from required bootstrap data"
+    "No app update without a backup",
+    "Known-good state must be explicit",
+    "Health gate determines update success",
+    "Rollback must restore data or explicitly say it is code-only and unsafe for data migrations",
+    "Start with refs/commits before release-channel polish"
   ],
   "techStack": {
-    "language": "Mostly Node/Express plus one Python/FastAPI app",
-    "runtime": "Managed app endpoints + Homebase catalog/manifest metadata",
-    "storage": "Each app's existing database plus Homebase catalog/manifest records",
-    "testing": "Per-app endpoint tests and Homebase integration checks"
+    "language": "Node.js planner/executor + vanilla JS UI",
+    "runtime": "git, npm/python app bootstrap, systemd, nginx, PostgreSQL restore",
+    "storage": "SQLite rollback/update records plus existing jobs/backups/installations",
+    "testing": "Planner tests, dry-run endpoint tests, manual VM update/rollback rehearsal"
   },
   "userStories": [
     {
-      "id": "BASE-001",
-      "title": "Standard health/readiness/meta endpoints across apps",
+      "id": "UPD-001",
+      "title": "Update requires and records a pre-update backup",
       "acceptanceCriteria": [
-        "Each managed app exposes /api/health and /api/ready or manifest-declared equivalents",
-        "Each app exposes metadata: name, version/ref where practical, bootstrap capability",
-        "Homebase catalog records endpoint support accurately"
+        "Update action is unavailable or blocked until a pre-update backup can be created",
+        "Update job records previous ref, target ref, backup id, and service name",
+        "Dry-run shows full backup/update/restart/health plan"
       ],
       "priority": 1,
-      "estimatedLines": "+varies",
-      "testStrategy": "Per-app endpoint tests plus Homebase probe tests",
+      "estimatedLines": "+300/-30",
+      "testStrategy": "Planner tests and API dry-run tests",
       "passes": false
     },
     {
-      "id": "BASE-002",
-      "title": "First-run onboarding replaces required seed data",
+      "id": "UPD-002",
+      "title": "Health-gated update execution",
       "acceptanceCriteria": [
-        "Fresh migration-only install can start and serve setup/onboarding UI",
-        "App reports needs_household/needs_auth/ready state where applicable",
-        "Demo/dev seed data is optional and not required for production first use"
+        "Update fetches target ref, installs dependencies, runs migrations/bootstrap, restarts service",
+        "Post-update health/readiness must pass before job is marked completed",
+        "Failures preserve enough state for rollback"
       ],
       "priority": 2,
-      "estimatedLines": "+varies",
-      "testStrategy": "Schema-only install tests per app",
+      "estimatedLines": "+360/-40",
+      "testStrategy": "Manual VM update to known ref plus simulated health failure",
       "passes": false
     },
     {
-      "id": "BASE-003",
-      "title": "App manifests become the Homebase abstraction boundary",
+      "id": "UPD-003",
+      "title": "Rollback restores code and pre-update data by default",
       "acceptanceCriteria": [
-        "Each repo carries or exports a managed-app manifest",
-        "Homebase can validate manifests and reduce hard-coded catalog drift",
-        "Backup paths, service names, health endpoints, onboarding endpoints, and timers are declared"
+        "Safe rollback uses the pre-update backup to restore database/filesystem state as well as previous code ref",
+        "If no usable pre-update backup exists, Homebase blocks safe rollback and labels any code-only rollback as advanced/unsafe",
+        "If migrations may be non-reversible, UI explains that data restore from backup is the rollback mechanism",
+        "Rollback has its own health gate and job log"
       ],
       "priority": 3,
-      "estimatedLines": "+varies",
-      "testStrategy": "Manifest schema tests and app-by-app Homebase install smoke tests",
+      "estimatedLines": "+480/-70",
+      "testStrategy": "Manual VM rollback rehearsal using Family Help or Family Dinner with data mutation before rollback",
       "passes": false
     }
   ],
   "riskAssessment": {
     "high": [
-      "Cross-repo scope can sprawl and interrupt Homebase core hardening"
+      "Rollback that restores code but not data creates false confidence and must not be presented as safe rollback",
+      "Migrations may not be reversible across app repos"
     ],
     "medium": [
-      "Apps have different data/bootstrap assumptions",
-      "Changing first-run behavior can affect existing production deployments"
+      "Update commands differ across Node/Python apps",
+      "Health checks must be trustworthy before gating updates"
     ],
     "low": [
-      "Can proceed incrementally by app order"
+      "Can start with one or two simple apps before suite-wide support"
     ]
   },
   "preFlightChecklist": [
-    "Use the existing first-run onboarding suite plan as source context",
-    "Pick app order: Family Help, Family Dinner, Family Plan, Bitcoin Accounting, Family Pulse",
-    "Define manifest ownership and versioning approach",
-    "Define backward compatibility expectations for existing installs"
+    "Choose first supported app for update/rollback rehearsal",
+    "Define update/rollback record schema",
+    "Define code-only rollback as an advanced unsafe option, not the default",
+    "Confirm backup artifact completeness for rollback target app",
+    "Define how non-reversible migrations are communicated"
   ],
   "metrics": {
-    "estimatedTotalLines": "multi-repo",
+    "estimatedTotalLines": "+1140/-140",
     "storiesCount": 3,
     "filesLikelyModified": [
-      "familyHelp/*",
-      "familyDinner/*",
-      "familyPlan/*",
-      "bitcoinAccounting/*",
-      "familyPulse/*",
-      "homeBase/src/catalog.js",
-      "homeBase/manifests/*",
+      "src/services/update-planner.js",
+      "src/services/rollback-planner.js",
+      "src/services/job-runner.js",
+      "src/state/sqlite-driver.js",
+      "src/app.js",
+      "public/app-detail.js",
+      "test/update-planner.test.js",
+      "test/rollback-planner.test.js",
       "planning/current-feature.json",
       "planning/progress.txt"
     ]

@@ -1,96 +1,96 @@
 {
-  "branchName": "feature/admin-auth-action-guardrails",
-  "projectName": "Admin Auth and Destructive-Action Guardrails",
-  "description": "Add a practical Homebase admin authentication boundary and tighten destructive operation authorization so tailnet access alone is not the only guardrail for host management.",
+  "branchName": "feature/guided-setup-first-backup",
+  "projectName": "Guided Setup and First Backup Wizard",
+  "description": "Replace the placeholder setup shell with a linear first-run flow that takes a founder from Homebase service readiness through host bootstrap, admin setup, Tailscale publishing, app installation, backup destination awareness, and first backup.",
   "timing": {
     "draftedOn": "2026-04-18",
-    "plannedEarliestExecution": "Before broader/non-founder use; can start earlier if VM is exposed to more users",
-    "gatingCondition": "Requires choosing PIN/passphrase/session model and migration path for existing Homebase installs."
+    "plannedEarliestExecution": "After admin auth, Tailscale publishing, and backup destination basics are defined",
+    "gatingCondition": "Requires current bootstrap/install/backup actions to be stable enough to orchestrate from a wizard."
   },
   "principles": [
-    "Tailnet access is necessary but not sufficient for destructive host operations",
-    "Use a simple admin model before full user accounts",
-    "Server-enforced auth, not cosmetic UI locking",
-    "Do not expose secrets after save",
-    "Audit destructive actions"
+    "A first-time founder should not have to know which page to visit next",
+    "Setup should be resumable and repair-oriented",
+    "Each step should show why it matters",
+    "Prefer a small wizard over a giant dashboard",
+    "End setup with at least one known-good backup and an explicit backup-destination state"
   ],
   "techStack": {
-    "language": "Node.js + vanilla JS",
-    "runtime": "HTTP-only signed session cookie, SQLite config/auth storage",
-    "storage": "SQLite admin credential/session/audit tables or config records",
-    "testing": "Endpoint auth tests plus manual browser lock/unlock validation"
+    "language": "Vanilla JS setup controller + existing Homebase APIs",
+    "runtime": "Homebase job runner",
+    "storage": "SQLite state/jobs/backups plus optional setup progress record",
+    "testing": "UI flow tests/source assertions and fresh VM walkthrough"
   },
   "userStories": [
     {
-      "id": "ADM-001",
-      "title": "Require admin unlock for destructive operations",
+      "id": "SET-001",
+      "title": "Founder sees a resumable setup checklist",
       "acceptanceCriteria": [
-        "Bootstrap execute, install execute, backup real, restore real, update, rollback, and service publishing require unlocked admin session",
-        "Dry-runs remain available without full unlock or have a lighter confirmation policy",
-        "Unauthorized API calls return clear 401/403 responses"
+        "Setup page replaces placeholder shell with real steps",
+        "Steps reflect current state: admin auth, service installed, preflight, bootstrap, publishing, apps, backup destination, first backup",
+        "Completed steps remain checked after refresh",
+        "Failed steps link to job detail and recovery actions"
       ],
       "priority": 1,
-      "estimatedLines": "+260/-40",
-      "testStrategy": "Endpoint tests for protected actions and manual browser verification",
+      "estimatedLines": "+280/-20",
+      "testStrategy": "Fixture state tests plus manual browser refresh/resume verification",
       "passes": false
     },
     {
-      "id": "ADM-002",
-      "title": "Admin setup, unlock, lock, and rotation",
+      "id": "SET-002",
+      "title": "Install first apps from setup without leaving the flow",
       "acceptanceCriteria": [
-        "First-run admin setup is available from UI",
-        "Admin credential is hashed, never plaintext",
-        "Unlock session is HTTP-only and time-bounded",
-        "Admin can rotate credential and manually lock"
+        "Wizard can install one or more selected apps using existing execute endpoint",
+        "Default recommended first app path is clear (Family Help, then Family Dinner)",
+        "Wizard links to app detail for advanced configuration without losing progress"
       ],
       "priority": 2,
-      "estimatedLines": "+320/-20",
-      "testStrategy": "Manual browser session tests and endpoint tests",
+      "estimatedLines": "+240/-30",
+      "testStrategy": "Dry-run install job tests plus manual VM install walkthrough",
       "passes": false
     },
     {
-      "id": "ADM-003",
-      "title": "Audit destructive actions",
+      "id": "SET-003",
+      "title": "Setup finishes with first backup confidence",
       "acceptanceCriteria": [
-        "Destructive action attempts record actor/session, timestamp, action, target, outcome, and job id where applicable",
-        "Secrets are never logged",
-        "Settings or job detail can expose audit context without clutter"
+        "After app install, setup recommends taking a first backup",
+        "Setup shows whether the backup is local-only or off-host protected",
+        "Successful backup is shown as setup completion evidence",
+        "If backup fails, setup explains recovery and links to the job log"
       ],
       "priority": 3,
-      "estimatedLines": "+220/-20",
-      "testStrategy": "Unit tests for audit writes and manual inspection after actions",
+      "estimatedLines": "+200/-20",
+      "testStrategy": "Manual VM real backup after app install plus UI source assertions",
       "passes": false
     }
   ],
   "riskAssessment": {
     "high": [
-      "Adding auth late can break recovery flows if not carefully staged"
+      "Wizard can become brittle if it tries to own too many app-specific setup decisions"
     ],
     "medium": [
-      "Too much friction could slow founder testing",
-      "Session storage needs to be robust across service restarts"
+      "State inference can be wrong if manual shell work changes host state outside Homebase",
+      "Multiple simultaneous jobs can complicate step display"
     ],
     "low": [
-      "Pattern can borrow from Family Plan settings PIN work"
+      "The first version can be a guided checklist over existing APIs"
     ]
   },
   "preFlightChecklist": [
-    "Choose PIN vs passphrase language for Homebase",
-    "Decide whether first-run setup is env-seeded or browser-created",
-    "Define protected endpoint list",
-    "Define emergency recovery path if admin credential is lost"
+    "Define setup state derivation rules from existing state/jobs/preflight/publishing/backups",
+    "Choose first recommended app sequence",
+    "Decide whether setup progress needs a dedicated SQLite table",
+    "Define skip/defer semantics for Tailscale publishing and off-host backup"
   ],
   "metrics": {
-    "estimatedTotalLines": "+800/-100",
+    "estimatedTotalLines": "+720/-70",
     "storiesCount": 3,
     "filesLikelyModified": [
-      "src/admin-auth.js",
-      "src/app.js",
-      "src/state/sqlite-driver.js",
-      "public/settings.js",
       "public/setup.js",
-      "test/admin-auth.test.js",
-      "test/server.test.js",
+      "public/setup.html",
+      "public/style.css",
+      "src/setup-gate.js",
+      "src/app.js",
+      "test/setup-flow.test.js",
       "planning/current-feature.json",
       "planning/progress.txt"
     ]

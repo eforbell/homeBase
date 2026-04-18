@@ -1,27 +1,27 @@
-# Feature-6: Admin Auth and Destructive-Action Guardrails
+# Feature-6: Guided Setup and First Backup Wizard
 
 ## Purpose
 
-Add a server-enforced Homebase admin boundary so destructive host-management operations are not protected only by tailnet access and `EXECUTE` prompts.
+Replace the placeholder setup page with a practical first-run flow that gets a founder to a working, published, backed-up Homebase installation.
 
 ## Why This Is Worth Shipping
 
-Founder-only testing can tolerate a loose boundary. Launch capability needs clearer protection, especially once Homebase can update, restore, publish services, and manage multiple apps.
+Homebase is intended to reduce shell work. A new founder should not need to know the internal order of Settings, Bootstrap, Apps, Jobs, Publishing, and Backup pages to complete the first useful setup.
 
 ## Scope
 
-1. Require admin unlock for destructive actions.
-2. Add admin setup/unlock/lock/rotation.
-3. Audit destructive action attempts and outcomes.
+1. Build a resumable setup checklist from current system state.
+2. Guide through admin setup, bootstrap, publishing, app install, and backup destination awareness.
+3. Finish with first backup evidence.
 
 ## Recommended UX
 
-- Keep dry-run and status viewing low-friction.
-- Require unlock for operations that mutate host/app state.
-- Borrow the simple settings-PIN ergonomics from Family Plan, but adapt the language for a host control plane.
+- Clear linear steps with completed/current/blocked states.
+- Allow advanced users to skip/defer publishing and off-host backup, but make the recommended path obvious.
+- Finish with evidence: app installed, reachable, and backed up.
 
 ## Definition of Done
 
-- Mutating execute endpoints reject unauthenticated requests.
-- Admin can unlock and lock from the UI.
-- Destructive actions leave an audit trail.
+- A fresh VM setup can be driven primarily from `/setup`.
+- Founder can resume after refresh or failure.
+- At least one app has a first backup before setup is considered complete, and the backup protection level is explicit.

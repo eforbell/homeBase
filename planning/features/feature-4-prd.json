@@ -1,95 +1,98 @@
 {
-  "branchName": "feature/guided-setup-first-backup",
-  "projectName": "Guided Setup and First Backup Wizard",
-  "description": "Replace the placeholder setup shell with a linear first-run flow that takes a founder from Homebase service readiness through host bootstrap, Tailscale publishing, app installation, and first backup.",
+  "branchName": "feature/tailscale-service-publishing",
+  "projectName": "Tailscale Service Publishing Automation",
+  "description": "Productize the recommended private-access path so Homebase can plan, execute, verify, and repair Tailscale Serve publishing instead of relying on manual operator commands.",
   "timing": {
     "draftedOn": "2026-04-18",
-    "plannedEarliestExecution": "After app operations UX and/or Tailscale publishing foundation",
-    "gatingCondition": "Requires current bootstrap/install/backup actions to be stable enough to orchestrate from a wizard."
+    "plannedEarliestExecution": "After Admin Auth and Destructive-Action Guardrails",
+    "gatingCondition": "Requires admin-protected execution and careful merge/ownership policy for existing Tailscale Serve config. Authentication via `tailscale up` may remain manual."
   },
   "principles": [
-    "A first-time founder should not have to know which page to visit next",
-    "Setup should be resumable and repair-oriented",
-    "Each step should show why it matters",
-    "Prefer a small wizard over a giant dashboard",
-    "End setup with at least one known-good backup"
+    "Sovereign Home should feel like a named service, not a host with ports",
+    "Never silently overwrite unrelated Tailscale Serve config",
+    "Preview exact commands/config before executing",
+    "Verify both local nginx upstream and Tailscale Serve result",
+    "Keep public internet exposure out of the default path"
   ],
   "techStack": {
-    "language": "Vanilla JS setup controller + existing Homebase APIs",
-    "runtime": "Homebase job runner",
-    "storage": "SQLite state/jobs/backups plus optional setup progress record",
-    "testing": "UI flow tests/source assertions and fresh VM walkthrough"
+    "language": "Node.js + shell command planner",
+    "runtime": "tailscale CLI, nginx local HTTPS upstream, systemd job runner",
+    "storage": "SQLite jobs plus optional publishing state/config record",
+    "testing": "Planner unit tests + manual VM tailnet verification"
   },
   "userStories": [
     {
-      "id": "SET-001",
-      "title": "Founder sees a resumable setup checklist",
+      "id": "TS-001",
+      "title": "Detect Tailscale identity and publishing readiness",
       "acceptanceCriteria": [
-        "Setup page replaces placeholder shell with real steps",
-        "Steps reflect current state: service installed, preflight, bootstrap, publishing, apps, backup",
-        "Completed steps remain checked after refresh",
-        "Failed steps link to job detail and recovery actions"
+        "Settings/setup page shows Tailscale installed/daemon/authenticated status",
+        "Homebase identifies current node name and tailnet/MagicDNS hostname when available",
+        "Current `tailscale serve get-config --all` is visible or summarized",
+        "UI distinguishes not installed, not authenticated, authenticated but unpublished, and published states"
       ],
       "priority": 1,
-      "estimatedLines": "+260/-20",
-      "testStrategy": "Fixture state tests plus manual browser refresh/resume verification",
+      "estimatedLines": "+220/-10",
+      "testStrategy": "Unit tests around parser/status mapping plus VM check with authenticated and unauthenticated states",
       "passes": false
     },
     {
-      "id": "SET-002",
-      "title": "Install first apps from setup without leaving the flow",
+      "id": "TS-002",
+      "title": "Plan and execute prescribed Serve topology",
       "acceptanceCriteria": [
-        "Wizard can install one or more selected apps using existing execute endpoint",
-        "Default recommended first app path is clear (Family Help, then Family Dinner)",
-        "Wizard links to app detail for advanced configuration without losing progress"
+        "Planner previews Homebase lane: tcp:3080 -> http://127.0.0.1:3080",
+        "Planner previews app lane: tcp:443 -> https+insecure://localhost:443",
+        "Execution is admin-unlock protected and guarded by EXECUTE",
+        "Existing non-Homebase Serve config is not silently destroyed"
       ],
       "priority": 2,
-      "estimatedLines": "+240/-30",
-      "testStrategy": "Dry-run install job tests plus manual VM install walkthrough",
+      "estimatedLines": "+300/-20",
+      "testStrategy": "Planner tests for generated commands and manual VM execution against tailnet",
       "passes": false
     },
     {
-      "id": "SET-003",
-      "title": "Setup finishes with first backup confidence",
+      "id": "TS-003",
+      "title": "Verify and repair service publishing",
       "acceptanceCriteria": [
-        "After app install, setup recommends taking a first backup",
-        "Successful backup is shown as setup completion evidence",
-        "If backup fails, setup explains recovery and links to the job log"
+        "Verification checks local nginx 443 listener before publishing",
+        "Verification checks Serve config contains expected tcp:3080 and tcp:443 endpoints",
+        "Hostname/domain setting changes surface a repair prompt if publishing is stale",
+        "UI provides final copyable Homebase and app base URLs"
       ],
       "priority": 3,
-      "estimatedLines": "+180/-20",
-      "testStrategy": "Manual VM real backup after app install plus UI source assertions",
+      "estimatedLines": "+260/-20",
+      "testStrategy": "Manual VM verification plus fixture tests for stale/missing Serve config parsing",
       "passes": false
     }
   ],
   "riskAssessment": {
     "high": [
-      "Wizard can become brittle if it tries to own too many app-specific setup decisions"
+      "Incorrect Serve config changes could disrupt a user's existing tailnet services"
     ],
     "medium": [
-      "State inference can be wrong if manual shell work changes host state outside Homebase",
-      "Multiple simultaneous jobs can complicate step display"
+      "Tailscale CLI output/config shape may vary by version",
+      "Authentication still requires an operator-owned action unless OAuth/device flow is designed"
     ],
     "low": [
-      "The first version can be a guided checklist over existing APIs"
+      "The target topology has already been manually validated in VM testing"
     ]
   },
   "preFlightChecklist": [
-    "Define setup state derivation rules from existing state/jobs/preflight/publishing/backups",
-    "Choose first recommended app sequence",
-    "Decide whether setup progress needs a dedicated SQLite table",
-    "Define skip/defer semantics for Tailscale publishing"
+    "Capture real `tailscale status --json` and `tailscale serve get-config --all` examples",
+    "Choose policy for existing Serve config: merge managed endpoints vs require explicit replace",
+    "Define whether Homebase stores a managed-service marker or derives state entirely from Serve config",
+    "Confirm UI placement: Settings vs Setup Wizard vs Dashboard card"
   ],
   "metrics": {
-    "estimatedTotalLines": "+680/-70",
+    "estimatedTotalLines": "+780/-50",
     "storiesCount": 3,
     "filesLikelyModified": [
-      "public/setup.js",
-      "public/setup.html",
-      "public/style.css",
-      "src/setup-gate.js",
+      "src/services/tailscale-publisher.js",
       "src/app.js",
-      "test/setup-flow.test.js",
+      "src/services/job-runner.js",
+      "public/settings.js",
+      "public/setup.js",
+      "public/dashboard.js",
+      "test/tailscale-publisher.test.js",
       "planning/current-feature.json",
       "planning/progress.txt"
     ]

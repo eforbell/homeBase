@@ -1,27 +1,28 @@
-# Feature-4: Guided Setup and First Backup Wizard
+# Feature-4: Tailscale Service Publishing Automation
 
 ## Purpose
 
-Replace the placeholder setup page with a practical first-run flow that gets a founder to a working, published, backed-up Homebase installation.
+Turn the current manual Tailscale Serve setup into a Homebase-managed publishing flow for the recommended private-access deployment.
 
 ## Why This Is Worth Shipping
 
-Homebase is intended to reduce shell work. A new founder should not need to know the internal order of Settings, Bootstrap, Apps, Jobs, and Backup pages to complete the first useful setup.
+Tailscale is what makes Sovereign Home deployable for real households without public DNS/firewall complexity. If Homebase can own the prescribed Serve topology, the product feels like a named household service instead of a server with ports.
 
 ## Scope
 
-1. Build a resumable setup checklist from current system state.
-2. Guide through bootstrap, publishing, app install, and first backup.
-3. Link failures to jobs and repair actions.
+1. Detect Tailscale install/auth/MagicDNS/Serve state.
+2. Plan and execute the prescribed Serve lanes behind admin auth.
+3. Verify and repair stale/missing publishing config.
 
 ## Recommended UX
 
-- Clear linear steps with completed/current/blocked states.
-- Allow advanced users to skip/defer publishing and backup, but make the recommended path obvious.
-- Finish with evidence: app installed, reachable, and backed up.
+- Present this as `Publish Sovereign Home on your tailnet`.
+- Preview exactly what will be changed.
+- Preserve advanced/manual mode for existing Serve users.
+- Show final copyable URLs.
 
 ## Definition of Done
 
-- A fresh VM setup can be driven primarily from `/setup`.
-- Founder can resume after refresh or failure.
-- At least one app has a first backup before setup is considered complete.
+- A fresh VM can be published through Tailscale Serve without hand-typing Serve commands.
+- Homebase can show whether publishing is healthy or stale.
+- Existing unrelated Serve config is not silently overwritten.

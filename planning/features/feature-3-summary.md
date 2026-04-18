@@ -1,28 +1,27 @@
-# Feature-3: Tailscale Service Publishing Automation
+# Feature-3: Admin Auth and Destructive-Action Guardrails
 
 ## Purpose
 
-Turn the current manual Tailscale Serve setup into a Homebase-managed publishing flow for the recommended private-access deployment.
+Add a server-enforced Homebase admin boundary before Homebase expands into service publishing, setup orchestration, and update/rollback operations.
 
 ## Why This Is Worth Shipping
 
-Tailscale is what makes Sovereign Home deployable for real households without public DNS/firewall complexity. If Homebase can own the prescribed Serve topology, the product feels like a named household service instead of a server with ports.
+Feature 1 makes operations easier to find. Feature 4 will publish Homebase more deliberately on the tailnet. Tailnet access plus `EXECUTE` prompts is not a sufficient guardrail once real household data and backups are involved.
 
 ## Scope
 
-1. Detect Tailscale install/auth/MagicDNS/Serve state.
-2. Plan and execute the prescribed Serve lanes.
-3. Verify and repair stale/missing publishing config.
+1. Require admin unlock for destructive actions.
+2. Add admin setup/unlock/lock/rotation.
+3. Audit destructive action attempts and outcomes.
 
 ## Recommended UX
 
-- Present this as `Publish Sovereign Home on your tailnet`.
-- Preview exactly what will be changed.
-- Preserve advanced/manual mode for existing Serve users.
-- Show final copyable URLs.
+- Keep dry-run and status viewing low-friction.
+- Require unlock for operations that mutate host/app state.
+- Borrow simple settings-PIN ergonomics from Family Plan, adapted for a host control plane.
 
 ## Definition of Done
 
-- A fresh VM can be published through Tailscale Serve without hand-typing Serve commands.
-- Homebase can show whether publishing is healthy or stale.
-- Existing unrelated Serve config is not silently overwritten.
+- Mutating execute endpoints reject unauthenticated requests.
+- Admin can unlock and lock from the UI.
+- Destructive actions leave an audit trail.

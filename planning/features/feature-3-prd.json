@@ -1,98 +1,96 @@
 {
-  "branchName": "feature/tailscale-service-publishing",
-  "projectName": "Tailscale Service Publishing Automation",
-  "description": "Productize the recommended private-access path so Homebase can plan, execute, verify, and repair Tailscale Serve publishing instead of relying on manual operator commands.",
+  "branchName": "feature/admin-auth-action-guardrails",
+  "projectName": "Admin Auth and Destructive-Action Guardrails",
+  "description": "Add a practical Homebase admin authentication boundary and tighten destructive operation authorization before Homebase expands network publishing, setup orchestration, and update/rollback capabilities.",
   "timing": {
     "draftedOn": "2026-04-18",
-    "plannedEarliestExecution": "After app operations UX or when manual Tailscale setup becomes the next highest-friction blocker",
-    "gatingCondition": "Requires careful merge/ownership policy for existing Tailscale Serve config. Authentication via `tailscale up` may remain manual."
+    "plannedEarliestExecution": "After Feature-2, before Tailscale publishing automation",
+    "gatingCondition": "Requires choosing PIN/passphrase/session model and migration path for existing Homebase installs."
   },
   "principles": [
-    "Sovereign Home should feel like a named service, not a host with ports",
-    "Never silently overwrite unrelated Tailscale Serve config",
-    "Preview exact commands/config before executing",
-    "Verify both local nginx upstream and Tailscale Serve result",
-    "Keep public internet exposure out of the default path"
+    "Tailnet access is necessary but not sufficient for destructive host operations",
+    "Use a simple admin model before full user accounts",
+    "Server-enforced auth, not cosmetic UI locking",
+    "Do not expose secrets after save",
+    "Audit destructive actions"
   ],
   "techStack": {
-    "language": "Node.js + shell command planner",
-    "runtime": "tailscale CLI, nginx local HTTPS upstream, systemd job runner",
-    "storage": "SQLite jobs plus optional publishing state/config record",
-    "testing": "Planner unit tests + manual VM tailnet verification"
+    "language": "Node.js + vanilla JS",
+    "runtime": "HTTP-only signed session cookie, SQLite config/auth storage",
+    "storage": "SQLite admin credential/session/audit tables or config records",
+    "testing": "Endpoint auth tests plus manual browser lock/unlock validation"
   },
   "userStories": [
     {
-      "id": "TS-001",
-      "title": "Detect Tailscale identity and publishing readiness",
+      "id": "ADM-001",
+      "title": "Require admin unlock for destructive operations",
       "acceptanceCriteria": [
-        "Settings/setup page shows Tailscale installed/daemon/authenticated status",
-        "Homebase identifies current node name and tailnet/MagicDNS hostname when available",
-        "Current `tailscale serve get-config --all` is visible or summarized",
-        "UI distinguishes not installed, not authenticated, authenticated but unpublished, and published states"
+        "Bootstrap execute, install execute, backup real, restore real, update, rollback, and service publishing require unlocked admin session",
+        "Dry-runs remain available without full unlock or have a lighter confirmation policy",
+        "Unauthorized API calls return clear 401/403 responses"
       ],
       "priority": 1,
-      "estimatedLines": "+220/-10",
-      "testStrategy": "Unit tests around parser/status mapping plus VM check with authenticated and unauthenticated states",
+      "estimatedLines": "+260/-40",
+      "testStrategy": "Endpoint tests for protected actions and manual browser verification",
       "passes": false
     },
     {
-      "id": "TS-002",
-      "title": "Plan and execute prescribed Serve topology",
+      "id": "ADM-002",
+      "title": "Admin setup, unlock, lock, and rotation",
       "acceptanceCriteria": [
-        "Planner previews Homebase lane: tcp:3080 -> http://127.0.0.1:3080",
-        "Planner previews app lane: tcp:443 -> https+insecure://localhost:443",
-        "Execution is guarded by EXECUTE and records a normal job",
-        "Existing non-Homebase Serve config is not silently destroyed"
+        "First-run admin setup is available from UI",
+        "Admin credential is hashed, never plaintext",
+        "Unlock session is HTTP-only and time-bounded",
+        "Admin can rotate credential and manually lock"
       ],
       "priority": 2,
-      "estimatedLines": "+300/-20",
-      "testStrategy": "Planner tests for generated commands and manual VM execution against tailnet",
+      "estimatedLines": "+320/-20",
+      "testStrategy": "Manual browser session tests and endpoint tests",
       "passes": false
     },
     {
-      "id": "TS-003",
-      "title": "Verify and repair service publishing",
+      "id": "ADM-003",
+      "title": "Audit destructive actions",
       "acceptanceCriteria": [
-        "Verification checks local nginx 443 listener before publishing",
-        "Verification checks Serve config contains expected tcp:3080 and tcp:443 endpoints",
-        "Hostname/domain setting changes surface a repair prompt if publishing is stale",
-        "UI provides the final copyable Homebase and app base URLs"
+        "Destructive action attempts record actor/session, timestamp, action, target, outcome, and job id where applicable",
+        "Secrets are never logged",
+        "Settings or job detail can expose audit context without clutter"
       ],
       "priority": 3,
-      "estimatedLines": "+260/-20",
-      "testStrategy": "Manual VM verification plus fixture tests for stale/missing Serve config parsing",
+      "estimatedLines": "+220/-20",
+      "testStrategy": "Unit tests for audit writes and manual inspection after actions",
       "passes": false
     }
   ],
   "riskAssessment": {
     "high": [
-      "Incorrect Serve config changes could disrupt a user's existing tailnet services"
+      "Adding auth can break recovery flows if not carefully staged"
     ],
     "medium": [
-      "Tailscale CLI output/config shape may vary by version",
-      "Authentication still requires an operator-owned action unless OAuth/device flow is designed"
+      "Too much friction could slow founder testing",
+      "Session storage needs to be robust across service restarts"
     ],
     "low": [
-      "The target topology has already been manually validated in VM testing"
+      "Pattern can borrow from Family Plan settings PIN work"
     ]
   },
   "preFlightChecklist": [
-    "Capture real `tailscale status --json` and `tailscale serve get-config --all` examples",
-    "Choose policy for existing Serve config: merge managed endpoints vs require explicit replace",
-    "Define whether Homebase stores a managed-service marker or derives state entirely from Serve config",
-    "Confirm UI placement: Settings vs Setup Wizard vs Dashboard card"
+    "Choose PIN vs passphrase language for Homebase",
+    "Decide whether first-run setup is env-seeded or browser-created",
+    "Define protected endpoint list",
+    "Define emergency recovery path if admin credential is lost"
   ],
   "metrics": {
-    "estimatedTotalLines": "+780/-50",
+    "estimatedTotalLines": "+800/-100",
     "storiesCount": 3,
     "filesLikelyModified": [
-      "src/services/tailscale-publisher.js",
+      "src/admin-auth.js",
       "src/app.js",
-      "src/services/job-runner.js",
+      "src/state/sqlite-driver.js",
       "public/settings.js",
       "public/setup.js",
-      "public/dashboard.js",
-      "test/tailscale-publisher.test.js",
+      "test/admin-auth.test.js",
+      "test/server.test.js",
       "planning/current-feature.json",
       "planning/progress.txt"
     ]
