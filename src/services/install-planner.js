@@ -94,14 +94,17 @@ function renderTimerUnit({ description, onCalendar, serviceName }) {
 
 function renderNginxSnippet({ mountPath, port, appId, extraProxyHeaders = [] }) {
   const basePath = trimTrailingSlash(mountPath === '/' ? '' : mountPath);
-  const lines = [
-    `# ${appId}`,
+  const lines = [`# ${appId}`];
+  if (basePath) {
+    lines.push(`location = ${basePath} {`, `    return 301 ${mountPath};`, '}');
+  }
+  lines.push(
     `location ${mountPath} {`,
-    `    proxy_pass http://127.0.0.1:${port}/;`,
+    `    proxy_pass http://127.0.0.1:${port};`,
     '    proxy_set_header Host $host;',
     '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
     '    proxy_set_header X-Forwarded-Proto $scheme;',
-  ];
+  );
   if (basePath) lines.push(`    proxy_set_header X-Forwarded-Prefix ${basePath};`);
   for (const header of extraProxyHeaders) lines.push(`    ${header}`);
   lines.push('}', '');
