@@ -392,7 +392,8 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     makeStep('app-bootstrap', 'Install dependencies and run app bootstrap', buildAppBootstrapCommands(app, ctx)),
     makeStep('enable-services', 'Enable and start services', [
       'sudo systemctl daemon-reload',
-      `sudo systemctl enable --now ${app.service.name}`,
+      `sudo systemctl enable ${app.service.name}`,
+      `sudo systemctl restart ${app.service.name}`,
     ]),
     makeStep('health-check', 'Validate nginx and application health', [
       'sudo nginx -t',
@@ -406,14 +407,16 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   if (Array.isArray(app.sidecars)) {
     for (const sidecar of app.sidecars) {
       executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${sidecar.name}.service`, files[`${sidecar.name}.service`]));
-      executionSteps[5].run.push(`sudo systemctl enable --now ${sidecar.name}`);
+      executionSteps[5].run.push(`sudo systemctl enable ${sidecar.name}`);
+      executionSteps[5].run.push(`sudo systemctl restart ${sidecar.name}`);
     }
   }
   if (Array.isArray(app.timers)) {
     for (const timer of app.timers) {
       executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.serviceName}.service`, files[`${timer.serviceName}.service`]));
       executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.timerName}`, files[timer.timerName]));
-      executionSteps[5].run.push(`sudo systemctl enable --now ${timer.timerName}`);
+      executionSteps[5].run.push(`sudo systemctl enable ${timer.timerName}`);
+      executionSteps[5].run.push(`sudo systemctl restart ${timer.timerName}`);
     }
   }
 
