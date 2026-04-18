@@ -182,6 +182,8 @@ PY`,
       [
         'sudo systemctl enable --now postgresql',
         'sudo systemctl enable --now nginx',
+        'sudo nginx -t',
+        'sudo systemctl reload-or-restart nginx',
       ],
       ['systemctl is-enabled postgresql >/dev/null 2>&1', 'systemctl is-enabled nginx >/dev/null 2>&1'],
       ['systemctl is-active postgresql', 'systemctl is-active nginx']

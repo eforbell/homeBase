@@ -21,6 +21,8 @@ test('bootstrap plan includes Debian host setup essentials', () => {
   assert.match(plan.script, /listen \[::\]:443 ssl default_server;/);
   assert.match(plan.script, /include snippets\/snakeoil\.conf;/);
   assert.match(plan.script, /ssl-cert/);
+  assert.match(plan.script, /sudo nginx -t/);
+  assert.match(plan.script, /sudo systemctl reload-or-restart nginx/);
   assert.match(plan.script, /ufw app info OpenSSH/);
   assert.match(plan.script, /ufw allow 22\/tcp/);
   assert.match(plan.script, /tailscaled/);
