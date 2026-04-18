@@ -176,12 +176,12 @@ const catalog = [
       preferredPort: 3000,
       upstreamBind: '127.0.0.1',
       health: {
-        type: 'synthetic-http',
-        livenessPath: '/api/week',
-        readinessPath: '/api/tonight',
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/ready',
       },
       notes: [
-        'No dedicated health endpoint yet; probe week/tonight routes.',
+        'First-run household setup is handled in the browser when family_members is empty.',
       ],
     },
     database: {
@@ -190,7 +190,17 @@ const catalog = [
       databaseName: 'family_dinner',
       databaseUser: 'family_dinner',
       migrationCommand: 'npm run db:migrate',
-      seedPolicy: 'manual-only',
+      seedPolicy: 'app-onboarding',
+    },
+    onboarding: {
+      mode: 'browser',
+      setupPath: '/setup',
+      statusPath: '/api/bootstrap',
+      readyWhen: 'household_initialized',
+      notes: [
+        'No production db/seed.sql is required; app bootstrap creates the first household from the browser.',
+        'Starter order-in/default content can be installed during setup.',
+      ],
     },
     service: {
       name: 'family-dinner',
