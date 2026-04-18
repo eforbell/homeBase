@@ -146,10 +146,14 @@ function buildAppBootstrapCommands(app, ctx) {
       command: `cd ${ctx.installRoot} && ${app.runtime.installCommand}`,
     }));
     if (app.database.bootstrap === 'schema-file' && app.database.schemaCommand) {
-      commands.push(renderRunAsServiceUserCommand({
-        serviceUser: ctx.serviceUser,
-        command: `cd ${ctx.installRoot} && ${app.database.schemaCommand}`,
-      }));
+      const resolvedCmd = app.database.schemaCommand
+        .replaceAll('{{dbUser}}', ctx.dbUser)
+        .replaceAll('{{dbName}}', ctx.dbName);
+      const isPostgres = app.database.engine && app.database.engine.includes('postgres');
+      commands.push(isPostgres
+        ? `sudo -u postgres bash -lc ${shellSingleQuote(`cd ${ctx.installRoot} && ${resolvedCmd}`)}`
+        : renderRunAsServiceUserCommand({ serviceUser: ctx.serviceUser, command: `cd ${ctx.installRoot} && ${resolvedCmd}` })
+      );
     }
     if (app.database.migrationCommand) {
       commands.push(renderRunAsServiceUserCommand({
@@ -173,12 +177,14 @@ function buildAppBootstrapCommands(app, ctx) {
     command: `cd ${ctx.installRoot} && ${app.runtime.installCommand}`,
   }));
   if (app.database.bootstrap === 'schema-file' && app.database.schemaCommand) {
-    commands.push(renderRunAsServiceUserCommand({
-      serviceUser: ctx.serviceUser,
-      command: `cd ${ctx.installRoot} && ${app.database.schemaCommand
-        .replaceAll('{{dbUser}}', ctx.dbUser)
-        .replaceAll('{{dbName}}', ctx.dbName)}`,
-    }));
+    const resolvedCmd = app.database.schemaCommand
+      .replaceAll('{{dbUser}}', ctx.dbUser)
+      .replaceAll('{{dbName}}', ctx.dbName);
+    const isPostgres = app.database.engine && app.database.engine.includes('postgres');
+    commands.push(isPostgres
+      ? `sudo -u postgres bash -lc ${shellSingleQuote(`cd ${ctx.installRoot} && ${resolvedCmd}`)}`
+      : renderRunAsServiceUserCommand({ serviceUser: ctx.serviceUser, command: `cd ${ctx.installRoot} && ${resolvedCmd}` })
+    );
   }
   if (app.database.migrationCommand) {
     commands.push(renderRunAsServiceUserCommand({

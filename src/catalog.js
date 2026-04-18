@@ -331,7 +331,7 @@ const catalog = [
       bootstrap: 'schema-file',
       databaseName: 'bitcoin_accounting',
       databaseUser: 'bitcoin_accountant',
-      schemaCommand: 'psql -h localhost -U {{dbUser}} -d {{dbName}} -f src/sql/tables.sql',
+      schemaCommand: 'psql -d {{dbName}} -f src/sql/tables.sql',
       migrationCommand: '.venv/bin/bitcoin-accounting-web-init',
       seedPolicy: 'never',
     },
