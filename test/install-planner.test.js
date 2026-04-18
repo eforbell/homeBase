@@ -39,6 +39,21 @@ test('bitcoin accounting plan renders postgres-oriented env and readiness probes
   assert.match(plan.files['bitcoin-accounting.nginx.conf'], /X-Forwarded-Prefix \/bitcoin-accounting/);
 });
 
+
+test('family pulse nginx route strips mount prefix for vanilla Express app', () => {
+  const plan = buildInstallPlan({
+    appId: 'family-pulse',
+    state: { installations: {} },
+    options: {},
+    config: { port: 3080, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', defaultHostname: 'homebase', defaultDomain: 'tailnet' },
+  });
+
+  assert.match(plan.files['family-pulse.nginx.conf'], /location \/pulse\//);
+  assert.match(plan.files['family-pulse.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:\d+\//);
+  assert.match(plan.files['family-pulse.nginx.conf'], /return 301 \/pulse\//);
+  assert.match(plan.files['family-pulse.nginx.conf'], /X-Forwarded-Prefix \/pulse/);
+});
+
 test('install planner uses HTTPS repository URLs by default', () => {
   const plan = buildInstallPlan({
     appId: 'family-help',
