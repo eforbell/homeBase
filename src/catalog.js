@@ -27,6 +27,7 @@ const catalog = [
       notes: [
         'Plaid production OAuth requires a public HTTPS callback path.',
         'Current repo uses a second MCP sidecar service on port 3004.',
+        'First-run household setup is handled in the browser when family_members is empty.',
       ],
     },
     database: {
@@ -35,7 +36,17 @@ const catalog = [
       databaseName: 'familypulse',
       databaseUser: 'familypulse',
       migrationCommand: 'node db/migrate.js',
-      seedPolicy: 'manual-only',
+      seedPolicy: 'app-onboarding',
+    },
+    onboarding: {
+      mode: 'browser',
+      setupPath: '/setup',
+      statusPath: '/api/bootstrap',
+      readyWhen: 'household_initialized',
+      notes: [
+        'No production db/seed.sql required; household and categories are created from the browser.',
+        'Plaid credentials and passphrases are configured in Settings after first login.',
+      ],
     },
     service: {
       name: 'family-pulse',
