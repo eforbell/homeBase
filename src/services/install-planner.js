@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { getAppById } = require('../catalog');
 
 function trimTrailingSlash(value) {
@@ -213,6 +214,9 @@ function resolveEnvTemplate(template, ctx) {
     next = next.replaceAll('{{dbPassword}}', ctx.dbPassword);
     next = next.replaceAll('{{dbName}}', ctx.dbName);
     next = next.replaceAll('{{mountBasePath}}', trimTrailingSlash(ctx.mountPath));
+    next = next.replaceAll('{{secret1}}', ctx.secret1);
+    next = next.replaceAll('{{secret2}}', ctx.secret2);
+    next = next.replaceAll('{{secret3}}', ctx.secret3);
     if (ctx.sidecarPorts) {
       for (const [sidecarName, sidecarPort] of Object.entries(ctx.sidecarPorts)) {
         next = next.replaceAll(`{{sidecar.${sidecarName}.port}}`, String(sidecarPort));
@@ -274,6 +278,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const dbName = options.dbName || app.database.databaseName || app.id.replace(/-/g, '_');
   const dbUser = options.dbUser || app.database.databaseUser || dbName;
   const dbPassword = options.dbPassword || `change-me-${dbUser}`;
+  const secret1 = crypto.randomBytes(32).toString('hex');
+  const secret2 = crypto.randomBytes(32).toString('hex');
+  const secret3 = crypto.randomBytes(32).toString('hex');
   const hostname = options.hostname || config.defaultHostname || 'homebase';
   const domain = options.domain || config.defaultDomain || 'tailnet';
   const publicBase = options.publicBaseUrl || `https://${hostname}.${domain}`;
@@ -304,6 +311,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     publicUrl,
     serviceUser,
     sidecarPorts,
+    secret1,
+    secret2,
+    secret3,
   };
   const repositoryUrl = resolveRepositoryUrl(app, config);
   const gitRunPrefix = renderGitRunPrefix({ serviceUser, app, config });
