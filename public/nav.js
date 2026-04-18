@@ -50,6 +50,26 @@
     sessionStorage.setItem(cacheKey, JSON.stringify({ status, expiresAt: now + (30 * 1000) }));
   }
 
+  const LOADING_MSGS = [
+    'Asking the server nicely…',
+    'Waking up the household…',
+    'Rattling the pipes…',
+    'Consulting the job queue…',
+    'Herding the bits…',
+    'Checking in with your private cloud…',
+    'Dusting off the dashboard…',
+    'Querying the household mainframe…',
+    'Pulling state from the VM…',
+    'Sovereign home is thinking…',
+    'Fetching from the tailnet…',
+    'One moment, checking the vitals…',
+  ];
+
+  const loadingEl = document.getElementById('hb-loading-msg');
+  if (loadingEl) {
+    loadingEl.textContent = LOADING_MSGS[Math.floor(Math.random() * LOADING_MSGS.length)];
+  }
+
   const body = document.body;
   body.classList.add('app-has-nav');
   const activePage = body.getAttribute('data-nav-page') || '';
