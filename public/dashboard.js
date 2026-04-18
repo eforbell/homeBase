@@ -124,6 +124,10 @@
             <p data-preflight-summary style="margin:0;"><span class="hb-muted">Checking host readiness…</span></p>
             <div style="margin-top:0.75rem;">${renderBootstrapStatus(bootstrapStatus)}</div>
           </section>
+          <section class="hb-card">
+            <h2 style="margin-top:0;">Backup posture</h2>
+            <p class="hb-warn" style="margin:0;">Backups are currently local-only at ${window.HB.escapeHtml(config.baseBackupDir || '/var/lib/sovereign-home/backups')}. This helps recover app mistakes, but not VM or disk loss.</p>
+          </section>
           <section>
             <div class="hb-row" style="justify-content:space-between;">
               <h2 style="margin:0;">Installed apps</h2>

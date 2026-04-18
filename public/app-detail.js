@@ -12,6 +12,20 @@
     `;
   }
 
+  function renderBackupSummary(backups, config) {
+    const latest = window.HB.latestBackup(backups);
+    const backupLine = latest
+      ? `Last backup: ${window.HB.escapeHtml(window.HB.formatTimestamp(latest.generatedAt))}${latest.status ? ` · ${window.HB.escapeHtml(latest.status)}` : ''}`
+      : '<span class="hb-warn">No backups recorded yet. Take a first backup before relying on this install.</span>';
+    return `<p class="hb-muted" style="margin:0.65rem 0 0;">${backupLine}<br>${window.HB.localOnlyBackupNote(config)}</p>`;
+  }
+
+  function scrollToCurrentHash() {
+    if (!window.location.hash) return;
+    const target = document.getElementById(window.location.hash.slice(1));
+    if (target) target.scrollIntoView({ block: 'start' });
+  }
+
   function buildBackupOptions(backups) {
     if (!backups.length) {
       return '<option value="">No backups available</option>';
@@ -19,6 +33,36 @@
     return backups.map((item) => `
       <option value="${window.HB.escapeHtml(item.archiveDir)}">${window.HB.escapeHtml(item.name || item.archiveDir)} — ${window.HB.escapeHtml(window.HB.formatTimestamp(item.generatedAt))}</option>
     `).join('');
+  }
+
+
+  function isTerminalJobStatus(status) {
+    return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
+  }
+
+  async function waitForJobCompletion(jobId, resultNode, { refreshOnComplete = true } = {}) {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        const job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
+        if (resultNode) {
+          resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> ${window.HB.escapeHtml(job.status)}.`;
+        }
+        if (isTerminalJobStatus(job.status)) {
+          if (refreshOnComplete) {
+            setTimeout(() => load(), 650);
+          }
+          return job;
+        }
+      } catch (error) {
+        if (resultNode) resultNode.textContent = error.message;
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    if (resultNode) {
+      resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> is still running. Open the job for details.`;
+    }
+    return null;
   }
 
   async function handleBackup(form) {
@@ -39,7 +83,9 @@
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/backup/execute`, payload);
       const mode = dryRun ? 'Backup dry-run' : 'Backup';
-      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started.`;
+      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started. This page will refresh when it finishes.`;
+      // Intentional fire-and-forget: keep the form responsive while the page repaints on terminal job state.
+      void waitForJobCompletion(response.jobId, resultNode);
     } catch (error) {
       resultNode.textContent = error.message;
     } finally {
@@ -91,7 +137,9 @@
     resultNode.textContent = 'Submitting...';
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/restore/execute`, payload);
-      resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>.`;
+      resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>. This page will refresh when it finishes.`;
+      // Intentional fire-and-forget: keep the form responsive while the page repaints on terminal job state.
+      void waitForJobCompletion(response.jobId, resultNode);
     } catch (error) {
       resultNode.textContent = error.message;
     }
@@ -125,11 +173,12 @@
       return;
     }
     try {
-      const [statePayload, catalogPayload, backupPayload, actionsPayload] = await Promise.all([
+      const [statePayload, catalogPayload, backupPayload, actionsPayload, config] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson(`/api/apps/${appId}/backups`),
         window.HB.getJson(`/api/apps/${appId}/actions`),
+        window.HB.getJson('/api/homebase/config'),
       ]);
       const catalogApps = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const app = catalogApps.find((item) => item.id === appId);
@@ -154,11 +203,17 @@
             <p class="hb-muted" style="margin:0.55rem 0 0;">
               App ID: ${window.HB.escapeHtml(app.id)} · Port: ${window.HB.escapeHtml(port)} · Route: ${window.HB.escapeHtml(mountPath)}
             </p>
-            ${install?.externalUrl ? `<p style="margin:0.65rem 0 0;"><a href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open app ↗</a></p>` : ''}
+            <div class="hb-actions" style="margin-top:0.75rem;">
+              ${install?.externalUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open app ↗</a>` : ''}
+              <a class="hb-btn" href="#backup">Backup</a>
+              <a class="hb-btn" href="#restore">Restore</a>
+              <a class="hb-btn" href="#deploy">Deploy / Reinstall</a>
+            </div>
+            ${renderBackupSummary(backups, config)}
           </section>
 
           <section class="hb-grid hb-grid-2">
-            <article class="hb-card">
+            <article id="backup" class="hb-card">
               <h2 style="margin-top:0;">Backup</h2>
               <form class="hb-form-grid" data-action="backup">
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
@@ -173,7 +228,7 @@
               </p>
             </article>
 
-            <article class="hb-card">
+            <article id="deploy" class="hb-card">
               <h2 style="margin-top:0;">Deploy / Reinstall</h2>
               <form class="hb-form-grid" data-action="deploy">
                 <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
@@ -187,7 +242,7 @@
             </article>
           </section>
 
-          <section class="hb-card">
+          <section id="restore" class="hb-card">
             <h2 style="margin-top:0;">Restore from backup</h2>
             <form class="hb-form-grid" data-action="restore">
               <label class="hb-label">
@@ -227,6 +282,7 @@
         </div>
       `;
       wireActions();
+      scrollToCurrentHash();
     } catch (error) {
       renderError(error.message);
     }

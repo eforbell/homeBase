@@ -33,7 +33,7 @@
       "priority": 1,
       "estimatedLines": "+160/-40",
       "testStrategy": "UI source assertions plus manual browser check on /apps with two installed apps",
-      "passes": false
+      "passes": true
     },
     {
       "id": "OPS-002",
@@ -47,7 +47,7 @@
       "priority": 2,
       "estimatedLines": "+180/-50",
       "testStrategy": "UI source assertions, endpoint dry-run job tests, manual browser flow for backup/restore dry-run and real backup",
-      "passes": false
+      "passes": true
     },
     {
       "id": "OPS-003",
@@ -61,7 +61,7 @@
       "priority": 3,
       "estimatedLines": "+220/-20",
       "testStrategy": "SQLite backup record tests plus manual VM browser verification after taking a real backup",
-      "passes": false
+      "passes": true
     },
     {
       "id": "OPS-004",
@@ -75,7 +75,7 @@
       "priority": 4,
       "estimatedLines": "+180/-30",
       "testStrategy": "UI source assertions plus manual rerun from failed-job fixture/VM failure",
-      "passes": false
+      "passes": true
     },
     {
       "id": "OPS-005",
@@ -89,7 +89,7 @@
       "priority": 5,
       "estimatedLines": "+90/-10",
       "testStrategy": "UI source assertions and manual browser verification on a VM with default local backup path",
-      "passes": false
+      "passes": true
     }
   ],
   "riskAssessment": {
