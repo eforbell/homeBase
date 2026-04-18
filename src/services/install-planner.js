@@ -137,6 +137,7 @@ function buildDatabaseCommands(app, ctx) {
 
   return [
     `sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname = '${ctx.dbUser}'" | grep -q 1 || sudo -u postgres psql -c \"CREATE ROLE ${ctx.dbUser} LOGIN PASSWORD '${ctx.dbPassword}';\"`,
+    `sudo -u postgres psql -c "ALTER ROLE ${ctx.dbUser} PASSWORD '${ctx.dbPassword}';"`,
     `sudo -u postgres psql -lqt | cut -d '|' -f 1 | grep -qw ${ctx.dbName} || sudo -u postgres createdb --owner=${ctx.dbUser} ${ctx.dbName}`,
   ];
 }
