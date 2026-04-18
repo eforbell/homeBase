@@ -1,0 +1,41 @@
+{
+  "currentFeature": "feature-1",
+  "featureName": "App Operations UX Parity",
+  "prdPath": "planning/features/feature-1-prd.json",
+  "summaryPath": "planning/features/feature-1-summary.md",
+  "branch": "feature/app-operations-ux-parity",
+  "status": "queued",
+  "stories": [
+    {
+      "id": "OPS-001",
+      "title": "Installed app cards expose the complete operations path",
+      "status": "queued"
+    },
+    {
+      "id": "OPS-002",
+      "title": "App detail becomes the canonical operations center",
+      "status": "queued"
+    },
+    {
+      "id": "OPS-003",
+      "title": "Backup history and first-backup prompts are visible where decisions happen",
+      "status": "queued"
+    }
+  ],
+  "completedFeatures": [],
+  "futureEnhancements": [
+    "Feature #1: App Operations UX Parity",
+    "Feature #2: App Health and Readiness Visibility",
+    "Feature #3: Tailscale Service Publishing Automation",
+    "Feature #4: Guided Setup and First Backup Wizard",
+    "Feature #5: Managed App Update and Rollback",
+    "Feature #6: Admin Auth and Destructive-Action Guardrails",
+    "Feature #7: Suite Onboarding Baseline Convergence"
+  ],
+  "branchAndPrPolicy": {
+    "baseBranch": "main",
+    "branchPattern": "feature/<short-feature-name>",
+    "reviewExpectation": "Each feature lands through a PR with tests, VM/browser evidence where relevant, and founder plus agent/code-review notes before merge.",
+    "mergeExpectation": "Prefer squash or merge commits with Lore-style commit trailers that record constraints, rejected alternatives, confidence, tested, and not-tested evidence."
+  }
+}

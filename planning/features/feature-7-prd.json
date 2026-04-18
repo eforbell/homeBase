@@ -1,0 +1,97 @@
+{
+  "branchName": "feature/suite-onboarding-baselines",
+  "projectName": "Suite Onboarding Baseline Convergence",
+  "description": "Reduce Homebase special cases by converging managed apps toward standard health, readiness, metadata, manifest, and first-run onboarding contracts.",
+  "timing": {
+    "draftedOn": "2026-04-18",
+    "plannedEarliestExecution": "Parallelizable after core Homebase operations are stable",
+    "gatingCondition": "Requires app-by-app branches and acceptance tests in each managed repo."
+  },
+  "principles": [
+    "Homebase should manage contracts, not infer repo quirks forever",
+    "Fresh install should not depend on production seed.sql",
+    "Every app should tell Homebase whether it is alive, ready, and needs setup",
+    "Converge one app at a time",
+    "Keep demo data separate from required bootstrap data"
+  ],
+  "techStack": {
+    "language": "Mostly Node/Express plus one Python/FastAPI app",
+    "runtime": "Managed app endpoints + Homebase catalog/manifest metadata",
+    "storage": "Each app's existing database plus Homebase catalog/manifest records",
+    "testing": "Per-app endpoint tests and Homebase integration checks"
+  },
+  "userStories": [
+    {
+      "id": "BASE-001",
+      "title": "Standard health/readiness/meta endpoints across apps",
+      "acceptanceCriteria": [
+        "Each managed app exposes /api/health and /api/ready or manifest-declared equivalents",
+        "Each app exposes metadata: name, version/ref where practical, bootstrap capability",
+        "Homebase catalog records endpoint support accurately"
+      ],
+      "priority": 1,
+      "estimatedLines": "+varies",
+      "testStrategy": "Per-app endpoint tests plus Homebase probe tests",
+      "passes": false
+    },
+    {
+      "id": "BASE-002",
+      "title": "First-run onboarding replaces required seed data",
+      "acceptanceCriteria": [
+        "Fresh migration-only install can start and serve setup/onboarding UI",
+        "App reports needs_household/needs_auth/ready state where applicable",
+        "Demo/dev seed data is optional and not required for production first use"
+      ],
+      "priority": 2,
+      "estimatedLines": "+varies",
+      "testStrategy": "Schema-only install tests per app",
+      "passes": false
+    },
+    {
+      "id": "BASE-003",
+      "title": "App manifests become the Homebase abstraction boundary",
+      "acceptanceCriteria": [
+        "Each repo carries or exports a managed-app manifest",
+        "Homebase can validate manifests and reduce hard-coded catalog drift",
+        "Backup paths, service names, health endpoints, onboarding endpoints, and timers are declared"
+      ],
+      "priority": 3,
+      "estimatedLines": "+varies",
+      "testStrategy": "Manifest schema tests and app-by-app Homebase install smoke tests",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [
+      "Cross-repo scope can sprawl and interrupt Homebase core hardening"
+    ],
+    "medium": [
+      "Apps have different data/bootstrap assumptions",
+      "Changing first-run behavior can affect existing production deployments"
+    ],
+    "low": [
+      "Can proceed incrementally by app order"
+    ]
+  },
+  "preFlightChecklist": [
+    "Use the existing first-run onboarding suite plan as source context",
+    "Pick app order: Family Help, Family Dinner, Family Plan, Bitcoin Accounting, Family Pulse",
+    "Define manifest ownership and versioning approach",
+    "Define backward compatibility expectations for existing installs"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "multi-repo",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "familyHelp/*",
+      "familyDinner/*",
+      "familyPlan/*",
+      "bitcoinAccounting/*",
+      "familyPulse/*",
+      "homeBase/src/catalog.js",
+      "homeBase/manifests/*",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}

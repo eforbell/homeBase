@@ -1,0 +1,99 @@
+{
+  "branchName": "feature/app-health-readiness-visibility",
+  "projectName": "App Health and Readiness Visibility",
+  "description": "Replace the single deployment-state badge with truthful runtime and readiness signals so Homebase can distinguish installed, service-running, HTTP-healthy, needs-onboarding, and unhealthy app states.",
+  "timing": {
+    "draftedOn": "2026-04-18",
+    "plannedEarliestExecution": "After Feature-1",
+    "gatingCondition": "Requires agreement on the first health payload shape and which probes are safe to run synchronously vs cached."
+  },
+  "principles": [
+    "Installed is not the same as healthy",
+    "Health checks should explain next actions, not just color badges",
+    "Prefer cached probes to slow page loads",
+    "Surface app onboarding readiness separately from process liveness",
+    "Normalize app health without blocking on full suite convergence"
+  ],
+  "techStack": {
+    "language": "Node.js + vanilla JS",
+    "runtime": "systemctl, curl/fetch HTTP probes, SQLite health snapshots",
+    "storage": "SQLite health snapshot table or cached in-process probe results for first pass",
+    "testing": "Unit tests for status mapping + manual VM service failure/restore checks"
+  },
+  "userStories": [
+    {
+      "id": "HLT-001",
+      "title": "Installed app cards show live service and HTTP state",
+      "acceptanceCriteria": [
+        "Cards show deployment status and runtime health separately",
+        "Homebase probes systemd service state for installed apps",
+        "Homebase probes app readiness/liveness URL from catalog metadata",
+        "Failures show concise recovery guidance and link to app detail"
+      ],
+      "priority": 1,
+      "estimatedLines": "+260/-20",
+      "testStrategy": "Mocked probe tests plus manual VM stop/start service validation",
+      "passes": false
+    },
+    {
+      "id": "HLT-002",
+      "title": "Dashboard summarizes warnings and unhealthy apps",
+      "acceptanceCriteria": [
+        "Dashboard lists app health warnings before recent jobs when action is needed",
+        "Health probes are cached or asynchronous so dashboard render stays fast",
+        "Critical host checks and app checks are visually distinct"
+      ],
+      "priority": 2,
+      "estimatedLines": "+180/-20",
+      "testStrategy": "UI tests/source assertions plus manual browser verification with one stopped app",
+      "passes": false
+    },
+    {
+      "id": "HLT-003",
+      "title": "Onboarding/readiness state is not conflated with install state",
+      "acceptanceCriteria": [
+        "Apps with onboarding contracts can show needs setup vs ready",
+        "Open action remains available but recommended next action can be Setup when appropriate",
+        "Catalog metadata defines the bootstrap/readiness endpoint used where available"
+      ],
+      "priority": 3,
+      "estimatedLines": "+220/-30",
+      "testStrategy": "Catalog fixture tests and manual validation against Family Help/Family Plan onboarding endpoints",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [
+      "Synchronous host probes can make page loads slow or flaky"
+    ],
+    "medium": [
+      "Suite apps have inconsistent health/readiness endpoints",
+      "Systemd service names and app route health can diverge after manual repairs"
+    ],
+    "low": [
+      "Initial version can be read-only visibility with no destructive actions"
+    ]
+  },
+  "preFlightChecklist": [
+    "Define health status vocabulary: installed, service_running, healthy, needs_onboarding, unhealthy, unknown",
+    "Choose probe cache duration",
+    "Decide whether health snapshots get a SQLite table in this feature or a follow-up",
+    "List which catalog apps already have useful health/readiness endpoints"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+660/-70",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "src/services/health-monitor.js",
+      "src/app.js",
+      "src/catalog.js",
+      "src/state/sqlite-driver.js",
+      "public/apps.js",
+      "public/app-detail.js",
+      "public/dashboard.js",
+      "test/health-monitor.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}

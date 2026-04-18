@@ -1,0 +1,99 @@
+{
+  "branchName": "feature/app-operations-ux-parity",
+  "projectName": "App Operations UX Parity",
+  "description": "Make installed app management match the backend capabilities Homebase already has: clear Open, Details, Backup, Restore, and first-backup paths without forcing the operator to remember hidden app-detail routes or curl endpoints.",
+  "timing": {
+    "draftedOn": "2026-04-18",
+    "plannedEarliestExecution": "2026-04-18",
+    "gatingCondition": "Can proceed immediately. Backend backup/restore execution endpoints already exist; scope is mostly UI and small API quality improvements."
+  },
+  "principles": [
+    "Installed app cards should summarize and route, not become a crowded operator console",
+    "App Detail is the canonical operations center",
+    "Backup and restore must be discoverable before founder trust is possible",
+    "Dry-run stays the safe default, with real execution guarded by EXECUTE",
+    "Show recovery actions where the operator naturally looks"
+  ],
+  "techStack": {
+    "language": "Node.js + vanilla browser JavaScript",
+    "runtime": "Homebase static pages over raw http.createServer",
+    "storage": "Existing SQLite installations, jobs, and backup_records tables",
+    "testing": "node --test, UI source assertions, API tests, manual browser verification on VM"
+  },
+  "userStories": [
+    {
+      "id": "OPS-001",
+      "title": "Installed app cards expose the complete operations path",
+      "acceptanceCriteria": [
+        "Installed app cards include explicit Open and Details actions",
+        "Backup action on installed cards is no longer labeled as dry-run-only; it exposes a guarded dry-run/real choice or routes to the detail backup section",
+        "Restore action is discoverable from installed cards and routes to the app detail restore section with backup selection",
+        "Cards continue to avoid clutter on desktop and mobile"
+      ],
+      "priority": 1,
+      "estimatedLines": "+160/-40",
+      "testStrategy": "UI source assertions plus manual browser check on /apps with two installed apps",
+      "passes": false
+    },
+    {
+      "id": "OPS-002",
+      "title": "App detail becomes the canonical operations center",
+      "acceptanceCriteria": [
+        "App detail top section clearly presents Open, Backup, Restore, and Deploy/Reinstall",
+        "Backup and Restore sections have stable anchors (#backup, #restore) for navigation from app cards",
+        "Submitting backup/restore shows a job link immediately",
+        "Backup history refreshes or clearly instructs refresh after a completed backup job"
+      ],
+      "priority": 2,
+      "estimatedLines": "+180/-50",
+      "testStrategy": "UI source assertions, endpoint dry-run job tests, manual browser flow for backup/restore dry-run and real backup",
+      "passes": false
+    },
+    {
+      "id": "OPS-003",
+      "title": "Backup history and first-backup prompts are visible where decisions happen",
+      "acceptanceCriteria": [
+        "Installed app cards show latest backup state: never, last successful timestamp, or last failed/unknown",
+        "Newly installed apps show a first-backup prompt",
+        "App detail backup history uses SQLite records first and disk discovery fallback remains available",
+        "Dashboard can surface at least one backup summary or warning without requiring raw logs"
+      ],
+      "priority": 3,
+      "estimatedLines": "+220/-20",
+      "testStrategy": "SQLite backup record tests plus manual VM browser verification after taking a real backup",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [],
+    "medium": [
+      "Putting too many actions on cards can re-create the old operator-console feel",
+      "Real backup action from a summary card could be too easy to trigger without a clear confirmation pattern"
+    ],
+    "low": [
+      "Most backend operations already exist and are guarded",
+      "This feature is reversible UI work with focused tests"
+    ]
+  },
+  "preFlightChecklist": [
+    "Choose card action pattern: inline Backup panel vs route to #backup",
+    "Choose Restore card behavior: route to #restore unless a single backup can be safely preselected",
+    "Confirm latest-backup data source and whether /api/state should include backup summary or /apps should fetch per-app backups",
+    "Confirm mobile layout for action buttons"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+560/-110",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "public/apps.js",
+      "public/app-detail.js",
+      "public/dashboard.js",
+      "public/style.css",
+      "src/app.js",
+      "test/homebase-ui-actions.test.js",
+      "test/server.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}
