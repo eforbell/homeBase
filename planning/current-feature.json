@@ -9,17 +9,17 @@
     {
       "id": "OPS-001",
       "title": "Installed app cards expose the complete operations path",
-      "status": "review"
+      "status": "verified"
     },
     {
       "id": "OPS-002",
       "title": "App detail becomes the canonical operations center",
-      "status": "review"
+      "status": "verified"
     },
     {
       "id": "OPS-003",
       "title": "Backup history and first-backup prompts are visible where decisions happen",
-      "status": "review"
+      "status": "verified"
     },
     {
       "id": "OPS-004",
@@ -29,7 +29,7 @@
     {
       "id": "OPS-005",
       "title": "Backup destination risk is visible before launch",
-      "status": "review"
+      "status": "verified"
     }
   ],
   "featureSequence": [

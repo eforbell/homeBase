@@ -26,6 +26,14 @@ test('app detail exposes operations sections and anchors', () => {
   assert.match(source, /scrollToCurrentHash/);
 });
 
+test('app detail polls backup and restore jobs until the page can repaint', () => {
+  const source = readAppDetail();
+
+  assert.match(source, /waitForJobCompletion/);
+  assert.match(source, /This page will refresh when it finishes/);
+  assert.match(source, /setTimeout\(\(\) => load\(\), 650\)/);
+});
+
 test('app detail surfaces backup summary and local-only risk', () => {
   const source = readAppDetail();
 

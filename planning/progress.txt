@@ -30,3 +30,5 @@
 - Initial implementation target: installed app card Open/Details/Backup/Restore paths, app detail anchors/operations center, backup summaries and local-only warnings, and broader failed-job rerun affordances.
 - Implemented Feature-1 first pass: installed app cards now expose Open/Details/Backup/Restore, app detail has operation anchors and local-only backup posture, dashboard shows backup posture, and failed install/backup/restore/bootstrap jobs can rerun from job detail when supported.
 - Verification: node --check for changed public controllers and npm test passed (52/52). Manual browser/VM verification still pending, so story statuses moved to review rather than verified.
+- VM/browser evidence from Eric: updated Homebase directly to the feature branch from Settings; app cards worked; backups and a successful restore completed. Failed-job rerun remains untested.
+- Added lightweight repaint support: app detail polls started backup/restore jobs and reloads when terminal; apps page refreshes visible installed-card state periodically so backup summaries can update without manual browser refresh.

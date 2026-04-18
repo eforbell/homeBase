@@ -45,6 +45,36 @@
     `).join('');
   }
 
+
+  function isTerminalJobStatus(status) {
+    return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
+  }
+
+  async function waitForJobCompletion(jobId, resultNode, { refreshOnComplete = true } = {}) {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        const job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
+        if (resultNode) {
+          resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> ${window.HB.escapeHtml(job.status)}.`;
+        }
+        if (isTerminalJobStatus(job.status)) {
+          if (refreshOnComplete) {
+            setTimeout(() => load(), 650);
+          }
+          return job;
+        }
+      } catch (error) {
+        if (resultNode) resultNode.textContent = error.message;
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    if (resultNode) {
+      resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> is still running. Open the job for details.`;
+    }
+    return null;
+  }
+
   async function handleBackup(form) {
     const dryRun = form.elements.dryRun.checked;
     const resultNode = form.querySelector('[data-result]');
@@ -63,7 +93,8 @@
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/backup/execute`, payload);
       const mode = dryRun ? 'Backup dry-run' : 'Backup';
-      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started.`;
+      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started. This page will refresh when it finishes.`;
+      waitForJobCompletion(response.jobId, resultNode);
     } catch (error) {
       resultNode.textContent = error.message;
     } finally {
@@ -115,7 +146,8 @@
     resultNode.textContent = 'Submitting...';
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/restore/execute`, payload);
-      resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>.`;
+      resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>. This page will refresh when it finishes.`;
+      waitForJobCompletion(response.jobId, resultNode);
     } catch (error) {
       resultNode.textContent = error.message;
     }

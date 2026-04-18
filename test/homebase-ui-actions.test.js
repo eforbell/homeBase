@@ -35,6 +35,8 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /Last backup:/);
   assert.match(apps, /No backups yet/);
   assert.match(apps, /Local-only backup path/);
+  assert.match(apps, /scheduleRefresh/);
+  assert.match(apps, /visibilitychange/);
 });
 
 test('dashboard surfaces local-only backup posture warning', () => {

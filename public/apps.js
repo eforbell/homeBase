@@ -1,5 +1,7 @@
 (function appsPage() {
   const root = document.getElementById('app');
+  let refreshTimer = null;
+  let eventsWired = false;
 
   function latestBackup(backups) {
     const items = Array.isArray(backups) ? backups : [];
@@ -107,6 +109,8 @@
   }
 
   function wireEvents() {
+    if (eventsWired) return;
+    eventsWired = true;
     root.addEventListener('submit', (event) => {
       const form = event.target.closest('form[data-action="install"]');
       if (!form) return;
@@ -125,6 +129,17 @@
       }
     }));
     return Object.fromEntries(entries);
+  }
+
+  function scheduleRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      if (document.visibilityState === 'visible') {
+        load();
+        return;
+      }
+      scheduleRefresh();
+    }, 15000);
   }
 
   async function load() {
@@ -159,6 +174,7 @@
         </div>
       `;
       wireEvents();
+      scheduleRefresh();
     } catch (error) {
       root.innerHTML = `
         <section class="hb-card">
@@ -166,8 +182,13 @@
           <p class="hb-muted" style="margin-top:0.5rem;">${window.HB.escapeHtml(error.message)}</p>
         </section>
       `;
+      scheduleRefresh();
     }
   }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') load();
+  });
 
   load();
 }());
