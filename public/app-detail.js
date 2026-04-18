@@ -12,6 +12,30 @@
     `;
   }
 
+  function latestBackup(backups) {
+    const items = Array.isArray(backups) ? backups : [];
+    return items.find((item) => item.status === 'completed') || items[0] || null;
+  }
+
+  function localOnlyBackupNote(config) {
+    const backupRoot = config?.baseBackupDir || '/var/lib/sovereign-home/backups';
+    return `Local-only backup path: ${window.HB.escapeHtml(backupRoot)}. This protects app mistakes, not VM/disk loss.`;
+  }
+
+  function renderBackupSummary(backups, config) {
+    const latest = latestBackup(backups);
+    const backupLine = latest
+      ? `Last backup: ${window.HB.escapeHtml(window.HB.formatTimestamp(latest.generatedAt))}${latest.status ? ` · ${window.HB.escapeHtml(latest.status)}` : ''}`
+      : '<span class="hb-warn">No backups recorded yet. Take a first backup before relying on this install.</span>';
+    return `<p class="hb-muted" style="margin:0.65rem 0 0;">${backupLine}<br>${localOnlyBackupNote(config)}</p>`;
+  }
+
+  function scrollToCurrentHash() {
+    if (!window.location.hash) return;
+    const target = document.getElementById(window.location.hash.slice(1));
+    if (target) target.scrollIntoView({ block: 'start' });
+  }
+
   function buildBackupOptions(backups) {
     if (!backups.length) {
       return '<option value="">No backups available</option>';
@@ -125,11 +149,12 @@
       return;
     }
     try {
-      const [statePayload, catalogPayload, backupPayload, actionsPayload] = await Promise.all([
+      const [statePayload, catalogPayload, backupPayload, actionsPayload, config] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson(`/api/apps/${appId}/backups`),
         window.HB.getJson(`/api/apps/${appId}/actions`),
+        window.HB.getJson('/api/homebase/config'),
       ]);
       const catalogApps = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const app = catalogApps.find((item) => item.id === appId);
@@ -154,11 +179,17 @@
             <p class="hb-muted" style="margin:0.55rem 0 0;">
               App ID: ${window.HB.escapeHtml(app.id)} · Port: ${window.HB.escapeHtml(port)} · Route: ${window.HB.escapeHtml(mountPath)}
             </p>
-            ${install?.externalUrl ? `<p style="margin:0.65rem 0 0;"><a href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open app ↗</a></p>` : ''}
+            <div class="hb-actions" style="margin-top:0.75rem;">
+              ${install?.externalUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open app ↗</a>` : ''}
+              <a class="hb-btn" href="#backup">Backup</a>
+              <a class="hb-btn" href="#restore">Restore</a>
+              <a class="hb-btn" href="#deploy">Deploy / Reinstall</a>
+            </div>
+            ${renderBackupSummary(backups, config)}
           </section>
 
           <section class="hb-grid hb-grid-2">
-            <article class="hb-card">
+            <article id="backup" class="hb-card">
               <h2 style="margin-top:0;">Backup</h2>
               <form class="hb-form-grid" data-action="backup">
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
@@ -173,7 +204,7 @@
               </p>
             </article>
 
-            <article class="hb-card">
+            <article id="deploy" class="hb-card">
               <h2 style="margin-top:0;">Deploy / Reinstall</h2>
               <form class="hb-form-grid" data-action="deploy">
                 <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
@@ -187,7 +218,7 @@
             </article>
           </section>
 
-          <section class="hb-card">
+          <section id="restore" class="hb-card">
             <h2 style="margin-top:0;">Restore from backup</h2>
             <form class="hb-form-grid" data-action="restore">
               <label class="hb-label">
@@ -227,6 +258,7 @@
         </div>
       `;
       wireActions();
+      scrollToCurrentHash();
     } catch (error) {
       renderError(error.message);
     }

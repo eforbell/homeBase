@@ -3,10 +3,33 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-test('app detail UI exposes dry-run guarded real backup execution', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'app-detail.js'), 'utf8');
+function readAppDetail() {
+  return fs.readFileSync(path.join(__dirname, '..', 'public', 'app-detail.js'), 'utf8');
+}
 
-  assert.match(source, /form class="hb-form-grid" data-action="backup"/);
+test('app detail UI exposes dry-run guarded real backup execution', () => {
+  const source = readAppDetail();
+
+  assert.match(source, /data-action="backup"/);
   assert.match(source, /Type EXECUTE to run backup for real/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/backup\/execute/);
+});
+
+test('app detail exposes operations sections and anchors', () => {
+  const source = readAppDetail();
+
+  assert.match(source, /id="backup"/);
+  assert.match(source, /id="restore"/);
+  assert.match(source, /id="deploy"/);
+  assert.match(source, /href="#backup"/);
+  assert.match(source, /href="#restore"/);
+  assert.match(source, /scrollToCurrentHash/);
+});
+
+test('app detail surfaces backup summary and local-only risk', () => {
+  const source = readAppDetail();
+
+  assert.match(source, /Last backup:/);
+  assert.match(source, /No backups recorded yet\. Take a first backup/);
+  assert.match(source, /Local-only backup path/);
 });

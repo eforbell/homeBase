@@ -4,32 +4,32 @@
   "prdPath": "planning/features/feature-1-prd.json",
   "summaryPath": "planning/features/feature-1-summary.md",
   "branch": "feature/app-operations-ux-parity",
-  "status": "in_progress",
+  "status": "review",
   "stories": [
     {
       "id": "OPS-001",
       "title": "Installed app cards expose the complete operations path",
-      "status": "in_progress"
+      "status": "review"
     },
     {
       "id": "OPS-002",
       "title": "App detail becomes the canonical operations center",
-      "status": "in_progress"
+      "status": "review"
     },
     {
       "id": "OPS-003",
       "title": "Backup history and first-backup prompts are visible where decisions happen",
-      "status": "in_progress"
+      "status": "review"
     },
     {
       "id": "OPS-004",
       "title": "Failed jobs can be rerun from the UI",
-      "status": "in_progress"
+      "status": "review"
     },
     {
       "id": "OPS-005",
       "title": "Backup destination risk is visible before launch",
-      "status": "in_progress"
+      "status": "review"
     }
   ],
   "featureSequence": [

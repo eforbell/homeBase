@@ -28,3 +28,5 @@
 2026-04-18 (Feature-1 kickoff)
 - Started Feature-1 App Operations UX Parity on branch `feature/app-operations-ux-parity`.
 - Initial implementation target: installed app card Open/Details/Backup/Restore paths, app detail anchors/operations center, backup summaries and local-only warnings, and broader failed-job rerun affordances.
+- Implemented Feature-1 first pass: installed app cards now expose Open/Details/Backup/Restore, app detail has operation anchors and local-only backup posture, dashboard shows backup posture, and failed install/backup/restore/bootstrap jobs can rerun from job detail when supported.
+- Verification: node --check for changed public controllers and npm test passed (52/52). Manual browser/VM verification still pending, so story statuses moved to review rather than verified.
