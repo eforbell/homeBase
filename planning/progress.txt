@@ -24,3 +24,7 @@
   7. Managed App Update and Rollback
   8. Suite Onboarding Baseline Convergence
 - Set Feature-1 as queued current feature because it uses backend capabilities already present and addresses the immediate installed-app UX gap observed during VM testing.
+
+2026-04-18 (Feature-1 kickoff)
+- Started Feature-1 App Operations UX Parity on branch `feature/app-operations-ux-parity`.
+- Initial implementation target: installed app card Open/Details/Backup/Restore paths, app detail anchors/operations center, backup summaries and local-only warnings, and broader failed-job rerun affordances.
