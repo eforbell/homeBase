@@ -316,6 +316,7 @@ const catalog = [
     network: {
       preferredMountPath: '/bitcoin-accounting/',
       preferredPort: 3010,
+      preserveMountPath: true,
       upstreamBind: '127.0.0.1',
       health: {
         type: 'http',
