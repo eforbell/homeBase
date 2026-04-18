@@ -32,3 +32,5 @@
 - Verification: node --check for changed public controllers and npm test passed (52/52). Manual browser/VM verification still pending, so story statuses moved to review rather than verified.
 - VM/browser evidence from Eric: updated Homebase directly to the feature branch from Settings; app cards worked; backups and a successful restore completed. Failed-job rerun remains untested.
 - Added lightweight repaint support: app detail polls started backup/restore jobs and reloads when terminal; apps page refreshes visible installed-card state periodically so backup summaries can update without manual browser refresh.
+- VM/browser evidence from Eric: failed-job rerun verified by temporarily removing SSH-key access, running an install to failure, restoring access, re-running from job detail, and confirming the rerun succeeded.
+- All Feature-1 stories are now marked verified in planning/current-feature.json.

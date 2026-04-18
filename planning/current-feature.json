@@ -4,7 +4,7 @@
   "prdPath": "planning/features/feature-1-prd.json",
   "summaryPath": "planning/features/feature-1-summary.md",
   "branch": "feature/app-operations-ux-parity",
-  "status": "review",
+  "status": "verified",
   "stories": [
     {
       "id": "OPS-001",
@@ -24,7 +24,7 @@
     {
       "id": "OPS-004",
       "title": "Failed jobs can be rerun from the UI",
-      "status": "review"
+      "status": "verified"
     },
     {
       "id": "OPS-005",
