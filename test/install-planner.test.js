@@ -32,6 +32,7 @@ test('bitcoin accounting plan renders postgres-oriented env and readiness probes
   assert.match(plan.files['.env'], /BITCOIN_ACCOUNTING_WEB_BASE_PATH=\/bitcoin-accounting/);
   assert.match(plan.script, /bitcoin-accounting-web-init/);
   assert.equal(plan.install.health.readinessPath, '/api/ready');
+  assert.match(plan.files['bitcoin-accounting-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/bitcoinAccounting\/.venv\/bin\/uvicorn/);
 });
 
 test('install planner uses HTTPS repository URLs by default', () => {

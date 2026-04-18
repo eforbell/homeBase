@@ -197,9 +197,16 @@ function buildAppBootstrapCommands(app, ctx) {
 }
 
 function renderStartCommand(app, ctx) {
-  return app.runtime.startCommand
+  const resolved = app.runtime.startCommand
     .replaceAll('{{port}}', String(ctx.port))
     .replaceAll('{{installRoot}}', ctx.installRoot);
+  const spaceIdx = resolved.indexOf(' ');
+  const exe = spaceIdx === -1 ? resolved : resolved.slice(0, spaceIdx);
+  const rest = spaceIdx === -1 ? '' : resolved.slice(spaceIdx);
+  if (exe.startsWith('.')) {
+    return `${ctx.installRoot}/${exe}${rest}`;
+  }
+  return resolved;
 }
 
 function resolveEnvTemplate(template, ctx) {
