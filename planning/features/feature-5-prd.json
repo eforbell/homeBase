@@ -1,0 +1,103 @@
+{
+  "branchName": "feature/backup-destination-retention",
+  "projectName": "Backup Destination and Retention Confidence",
+  "description": "Make backup protection honest by distinguishing local-only app backups from off-host disaster-recovery backups and adding the first supported off-host destination path with retention visibility.",
+  "timing": {
+    "draftedOn": "2026-04-18",
+    "plannedEarliestExecution": "After admin auth and before setup wizard is considered launch-complete",
+    "gatingCondition": "Requires choosing the first supported off-host destination strategy and how credentials are stored/masked."
+  },
+  "principles": [
+    "Local backup is not disaster recovery",
+    "The UI must not imply same-VM backups protect against VM or disk loss",
+    "Start with one boring off-host destination before generic backup plugins",
+    "Restore proof matters as much as backup creation",
+    "Backup destination secrets must be masked and auditable"
+  ],
+  "techStack": {
+    "language": "Node.js planner/executor + vanilla JS",
+    "runtime": "existing backup planner plus off-host sync command such as rsync/scp or mounted path copy",
+    "storage": "SQLite backup records plus backup destination config and retention metadata",
+    "testing": "Planner tests, dry-run tests, manual VM backup to off-host target and restore rehearsal"
+  },
+  "userStories": [
+    {
+      "id": "BKP-001",
+      "title": "Homebase identifies local-only backup risk",
+      "acceptanceCriteria": [
+        "Dashboard/app cards indicate when backups are stored only under the VM/local backup root",
+        "Local-only state is displayed as a launch-confidence warning",
+        "Backup records include destination class: local, off_host, unknown",
+        "Docs and UI explain what local backup protects and does not protect"
+      ],
+      "priority": 1,
+      "estimatedLines": "+180/-20",
+      "testStrategy": "State/record tests plus manual browser verification on default VM config",
+      "passes": false
+    },
+    {
+      "id": "BKP-002",
+      "title": "Founder can configure one off-host backup destination",
+      "acceptanceCriteria": [
+        "Settings supports one first-class destination option with clear prerequisites",
+        "Destination config is validated before use",
+        "Secrets/paths are masked after save",
+        "Backup execution can copy or sync completed backup artifacts to the destination"
+      ],
+      "priority": 2,
+      "estimatedLines": "+360/-40",
+      "testStrategy": "Planner and config validation tests plus manual off-host sync test",
+      "passes": false
+    },
+    {
+      "id": "BKP-003",
+      "title": "Retention and restore confidence are visible",
+      "acceptanceCriteria": [
+        "Homebase shows latest local and off-host backup timestamps per app",
+        "Retention policy is explicit even if simple",
+        "Restore picker can identify whether a backup is local-only or off-host replicated",
+        "A manual restore rehearsal can prove the off-host artifact is usable"
+      ],
+      "priority": 3,
+      "estimatedLines": "+300/-30",
+      "testStrategy": "SQLite record tests plus manual VM restore from replicated artifact",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [
+      "A failed off-host sync can create false confidence if local backup still succeeded",
+      "Credential handling for remote destinations can become a security liability"
+    ],
+    "medium": [
+      "Generic backup destinations can sprawl; first version must stay narrow",
+      "Large backups may make synchronous job logs noisy or slow"
+    ],
+    "low": [
+      "Existing backup artifact layout can remain the source of truth"
+    ]
+  },
+  "preFlightChecklist": [
+    "Choose first off-host destination: mounted path, rsync over SSH, or external drive path",
+    "Define destination config validation and masking",
+    "Define retention defaults",
+    "Define whether off-host sync is part of backup job or separate replication job"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+840/-90",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "src/services/backup-destination-planner.js",
+      "src/services/backup-planner.js",
+      "src/services/job-runner.js",
+      "src/state/sqlite-driver.js",
+      "src/app.js",
+      "public/settings.js",
+      "public/apps.js",
+      "public/app-detail.js",
+      "test/backup-destination.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}

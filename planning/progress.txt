@@ -1,0 +1,26 @@
+2026-04-18
+- Created Homebase planning workspace modeled on familyPlan/planning.
+- Reconciled current implementation state after the fresh-VM bug-fix loop:
+  - bootstrap/install/update/backup/restore execution exists,
+  - Homebase service runtime and self-update exist,
+  - Apps/App Detail/Jobs/Settings/Dashboard static UI exists,
+  - recent bugs #10/#11/#15/#16 are closed/verified,
+  - Tailscale publishing automation remains open as BugBase #12.
+- Initial launch-confidence sequence drafted.
+- PR review challenged sequencing and missing launch blockers:
+  - auth was too late,
+  - off-host backup was missing,
+  - alerting was missing,
+  - failed-job rerun belonged in Feature-1,
+  - rollback semantics were under-specified,
+  - launch definition and story status process needed clarity.
+- Revised roadmap in response:
+  1. App Operations UX Parity
+  2. App Health, Readiness, and Alerts
+  3. Admin Auth and Destructive-Action Guardrails
+  4. Tailscale Service Publishing Automation
+  5. Backup Destination and Retention Confidence
+  6. Guided Setup and First Backup Wizard
+  7. Managed App Update and Rollback
+  8. Suite Onboarding Baseline Convergence
+- Set Feature-1 as queued current feature because it uses backend capabilities already present and addresses the immediate installed-app UX gap observed during VM testing.

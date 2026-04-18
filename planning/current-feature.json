@@ -1,0 +1,106 @@
+{
+  "currentFeature": "feature-1",
+  "featureName": "App Operations UX Parity",
+  "prdPath": "planning/features/feature-1-prd.json",
+  "summaryPath": "planning/features/feature-1-summary.md",
+  "branch": "feature/app-operations-ux-parity",
+  "status": "queued",
+  "stories": [
+    {
+      "id": "OPS-001",
+      "title": "Installed app cards expose the complete operations path",
+      "status": "queued"
+    },
+    {
+      "id": "OPS-002",
+      "title": "App detail becomes the canonical operations center",
+      "status": "queued"
+    },
+    {
+      "id": "OPS-003",
+      "title": "Backup history and first-backup prompts are visible where decisions happen",
+      "status": "queued"
+    },
+    {
+      "id": "OPS-004",
+      "title": "Failed jobs can be rerun from the UI",
+      "status": "queued"
+    },
+    {
+      "id": "OPS-005",
+      "title": "Backup destination risk is visible before launch",
+      "status": "queued"
+    }
+  ],
+  "featureSequence": [
+    {
+      "featureId": "feature-1",
+      "featureName": "App Operations UX Parity",
+      "branch": "feature/app-operations-ux-parity",
+      "summary": "Make Open, Details, Backup, Restore, and failed-job rerun discoverable."
+    },
+    {
+      "featureId": "feature-2",
+      "featureName": "App Health, Readiness, and Alerts",
+      "branch": "feature/app-health-readiness-alerts",
+      "summary": "Show real runtime/readiness state and notify on critical failures."
+    },
+    {
+      "featureId": "feature-3",
+      "featureName": "Admin Auth and Destructive-Action Guardrails",
+      "branch": "feature/admin-auth-action-guardrails",
+      "summary": "Add server-enforced admin unlock before destructive host/app actions."
+    },
+    {
+      "featureId": "feature-4",
+      "featureName": "Tailscale Service Publishing Automation",
+      "branch": "feature/tailscale-service-publishing",
+      "summary": "Plan, execute, verify, and repair the recommended Tailscale Serve topology."
+    },
+    {
+      "featureId": "feature-5",
+      "featureName": "Backup Destination and Retention Confidence",
+      "branch": "feature/backup-destination-retention",
+      "summary": "Make local-only backup risk visible and add an off-host backup destination path."
+    },
+    {
+      "featureId": "feature-6",
+      "featureName": "Guided Setup and First Backup Wizard",
+      "branch": "feature/guided-setup-first-backup",
+      "summary": "Guide a founder through setup, publishing, app install, and first backup."
+    },
+    {
+      "featureId": "feature-7",
+      "featureName": "Managed App Update and Rollback",
+      "branch": "feature/managed-app-update-rollback",
+      "summary": "Require pre-update backups, health-gate updates, and offer honest rollback."
+    },
+    {
+      "featureId": "feature-8",
+      "featureName": "Suite Onboarding Baseline Convergence",
+      "branch": "feature/suite-onboarding-baselines",
+      "summary": "Converge app health/readiness/onboarding/manifest contracts."
+    }
+  ],
+  "launchDefinition": {
+    "name": "founder-confidence launch",
+    "description": "Eric can run his own household apps through Homebase and use Homebase instead of routine shell work for normal operations.",
+    "gates": [
+      "Routine app operations are discoverable: open, backup, restore, rerun failed jobs.",
+      "App health/readiness and critical failures are visible and can alert the founder.",
+      "Destructive operations require Homebase admin authorization.",
+      "Private Tailscale service publishing is managed or clearly verified by Homebase.",
+      "Backups are not silently local-only and an off-host backup destination path is addressed.",
+      "Setup leads to at least one installed, reachable, backed-up app.",
+      "App updates require backup and have honest rollback semantics.",
+      "Homebase can distinguish installed apps from ready apps for enough of the suite to operate confidently."
+    ]
+  },
+  "completedFeatures": [],
+  "branchAndPrPolicy": {
+    "baseBranch": "main",
+    "branchPattern": "feature/<short-feature-name>",
+    "reviewExpectation": "Each feature lands through a PR with tests, VM/browser evidence where relevant, and founder plus agent/code-review notes before merge.",
+    "mergeExpectation": "Prefer squash or merge commits with commit trailers recording constraints, rejected alternatives, confidence, scope risk, tested, and not-tested evidence."
+  }
+}

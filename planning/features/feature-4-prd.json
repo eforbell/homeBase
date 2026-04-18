@@ -1,0 +1,100 @@
+{
+  "branchName": "feature/tailscale-service-publishing",
+  "projectName": "Tailscale Service Publishing Automation",
+  "description": "Productize the recommended private-access path so Homebase can plan, execute, verify, and repair Tailscale Serve publishing instead of relying on manual operator commands.",
+  "timing": {
+    "draftedOn": "2026-04-18",
+    "plannedEarliestExecution": "After Admin Auth and Destructive-Action Guardrails",
+    "gatingCondition": "Requires admin-protected execution and careful merge/ownership policy for existing Tailscale Serve config. Authentication via `tailscale up` may remain manual."
+  },
+  "principles": [
+    "Sovereign Home should feel like a named service, not a host with ports",
+    "Never silently overwrite unrelated Tailscale Serve config",
+    "Preview exact commands/config before executing",
+    "Verify both local nginx upstream and Tailscale Serve result",
+    "Keep public internet exposure out of the default path"
+  ],
+  "techStack": {
+    "language": "Node.js + shell command planner",
+    "runtime": "tailscale CLI, nginx local HTTPS upstream, systemd job runner",
+    "storage": "SQLite jobs plus optional publishing state/config record",
+    "testing": "Planner unit tests + manual VM tailnet verification"
+  },
+  "userStories": [
+    {
+      "id": "TS-001",
+      "title": "Detect Tailscale identity and publishing readiness",
+      "acceptanceCriteria": [
+        "Settings/setup page shows Tailscale installed/daemon/authenticated status",
+        "Homebase identifies current node name and tailnet/MagicDNS hostname when available",
+        "Current `tailscale serve get-config --all` is visible or summarized",
+        "UI distinguishes not installed, not authenticated, authenticated but unpublished, and published states"
+      ],
+      "priority": 1,
+      "estimatedLines": "+220/-10",
+      "testStrategy": "Unit tests around parser/status mapping plus VM check with authenticated and unauthenticated states",
+      "passes": false
+    },
+    {
+      "id": "TS-002",
+      "title": "Plan and execute prescribed Serve topology",
+      "acceptanceCriteria": [
+        "Planner previews Homebase lane: tcp:3080 -> http://127.0.0.1:3080",
+        "Planner previews app lane: tcp:443 -> https+insecure://localhost:443",
+        "Execution is admin-unlock protected and guarded by EXECUTE",
+        "Existing non-Homebase Serve config is not silently destroyed"
+      ],
+      "priority": 2,
+      "estimatedLines": "+300/-20",
+      "testStrategy": "Planner tests for generated commands and manual VM execution against tailnet",
+      "passes": false
+    },
+    {
+      "id": "TS-003",
+      "title": "Verify and repair service publishing",
+      "acceptanceCriteria": [
+        "Verification checks local nginx 443 listener before publishing",
+        "Verification checks Serve config contains expected tcp:3080 and tcp:443 endpoints",
+        "Hostname/domain setting changes surface a repair prompt if publishing is stale",
+        "UI provides final copyable Homebase and app base URLs"
+      ],
+      "priority": 3,
+      "estimatedLines": "+260/-20",
+      "testStrategy": "Manual VM verification plus fixture tests for stale/missing Serve config parsing",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [
+      "Incorrect Serve config changes could disrupt a user's existing tailnet services"
+    ],
+    "medium": [
+      "Tailscale CLI output/config shape may vary by version",
+      "Authentication still requires an operator-owned action unless OAuth/device flow is designed"
+    ],
+    "low": [
+      "The target topology has already been manually validated in VM testing"
+    ]
+  },
+  "preFlightChecklist": [
+    "Capture real `tailscale status --json` and `tailscale serve get-config --all` examples",
+    "Choose policy for existing Serve config: merge managed endpoints vs require explicit replace",
+    "Define whether Homebase stores a managed-service marker or derives state entirely from Serve config",
+    "Confirm UI placement: Settings vs Setup Wizard vs Dashboard card"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+780/-50",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "src/services/tailscale-publisher.js",
+      "src/app.js",
+      "src/services/job-runner.js",
+      "public/settings.js",
+      "public/setup.js",
+      "public/dashboard.js",
+      "test/tailscale-publisher.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}

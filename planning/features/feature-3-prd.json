@@ -1,0 +1,98 @@
+{
+  "branchName": "feature/admin-auth-action-guardrails",
+  "projectName": "Admin Auth and Destructive-Action Guardrails",
+  "description": "Add a practical Homebase admin authentication boundary and tighten destructive operation authorization before Homebase expands network publishing, setup orchestration, and update/rollback capabilities.",
+  "timing": {
+    "draftedOn": "2026-04-18",
+    "plannedEarliestExecution": "After Feature-2, before Tailscale publishing automation",
+    "gatingCondition": "Requires choosing PIN/passphrase/session model and migration path for existing Homebase installs."
+  },
+  "principles": [
+    "Tailnet access is necessary but not sufficient for destructive host operations",
+    "Use a simple admin model before full user accounts",
+    "Server-enforced auth, not cosmetic UI locking",
+    "Do not expose secrets after save",
+    "Audit destructive actions"
+  ],
+  "techStack": {
+    "language": "Node.js + vanilla JS",
+    "runtime": "HTTP-only signed session cookie, SQLite config/auth storage",
+    "storage": "SQLite admin credential/session/audit tables or config records",
+    "testing": "Endpoint auth tests plus manual browser lock/unlock validation"
+  },
+  "userStories": [
+    {
+      "id": "ADM-001",
+      "title": "Require admin unlock for destructive operations",
+      "acceptanceCriteria": [
+        "Bootstrap execute, install execute, backup real, restore real, update, rollback, and service publishing require unlocked admin session",
+        "Dry-runs remain available without full unlock or have a lighter confirmation policy",
+        "Unauthorized API calls return clear 401/403 responses"
+      ],
+      "priority": 1,
+      "estimatedLines": "+260/-40",
+      "testStrategy": "Endpoint tests for protected actions and manual browser verification",
+      "passes": false
+    },
+    {
+      "id": "ADM-002",
+      "title": "Admin setup, unlock, lock, and rotation",
+      "acceptanceCriteria": [
+        "First-run admin setup is available from UI",
+        "Admin credential is hashed, never plaintext",
+        "Unlock session is HTTP-only and time-bounded",
+        "Admin can rotate credential and manually lock"
+      ],
+      "priority": 2,
+      "estimatedLines": "+320/-20",
+      "testStrategy": "Manual browser session tests and endpoint tests",
+      "passes": false
+    },
+    {
+      "id": "ADM-003",
+      "title": "Audit destructive actions",
+      "acceptanceCriteria": [
+        "Destructive action attempts record actor/session, timestamp, action, target, outcome, and job id where applicable",
+        "Secrets are never logged",
+        "Settings or job detail can expose audit context without clutter"
+      ],
+      "priority": 3,
+      "estimatedLines": "+220/-20",
+      "testStrategy": "Unit tests for audit writes and manual inspection after actions",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [
+      "Adding auth can break recovery flows if not carefully staged"
+    ],
+    "medium": [
+      "Too much friction could slow founder testing",
+      "Session storage needs to be robust across service restarts"
+    ],
+    "low": [
+      "Pattern can borrow from Family Plan settings PIN work"
+    ]
+  },
+  "preFlightChecklist": [
+    "Choose PIN vs passphrase language for Homebase",
+    "Decide whether first-run setup is env-seeded or browser-created",
+    "Define protected endpoint list",
+    "Define emergency recovery path if admin credential is lost"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+800/-100",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "src/admin-auth.js",
+      "src/app.js",
+      "src/state/sqlite-driver.js",
+      "public/settings.js",
+      "public/setup.js",
+      "test/admin-auth.test.js",
+      "test/server.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}

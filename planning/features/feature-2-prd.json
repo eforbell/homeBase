@@ -1,0 +1,119 @@
+{
+  "branchName": "feature/app-health-readiness-alerts",
+  "projectName": "App Health, Readiness, and Alerts",
+  "description": "Replace the single deployment-state badge with truthful runtime/readiness signals and critical alerts so Homebase can distinguish installed, service-running, HTTP-healthy, needs-onboarding, unhealthy, and needs-attention states.",
+  "timing": {
+    "draftedOn": "2026-04-18",
+    "plannedEarliestExecution": "After Feature-1",
+    "gatingCondition": "Requires agreement on the first health payload shape, probe cache strategy, and notification channel approach."
+  },
+  "principles": [
+    "Installed is not the same as healthy",
+    "Health checks should explain next actions, not just color badges",
+    "Prefer cached probes to slow page loads",
+    "Critical failures should notify instead of requiring dashboard polling",
+    "Surface app onboarding readiness separately from process liveness"
+  ],
+  "techStack": {
+    "language": "Node.js + vanilla JS",
+    "runtime": "systemctl, curl/fetch HTTP probes, SQLite health snapshots, brrr notification helper pattern",
+    "storage": "SQLite health snapshot and notification config/log records or first-pass app_config records",
+    "testing": "Unit tests for status mapping + manual VM service failure/restore checks + notification dry-run/test-send"
+  },
+  "userStories": [
+    {
+      "id": "HLT-001",
+      "title": "Installed app cards show live service and HTTP state",
+      "acceptanceCriteria": [
+        "Cards show deployment status and runtime health separately",
+        "Homebase probes systemd service state for installed apps",
+        "Homebase probes app readiness/liveness URL from catalog metadata",
+        "Failures show concise recovery guidance and link to app detail"
+      ],
+      "priority": 1,
+      "estimatedLines": "+260/-20",
+      "testStrategy": "Mocked probe tests plus manual VM stop/start service validation",
+      "passes": false
+    },
+    {
+      "id": "HLT-002",
+      "title": "Dashboard summarizes warnings and unhealthy apps",
+      "acceptanceCriteria": [
+        "Dashboard lists app health warnings before recent jobs when action is needed",
+        "Health probes are cached or asynchronous so dashboard render stays fast",
+        "Critical host checks and app checks are visually distinct"
+      ],
+      "priority": 2,
+      "estimatedLines": "+180/-20",
+      "testStrategy": "UI tests/source assertions plus manual browser verification with one stopped app",
+      "passes": false
+    },
+    {
+      "id": "HLT-003",
+      "title": "Onboarding/readiness state is not conflated with install state",
+      "acceptanceCriteria": [
+        "Apps with onboarding contracts can show needs setup vs ready",
+        "Open action remains available but recommended next action can be Setup when appropriate",
+        "Catalog metadata defines the bootstrap/readiness endpoint used where available"
+      ],
+      "priority": 3,
+      "estimatedLines": "+220/-30",
+      "testStrategy": "Catalog fixture tests and manual validation against Family Help/Family Plan onboarding endpoints",
+      "passes": false
+    },
+    {
+      "id": "HLT-004",
+      "title": "Critical health failures can alert the founder",
+      "acceptanceCriteria": [
+        "Founder can configure at least one notification target using the suite's existing brrr-style pattern",
+        "Critical app/service failures can emit a notification after a dedup/cooldown window",
+        "Notification payload identifies app, failure kind, and Homebase URL/job/detail link where applicable",
+        "Alerting can be disabled without deleting health visibility"
+      ],
+      "priority": 4,
+      "estimatedLines": "+320/-40",
+      "testStrategy": "Notification helper tests plus manual test-send and simulated service-down alert on VM",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [
+      "Synchronous host probes can make page loads slow or flaky",
+      "Noisy alerts can reduce trust quickly"
+    ],
+    "medium": [
+      "Suite apps have inconsistent health/readiness endpoints",
+      "Systemd service names and app route health can diverge after manual repairs",
+      "Notification secrets need masking and careful logging"
+    ],
+    "low": [
+      "Initial version can be read-only visibility plus opt-in alerts"
+    ]
+  },
+  "preFlightChecklist": [
+    "Define health status vocabulary",
+    "Choose probe cache duration",
+    "Choose first notification storage model and target format",
+    "Define alert cooldown/dedup policy",
+    "List catalog apps with useful health/readiness endpoints"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+980/-110",
+    "storiesCount": 4,
+    "filesLikelyModified": [
+      "src/services/health-monitor.js",
+      "src/services/notifications.js",
+      "src/app.js",
+      "src/catalog.js",
+      "src/state/sqlite-driver.js",
+      "public/apps.js",
+      "public/app-detail.js",
+      "public/dashboard.js",
+      "public/settings.js",
+      "test/health-monitor.test.js",
+      "test/notifications.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}
