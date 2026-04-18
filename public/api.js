@@ -50,5 +50,33 @@
     return `<span class="hb-badge">${safe}</span>`;
   }
 
-  window.HB = { getJson, postJson, escapeHtml, formatTimestamp, statusBadge };
+  function latestBackup(backups) {
+    const items = Array.isArray(backups) ? backups : [];
+    return items.find((item) => item.status === 'completed') || items[0] || null;
+  }
+
+  function backupSummary(backups) {
+    const latest = latestBackup(backups);
+    if (!latest) {
+      return '<span class="hb-warn">No backups yet</span>';
+    }
+    const status = latest.status ? ` · ${escapeHtml(latest.status)}` : '';
+    return `Last backup: ${escapeHtml(formatTimestamp(latest.generatedAt))}${status}`;
+  }
+
+  function localOnlyBackupNote(config) {
+    const backupRoot = config?.baseBackupDir || '/var/lib/sovereign-home/backups';
+    return `Local-only backup path: ${escapeHtml(backupRoot)}. This protects app mistakes, not VM/disk loss.`;
+  }
+
+  window.HB = {
+    getJson,
+    postJson,
+    escapeHtml,
+    formatTimestamp,
+    statusBadge,
+    latestBackup,
+    backupSummary,
+    localOnlyBackupNote,
+  };
 }());

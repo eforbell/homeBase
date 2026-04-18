@@ -12,22 +12,12 @@
     `;
   }
 
-  function latestBackup(backups) {
-    const items = Array.isArray(backups) ? backups : [];
-    return items.find((item) => item.status === 'completed') || items[0] || null;
-  }
-
-  function localOnlyBackupNote(config) {
-    const backupRoot = config?.baseBackupDir || '/var/lib/sovereign-home/backups';
-    return `Local-only backup path: ${window.HB.escapeHtml(backupRoot)}. This protects app mistakes, not VM/disk loss.`;
-  }
-
   function renderBackupSummary(backups, config) {
-    const latest = latestBackup(backups);
+    const latest = window.HB.latestBackup(backups);
     const backupLine = latest
       ? `Last backup: ${window.HB.escapeHtml(window.HB.formatTimestamp(latest.generatedAt))}${latest.status ? ` · ${window.HB.escapeHtml(latest.status)}` : ''}`
       : '<span class="hb-warn">No backups recorded yet. Take a first backup before relying on this install.</span>';
-    return `<p class="hb-muted" style="margin:0.65rem 0 0;">${backupLine}<br>${localOnlyBackupNote(config)}</p>`;
+    return `<p class="hb-muted" style="margin:0.65rem 0 0;">${backupLine}<br>${window.HB.localOnlyBackupNote(config)}</p>`;
   }
 
   function scrollToCurrentHash() {
@@ -94,7 +84,8 @@
       const response = await window.HB.postJson(`/api/apps/${appId}/backup/execute`, payload);
       const mode = dryRun ? 'Backup dry-run' : 'Backup';
       resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started. This page will refresh when it finishes.`;
-      waitForJobCompletion(response.jobId, resultNode);
+      // Intentional fire-and-forget: keep the form responsive while the page repaints on terminal job state.
+      void waitForJobCompletion(response.jobId, resultNode);
     } catch (error) {
       resultNode.textContent = error.message;
     } finally {
@@ -147,7 +138,8 @@
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/restore/execute`, payload);
       resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>. This page will refresh when it finishes.`;
-      waitForJobCompletion(response.jobId, resultNode);
+      // Intentional fire-and-forget: keep the form responsive while the page repaints on terminal job state.
+      void waitForJobCompletion(response.jobId, resultNode);
     } catch (error) {
       resultNode.textContent = error.message;
     }

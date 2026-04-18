@@ -30,6 +30,8 @@ test('app detail polls backup and restore jobs until the page can repaint', () =
   const source = readAppDetail();
 
   assert.match(source, /waitForJobCompletion/);
+  assert.match(source, /Intentional fire-and-forget/);
+  assert.match(source, /void waitForJobCompletion/);
   assert.match(source, /This page will refresh when it finishes/);
   assert.match(source, /setTimeout\(\(\) => load\(\), 650\)/);
 });
@@ -39,5 +41,6 @@ test('app detail surfaces backup summary and local-only risk', () => {
 
   assert.match(source, /Last backup:/);
   assert.match(source, /No backups recorded yet\. Take a first backup/);
-  assert.match(source, /Local-only backup path/);
+  assert.match(source, /window\.HB\.latestBackup/);
+  assert.match(source, /window\.HB\.localOnlyBackupNote/);
 });

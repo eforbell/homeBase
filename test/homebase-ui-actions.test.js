@@ -19,6 +19,11 @@ test('failed jobs expose rerun actions for supported job types on job detail', (
   const jobDetail = readPublicScript('job-detail.js');
 
   assert.match(jobDetail, /data-action="rerun-job"/);
+  assert.match(jobDetail, /data-job-id/);
+  assert.match(jobDetail, /window\.HB\.getJson\(`\/api\/jobs\/\$\{encodeURIComponent\(currentJobId\)\}`\)/);
+  assert.doesNotMatch(jobDetail, /__job/);
+  assert.match(jobDetail, /body\.dryRun === false/);
+  assert.match(jobDetail, /Type EXECUTE to re-run this real job/);
   assert.match(jobDetail, /Re-run bootstrap/);
   assert.match(jobDetail, /Re-run install/);
   assert.match(jobDetail, /Re-run backup/);
@@ -32,9 +37,8 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /Details/);
   assert.match(apps, /Backup…/);
   assert.match(apps, /Restore…/);
-  assert.match(apps, /Last backup:/);
-  assert.match(apps, /No backups yet/);
-  assert.match(apps, /Local-only backup path/);
+  assert.match(apps, /window\.HB\.backupSummary/);
+  assert.match(apps, /window\.HB\.localOnlyBackupNote/);
   assert.match(apps, /scheduleRefresh/);
   assert.match(apps, /visibilitychange/);
 });
@@ -44,4 +48,16 @@ test('dashboard surfaces local-only backup posture warning', () => {
 
   assert.match(dashboard, /Backup posture/);
   assert.match(dashboard, /Backups are currently local-only/);
+});
+
+test('shared API exposes backup summary helpers', () => {
+  const api = readPublicScript('api.js');
+
+  assert.match(api, /function latestBackup\(backups\)/);
+  assert.match(api, /function backupSummary\(backups\)/);
+  assert.match(api, /function localOnlyBackupNote\(config\)/);
+  assert.match(api, /No backups yet/);
+  assert.match(api, /latestBackup,/);
+  assert.match(api, /backupSummary,/);
+  assert.match(api, /localOnlyBackupNote,/);
 });

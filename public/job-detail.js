@@ -51,7 +51,7 @@
       return `<p class="hb-muted" style="margin-top:0.65rem;">${window.HB.escapeHtml(spec.unsupportedReason)}</p>`;
     }
     return `
-      <form class="hb-actions" data-action="rerun-job">
+      <form class="hb-actions" data-action="rerun-job" data-job-id="${window.HB.escapeHtml(job.id)}">
         <button class="hb-btn" type="submit">${window.HB.escapeHtml(spec.label)}</button>
         <span class="hb-muted" data-result></span>
       </form>
@@ -99,10 +99,18 @@
   }
 
   async function rerunJob(form) {
-    const job = form.__job;
-    const plan = form.__plan;
-    const spec = rerunSpec(job, plan);
     const resultNode = form.querySelector('[data-result]');
+    const currentJobId = form.getAttribute('data-job-id') || jobId;
+    let job;
+    let plan;
+    try {
+      job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(currentJobId)}`);
+      plan = parseJsonText(job.planJson);
+    } catch (error) {
+      if (resultNode) resultNode.textContent = error.message;
+      return;
+    }
+    const spec = rerunSpec(job, plan);
     if (!spec || spec.unsupportedReason) {
       if (resultNode) resultNode.textContent = spec?.unsupportedReason || 'Rerun is not available for this job.';
       return;
@@ -142,11 +150,6 @@
     try {
       const job = await window.HB.getJson(`/api/jobs/${jobId}`);
       renderJob(job);
-      const rerunForm = root.querySelector('form[data-action="rerun-job"]');
-      if (rerunForm) {
-        rerunForm.__job = job;
-        rerunForm.__plan = parseJsonText(job.planJson);
-      }
       if (pollTimer) {
         clearTimeout(pollTimer);
         pollTimer = null;

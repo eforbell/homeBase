@@ -3,25 +3,6 @@
   let refreshTimer = null;
   let eventsWired = false;
 
-  function latestBackup(backups) {
-    const items = Array.isArray(backups) ? backups : [];
-    return items.find((item) => item.status === 'completed') || items[0] || null;
-  }
-
-  function backupSummary(backups) {
-    const latest = latestBackup(backups);
-    if (!latest) {
-      return '<span class="hb-warn">No backups yet</span>';
-    }
-    const status = latest.status ? ` · ${window.HB.escapeHtml(latest.status)}` : '';
-    return `Last backup: ${window.HB.escapeHtml(window.HB.formatTimestamp(latest.generatedAt))}${status}`;
-  }
-
-  function localOnlyBackupNote(config) {
-    const backupRoot = config?.baseBackupDir || '/var/lib/sovereign-home/backups';
-    return `Local-only backup path: ${window.HB.escapeHtml(backupRoot)}. This protects app mistakes, not VM/disk loss.`;
-  }
-
   function installationCard(install, backupsByApp, config) {
     const appId = window.HB.escapeHtml(install.appId);
     const detailUrl = `/apps/${appId}`;
@@ -38,10 +19,9 @@
         <p class="hb-muted" style="margin:0.55rem 0 0;">
           Port ${window.HB.escapeHtml(install.port)} · ${window.HB.escapeHtml(install.mountPath)}<br>
           Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))}<br>
-          ${backupSummary(backups)}
+          ${window.HB.backupSummary(backups)}
         </p>
         ${!backups.length ? '<p class="hb-warn" style="margin:0.55rem 0 0;">Recommended next step: take a first backup.</p>' : ''}
-        <p class="hb-muted" style="margin:0.55rem 0 0;">${localOnlyBackupNote(config)}</p>
         <div class="hb-actions" style="margin-top:0.75rem;">
           ${openLink}
           <a class="hb-btn" href="${detailUrl}">Details</a>
@@ -161,6 +141,7 @@
           <section class="hb-card">
             <h1 style="margin:0;">Installed apps</h1>
             <p class="hb-muted" style="margin:0.55rem 0 0;">Open apps, inspect details, run backups, and start restores from one place.</p>
+            <p class="hb-warn" style="margin:0.55rem 0 0;">${window.HB.localOnlyBackupNote(config)}</p>
           </section>
           <section class="hb-grid hb-grid-2">
             ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
