@@ -117,10 +117,12 @@
     }
     const body = { ...spec.body };
     if (body.dryRun === false) {
-      const confirm = window.prompt('Type EXECUTE to re-run this real job.');
-      if (confirm !== 'EXECUTE') {
-        if (resultNode) resultNode.textContent = 'Cancelled.';
-        return;
+      if (job.kind === 'restore') {
+        try {
+          await window.HB.confirmInline(resultNode, 'Restore will overwrite the current app database and files. This cannot be undone.');
+        } catch (_) {
+          return;
+        }
       }
       body.confirm = 'EXECUTE';
     }

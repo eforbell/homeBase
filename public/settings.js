@@ -63,8 +63,6 @@
         const dryRun = installSelf.elements.dryRun.checked;
         const payload = { port, dryRun };
         if (!dryRun) {
-          const confirm = window.prompt('Type EXECUTE to install/enable the Home Base service for real.');
-          if (confirm !== 'EXECUTE') return;
           payload.confirm = 'EXECUTE';
         }
         triggerHomebaseAction('/api/homebase/install-self', payload, installSelf.querySelector('[data-result]'));
@@ -76,8 +74,6 @@
         const dryRun = bootstrapHost.elements.dryRun.checked;
         const payload = { dryRun };
         if (!dryRun) {
-          const confirm = window.prompt('Type EXECUTE to re-run host bootstrap for real.');
-          if (confirm !== 'EXECUTE') return;
           payload.confirm = 'EXECUTE';
         }
         triggerHomebaseAction('/api/bootstrap/execute', payload, bootstrapHost.querySelector('[data-result]'));
@@ -90,8 +86,6 @@
         const dryRun = updateSelf.elements.dryRun.checked;
         const payload = { ref, dryRun };
         if (!dryRun) {
-          const confirm = window.prompt('Type EXECUTE to run update-self for real.');
-          if (confirm !== 'EXECUTE') return;
           payload.confirm = 'EXECUTE';
         }
         triggerHomebaseAction('/api/homebase/update-self', payload, updateSelf.querySelector('[data-result]'));

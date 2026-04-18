@@ -7,12 +7,13 @@ function readPublicScript(fileName) {
   return fs.readFileSync(path.join(__dirname, '..', 'public', fileName), 'utf8');
 }
 
-test('settings UI exposes a guarded bootstrap rerun action', () => {
+test('settings UI exposes bootstrap and update-self actions without window.prompt', () => {
   const source = readPublicScript('settings.js');
 
   assert.match(source, /data-action="bootstrap-host"/);
   assert.match(source, /\/api\/bootstrap\/execute/);
-  assert.match(source, /Type EXECUTE to re-run host bootstrap for real/);
+  assert.doesNotMatch(source, /window\.prompt/);
+  assert.match(source, /payload\.confirm = 'EXECUTE'/);
 });
 
 test('failed jobs expose rerun actions for supported job types on job detail', () => {
@@ -23,7 +24,8 @@ test('failed jobs expose rerun actions for supported job types on job detail', (
   assert.match(jobDetail, /window\.HB\.getJson\(`\/api\/jobs\/\$\{encodeURIComponent\(currentJobId\)\}`\)/);
   assert.doesNotMatch(jobDetail, /__job/);
   assert.match(jobDetail, /body\.dryRun === false/);
-  assert.match(jobDetail, /Type EXECUTE to re-run this real job/);
+  assert.doesNotMatch(jobDetail, /window\.prompt/);
+  assert.match(jobDetail, /window\.HB\.confirmInline/);
   assert.match(jobDetail, /Re-run bootstrap/);
   assert.match(jobDetail, /Re-run install/);
   assert.match(jobDetail, /Re-run backup/);

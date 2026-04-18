@@ -71,11 +71,6 @@
     const submitButton = form.querySelector('button[type="submit"]');
     const payload = { dryRun };
     if (!dryRun) {
-      const confirm = window.prompt('Type EXECUTE to run backup for real.');
-      if (confirm !== 'EXECUTE') {
-        resultNode.textContent = 'Cancelled (EXECUTE not provided).';
-        return;
-      }
       payload.confirm = 'EXECUTE';
     }
     if (submitButton) submitButton.disabled = true;
@@ -101,11 +96,6 @@
     const payload = { mountPath, dryRun };
     if (portRaw) payload.port = Number(portRaw);
     if (!dryRun) {
-      const confirm = window.prompt('Type EXECUTE to run deployment for real.');
-      if (confirm !== 'EXECUTE') {
-        resultNode.textContent = 'Cancelled (EXECUTE not provided).';
-        return;
-      }
       payload.confirm = 'EXECUTE';
     }
     resultNode.textContent = 'Submitting...';
@@ -127,9 +117,9 @@
     }
     const payload = { backupDir, dryRun };
     if (!dryRun) {
-      const confirm = window.prompt('Type EXECUTE to run restore for real.');
-      if (confirm !== 'EXECUTE') {
-        resultNode.textContent = 'Cancelled (EXECUTE not provided).';
+      try {
+        await window.HB.confirmInline(resultNode, 'Restore will overwrite the current app database and files. This cannot be undone.');
+      } catch (_) {
         return;
       }
       payload.confirm = 'EXECUTE';

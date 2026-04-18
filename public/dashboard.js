@@ -70,11 +70,6 @@
 
   async function rerunBootstrap(form) {
     const resultNode = form.querySelector('[data-result]');
-    const confirm = window.prompt('Type EXECUTE to re-run host bootstrap for real.');
-    if (confirm !== 'EXECUTE') {
-      if (resultNode) resultNode.textContent = 'Cancelled.';
-      return;
-    }
     if (resultNode) resultNode.textContent = 'Submitting...';
     try {
       const payload = await window.HB.postJson('/api/bootstrap/execute', {

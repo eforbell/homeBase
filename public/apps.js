@@ -72,11 +72,6 @@
     };
     if (portRaw) payload.port = Number(portRaw);
     if (!dryRun) {
-      const confirm = window.prompt('Type EXECUTE to run install for real.');
-      if (confirm !== 'EXECUTE') {
-        resultNode.textContent = 'Cancelled (EXECUTE not provided).';
-        return;
-      }
       payload.confirm = 'EXECUTE';
     }
     resultNode.textContent = 'Submitting...';

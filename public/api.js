@@ -69,6 +69,31 @@
     return `Local-only backup path: ${escapeHtml(backupRoot)}. This protects app mistakes, not VM/disk loss.`;
   }
 
+  function confirmInline(resultNode, message) {
+    return new Promise((resolve, reject) => {
+      resultNode.innerHTML = `
+        <span class="hb-warn" style="display:block;margin-bottom:0.4rem;">${escapeHtml(message)}</span>
+        <span style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+          <button class="hb-btn" type="button" data-ic="confirm">Confirm</button>
+          <button class="hb-btn" type="button" data-ic="cancel">Cancel</button>
+        </span>
+      `;
+      function onClick(e) {
+        const btn = e.target.closest('[data-ic]');
+        if (!btn) return;
+        resultNode.removeEventListener('click', onClick);
+        if (btn.dataset.ic === 'confirm') {
+          resultNode.textContent = '';
+          resolve();
+        } else {
+          resultNode.textContent = 'Cancelled.';
+          reject(new Error('cancelled'));
+        }
+      }
+      resultNode.addEventListener('click', onClick);
+    });
+  }
+
   window.HB = {
     getJson,
     postJson,
@@ -78,5 +103,6 @@
     latestBackup,
     backupSummary,
     localOnlyBackupNote,
+    confirmInline,
   };
 }());

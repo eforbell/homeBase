@@ -7,12 +7,14 @@ function readAppDetail() {
   return fs.readFileSync(path.join(__dirname, '..', 'public', 'app-detail.js'), 'utf8');
 }
 
-test('app detail UI exposes dry-run guarded real backup execution', () => {
+test('app detail UI exposes backup and restore execution without window.prompt', () => {
   const source = readAppDetail();
 
   assert.match(source, /data-action="backup"/);
-  assert.match(source, /Type EXECUTE to run backup for real/);
+  assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/backup\/execute/);
+  assert.match(source, /window\.HB\.confirmInline/);
+  assert.match(source, /Restore will overwrite/);
 });
 
 test('app detail exposes operations sections and anchors', () => {
