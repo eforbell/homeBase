@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const { getAppById } = require('../catalog');
 
 function trimTrailingSlash(value) {
@@ -262,6 +263,43 @@ function resolveEnvTemplate(template, ctx) {
   return resolved;
 }
 
+function parseDotEnv(content) {
+  const env = {};
+  const lines = String(content || '').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const idx = trimmed.indexOf('=');
+    if (idx <= 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    let value = trimmed.slice(idx + 1);
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith('\'') && value.endsWith('\''))) {
+      value = value.slice(1, -1);
+    }
+    env[key] = value;
+  }
+  return env;
+}
+
+function shouldPreserveExistingEnvValue(key, templateValue) {
+  const template = String(templateValue == null ? '' : templateValue);
+  if (template === '') return true;
+  if (template.includes('{{secret')) return true;
+  if (/(SECRET|TOKEN|PASSWORD|PASSPHRASE|API_KEY|CLIENT_SECRET|CLIENT_ID|AUTH_)/i.test(key)) return true;
+  return false;
+}
+
+function mergeExistingEnvValues({ template, resolved, existing }) {
+  const next = { ...resolved };
+  for (const [key, templateValue] of Object.entries(template || {})) {
+    const existingValue = existing[key];
+    if (!existingValue) continue;
+    if (!shouldPreserveExistingEnvValue(key, templateValue)) continue;
+    next[key] = existingValue;
+  }
+  return next;
+}
+
 function resolveRepositoryUrl(app, config = {}) {
   if ((config.gitTransport === 'ssh' || config.gitTransport === 'ssh-key') && app.repository.sshUrl) {
     return app.repository.sshUrl;
@@ -355,8 +393,22 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const gitRunPrefix = renderGitRunPrefix({ serviceUser, app, config });
 
   const env = resolveEnvTemplate(app.config.env, ctx);
+  const existingEnvPath = `${installRoot}/.env`;
+  let mergedEnv = env;
+  try {
+    if (fs.existsSync(existingEnvPath)) {
+      const existingEnv = parseDotEnv(fs.readFileSync(existingEnvPath, 'utf8'));
+      mergedEnv = mergeExistingEnvValues({
+        template: app.config.env,
+        resolved: env,
+        existing: existingEnv,
+      });
+    }
+  } catch (_error) {
+    // Preserve install planning even when existing env cannot be parsed/read.
+  }
   const files = {};
-  files['.env'] = renderEnv(env);
+  files['.env'] = renderEnv(mergedEnv);
   files[`${app.service.name}.service`] = renderServiceUnit({
     description: app.service.description,
     serviceUser,

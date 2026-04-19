@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { buildInstallPlan } = require('../src/services/install-planner');
 
 test('install planner allocates a free port when the preferred port is already used', () => {
@@ -152,4 +155,35 @@ test('install planner rejects unsafe git refs', () => {
       },
     });
   }, /Invalid git ref/);
+});
+
+test('install planner preserves existing secret and oauth env values during reinstall', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-env-'));
+  const appDir = path.join(tempDir, 'familyPulse');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'PLAID_CLIENT_ID=existing-client',
+    'PLAID_SECRET=existing-secret',
+    'PLAID_OAUTH_REDIRECT_URI=https://test.example/pulse/oauth/callback',
+    'BOOTSTRAP_SECRET=existing-bootstrap-secret',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'family-pulse',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /PLAID_CLIENT_ID=existing-client/);
+  assert.match(plan.files['.env'], /PLAID_SECRET=existing-secret/);
+  assert.match(plan.files['.env'], /PLAID_OAUTH_REDIRECT_URI=https:\/\/test\.example\/pulse\/oauth\/callback/);
+  assert.match(plan.files['.env'], /BOOTSTRAP_SECRET=existing-bootstrap-secret/);
 });
