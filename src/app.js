@@ -612,7 +612,12 @@ function createApp(config) {
 
       return notFound(res);
     } catch (error) {
-      return sendJson(res, error.code === 'APP_NOT_FOUND' ? 404 : 500, {
+      const statusByCode = {
+        APP_NOT_FOUND: 404,
+        INVALID_GIT_REF: 400,
+        GIT_SSH_KEY_PATH_REQUIRED: 400,
+      };
+      return sendJson(res, statusByCode[error.code] || 500, {
         error: error.message || 'Unexpected error',
       });
     }

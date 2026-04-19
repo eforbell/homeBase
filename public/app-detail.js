@@ -103,10 +103,12 @@
   async function handleDeploy(form) {
     const mountPath = form.elements.mountPath.value.trim();
     const portRaw = form.elements.port.value.trim();
+    const ref = form.elements.ref.value.trim();
     const dryRun = form.elements.dryRun.checked;
     const resultNode = form.querySelector('[data-result]');
     const payload = { mountPath, dryRun };
     if (portRaw) payload.port = Number(portRaw);
+    if (ref) payload.ref = ref;
     if (!dryRun) {
       payload.confirm = 'EXECUTE';
     }
@@ -195,6 +197,7 @@
       const appHealth = (healthPayload.byAppId || {})[appId] || null;
       const mountPath = install?.mountPath || app.network?.preferredMountPath || `/${appId}/`;
       const port = install?.port || app.network?.preferredPort || '';
+      const ref = install?.ref || app.repository?.defaultRef || 'main';
 
       root.innerHTML = `
         <div class="hb-stack">
@@ -257,6 +260,7 @@
               <form class="hb-form-grid" data-action="deploy">
                 <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
                 <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(port)}"></label>
+                <label class="hb-label">Git ref <input class="hb-input" name="ref" value="${window.HB.escapeHtml(ref)}" placeholder="main"></label>
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>

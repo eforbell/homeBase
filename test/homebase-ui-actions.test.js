@@ -14,6 +14,8 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   assert.match(source, /data-action="test-alerts"/);
   assert.match(source, /\/api\/alerts\/test/);
   assert.match(source, /\/api\/bootstrap\/execute/);
+  assert.match(source, /Update Home Base/);
+  assert.match(source, /Run Home Base update/);
   assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /payload\.confirm = 'EXECUTE'/);
 });
@@ -41,12 +43,14 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /Details/);
   assert.match(apps, /Backup…/);
   assert.match(apps, /Restore…/);
+  assert.match(apps, /Git ref/);
   assert.match(apps, /\/api\/apps\/health/);
   assert.match(apps, /runtimeStatusPill/);
   assert.match(apps, /window\.HB\.backupSummary/);
   assert.match(apps, /window\.HB\.localOnlyBackupNote/);
   assert.match(apps, /View health details/);
   assert.match(apps, /Setup ↗/);
+  assert.match(apps, /payload\.ref = ref/);
   assert.match(apps, /scheduleRefresh/);
   assert.match(apps, /visibilitychange/);
 });

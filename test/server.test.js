@@ -681,6 +681,34 @@ test('install execute dry-run creates a completed install job', async () => {
   }
 });
 
+test('install execute rejects invalid git ref', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-invalid-ref-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const executeRes = await fetch(`${server.url}/api/apps/family-help/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true, ref: 'main;rm -rf /' }),
+    });
+    const payload = await executeRes.json();
+    assert.equal(executeRes.status, 400);
+    assert.match(payload.error, /Invalid git ref/);
+  } finally {
+    await server.close();
+  }
+});
+
 test('job detail route serves static page shell', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-job-page-'));
   const server = await startServer({

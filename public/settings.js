@@ -170,11 +170,11 @@
           </section>
           <section class="hb-grid hb-grid-2">
             <article class="hb-card">
-              <h2 style="margin-top:0;">Update self</h2>
+              <h2 style="margin-top:0;">Update Home Base</h2>
               <form class="hb-form-grid" data-action="update-self">
                 <label class="hb-label">Git ref <input class="hb-input" name="ref" value="main"></label>
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-                <button class="hb-btn" type="submit">Run update-self</button>
+                <button class="hb-btn" type="submit">Run Home Base update</button>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
             </article>

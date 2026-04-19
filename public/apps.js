@@ -51,6 +51,7 @@
     const appId = window.HB.escapeHtml(app.id);
     const mountDefault = app.network?.preferredMountPath || `/${app.id}/`;
     const portDefault = app.network?.preferredPort || '';
+    const refDefault = app.repository?.defaultRef || 'main';
     return `
       <article class="hb-card">
         <h3 style="margin:0;">${window.HB.escapeHtml(app.name)}</h3>
@@ -63,6 +64,10 @@
           <label class="hb-label">
             Port
             <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(portDefault)}">
+          </label>
+          <label class="hb-label">
+            Git ref
+            <input class="hb-input" name="ref" value="${window.HB.escapeHtml(refDefault)}" placeholder="main">
           </label>
           <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
             <input name="dryRun" type="checkbox" checked>
@@ -79,6 +84,7 @@
     const appId = form.getAttribute('data-app-id');
     const mountPath = form.elements.mountPath.value.trim();
     const portRaw = form.elements.port.value.trim();
+    const ref = form.elements.ref.value.trim();
     const dryRun = form.elements.dryRun.checked;
     const resultNode = form.querySelector('[data-result]');
     const payload = {
@@ -86,6 +92,7 @@
       dryRun,
     };
     if (portRaw) payload.port = Number(portRaw);
+    if (ref) payload.ref = ref;
     if (!dryRun) {
       payload.confirm = 'EXECUTE';
     }

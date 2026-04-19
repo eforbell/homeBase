@@ -24,6 +24,7 @@ test('app detail exposes operations sections and anchors', () => {
   assert.match(source, /id="backup"/);
   assert.match(source, /id="restore"/);
   assert.match(source, /id="deploy"/);
+  assert.match(source, /Git ref/);
   assert.match(source, /href="#health"/);
   assert.match(source, /href="#backup"/);
   assert.match(source, /href="#restore"/);
@@ -50,6 +51,7 @@ test('app detail surfaces backup summary and local-only risk', () => {
   assert.match(source, /\/api\/apps\/health/);
   assert.match(source, /Runtime health/);
   assert.match(source, /probeSummary/);
+  assert.match(source, /payload\.ref = ref/);
   assert.match(source, /Open setup ↗/);
   assert.match(source, /Onboarding/);
 });

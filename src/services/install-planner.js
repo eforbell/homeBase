@@ -16,6 +16,30 @@ function normalizeMountPath(value) {
   return next;
 }
 
+function isValidGitRef(value) {
+  const ref = String(value || '').trim();
+  if (!ref) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(ref)) return false;
+  if (ref.startsWith('/') || ref.endsWith('/')) return false;
+  if (ref.startsWith('.') || ref.endsWith('.')) return false;
+  if (ref.includes('..')) return false;
+  if (ref.includes('//')) return false;
+  if (ref.includes('@{')) return false;
+  if (ref.endsWith('.lock')) return false;
+  return true;
+}
+
+function resolveGitRef(options, app) {
+  const requested = options && options.ref != null ? String(options.ref).trim() : '';
+  const ref = requested || app.repository.defaultRef;
+  if (!isValidGitRef(ref)) {
+    const error = new Error('Invalid git ref. Use a branch/tag name with letters, numbers, dot, underscore, slash, or dash.');
+    error.code = 'INVALID_GIT_REF';
+    throw error;
+  }
+  return ref;
+}
+
 function allocatePort(preferred, usedPorts) {
   let candidate = preferred;
   while (usedPorts.has(candidate)) candidate += 1;
@@ -327,6 +351,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     secret3,
   };
   const repositoryUrl = resolveRepositoryUrl(app, config);
+  const gitRef = resolveGitRef(options, app);
   const gitRunPrefix = renderGitRunPrefix({ serviceUser, app, config });
 
   const env = resolveEnvTemplate(app.config.env, ctx);
@@ -386,8 +411,8 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     makeStep('git-sync', 'Clone or update application source', [
       `if [ ! -d ${installRoot}/.git ]; then ${gitRunPrefix} git clone ${repositoryUrl} ${installRoot}; fi`,
       `${gitRunPrefix} git -C ${installRoot} fetch origin --prune`,
-      `${gitRunPrefix} git -C ${installRoot} checkout ${options.ref || app.repository.defaultRef}`,
-      `${gitRunPrefix} git -C ${installRoot} pull --ff-only origin ${options.ref || app.repository.defaultRef}`,
+      `${gitRunPrefix} git -C ${installRoot} checkout ${gitRef}`,
+      `${gitRunPrefix} git -C ${installRoot} pull --ff-only origin ${gitRef}`,
     ]),
     makeStep('database-bootstrap', 'Create database role and database', buildDatabaseCommands(app, ctx)),
     makeStep('render-config', 'Render application environment and unit files', [
@@ -437,7 +462,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       id: app.id,
       name: app.name,
       repoUrl: repositoryUrl,
-      ref: options.ref || app.repository.defaultRef,
+      ref: gitRef,
     },
     install: {
       serviceUser,
@@ -464,7 +489,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       externalUrl,
       installRoot,
       serviceName: app.service.name,
-      ref: options.ref || app.repository.defaultRef,
+      ref: gitRef,
       status: 'planned',
       plannedAt: new Date().toISOString(),
     },

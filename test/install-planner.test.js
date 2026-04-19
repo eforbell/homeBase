@@ -117,3 +117,39 @@ test('install planner supports dedicated ssh key mode for founder workflows', ()
   assert.match(plan.script, /GIT_SSH_COMMAND='ssh -i \/opt\/sovereign-home\/\.ssh\/id_founder_homebase/);
   assert.match(plan.script, /UserKnownHostsFile=\/opt\/sovereign-home\/\.ssh\/known_hosts/);
 });
+
+test('install planner uses provided git ref for deploy/reinstall plans', () => {
+  const plan = buildInstallPlan({
+    appId: 'family-help',
+    state: { installations: {} },
+    options: { ref: 'feature/test-ref' },
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: '/opt/sovereign-home/apps',
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.equal(plan.app.ref, 'feature/test-ref');
+  assert.equal(plan.stateRecord.ref, 'feature/test-ref');
+  assert.match(plan.script, /git -C .* checkout feature\/test-ref/);
+});
+
+test('install planner rejects unsafe git refs', () => {
+  assert.throws(() => {
+    buildInstallPlan({
+      appId: 'family-help',
+      state: { installations: {} },
+      options: { ref: 'main;rm -rf /' },
+      config: {
+        port: 3080,
+        serviceUser: 'sovereign',
+        baseInstallDir: '/opt/sovereign-home/apps',
+        defaultHostname: 'homebase',
+        defaultDomain: 'tailnet',
+      },
+    });
+  }, /Invalid git ref/);
+});
