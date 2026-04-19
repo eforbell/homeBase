@@ -11,6 +11,8 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   const source = readPublicScript('settings.js');
 
   assert.match(source, /data-action="bootstrap-host"/);
+  assert.match(source, /data-action="test-alerts"/);
+  assert.match(source, /\/api\/alerts\/test/);
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /payload\.confirm = 'EXECUTE'/);
@@ -39,8 +41,12 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /Details/);
   assert.match(apps, /Backup…/);
   assert.match(apps, /Restore…/);
+  assert.match(apps, /\/api\/apps\/health/);
+  assert.match(apps, /runtimeStatusPill/);
   assert.match(apps, /window\.HB\.backupSummary/);
   assert.match(apps, /window\.HB\.localOnlyBackupNote/);
+  assert.match(apps, /View health details/);
+  assert.match(apps, /Setup ↗/);
   assert.match(apps, /scheduleRefresh/);
   assert.match(apps, /visibilitychange/);
 });
@@ -50,6 +56,12 @@ test('dashboard surfaces local-only backup posture warning', () => {
 
   assert.match(dashboard, /Backup posture/);
   assert.match(dashboard, /Backups are currently local-only/);
+  assert.match(dashboard, /Health warnings/);
+  assert.match(dashboard, /renderAppHealthWarnings/);
+  assert.match(dashboard, /renderHostWarnings/);
+  assert.match(dashboard, /needs-setup/);
+  assert.match(dashboard, /\/api\/apps\/health/);
+  assert.match(dashboard, /Inspect app health/);
 });
 
 test('shared API exposes backup summary helpers', () => {
@@ -58,8 +70,13 @@ test('shared API exposes backup summary helpers', () => {
   assert.match(api, /function latestBackup\(backups\)/);
   assert.match(api, /function backupSummary\(backups\)/);
   assert.match(api, /function localOnlyBackupNote\(config\)/);
+  assert.match(api, /function runtimeStatusMeta\(status\)/);
+  assert.match(api, /function runtimeStatusPill\(status\)/);
+  assert.match(api, /Needs setup/);
   assert.match(api, /No backups yet/);
   assert.match(api, /latestBackup,/);
   assert.match(api, /backupSummary,/);
   assert.match(api, /localOnlyBackupNote,/);
+  assert.match(api, /runtimeStatusMeta,/);
+  assert.match(api, /runtimeStatusPill,/);
 });

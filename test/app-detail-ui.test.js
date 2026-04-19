@@ -20,9 +20,11 @@ test('app detail UI exposes backup and restore execution without window.prompt',
 test('app detail exposes operations sections and anchors', () => {
   const source = readAppDetail();
 
+  assert.match(source, /id="health"/);
   assert.match(source, /id="backup"/);
   assert.match(source, /id="restore"/);
   assert.match(source, /id="deploy"/);
+  assert.match(source, /href="#health"/);
   assert.match(source, /href="#backup"/);
   assert.match(source, /href="#restore"/);
   assert.match(source, /scrollToCurrentHash/);
@@ -45,4 +47,9 @@ test('app detail surfaces backup summary and local-only risk', () => {
   assert.match(source, /No backups recorded yet\. Take a first backup/);
   assert.match(source, /window\.HB\.latestBackup/);
   assert.match(source, /window\.HB\.localOnlyBackupNote/);
+  assert.match(source, /\/api\/apps\/health/);
+  assert.match(source, /Runtime health/);
+  assert.match(source, /probeSummary/);
+  assert.match(source, /Open setup ↗/);
+  assert.match(source, /Onboarding/);
 });

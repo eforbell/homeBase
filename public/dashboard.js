@@ -1,21 +1,29 @@
 (function dashboardPage() {
   const root = document.getElementById('app');
 
-  function renderInstallCards(installations) {
+  function renderInstallCards(installations, healthByAppId) {
     if (!installations.length) {
       return '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>';
     }
-    return installations.map((item) => `
+    return installations.map((item) => {
+      const health = healthByAppId[item.appId] || {};
+      const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
+      const needsAttention = attentionStatuses.has(health.runtimeStatus);
+      return `
       <article class="hb-card">
         <div class="hb-row">
           <a href="/apps/${window.HB.escapeHtml(item.appId)}"><strong>${window.HB.escapeHtml(item.name || item.appId)}</strong></a>
           ${window.HB.statusBadge(item.status)}
+          ${window.HB.runtimeStatusPill(health.runtimeStatus || 'unknown')}
         </div>
         <p class="hb-muted" style="margin:0.55rem 0 0;">
-          ${window.HB.escapeHtml(item.mountPath)} · Port ${window.HB.escapeHtml(item.port)}
+          ${window.HB.escapeHtml(item.mountPath)} · Port ${window.HB.escapeHtml(item.port)}<br>
+          Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')}
         </p>
+        ${health.recoveryHint ? `<p class="${needsAttention ? 'hb-warn' : 'hb-muted'}" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(health.recoveryHint)}${needsAttention ? ` <a href="/apps/${window.HB.escapeHtml(item.appId)}#health">Inspect app health →</a>` : ''}</p>` : ''}
       </article>
-    `).join('');
+    `;
+    }).join('');
   }
 
   function renderJobs(jobs) {
@@ -28,6 +36,55 @@
             ${window.HB.statusBadge(job.status)}
             <span>${window.HB.escapeHtml(job.kind)}</span>
             <span class="hb-muted">${window.HB.escapeHtml(window.HB.formatTimestamp(job.createdAt))}</span>
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  }
+
+  function renderAppHealthWarnings(installations, healthByAppId) {
+    const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
+    const items = installations
+      .map((install) => ({ install, health: healthByAppId[install.appId] || {} }))
+      .filter(({ health }) => attentionStatuses.has(health.runtimeStatus));
+
+    if (!items.length) {
+      return '<p class="hb-ok" style="margin:0;">No app health warnings detected.</p>';
+    }
+
+    return `
+      <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
+        ${items.map(({ install, health }) => `
+          <li class="hb-row">
+            <a href="/apps/${window.HB.escapeHtml(install.appId)}#health"><strong>${window.HB.escapeHtml(install.name || install.appId)}</strong></a>
+            ${window.HB.runtimeStatusPill(health.runtimeStatus)}
+            <span class="hb-muted">${window.HB.escapeHtml(health.recoveryHint || 'Needs attention')}</span>
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  }
+
+  function renderHostWarnings(preflight) {
+    const checks = Array.isArray(preflight?.checks) ? preflight.checks : [];
+    const failing = checks.filter((item) => !item.ok);
+    const critical = failing.filter((item) => item.severity === 'critical');
+    const warning = failing.filter((item) => item.severity !== 'critical');
+    if (!failing.length) {
+      return '<p class="hb-ok" style="margin:0;">Host checks are passing.</p>';
+    }
+
+    return `
+      <p style="margin:0 0 0.55rem;">
+        ${critical.length ? `<span class="hb-err">${critical.length} critical host check(s) failing</span>` : ''}
+        ${critical.length && warning.length ? ' · ' : ''}
+        ${warning.length ? `<span class="hb-warn">${warning.length} warning host check(s)</span>` : ''}
+      </p>
+      <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
+        ${failing.slice(0, 4).map((item) => `
+          <li class="hb-row">
+            <span class="${item.severity === 'critical' ? 'hb-err' : 'hb-warn'}">${window.HB.escapeHtml(item.title || item.id)}</span>
+            <span class="hb-muted">${window.HB.escapeHtml(item.hint || item.summary || '')}</span>
           </li>
         `).join('')}
       </ul>
@@ -93,14 +150,16 @@
 
   async function load() {
     try {
-      const [state, status, config, bootstrapStatus] = await Promise.all([
+      const [state, status, config, bootstrapStatus, healthPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/homebase/bootstrap-status'),
+        window.HB.getJson('/api/apps/health'),
       ]);
       const installations = Object.values(state.installations || {});
       const jobs = Array.isArray(state.jobs) ? state.jobs : [];
+      const healthByAppId = healthPayload.byAppId || {};
       const placeholderBanner = config.hostnameIsPlaceholder
         ? '<p class="hb-warn" style="margin:0.4rem 0 0;">Hostname is still default (`homebase`). Update in Settings before wider deployment.</p>'
         : '';
@@ -123,13 +182,24 @@
             <h2 style="margin-top:0;">Backup posture</h2>
             <p class="hb-warn" style="margin:0;">Backups are currently local-only at ${window.HB.escapeHtml(config.baseBackupDir || '/var/lib/sovereign-home/backups')}. This helps recover app mistakes, but not VM or disk loss.</p>
           </section>
+          <section class="hb-card">
+            <h2 style="margin-top:0;">Health warnings</h2>
+            <div style="margin-top:0.65rem;">
+              <p class="hb-muted" style="margin:0 0 0.45rem;"><strong>Apps</strong></p>
+              ${renderAppHealthWarnings(installations, healthByAppId)}
+            </div>
+            <div data-host-warnings style="margin-top:0.8rem;">
+              <p class="hb-muted" style="margin:0 0 0.45rem;"><strong>Host checks</strong></p>
+              <p class="hb-muted" style="margin:0;">Loading host checks…</p>
+            </div>
+          </section>
           <section>
             <div class="hb-row" style="justify-content:space-between;">
               <h2 style="margin:0;">Installed apps</h2>
               <a href="/apps">Manage apps →</a>
             </div>
             <div class="hb-grid hb-grid-2" style="margin-top:0.75rem;">
-              ${renderInstallCards(installations)}
+              ${renderInstallCards(installations, healthByAppId)}
             </div>
           </section>
           <section class="hb-card">
@@ -145,9 +215,23 @@
       window.HB.getJson('/api/preflight').then((preflight) => {
         const node = root.querySelector('[data-preflight-summary]');
         if (node) node.innerHTML = preflightSummary(preflight);
+        const hostWarnings = root.querySelector('[data-host-warnings]');
+        if (hostWarnings) {
+          hostWarnings.innerHTML = `
+            <p class="hb-muted" style="margin:0 0 0.45rem;"><strong>Host checks</strong></p>
+            ${renderHostWarnings(preflight)}
+          `;
+        }
       }).catch((error) => {
         const node = root.querySelector('[data-preflight-summary]');
         if (node) node.innerHTML = `<span class="hb-warn">${window.HB.escapeHtml(error.message)}</span>`;
+        const hostWarnings = root.querySelector('[data-host-warnings]');
+        if (hostWarnings) {
+          hostWarnings.innerHTML = `
+            <p class="hb-muted" style="margin:0 0 0.45rem;"><strong>Host checks</strong></p>
+            <p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(error.message)}</p>
+          `;
+        }
       });
     } catch (error) {
       root.innerHTML = `

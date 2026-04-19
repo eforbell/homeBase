@@ -34,3 +34,34 @@
 - Added lightweight repaint support: app detail polls started backup/restore jobs and reloads when terminal; apps page refreshes visible installed-card state periodically so backup summaries can update without manual browser refresh.
 - VM/browser evidence from Eric: failed-job rerun verified by temporarily removing SSH-key access, running an install to failure, restoring access, re-running from job detail, and confirming the rerun succeeded.
 - All Feature-1 stories are now marked verified in planning/current-feature.json.
+
+2026-04-18 (Feature-2 kickoff)
+- Confirmed Feature-1 merged via GitHub PR #2 (`feature/app-operations-ux-parity` -> `main`, merged 2026-04-18T14:06:07Z).
+- Started Feature-2 App Health, Readiness, and Alerts on branch `feature/app-health-readiness-alerts`.
+- Set Feature-2 as current in planning/current-feature.json with HLT-001 in_progress and remaining stories queued.
+- Began HLT-001 implementation pass:
+  - added cached app health snapshot service (`src/services/health-monitor.js`),
+  - exposed `/api/apps/health`,
+  - surfaced runtime/service state on apps and dashboard cards.
+- Verification: `node --check` for changed JS files and `npm test` passed (58/58).
+- HLT-001 refinement pass:
+  - app cards now include explicit attention guidance links to app detail health (`#health`) when runtime checks fail,
+  - dashboard cards include the same quick health handoff,
+  - app detail now has a dedicated Runtime health section (service/liveness/readiness + recovery hint + check timestamp).
+- Story status update: HLT-001 moved to review (automated checks green; VM/manual failure-recovery validation still pending).
+- HLT-002 first implementation pass:
+  - dashboard now renders a dedicated Health warnings section before recent jobs,
+  - app-level warnings are grouped separately from host preflight failures,
+  - host warnings keep critical vs warning distinction in-line with preflight severity.
+- Story status update: HLT-002 moved to review (automated tests green; VM/manual stopped-service browser validation still pending).
+- HLT-003 implementation pass:
+  - health monitor now evaluates onboarding readiness (`onboarding.statusPath` + `readyWhen`) and can classify apps as `needs-setup`,
+  - apps + app detail now expose setup-oriented next actions while preserving the regular Open action,
+  - runtime health details now include onboarding signal alongside service/liveness/readiness.
+- Story status update: HLT-003 moved to review (automated checks green; VM/manual onboarding endpoint validation still pending).
+- HLT-004 first implementation pass:
+  - added configurable health-alert settings (`healthAlertsEnabled`, `healthAlertsWebhookUrl`) in Homebase config,
+  - added notifier service with cooldown/dedup behavior for critical runtime states,
+  - `/api/apps/health` now triggers critical alert evaluation,
+  - Settings now supports test alert delivery via `/api/alerts/test`.
+- Story status update: HLT-004 moved to review (automated tests green; VM/manual alert target test + simulated service-down alert validation still pending).

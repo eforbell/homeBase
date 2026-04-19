@@ -20,6 +20,8 @@ const {
   validateHomeBaseConfigPatch,
 } = require('./homebase-config');
 const { scheduleAutoBootstrap } = require('./auto-bootstrap');
+const { HealthMonitor } = require('./services/health-monitor');
+const { HealthAlertNotifier } = require('./services/notifications');
 const { normalizePathname } = require('./setup-gate');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -189,6 +191,7 @@ function createApp(config) {
   stateStore.init();
   const jobRunner = new JobRunner(stateStore);
   const catalog = getCatalog();
+  const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
   const preflightCache = {
     key: '',
     expiresAt: 0,
@@ -208,6 +211,10 @@ function createApp(config) {
     stateStore,
     jobRunner,
     config: initialEffectiveConfig,
+  });
+  const healthMonitor = new HealthMonitor({ catalogById });
+  const healthAlertNotifier = new HealthAlertNotifier({
+    postJson: config.notificationsPostJson,
   });
 
   function getPreflight(effectiveConfig, { force = false } = {}) {
@@ -251,6 +258,22 @@ function createApp(config) {
       }
       if (method === 'GET' && pathname === '/api/state') {
         return sendJson(res, 200, projectStateForClient(state, effectiveConfig));
+      }
+      if (method === 'GET' && pathname === '/api/apps/health') {
+        const installations = Object.values(state.installations || {});
+        const snapshot = await healthMonitor.getAppHealthSnapshot(installations, {
+          force: url.searchParams.get('refresh') === '1',
+        });
+        await healthAlertNotifier.notifySnapshot(snapshot, effectiveConfig);
+        return sendJson(res, 200, snapshot);
+      }
+      if (method === 'POST' && pathname === '/api/alerts/test') {
+        try {
+          await healthAlertNotifier.sendTestAlert(effectiveConfig);
+          return sendJson(res, 200, { ok: true });
+        } catch (error) {
+          return sendJson(res, error.code ? 409 : 500, { error: error.message || 'Unable to send test alert' });
+        }
       }
       if (method === 'GET' && pathname === '/api/preflight') {
         return sendJson(res, 200, getPreflight(effectiveConfig, {
