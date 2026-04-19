@@ -125,6 +125,21 @@ function joinExternalUrlPath(externalUrl, pathPart) {
   return `${base}${normalizedPath}`;
 }
 
+function readOnboardingReadyValue(payload, readyWhen) {
+  if (!payload || typeof payload !== 'object') return null;
+  const key = String(readyWhen || '').trim();
+  if (key && Object.prototype.hasOwnProperty.call(payload, key)) {
+    return Boolean(payload[key]);
+  }
+  if (payload.bootstrap && typeof payload.bootstrap === 'object' && typeof payload.bootstrap.ready === 'boolean') {
+    return payload.bootstrap.ready;
+  }
+  if (typeof payload.ready === 'boolean') {
+    return payload.ready;
+  }
+  return null;
+}
+
 function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessProbe, readinessProbe, onboarding }) {
   const deploymentStatus = asTrimmedString(install?.status, 'unknown');
   const service = serviceProbe || { state: 'unknown', ok: false, message: 'Service probe unavailable' };
@@ -234,10 +249,7 @@ async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, 
   }
   if (onboardingConfig?.statusPath && install?.status === 'installed' && serviceProbe.ok) {
     const onboardingProbe = await probeHttpJson(toProbeUrl({ install, path: onboardingConfig.statusPath }));
-    const readyKey = String(onboardingConfig.readyWhen || '').trim();
-    const readyValue = readyKey && onboardingProbe?.payload && typeof onboardingProbe.payload === 'object'
-      ? Boolean(onboardingProbe.payload[readyKey])
-      : null;
+    const readyValue = readOnboardingReadyValue(onboardingProbe?.payload, onboardingConfig.readyWhen);
     onboarding = {
       status: readyValue == null ? 'unknown' : (readyValue ? 'ready' : 'needs-setup'),
       ok: readyValue === true,
@@ -339,4 +351,5 @@ module.exports = {
   defaultProbeHttpJson,
   evaluateRuntimeState,
   joinExternalUrlPath,
+  readOnboardingReadyValue,
 };

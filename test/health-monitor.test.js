@@ -1,6 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { HealthMonitor, evaluateRuntimeState, buildAppHealthRecord, joinExternalUrlPath } = require('../src/services/health-monitor');
+const {
+  HealthMonitor,
+  evaluateRuntimeState,
+  buildAppHealthRecord,
+  joinExternalUrlPath,
+  readOnboardingReadyValue,
+} = require('../src/services/health-monitor');
 
 test('evaluateRuntimeState marks service-down when service probe fails', () => {
   const runtime = evaluateRuntimeState({
@@ -127,4 +133,43 @@ test('buildAppHealthRecord derives onboarding setupUrl from externalUrl and setu
 
   assert.equal(record.onboarding.status, 'needs-setup');
   assert.equal(record.onboarding.setupUrl, 'https://test.example.ts.net/help/setup');
+});
+
+test('readOnboardingReadyValue supports fallback to bootstrap.ready', () => {
+  assert.equal(readOnboardingReadyValue({ household_initialized: true }, 'household_initialized'), true);
+  assert.equal(readOnboardingReadyValue({ bootstrap: { ready: true } }, 'household_initialized'), true);
+  assert.equal(readOnboardingReadyValue({ bootstrap: { ready: false } }, 'household_initialized'), false);
+  assert.equal(readOnboardingReadyValue({}, 'household_initialized'), null);
+});
+
+test('buildAppHealthRecord uses bootstrap.ready when readyWhen key is missing', async () => {
+  const record = await buildAppHealthRecord({
+    install: {
+      appId: 'family-dinner',
+      status: 'installed',
+      serviceName: 'family-dinner',
+      port: 3000,
+      externalUrl: 'https://test.example.ts.net/dinner',
+    },
+    catalogEntry: {
+      network: {
+        health: {
+          livenessPath: '/api/health',
+          readinessPath: '/api/ready',
+        },
+      },
+      onboarding: {
+        statusPath: '/api/bootstrap',
+        setupPath: '/setup',
+        readyWhen: 'household_initialized',
+      },
+    },
+    probeServiceState: () => ({ state: 'active', ok: true, message: 'Service active' }),
+    probeHttp: async () => ({ status: 'ok', ok: true, statusCode: 200, message: 'HTTP 200' }),
+    probeHttpJson: async () => ({ status: 'ok', ok: true, payload: { bootstrap: { ready: true } } }),
+    nowIso: '2026-04-18T12:00:00.000Z',
+  });
+
+  assert.equal(record.onboarding.status, 'ready');
+  assert.equal(record.runtimeStatus, 'healthy');
 });
