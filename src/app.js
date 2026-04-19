@@ -186,6 +186,32 @@ function getHomeBaseStatus(config) {
   return status;
 }
 
+function buildRestartPlan({ app, install }) {
+  const serviceName = install?.serviceName || app?.service?.name;
+  const readinessPath = app?.network?.health?.readinessPath || app?.network?.health?.livenessPath || '/api/health';
+  const port = install?.port || app?.network?.preferredPort;
+  const healthUrl = port ? `http://127.0.0.1:${port}${readinessPath}` : null;
+  return {
+    kind: 'restart',
+    generatedAt: new Date().toISOString(),
+    app: {
+      id: app.id,
+      name: app.name,
+    },
+    restart: {
+      serviceName,
+      port,
+      readinessPath,
+    },
+    commands: [
+      `sudo systemctl restart ${serviceName}`,
+      healthUrl
+        ? `for attempt in $(seq 1 20); do curl --fail --silent --show-error ${healthUrl} && exit 0; sleep 1; done; echo \"Timed out waiting for ${healthUrl}\" >&2; exit 1`
+        : `echo \"Service restarted; no health URL configured for ${serviceName}\"`,
+    ],
+  };
+}
+
 function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   stateStore.init();
@@ -434,17 +460,19 @@ function createApp(config) {
 
       const appActionsMatch = pathname.match(/^\/api\/apps\/([^/]+)\/actions$/);
       if (method === 'GET' && appActionsMatch) {
-        if (!getAppById(appActionsMatch[1])) return notFound(res);
+        const appId = appActionsMatch[1];
+        if (!getAppById(appId)) return notFound(res);
+        const installation = (state.installations || {})[appId] || null;
         return sendJson(res, 200, {
-          appId: appActionsMatch[1],
+          appId,
           actions: {
             install: true,
             backup: true,
             restore: true,
             update: false,
-            restart: false,
+            restart: Boolean(installation),
           },
-          note: 'Update/restart are not separate API actions yet; use install execute for deploy operations.',
+          note: 'Update is not a separate API action yet; use install execute for deploy operations.',
         });
       }
 
@@ -494,6 +522,44 @@ function createApp(config) {
         const appId = executeInstallMatch[1];
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {
+          dryRun: body.dryRun !== false,
+        });
+        return sendJson(res, 202, {
+          ok: true,
+          jobId,
+          appId,
+          dryRun: body.dryRun !== false,
+        });
+      }
+      const restartExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restart\/execute$/);
+      if (method === 'POST' && restartExecuteMatch) {
+        const body = await parseBody(req);
+        if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          return sendJson(res, 400, {
+            error: 'Real execution requires confirm=EXECUTE',
+          });
+        }
+        const appId = restartExecuteMatch[1];
+        const app = getAppById(appId);
+        if (!app) return notFound(res);
+        const install = (state.installations || {})[appId];
+        if (!install) {
+          return sendJson(res, 409, {
+            error: `App ${appId} must be installed before restart is available.`,
+          });
+        }
+        if (body.dryRun === false) {
+          const preflight = getPreflight(effectiveConfig, { force: true });
+          const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
+          if (missing.length) {
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before real restart execution: ${missing.join(', ')}`,
+              missing,
+            });
+          }
+        }
+        const plan = buildRestartPlan({ app, install });
+        const jobId = jobRunner.startRestartJob(plan, {
           dryRun: body.dryRun !== false,
         });
         return sendJson(res, 202, {

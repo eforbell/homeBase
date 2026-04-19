@@ -149,6 +149,23 @@
     }
   }
 
+  async function handleRestart(form) {
+    const dryRun = form.elements.dryRun.checked;
+    const resultNode = form.querySelector('[data-result]');
+    const payload = { dryRun };
+    if (!dryRun) {
+      payload.confirm = 'EXECUTE';
+    }
+    resultNode.textContent = 'Submitting...';
+    try {
+      const response = await window.HB.postJson(`/api/apps/${appId}/restart/execute`, payload);
+      resultNode.innerHTML = `Started restart job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>.`;
+      void waitForJobCompletion(response.jobId, resultNode, { refreshOnComplete: false });
+    } catch (error) {
+      resultNode.textContent = error.message;
+    }
+  }
+
   function wireActions() {
     root.addEventListener('submit', (event) => {
       const backupForm = event.target.closest('form[data-action="backup"]');
@@ -167,6 +184,12 @@
       if (restoreForm) {
         event.preventDefault();
         handleRestore(restoreForm);
+        return;
+      }
+      const restartForm = event.target.closest('form[data-action="restart"]');
+      if (restartForm) {
+        event.preventDefault();
+        handleRestart(restartForm);
       }
     });
   }
@@ -249,8 +272,15 @@
                 <button class="hb-btn" type="submit">Run backup</button>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
+              <form class="hb-form-grid" data-action="restart" style="margin-top:0.75rem;">
+                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                  <input name="dryRun" type="checkbox" checked> Dry-run only
+                </label>
+                <button class="hb-btn" type="submit" ${actions.restart ? '' : 'disabled'}>Run restart</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
               <p class="hb-muted" style="margin:0.6rem 0 0;">
-                Restart: ${actions.restart ? 'Available' : 'Not exposed yet'} ·
+                Restart: ${actions.restart ? 'Available' : 'Install app first'} ·
                 Update: ${actions.update ? 'Available' : 'Not exposed yet'}
               </p>
             </article>

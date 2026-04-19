@@ -85,6 +85,26 @@ class JobRunner {
     });
   }
 
+  startRestartJob(plan, { dryRun = true } = {}) {
+    const steps = [
+      {
+        id: 'restart',
+        title: `Restart ${plan.app.name}`,
+        run: plan.commands,
+      },
+    ];
+    return this.startPlanJob({
+      kind: 'restart',
+      target: plan.app.id,
+      plan,
+      steps,
+      dryRun,
+      extraResult: {
+        serviceName: plan.restart.serviceName,
+      },
+    });
+  }
+
   startHomeBaseUpdateJob(plan, { dryRun = true } = {}) {
     return this.startPlanJob({
       kind: 'homebase-update',
