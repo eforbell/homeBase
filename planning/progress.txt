@@ -71,3 +71,9 @@
   - needs-setup status now takes precedence over readiness-failing when onboarding is incomplete,
   - removed no-op `encodeURIComponent` usage for numeric port probe URL construction.
 - Added regression coverage for webhook failure resilience and setupUrl propagation through hostname/domain config changes.
+
+2026-04-19 (Feature-2 closeout)
+- Confirmed Feature-2 merged via GitHub PR #4 (`feature/app-health-readiness-alerts` -> `main`, merged 2026-04-19T16:46:43Z).
+- Marked Feature-2 complete and moved it to completedFeatures in planning/current-feature.json.
+- Advanced queue pointer to Feature-3 (Admin Auth and Destructive-Action Guardrails) with queued story statuses.
+- Follow-up quality-of-life lane started after Feature-2 merge: app detail now supports restart jobs from UI to reduce CLI-only service restart trips during validation.

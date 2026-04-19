@@ -681,6 +681,77 @@ test('install execute dry-run creates a completed install job', async () => {
   }
 });
 
+test('app actions marks restart available after install record exists', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-actions-restart-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-help/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/help/' }),
+    });
+    const res = await fetch(`${server.url}/api/apps/family-help/actions`);
+    const payload = await res.json();
+    assert.equal(payload.actions.restart, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('restart execute dry-run creates a completed restart job', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-restart-job-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-help/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/help/' }),
+    });
+    const executeRes = await fetch(`${server.url}/api/apps/family-help/restart/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true }),
+    });
+    const execute = await executeRes.json();
+    assert.equal(execute.ok, true);
+
+    let job = null;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      job = await jobRes.json();
+      if (job.status === 'completed') break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.equal(job.kind, 'restart');
+    assert.equal(job.status, 'completed');
+  } finally {
+    await server.close();
+  }
+});
+
 test('install execute rejects invalid git ref', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-invalid-ref-'));
   const server = await startServer({

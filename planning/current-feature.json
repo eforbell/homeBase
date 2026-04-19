@@ -1,30 +1,25 @@
 {
-  "currentFeature": "feature-2",
-  "featureName": "App Health, Readiness, and Alerts",
-  "prdPath": "planning/features/feature-2-prd.json",
-  "summaryPath": "planning/features/feature-2-summary.md",
-  "branch": "feature/app-health-readiness-alerts",
-  "status": "in_progress",
+  "currentFeature": "feature-3",
+  "featureName": "Admin Auth and Destructive-Action Guardrails",
+  "prdPath": "planning/features/feature-3-prd.json",
+  "summaryPath": "planning/features/feature-3-summary.md",
+  "branch": "feature/admin-auth-action-guardrails",
+  "status": "queued",
   "stories": [
     {
-      "id": "HLT-001",
-      "title": "Installed app cards show live service and HTTP state",
-      "status": "review"
+      "id": "ADM-001",
+      "title": "Require admin unlock for destructive operations",
+      "status": "queued"
     },
     {
-      "id": "HLT-002",
-      "title": "Dashboard summarizes warnings and unhealthy apps",
-      "status": "review"
+      "id": "ADM-002",
+      "title": "Admin setup, unlock, lock, and rotation",
+      "status": "queued"
     },
     {
-      "id": "HLT-003",
-      "title": "Onboarding/readiness state is not conflated with install state",
-      "status": "review"
-    },
-    {
-      "id": "HLT-004",
-      "title": "Critical health failures can alert the founder",
-      "status": "review"
+      "id": "ADM-003",
+      "title": "Audit destructive actions",
+      "status": "queued"
     }
   ],
   "featureSequence": [
@@ -97,6 +92,12 @@
       "featureName": "App Operations UX Parity",
       "prNumber": 2,
       "mergedAt": "2026-04-18T14:06:07Z"
+    },
+    {
+      "featureId": "feature-2",
+      "featureName": "App Health, Readiness, and Alerts",
+      "prNumber": 4,
+      "mergedAt": "2026-04-19T16:46:43Z"
     }
   ],
   "branchAndPrPolicy": {
