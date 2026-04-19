@@ -65,3 +65,9 @@
   - `/api/apps/health` now triggers critical alert evaluation,
   - Settings now supports test alert delivery via `/api/alerts/test`.
 - Story status update: HLT-004 moved to review (automated tests green; VM/manual alert target test + simulated service-down alert validation still pending).
+- Addressed PR review fixes:
+  - webhook delivery failures no longer break `/api/apps/health` responses,
+  - setup URL joining now guarantees single-slash normalization,
+  - needs-setup status now takes precedence over readiness-failing when onboarding is incomplete,
+  - removed no-op `encodeURIComponent` usage for numeric port probe URL construction.
+- Added regression coverage for webhook failure resilience and setupUrl propagation through hostname/domain config changes.

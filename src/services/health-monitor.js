@@ -113,7 +113,16 @@ async function defaultProbeHttpJson(url) {
 function toProbeUrl({ install, path }) {
   if (!install || !install.port || !path) return null;
   const normalized = String(path).startsWith('/') ? String(path) : `/${path}`;
-  return `http://127.0.0.1:${encodeURIComponent(String(install.port))}${normalized}`;
+  return `http://127.0.0.1:${String(install.port)}${normalized}`;
+}
+
+function joinExternalUrlPath(externalUrl, pathPart) {
+  if (!externalUrl) return null;
+  const base = String(externalUrl).replace(/\/+$/, '');
+  const path = String(pathPart || '').trim();
+  if (!path) return `${base}/`;
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${normalizedPath}`;
 }
 
 function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessProbe, readinessProbe, onboarding }) {
@@ -147,6 +156,18 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
     };
   }
 
+  if (onboardingState.status === 'needs-setup') {
+    return {
+      runtimeStatus: 'needs-setup',
+      severity: 'warning',
+      recoveryHint: 'App is installed and running, but setup is incomplete. Open Setup to finish onboarding.',
+      service,
+      liveness,
+      readiness,
+      onboarding: onboardingState,
+    };
+  }
+
   if (healthConfig && readiness.status !== 'unknown' && !readiness.ok) {
     return {
       runtimeStatus: 'readiness-failing',
@@ -164,18 +185,6 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
       runtimeStatus: 'http-failing',
       severity: 'high',
       recoveryHint: 'HTTP liveness check failed. Open app detail and review recent jobs.',
-      service,
-      liveness,
-      readiness,
-      onboarding: onboardingState,
-    };
-  }
-
-  if (onboardingState.status === 'needs-setup') {
-    return {
-      runtimeStatus: 'needs-setup',
-      severity: 'warning',
-      recoveryHint: 'App is installed and running, but setup is incomplete. Open Setup to finish onboarding.',
       service,
       liveness,
       readiness,
@@ -206,14 +215,16 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
   };
 }
 
-async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeHttp, nowIso }) {
+async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeHttp, probeHttpJson = defaultProbeHttpJson, nowIso }) {
   const healthConfig = catalogEntry?.network?.health || null;
   const serviceProbe = probeServiceState(install?.serviceName);
   const onboardingConfig = catalogEntry?.onboarding || null;
+  const setupPath = String(onboardingConfig?.setupPath || '/setup');
+  const setupUrl = joinExternalUrlPath(install?.externalUrl, setupPath);
 
   let livenessProbe = { status: 'unknown', ok: false, message: 'No liveness probe configured' };
   let readinessProbe = { status: 'unknown', ok: false, message: 'No readiness probe configured' };
-  let onboarding = { status: 'unknown', ok: false, message: 'No onboarding status configured', setupUrl: null };
+  let onboarding = { status: 'unknown', ok: false, message: 'No onboarding status configured', setupUrl };
 
   if (healthConfig?.livenessPath && install?.status === 'installed' && serviceProbe.ok) {
     livenessProbe = await probeHttp(toProbeUrl({ install, path: healthConfig.livenessPath }));
@@ -222,13 +233,11 @@ async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, 
     readinessProbe = await probeHttp(toProbeUrl({ install, path: healthConfig.readinessPath }));
   }
   if (onboardingConfig?.statusPath && install?.status === 'installed' && serviceProbe.ok) {
-    const onboardingProbe = await defaultProbeHttpJson(toProbeUrl({ install, path: onboardingConfig.statusPath }));
+    const onboardingProbe = await probeHttpJson(toProbeUrl({ install, path: onboardingConfig.statusPath }));
     const readyKey = String(onboardingConfig.readyWhen || '').trim();
     const readyValue = readyKey && onboardingProbe?.payload && typeof onboardingProbe.payload === 'object'
       ? Boolean(onboardingProbe.payload[readyKey])
       : null;
-    const setupPath = String(onboardingConfig.setupPath || '/setup');
-    const setupUrl = install?.externalUrl ? `${String(install.externalUrl).replace(/\/$/, '')}${setupPath.startsWith('/') ? '' : '/'}${setupPath}` : null;
     onboarding = {
       status: readyValue == null ? 'unknown' : (readyValue ? 'ready' : 'needs-setup'),
       ok: readyValue === true,
@@ -273,10 +282,11 @@ function computeInstallationsKey(installations) {
 }
 
 class HealthMonitor {
-  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeHttp = defaultProbeHttp, ttlMs = 15000, now = () => Date.now() } = {}) {
+  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeHttp = defaultProbeHttp, probeHttpJson = defaultProbeHttpJson, ttlMs = 15000, now = () => Date.now() } = {}) {
     this.catalogById = catalogById;
     this.probeServiceState = probeServiceState;
     this.probeHttp = probeHttp;
+    this.probeHttpJson = probeHttpJson;
     this.ttlMs = ttlMs;
     this.now = now;
     this.cache = {
@@ -301,6 +311,7 @@ class HealthMonitor {
       catalogEntry: this.catalogById.get(install.appId) || null,
       probeServiceState: this.probeServiceState,
       probeHttp: this.probeHttp,
+      probeHttpJson: this.probeHttpJson,
       nowIso,
     })));
 
@@ -327,4 +338,5 @@ module.exports = {
   defaultProbeHttp,
   defaultProbeHttpJson,
   evaluateRuntimeState,
+  joinExternalUrlPath,
 };

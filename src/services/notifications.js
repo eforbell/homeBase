@@ -39,6 +39,8 @@ class HealthAlertNotifier {
     const alerts = (snapshot?.apps || []).filter((appHealth) => isCriticalRuntimeStatus(appHealth.runtimeStatus));
     let sent = 0;
     let skipped = 0;
+    let failed = 0;
+    const errors = [];
 
     for (const alert of alerts) {
       const key = `${alert.appId}:${alert.runtimeStatus}`;
@@ -49,21 +51,29 @@ class HealthAlertNotifier {
         continue;
       }
 
-      await this.postJson(config.healthAlertsWebhookUrl, {
-        source: 'homebase',
-        event: 'app-health-critical',
-        appId: alert.appId,
-        runtimeStatus: alert.runtimeStatus,
-        recoveryHint: alert.recoveryHint,
-        checkedAt: alert.checkedAt,
-        appDetailUrl: `${publicBase}/apps/${encodeURIComponent(alert.appId)}#health`,
-      });
-
-      this.lastSentByKey.set(key, nowMs);
-      sent += 1;
+      try {
+        await this.postJson(config.healthAlertsWebhookUrl, {
+          source: 'homebase',
+          event: 'app-health-critical',
+          appId: alert.appId,
+          runtimeStatus: alert.runtimeStatus,
+          recoveryHint: alert.recoveryHint,
+          checkedAt: alert.checkedAt,
+          appDetailUrl: `${publicBase}/apps/${encodeURIComponent(alert.appId)}#health`,
+        });
+        this.lastSentByKey.set(key, nowMs);
+        sent += 1;
+      } catch (error) {
+        failed += 1;
+        errors.push({
+          appId: alert.appId,
+          runtimeStatus: alert.runtimeStatus,
+          error: error.message || 'Notification send failed',
+        });
+      }
     }
 
-    return { enabled: true, sent, skipped };
+    return { enabled: true, sent, skipped, failed, errors };
   }
 
   async sendTestAlert(config = {}) {

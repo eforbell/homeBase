@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createApp } = require('../src/app');
+const { SqliteStateStore } = require('../src/state/sqlite-store');
 
 async function startServer(config) {
   const app = createApp(config);
@@ -300,6 +301,108 @@ test('health alert test endpoint posts to configured webhook target', async () =
     assert.equal(posted.length, 1);
     assert.equal(posted[0].url, 'https://alerts.example.test/hook');
     assert.equal(posted[0].body.event, 'app-health-test');
+  } finally {
+    await server.close();
+  }
+});
+
+test('apps health endpoint still responds when webhook delivery fails', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-failure-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    notificationsPostJson: async () => {
+      throw new Error('webhook offline');
+    },
+  });
+
+  try {
+    const store = new SqliteStateStore(dbPath);
+    store.upsertInstallation({
+      appId: 'family-help',
+      name: 'Family Help',
+      purpose: 'Household task intake',
+      port: 3002,
+      mountPath: '/help/',
+      externalUrl: 'https://homebase.tailnet/help/',
+      installRoot: '/opt/sovereign-home/apps/family-help',
+      serviceName: 'definitely-not-a-real-service',
+      ref: 'main',
+      status: 'installed',
+      plannedAt: '2026-04-18T12:00:00.000Z',
+      updatedAt: '2026-04-18T12:00:00.000Z',
+    });
+
+    const cfgRes = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        hostname: 'homebase',
+        domain: 'tailnet',
+        gitTransport: 'https',
+        healthAlertsEnabled: true,
+        healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+      }),
+    });
+    assert.equal(cfgRes.status, 200);
+
+    const res = await fetch(`${server.url}/api/apps/health`);
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(payload.byAppId['family-help'].runtimeStatus, 'service-down');
+  } finally {
+    await server.close();
+  }
+});
+
+test('apps health onboarding setupUrl follows hostname/domain config updates', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-health-setup-url-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-help/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/help/' }),
+    });
+
+    const beforeRes = await fetch(`${server.url}/api/apps/health`);
+    const before = await beforeRes.json();
+    assert.equal(before.byAppId['family-help'].onboarding.setupUrl, 'https://homebase.tailnet/help/setup');
+
+    const updateRes = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        hostname: 'test',
+        domain: 'example.ts.net',
+        gitTransport: 'https',
+      }),
+    });
+    assert.equal(updateRes.status, 200);
+
+    const afterRes = await fetch(`${server.url}/api/apps/health`);
+    const after = await afterRes.json();
+    assert.equal(after.byAppId['family-help'].onboarding.setupUrl, 'https://test.example.ts.net/help/setup');
   } finally {
     await server.close();
   }

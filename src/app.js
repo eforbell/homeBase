@@ -264,7 +264,11 @@ function createApp(config) {
         const snapshot = await healthMonitor.getAppHealthSnapshot(installations, {
           force: url.searchParams.get('refresh') === '1',
         });
-        await healthAlertNotifier.notifySnapshot(snapshot, effectiveConfig);
+        try {
+          await healthAlertNotifier.notifySnapshot(snapshot, effectiveConfig);
+        } catch (error) {
+          console.warn(`[homebase] health alert notify failed: ${error.message}`);
+        }
         return sendJson(res, 200, snapshot);
       }
       if (method === 'POST' && pathname === '/api/alerts/test') {

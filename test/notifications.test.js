@@ -41,3 +41,31 @@ test('health alert notifier deduplicates critical alerts during cooldown', async
   assert.equal(third.sent, 1);
   assert.equal(posted.length, 2);
 });
+
+test('health alert notifier swallows webhook failures and keeps snapshot flow alive', async () => {
+  const notifier = new HealthAlertNotifier({
+    postJson: async (_url, body) => {
+      if (body.appId === 'family-help') {
+        throw new Error('webhook offline');
+      }
+    },
+  });
+
+  const result = await notifier.notifySnapshot({
+    apps: [{
+      appId: 'family-help',
+      runtimeStatus: 'service-down',
+      recoveryHint: 'Service down',
+      checkedAt: '2026-04-18T12:00:00.000Z',
+    }],
+  }, {
+    healthAlertsEnabled: true,
+    healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+  });
+
+  assert.equal(result.enabled, true);
+  assert.equal(result.sent, 0);
+  assert.equal(result.failed, 1);
+  assert.equal(Array.isArray(result.errors), true);
+  assert.match(result.errors[0].error, /webhook offline/);
+});
