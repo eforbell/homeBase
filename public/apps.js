@@ -3,27 +3,42 @@
   let refreshTimer = null;
   let eventsWired = false;
 
-  function installationCard(install, backupsByApp, config) {
+  function installationCard(install, backupsByApp, config, healthByAppId) {
     const appId = window.HB.escapeHtml(install.appId);
     const detailUrl = `/apps/${appId}`;
     const backups = backupsByApp[install.appId] || [];
+    const health = healthByAppId[install.appId] || {};
+    const runtimeStatus = health.runtimeStatus || 'unknown';
+    const runtimePill = window.HB.runtimeStatusPill(runtimeStatus);
+    const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
+    const needsAttention = attentionStatuses.has(runtimeStatus);
+    const healthHint = health.recoveryHint
+      ? `<p class="${needsAttention ? 'hb-warn' : 'hb-muted'}" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(health.recoveryHint)}${needsAttention ? ` <a href="${detailUrl}#health">View health details →</a>` : ''}</p>`
+      : '';
     const openLink = install.externalUrl
       ? `<a class="hb-btn" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>`
+      : '';
+    const setupLink = runtimeStatus === 'needs-setup' && health.onboarding?.setupUrl
+      ? `<a class="hb-btn" href="${window.HB.escapeHtml(health.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Setup ↗</a>`
       : '';
     return `
       <article class="hb-card">
         <div class="hb-row">
           <a href="${detailUrl}"><strong>${window.HB.escapeHtml(install.name || install.appId)}</strong></a>
           ${window.HB.statusBadge(install.status)}
+          ${runtimePill}
         </div>
         <p class="hb-muted" style="margin:0.55rem 0 0;">
           Port ${window.HB.escapeHtml(install.port)} · ${window.HB.escapeHtml(install.mountPath)}<br>
+          Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')} · Readiness: ${window.HB.escapeHtml(health.readiness?.status || 'unknown')}<br>
           Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))}<br>
           ${window.HB.backupSummary(backups)}
         </p>
+        ${healthHint}
         ${!backups.length ? '<p class="hb-warn" style="margin:0.55rem 0 0;">Recommended next step: take a first backup.</p>' : ''}
         <div class="hb-actions" style="margin-top:0.75rem;">
           ${openLink}
+          ${setupLink}
           <a class="hb-btn" href="${detailUrl}">Details</a>
           <a class="hb-btn" href="${detailUrl}#backup">Backup…</a>
           <a class="hb-btn" href="${detailUrl}#restore">Restore…</a>
@@ -36,6 +51,7 @@
     const appId = window.HB.escapeHtml(app.id);
     const mountDefault = app.network?.preferredMountPath || `/${app.id}/`;
     const portDefault = app.network?.preferredPort || '';
+    const refDefault = app.repository?.defaultRef || 'main';
     return `
       <article class="hb-card">
         <h3 style="margin:0;">${window.HB.escapeHtml(app.name)}</h3>
@@ -48,6 +64,10 @@
           <label class="hb-label">
             Port
             <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(portDefault)}">
+          </label>
+          <label class="hb-label">
+            Git ref
+            <input class="hb-input" name="ref" value="${window.HB.escapeHtml(refDefault)}" placeholder="main">
           </label>
           <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
             <input name="dryRun" type="checkbox" checked>
@@ -64,6 +84,7 @@
     const appId = form.getAttribute('data-app-id');
     const mountPath = form.elements.mountPath.value.trim();
     const portRaw = form.elements.port.value.trim();
+    const ref = form.elements.ref.value.trim();
     const dryRun = form.elements.dryRun.checked;
     const resultNode = form.querySelector('[data-result]');
     const payload = {
@@ -71,6 +92,7 @@
       dryRun,
     };
     if (portRaw) payload.port = Number(portRaw);
+    if (ref) payload.ref = ref;
     if (!dryRun) {
       payload.confirm = 'EXECUTE';
     }
@@ -119,14 +141,16 @@
 
   async function load() {
     try {
-      const [statePayload, catalogPayload, config] = await Promise.all([
+      const [statePayload, catalogPayload, config, healthPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson('/api/homebase/config'),
+        window.HB.getJson('/api/apps/health'),
       ]);
       const installationsMap = statePayload.installations || {};
       const installations = Object.values(installationsMap);
       const backupsByApp = await loadBackupsForInstallations(installations);
+      const healthByAppId = healthPayload.byAppId || {};
       const installedIds = new Set(installations.map((item) => item.appId));
       const catalog = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const available = catalog.filter((app) => !installedIds.has(app.id));
@@ -139,7 +163,7 @@
             <p class="hb-warn" style="margin:0.55rem 0 0;">${window.HB.localOnlyBackupNote(config)}</p>
           </section>
           <section class="hb-grid hb-grid-2">
-            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
+            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
           </section>
           <details ${available.length ? '' : 'open'}>
             <summary>Available to install (${available.length})</summary>

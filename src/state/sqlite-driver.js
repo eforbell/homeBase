@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS homebase_config (
   domain TEXT,
   git_transport TEXT,
   git_ssh_key_path TEXT,
+  health_alerts_enabled INTEGER NOT NULL DEFAULT 0,
+  health_alerts_webhook_url TEXT,
   updated_at TEXT NOT NULL
 );
 """
@@ -84,6 +86,11 @@ def emit(value):
 
 if op == "init":
     conn.executescript(SCHEMA)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(homebase_config)")}
+    if "health_alerts_enabled" not in columns:
+        conn.execute("ALTER TABLE homebase_config ADD COLUMN health_alerts_enabled INTEGER NOT NULL DEFAULT 0")
+    if "health_alerts_webhook_url" not in columns:
+        conn.execute("ALTER TABLE homebase_config ADD COLUMN health_alerts_webhook_url TEXT")
     conn.commit()
     emit({"ok": True})
 
@@ -357,7 +364,7 @@ elif op == "list_backups":
 
 elif op == "get_homebase_config":
     row = conn.execute(
-        "SELECT hostname, domain, git_transport, git_ssh_key_path, updated_at FROM homebase_config WHERE id = 1"
+        "SELECT hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, updated_at FROM homebase_config WHERE id = 1"
     ).fetchone()
     if row is None:
         emit(None)
@@ -367,6 +374,8 @@ elif op == "get_homebase_config":
             "domain": row["domain"],
             "gitTransport": row["git_transport"],
             "gitSshKeyPath": row["git_ssh_key_path"] or "",
+            "healthAlertsEnabled": bool(row["health_alerts_enabled"]),
+            "healthAlertsWebhookUrl": row["health_alerts_webhook_url"] or "",
             "updatedAt": row["updated_at"],
         })
 
@@ -375,13 +384,15 @@ elif op == "set_homebase_config":
     conn.execute(
         """
         INSERT INTO homebase_config (
-          id, hostname, domain, git_transport, git_ssh_key_path, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?)
+          id, hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           hostname=excluded.hostname,
           domain=excluded.domain,
           git_transport=excluded.git_transport,
           git_ssh_key_path=excluded.git_ssh_key_path,
+          health_alerts_enabled=excluded.health_alerts_enabled,
+          health_alerts_webhook_url=excluded.health_alerts_webhook_url,
           updated_at=excluded.updated_at
         """,
         (
@@ -389,6 +400,8 @@ elif op == "set_homebase_config":
             record["domain"],
             record["gitTransport"],
             record.get("gitSshKeyPath", ""),
+            1 if record.get("healthAlertsEnabled") else 0,
+            record.get("healthAlertsWebhookUrl", ""),
             record["updatedAt"],
         ),
     )

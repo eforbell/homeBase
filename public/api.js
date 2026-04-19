@@ -69,6 +69,28 @@
     return `Local-only backup path: ${escapeHtml(backupRoot)}. This protects app mistakes, not VM/disk loss.`;
   }
 
+
+
+  function runtimeStatusMeta(status) {
+    const current = String(status || 'unknown');
+    const map = {
+      healthy: { label: 'Healthy', className: 'hb-ok' },
+      'service-active': { label: 'Service active', className: 'hb-muted' },
+      'service-down': { label: 'Service down', className: 'hb-err' },
+      'http-failing': { label: 'HTTP check failing', className: 'hb-err' },
+      'readiness-failing': { label: 'Needs attention', className: 'hb-warn' },
+      'needs-setup': { label: 'Needs setup', className: 'hb-warn' },
+      'not-installed': { label: 'Not installed', className: 'hb-muted' },
+      unknown: { label: 'Unknown', className: 'hb-warn' },
+    };
+    return map[current] || { label: current, className: 'hb-warn' };
+  }
+
+  function runtimeStatusPill(status) {
+    const meta = runtimeStatusMeta(status);
+    return `<span class="hb-badge ${meta.className}">${escapeHtml(meta.label)}</span>`;
+  }
+
   function confirmInline(resultNode, message) {
     return new Promise((resolve, reject) => {
       resultNode.innerHTML = `
@@ -103,6 +125,8 @@
     latestBackup,
     backupSummary,
     localOnlyBackupNote,
+    runtimeStatusMeta,
+    runtimeStatusPill,
     confirmInline,
   };
 }());

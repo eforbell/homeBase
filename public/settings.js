@@ -28,6 +28,8 @@
       domain: form.elements.domain.value.trim(),
       gitTransport: form.elements.gitTransport.value,
       gitSshKeyPath: form.elements.gitSshKeyPath.value.trim(),
+      healthAlertsEnabled: form.elements.healthAlertsEnabled.checked,
+      healthAlertsWebhookUrl: form.elements.healthAlertsWebhookUrl.value.trim(),
     };
     result.textContent = 'Saving...';
     try {
@@ -42,7 +44,11 @@
     resultNode.textContent = 'Submitting...';
     try {
       const payload = await window.HB.postJson(endpoint, body);
-      resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a>.`;
+      if (payload && payload.jobId) {
+        resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a>.`;
+      } else {
+        resultNode.textContent = 'Completed.';
+      }
     } catch (error) {
       resultNode.textContent = error.message;
     }
@@ -89,6 +95,12 @@
           payload.confirm = 'EXECUTE';
         }
         triggerHomebaseAction('/api/homebase/update-self', payload, updateSelf.querySelector('[data-result]'));
+        return;
+      }
+      const testAlerts = event.target.closest('form[data-action="test-alerts"]');
+      if (testAlerts) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/alerts/test', {}, testAlerts.querySelector('[data-result]'));
       }
     });
   }
@@ -124,6 +136,13 @@
               <label class="hb-label">SSH key path (for ssh-key transport)
                 <input class="hb-input" name="gitSshKeyPath" value="${window.HB.escapeHtml(config.gitSshKeyPath || '')}">
               </label>
+              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                <input type="checkbox" name="healthAlertsEnabled" ${config.healthAlertsEnabled ? 'checked' : ''}>
+                Enable critical health alerts
+              </label>
+              <label class="hb-label">Health alert webhook URL
+                <input class="hb-input" name="healthAlertsWebhookUrl" placeholder="https://..." value="${window.HB.escapeHtml(config.healthAlertsWebhookUrl || '')}">
+              </label>
               <button class="hb-btn hb-btn-primary" type="submit">Save config</button>
               <p class="hb-muted" data-config-result style="margin:0;"></p>
             </form>
@@ -151,11 +170,19 @@
           </section>
           <section class="hb-grid hb-grid-2">
             <article class="hb-card">
-              <h2 style="margin-top:0;">Update self</h2>
+              <h2 style="margin-top:0;">Update Home Base</h2>
               <form class="hb-form-grid" data-action="update-self">
                 <label class="hb-label">Git ref <input class="hb-input" name="ref" value="main"></label>
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-                <button class="hb-btn" type="submit">Run update-self</button>
+                <button class="hb-btn" type="submit">Run Home Base update</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+            </article>
+            <article class="hb-card">
+              <h2 style="margin-top:0;">Health alerts</h2>
+              <form class="hb-form-grid" data-action="test-alerts">
+                <p class="hb-muted" style="margin:0;">Send a test notification to confirm your configured alert target works before relying on automated critical alerts.</p>
+                <button class="hb-btn" type="submit">Send test alert</button>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
             </article>

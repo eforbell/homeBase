@@ -1,35 +1,30 @@
 {
-  "currentFeature": "feature-1",
-  "featureName": "App Operations UX Parity",
-  "prdPath": "planning/features/feature-1-prd.json",
-  "summaryPath": "planning/features/feature-1-summary.md",
-  "branch": "feature/app-operations-ux-parity",
-  "status": "verified",
+  "currentFeature": "feature-2",
+  "featureName": "App Health, Readiness, and Alerts",
+  "prdPath": "planning/features/feature-2-prd.json",
+  "summaryPath": "planning/features/feature-2-summary.md",
+  "branch": "feature/app-health-readiness-alerts",
+  "status": "in_progress",
   "stories": [
     {
-      "id": "OPS-001",
-      "title": "Installed app cards expose the complete operations path",
-      "status": "verified"
+      "id": "HLT-001",
+      "title": "Installed app cards show live service and HTTP state",
+      "status": "review"
     },
     {
-      "id": "OPS-002",
-      "title": "App detail becomes the canonical operations center",
-      "status": "verified"
+      "id": "HLT-002",
+      "title": "Dashboard summarizes warnings and unhealthy apps",
+      "status": "review"
     },
     {
-      "id": "OPS-003",
-      "title": "Backup history and first-backup prompts are visible where decisions happen",
-      "status": "verified"
+      "id": "HLT-003",
+      "title": "Onboarding/readiness state is not conflated with install state",
+      "status": "review"
     },
     {
-      "id": "OPS-004",
-      "title": "Failed jobs can be rerun from the UI",
-      "status": "verified"
-    },
-    {
-      "id": "OPS-005",
-      "title": "Backup destination risk is visible before launch",
-      "status": "verified"
+      "id": "HLT-004",
+      "title": "Critical health failures can alert the founder",
+      "status": "review"
     }
   ],
   "featureSequence": [
@@ -96,7 +91,14 @@
       "Homebase can distinguish installed apps from ready apps for enough of the suite to operate confidently."
     ]
   },
-  "completedFeatures": [],
+  "completedFeatures": [
+    {
+      "featureId": "feature-1",
+      "featureName": "App Operations UX Parity",
+      "prNumber": 2,
+      "mergedAt": "2026-04-18T14:06:07Z"
+    }
+  ],
   "branchAndPrPolicy": {
     "baseBranch": "main",
     "branchPattern": "feature/<short-feature-name>",

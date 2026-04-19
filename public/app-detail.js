@@ -35,6 +35,18 @@
     `).join('');
   }
 
+  function probeSummary(label, probe) {
+    const status = probe?.status || probe?.state || 'unknown';
+    const message = probe?.message || '';
+    return `
+      <li class="hb-row">
+        <strong>${window.HB.escapeHtml(label)}</strong>
+        <span class="hb-badge">${window.HB.escapeHtml(status)}</span>
+        <span class="hb-muted">${window.HB.escapeHtml(message)}</span>
+      </li>
+    `;
+  }
+
 
   function isTerminalJobStatus(status) {
     return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
@@ -91,10 +103,12 @@
   async function handleDeploy(form) {
     const mountPath = form.elements.mountPath.value.trim();
     const portRaw = form.elements.port.value.trim();
+    const ref = form.elements.ref.value.trim();
     const dryRun = form.elements.dryRun.checked;
     const resultNode = form.querySelector('[data-result]');
     const payload = { mountPath, dryRun };
     if (portRaw) payload.port = Number(portRaw);
+    if (ref) payload.ref = ref;
     if (!dryRun) {
       payload.confirm = 'EXECUTE';
     }
@@ -163,12 +177,13 @@
       return;
     }
     try {
-      const [statePayload, catalogPayload, backupPayload, actionsPayload, config] = await Promise.all([
+      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson(`/api/apps/${appId}/backups`),
         window.HB.getJson(`/api/apps/${appId}/actions`),
         window.HB.getJson('/api/homebase/config'),
+        window.HB.getJson('/api/apps/health'),
       ]);
       const catalogApps = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const app = catalogApps.find((item) => item.id === appId);
@@ -179,8 +194,10 @@
       const install = (statePayload.installations || {})[appId] || null;
       const backups = Array.isArray(backupPayload.backups) ? backupPayload.backups : [];
       const actions = actionsPayload.actions || {};
+      const appHealth = (healthPayload.byAppId || {})[appId] || null;
       const mountPath = install?.mountPath || app.network?.preferredMountPath || `/${appId}/`;
       const port = install?.port || app.network?.preferredPort || '';
+      const ref = install?.ref || app.repository?.defaultRef || 'main';
 
       root.innerHTML = `
         <div class="hb-stack">
@@ -195,11 +212,31 @@
             </p>
             <div class="hb-actions" style="margin-top:0.75rem;">
               ${install?.externalUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open app ↗</a>` : ''}
+              ${appHealth?.onboarding?.setupUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(appHealth.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Open setup ↗</a>` : ''}
+              <a class="hb-btn" href="#health">Health</a>
               <a class="hb-btn" href="#backup">Backup</a>
               <a class="hb-btn" href="#restore">Restore</a>
               <a class="hb-btn" href="#deploy">Deploy / Reinstall</a>
             </div>
             ${renderBackupSummary(backups, config)}
+          </section>
+
+          <section id="health" class="hb-card">
+            <div class="hb-row">
+              <h2 style="margin:0;">Runtime health</h2>
+              ${window.HB.runtimeStatusPill(appHealth?.runtimeStatus || 'unknown')}
+              ${window.HB.statusBadge(install?.status || 'not-installed')}
+            </div>
+            <p class="hb-muted" style="margin:0.55rem 0 0;">
+              Last check: ${window.HB.escapeHtml(window.HB.formatTimestamp(appHealth?.checkedAt))}
+            </p>
+            ${appHealth?.recoveryHint ? `<p class="${['service-down', 'http-failing', 'readiness-failing'].includes(appHealth.runtimeStatus) ? 'hb-warn' : 'hb-muted'}" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(appHealth.recoveryHint)}</p>` : ''}
+            <ul class="hb-stack" style="list-style:none;padding:0;margin:0.75rem 0 0;">
+              ${probeSummary('Service state', appHealth?.service)}
+              ${probeSummary('HTTP liveness', appHealth?.liveness)}
+              ${probeSummary('HTTP readiness', appHealth?.readiness)}
+              ${probeSummary('Onboarding', appHealth?.onboarding)}
+            </ul>
           </section>
 
           <section class="hb-grid hb-grid-2">
@@ -223,6 +260,7 @@
               <form class="hb-form-grid" data-action="deploy">
                 <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
                 <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(port)}"></label>
+                <label class="hb-label">Git ref <input class="hb-input" name="ref" value="${window.HB.escapeHtml(ref)}" placeholder="main"></label>
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>

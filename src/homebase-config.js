@@ -9,6 +9,8 @@ function mergeHomeBaseConfig(baseConfig, override = {}) {
     defaultDomain: override.domain || baseConfig.defaultDomain || 'tailnet',
     gitTransport: override.gitTransport || baseConfig.gitTransport || 'https',
     gitSshKeyPath: override.gitSshKeyPath != null ? override.gitSshKeyPath : (baseConfig.gitSshKeyPath || ''),
+    healthAlertsEnabled: override.healthAlertsEnabled != null ? Boolean(override.healthAlertsEnabled) : Boolean(baseConfig.healthAlertsEnabled),
+    healthAlertsWebhookUrl: override.healthAlertsWebhookUrl != null ? String(override.healthAlertsWebhookUrl) : String(baseConfig.healthAlertsWebhookUrl || ''),
   };
 }
 
@@ -21,6 +23,8 @@ function toClientHomeBaseConfig(config, override = {}) {
     domain,
     gitTransport: effective.gitTransport || 'https',
     gitSshKeyPath: effective.gitSshKeyPath || '',
+    healthAlertsEnabled: Boolean(effective.healthAlertsEnabled),
+    healthAlertsWebhookUrl: effective.healthAlertsWebhookUrl || '',
     serviceUser: config.serviceUser,
     baseInstallDir: config.baseInstallDir,
     baseBackupDir: config.baseBackupDir,
@@ -50,7 +54,7 @@ function validateDomain(domain) {
 
 function validateHomeBaseConfigPatch(payload, currentConfig) {
   const patch = payload && typeof payload === 'object' ? payload : {};
-  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath'];
+  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl'];
   const unknownFields = Object.keys(patch).filter((field) => !allowedFields.includes(field));
   if (unknownFields.length) {
     return { error: `Unknown field(s): ${unknownFields.join(', ')}` };
@@ -64,6 +68,8 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
     domain: patch.domain != null ? String(patch.domain).trim() : currentConfig.domain,
     gitTransport: patch.gitTransport != null ? String(patch.gitTransport).trim() : currentConfig.gitTransport,
     gitSshKeyPath: patch.gitSshKeyPath != null ? String(patch.gitSshKeyPath).trim() : (currentConfig.gitSshKeyPath || ''),
+    healthAlertsEnabled: patch.healthAlertsEnabled != null ? Boolean(patch.healthAlertsEnabled) : Boolean(currentConfig.healthAlertsEnabled),
+    healthAlertsWebhookUrl: patch.healthAlertsWebhookUrl != null ? String(patch.healthAlertsWebhookUrl).trim() : String(currentConfig.healthAlertsWebhookUrl || ''),
   };
 
   const hostnameError = validateHostname(candidate.hostname);
@@ -79,6 +85,19 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
   }
   if (candidate.gitTransport === 'ssh-key' && !candidate.gitSshKeyPath) {
     return { error: 'gitSshKeyPath is required when gitTransport=ssh-key' };
+  }
+  if (candidate.healthAlertsWebhookUrl) {
+    try {
+      const parsed = new URL(candidate.healthAlertsWebhookUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return { error: 'healthAlertsWebhookUrl must use http or https' };
+      }
+    } catch (_error) {
+      return { error: 'healthAlertsWebhookUrl must be a valid absolute URL when provided' };
+    }
+  }
+  if (candidate.healthAlertsEnabled && !candidate.healthAlertsWebhookUrl) {
+    return { error: 'healthAlertsWebhookUrl is required when healthAlertsEnabled=true' };
   }
 
   return { value: candidate };
