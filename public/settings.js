@@ -101,16 +101,39 @@
       if (testAlerts) {
         event.preventDefault();
         triggerHomebaseAction('/api/alerts/test', {}, testAlerts.querySelector('[data-result]'));
+        return;
+      }
+      const adminSetup = event.target.closest('form[data-action="admin-setup"]');
+      if (adminSetup) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/setup', {
+          passphrase: adminSetup.elements.passphrase.value,
+        }, adminSetup.querySelector('[data-result]'));
+        return;
+      }
+      const adminUnlock = event.target.closest('form[data-action="admin-unlock"]');
+      if (adminUnlock) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/unlock', {
+          passphrase: adminUnlock.elements.passphrase.value,
+        }, adminUnlock.querySelector('[data-result]'));
+        return;
+      }
+      const adminLock = event.target.closest('form[data-action="admin-lock"]');
+      if (adminLock) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/lock', {}, adminLock.querySelector('[data-result]'));
       }
     });
   }
 
   async function load() {
     try {
-      const [config, status, preflight] = await Promise.all([
+      const [config, status, preflight, adminStatus] = await Promise.all([
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/preflight'),
+        window.HB.getJson('/api/admin/status'),
       ]);
       root.innerHTML = `
         <div class="hb-stack">
@@ -146,6 +169,32 @@
               <button class="hb-btn hb-btn-primary" type="submit">Save config</button>
               <p class="hb-muted" data-config-result style="margin:0;"></p>
             </form>
+          </section>
+          <section class="hb-card">
+            <h2 style="margin-top:0;">Admin execution lock</h2>
+            <p class="hb-muted" style="margin:0.4rem 0 0.8rem;">
+              Status: ${adminStatus.configured ? (adminStatus.unlocked ? '<span class="hb-ok">Configured + unlocked</span>' : '<span class="hb-warn">Configured but locked</span>') : '<span class="hb-warn">Not configured</span>'}
+            </p>
+            ${adminStatus.configured ? `
+              <div class="hb-grid hb-grid-2">
+                <form class="hb-form-grid" data-action="admin-unlock">
+                  <label class="hb-label">Passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="current-password"></label>
+                  <button class="hb-btn" type="submit">Unlock admin</button>
+                  <p class="hb-muted" data-result style="margin:0;"></p>
+                </form>
+                <form class="hb-form-grid" data-action="admin-lock">
+                  <p class="hb-muted" style="margin:0;">Lock the current admin session before leaving shared terminals.</p>
+                  <button class="hb-btn" type="submit">Lock admin</button>
+                  <p class="hb-muted" data-result style="margin:0;"></p>
+                </form>
+              </div>
+            ` : `
+              <form class="hb-form-grid" data-action="admin-setup">
+                <label class="hb-label">Create admin passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="new-password"></label>
+                <button class="hb-btn" type="submit">Set admin passphrase</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+            `}
           </section>
           <section class="hb-grid hb-grid-2">
             <article class="hb-card">

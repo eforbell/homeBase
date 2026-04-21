@@ -23,6 +23,13 @@ const { scheduleAutoBootstrap } = require('./auto-bootstrap');
 const { HealthMonitor } = require('./services/health-monitor');
 const { HealthAlertNotifier } = require('./services/notifications');
 const { normalizePathname } = require('./setup-gate');
+const {
+  getAdminStatus,
+  setupAdmin,
+  unlockAdmin,
+  lockAdmin,
+  requireAdminForExecute,
+} = require('./admin-auth');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const PUBLIC_MIME_TYPES = {
@@ -325,6 +332,23 @@ function createApp(config) {
       if (method === 'GET' && pathname === '/api/homebase/config') {
         return sendJson(res, 200, toClientHomeBaseConfig(config, homeBaseConfigOverride));
       }
+      if (method === 'GET' && pathname === '/api/admin/status') {
+        return sendJson(res, 200, await getAdminStatus(req, stateStore));
+      }
+      if (method === 'POST' && pathname === '/api/admin/setup') {
+        const body = await parseBody(req);
+        const result = await setupAdmin(req, res, body, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
+      if (method === 'POST' && pathname === '/api/admin/unlock') {
+        const body = await parseBody(req);
+        const result = await unlockAdmin(req, res, body, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
+      if (method === 'POST' && pathname === '/api/admin/lock') {
+        const result = await lockAdmin(req, res, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
       if (method === 'POST' && pathname === '/api/homebase/config') {
         const body = await parseBody(req);
         const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
@@ -375,6 +399,10 @@ function createApp(config) {
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
         }
+        if (body.dryRun === false) {
+          const auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
+        }
         const plan = buildHomeBaseUpdatePlan(effectiveConfig, body);
         const jobId = jobRunner.startHomeBaseUpdateJob(plan, {
           dryRun: body.dryRun !== false,
@@ -387,6 +415,10 @@ function createApp(config) {
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
+        }
+        if (body.dryRun === false) {
+          const auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         }
         if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
@@ -429,6 +461,10 @@ function createApp(config) {
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
+        }
+        if (body.dryRun === false) {
+          const auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         }
         if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
@@ -505,6 +541,10 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
+          const auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
+        }
+        if (body.dryRun === false) {
           const app = getAppById(executeInstallMatch[1]);
           const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
           if (app?.runtime?.kind === 'node') required.push('node');
@@ -538,6 +578,10 @@ function createApp(config) {
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
+        }
+        if (body.dryRun === false) {
+          const auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         }
         const appId = restartExecuteMatch[1];
         const app = getAppById(appId);
@@ -602,6 +646,10 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
+          const auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
+        }
+        if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
@@ -640,6 +688,10 @@ function createApp(config) {
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
+        }
+        if (body.dryRun === false) {
+          const auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         }
         if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });

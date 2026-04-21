@@ -77,3 +77,15 @@
 - Marked Feature-2 complete and moved it to completedFeatures in planning/current-feature.json.
 - Advanced queue pointer to Feature-3 (Admin Auth and Destructive-Action Guardrails) with queued story statuses.
 - Follow-up quality-of-life lane started after Feature-2 merge: app detail now supports restart jobs from UI to reduce CLI-only service restart trips during validation.
+
+2026-04-21 (Feature-3 kickoff)
+- Confirmed Feature-2 and follow-up closeout are merged (PR #4 and PR #5).
+- Started Feature-3 Admin Auth and Destructive-Action Guardrails on branch `feature/admin-auth-action-guardrails`.
+- Set Feature-3 status to in_progress with ADM-001 marked in_progress and remaining stories queued.
+- ADM-001 first implementation pass:
+  - added server-enforced admin setup/unlock/lock status endpoints (`/api/admin/status`, `/api/admin/setup`, `/api/admin/unlock`, `/api/admin/lock`),
+  - added HTTP-only admin session persistence in sqlite-backed auth tables,
+  - guarded destructive real execution paths (install/backup/restore/restart/bootstrap/install-self/update-self) behind admin unlock while keeping dry-run available.
+- Added Settings UI admin lock section for setup/unlock/lock flows.
+- Verification: npm test passed (77/77).
+- Story status update: ADM-001 moved to review (manual browser/VM unlock UX validation still pending).
