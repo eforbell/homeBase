@@ -17,6 +17,8 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   assert.match(source, /\/api\/admin\/setup/);
   assert.match(source, /\/api\/admin\/unlock/);
   assert.match(source, /\/api\/admin\/lock/);
+  assert.match(source, /\/api\/admin\/rotate/);
+  assert.match(source, /Rotate admin passphrase/);
   assert.match(source, /Admin execution lock/);
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.match(source, /Update Home Base/);

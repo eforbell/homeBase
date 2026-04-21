@@ -102,6 +102,42 @@ async function lockAdmin(req, res, stateStore) {
   return { statusCode: 200, payload: { ok: true } };
 }
 
+async function rotateAdmin(req, res, body, stateStore) {
+  const status = await getAdminStatus(req, stateStore);
+  if (!status.configured) {
+    return { statusCode: 409, payload: { error: 'Admin credential is not configured yet. Use setup first.' } };
+  }
+  if (!status.unlocked) {
+    return { statusCode: 401, payload: { error: 'Admin unlock is required before credential rotation.' } };
+  }
+
+  const credential = stateStore.getAdminCredential();
+  const currentPassphrase = String(body.currentPassphrase || '');
+  const newPassphrase = String(body.newPassphrase || '');
+  if (!verifyPassphrase(currentPassphrase, credential.passphraseHash)) {
+    return { statusCode: 403, payload: { error: 'Current admin passphrase is invalid.' } };
+  }
+  if (newPassphrase.length < 8) {
+    return { statusCode: 400, payload: { error: 'New admin passphrase must be at least 8 characters.' } };
+  }
+
+  const nowIso = new Date().toISOString();
+  stateStore.setAdminCredential({
+    passphraseHash: hashPassphrase(newPassphrase),
+    createdAt: credential.createdAt || nowIso,
+    updatedAt: nowIso,
+  });
+  stateStore.deleteAllAdminSessions();
+  const token = makeSessionToken();
+  stateStore.createAdminSession({
+    tokenHash: hashToken(token),
+    createdAt: nowIso,
+    expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
+  });
+  setSessionCookie(res, token);
+  return { statusCode: 200, payload: { ok: true } };
+}
+
 async function requireAdminForExecute(req, stateStore) {
   const status = await getAdminStatus(req, stateStore);
   if (!status.configured) {
@@ -118,5 +154,6 @@ module.exports = {
   setupAdmin,
   unlockAdmin,
   lockAdmin,
+  rotateAdmin,
   requireAdminForExecute,
 };

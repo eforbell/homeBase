@@ -28,6 +28,7 @@ const {
   setupAdmin,
   unlockAdmin,
   lockAdmin,
+  rotateAdmin,
   requireAdminForExecute,
 } = require('./admin-auth');
 
@@ -347,6 +348,11 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/admin/lock') {
         const result = await lockAdmin(req, res, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
+      if (method === 'POST' && pathname === '/api/admin/rotate') {
+        const body = await parseBody(req);
+        const result = await rotateAdmin(req, res, body, stateStore);
         return sendJson(res, result.statusCode, result.payload);
       }
       if (method === 'POST' && pathname === '/api/homebase/config') {

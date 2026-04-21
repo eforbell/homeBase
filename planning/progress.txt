@@ -89,3 +89,10 @@
 - Added Settings UI admin lock section for setup/unlock/lock flows.
 - Verification: npm test passed (77/77).
 - Story status update: ADM-001 moved to review (manual browser/VM unlock UX validation still pending).
+- ADM-002 implementation pass:
+  - added admin passphrase rotation endpoint (`/api/admin/rotate`) requiring an unlocked admin session and current-passphrase verification,
+  - rotation now revokes existing admin sessions and issues a fresh session cookie,
+  - Settings admin lock UI now shows session expiry and exposes passphrase rotation form.
+- Added regression coverage for passphrase rotation, session invalidation, and new admin UI wiring.
+- Verification: npm test passed (78/78).
+- Story status update: ADM-002 moved to review (manual browser/VM admin lifecycle UX validation still pending).

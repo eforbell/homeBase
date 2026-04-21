@@ -357,6 +357,86 @@ test('real execute requires admin setup/unlock', async () => {
   }
 });
 
+test('admin passphrase rotation requires unlock and invalidates prior sessions', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-rotate-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    await fetch(`${server.url}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'first-passphrase' }),
+    });
+    const unlockRes = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'first-passphrase' }),
+    });
+    const unlockCookie = (unlockRes.headers.get('set-cookie') || '').split(';')[0];
+
+    const badRotateRes = await fetch(`${server.url}/api/admin/rotate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: unlockCookie },
+      body: JSON.stringify({ currentPassphrase: 'wrong', newPassphrase: 'second-passphrase' }),
+    });
+    assert.equal(badRotateRes.status, 403);
+
+    const rotateRes = await fetch(`${server.url}/api/admin/rotate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: unlockCookie },
+      body: JSON.stringify({ currentPassphrase: 'first-passphrase', newPassphrase: 'second-passphrase' }),
+    });
+    assert.equal(rotateRes.status, 200);
+    const rotatedCookie = (rotateRes.headers.get('set-cookie') || '').split(';')[0];
+    assert.match(rotatedCookie, /hb_admin_session=/);
+
+    const oldSessionRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: unlockCookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const oldSessionPayload = await oldSessionRes.json();
+    assert.equal(oldSessionRes.status, 401);
+    assert.match(oldSessionPayload.error, /Admin unlock is required/i);
+
+    const newSessionRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: rotatedCookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const newSessionPayload = await newSessionRes.json();
+    assert.equal(newSessionRes.status, 409);
+    assert.doesNotMatch(newSessionPayload.error, /Admin unlock is required/i);
+
+    const oldPassUnlock = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'first-passphrase' }),
+    });
+    assert.equal(oldPassUnlock.status, 403);
+
+    const newPassUnlock = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'second-passphrase' }),
+    });
+    assert.equal(newPassUnlock.status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
 test('health alert test endpoint posts to configured webhook target', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-test-'));
   const posted = [];

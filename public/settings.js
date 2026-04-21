@@ -123,6 +123,15 @@
       if (adminLock) {
         event.preventDefault();
         triggerHomebaseAction('/api/admin/lock', {}, adminLock.querySelector('[data-result]'));
+        return;
+      }
+      const adminRotate = event.target.closest('form[data-action="admin-rotate"]');
+      if (adminRotate) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/rotate', {
+          currentPassphrase: adminRotate.elements.currentPassphrase.value,
+          newPassphrase: adminRotate.elements.newPassphrase.value,
+        }, adminRotate.querySelector('[data-result]'));
       }
     });
   }
@@ -175,6 +184,7 @@
             <p class="hb-muted" style="margin:0.4rem 0 0.8rem;">
               Status: ${adminStatus.configured ? (adminStatus.unlocked ? '<span class="hb-ok">Configured + unlocked</span>' : '<span class="hb-warn">Configured but locked</span>') : '<span class="hb-warn">Not configured</span>'}
             </p>
+            ${adminStatus.unlocked && adminStatus.sessionExpiresAt ? `<p class="hb-muted" style="margin:0 0 0.8rem;">Session expires: ${window.HB.escapeHtml(window.HB.formatTimestamp(adminStatus.sessionExpiresAt))}</p>` : ''}
             ${adminStatus.configured ? `
               <div class="hb-grid hb-grid-2">
                 <form class="hb-form-grid" data-action="admin-unlock">
@@ -188,6 +198,12 @@
                   <p class="hb-muted" data-result style="margin:0;"></p>
                 </form>
               </div>
+              <form class="hb-form-grid" data-action="admin-rotate" style="margin-top:0.85rem;">
+                <label class="hb-label">Current passphrase <input class="hb-input" name="currentPassphrase" type="password" autocomplete="current-password"></label>
+                <label class="hb-label">New passphrase <input class="hb-input" name="newPassphrase" type="password" autocomplete="new-password"></label>
+                <button class="hb-btn" type="submit">Rotate admin passphrase</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
             ` : `
               <form class="hb-form-grid" data-action="admin-setup">
                 <label class="hb-label">Create admin passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="new-password"></label>
