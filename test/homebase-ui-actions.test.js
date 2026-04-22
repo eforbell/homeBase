@@ -82,6 +82,11 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /Installing now/);
   assert.match(apps, /View install job/);
   assert.match(apps, /!installingByAppId\.has\(app\.id\)/);
+  assert.match(apps, /data-available-install/);
+  assert.match(apps, /availableWasOpen/);
+  assert.match(apps, /shouldOpenAvailable/);
+  assert.match(apps, /isInstallFormInteractionActive/);
+  assert.match(apps, /form\[data-action="install"\]/);
   assert.match(apps, /scheduleRefresh/);
   assert.match(apps, /visibilitychange/);
 });

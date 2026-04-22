@@ -157,10 +157,19 @@
     return Object.fromEntries(entries);
   }
 
+  function isInstallFormInteractionActive() {
+    const activeElement = document.activeElement;
+    return Boolean(activeElement?.closest?.('form[data-action="install"]'));
+  }
+
   function scheduleRefresh() {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
       if (document.visibilityState === 'visible') {
+        if (isInstallFormInteractionActive()) {
+          scheduleRefresh();
+          return;
+        }
         load();
         return;
       }
@@ -169,6 +178,7 @@
   }
 
   async function load() {
+    const availableWasOpen = root.querySelector('[data-available-install]')?.open;
     try {
       const [statePayload, catalogPayload, config, healthPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
@@ -186,6 +196,7 @@
       const installingByAppId = activeInstallJobsByTarget(activeJobs);
       const installing = catalog.filter((app) => !installedIds.has(app.id) && installingByAppId.has(app.id));
       const available = catalog.filter((app) => !installedIds.has(app.id) && !installingByAppId.has(app.id));
+      const shouldOpenAvailable = available.length ? availableWasOpen === true : true;
 
       root.innerHTML = `
         <div class="hb-stack">
@@ -205,7 +216,7 @@
               </div>
             </section>
           ` : ''}
-          <details ${available.length ? '' : 'open'}>
+          <details data-available-install ${shouldOpenAvailable ? 'open' : ''}>
             <summary>Available to install (${available.length})</summary>
             <section class="hb-grid hb-grid-2" style="margin-top:0.75rem;">
               ${available.length ? available.map((app) => catalogCard(app)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">All catalog apps are already installed.</p></article>'}
