@@ -23,6 +23,14 @@ const { scheduleAutoBootstrap } = require('./auto-bootstrap');
 const { HealthMonitor } = require('./services/health-monitor');
 const { HealthAlertNotifier } = require('./services/notifications');
 const { normalizePathname } = require('./setup-gate');
+const {
+  getAdminStatus,
+  setupAdmin,
+  unlockAdmin,
+  lockAdmin,
+  rotateAdmin,
+  requireAdminForExecute,
+} = require('./admin-auth');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const PUBLIC_MIME_TYPES = {
@@ -212,6 +220,23 @@ function buildRestartPlan({ app, install }) {
   };
 }
 
+function recordAdminAudit(stateStore, record = {}) {
+  try {
+    stateStore.createAdminAudit({
+      createdAt: new Date().toISOString(),
+      action: String(record.action || 'unknown'),
+      target: String(record.target || 'unknown'),
+      dryRun: Boolean(record.dryRun),
+      outcome: String(record.outcome || 'unknown'),
+      reason: record.reason ? String(record.reason) : null,
+      jobId: record.jobId != null ? Number(record.jobId) : null,
+      sessionTokenHash: record.sessionTokenHash || null,
+    });
+  } catch (_error) {
+    // Never block API flow on audit write failures.
+  }
+}
+
 function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   stateStore.init();
@@ -325,6 +350,37 @@ function createApp(config) {
       if (method === 'GET' && pathname === '/api/homebase/config') {
         return sendJson(res, 200, toClientHomeBaseConfig(config, homeBaseConfigOverride));
       }
+      if (method === 'GET' && pathname === '/api/admin/status') {
+        return sendJson(res, 200, await getAdminStatus(req, stateStore));
+      }
+      if (method === 'POST' && pathname === '/api/admin/setup') {
+        const body = await parseBody(req);
+        const result = await setupAdmin(req, res, body, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
+      if (method === 'POST' && pathname === '/api/admin/unlock') {
+        const body = await parseBody(req);
+        const result = await unlockAdmin(req, res, body, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
+      if (method === 'POST' && pathname === '/api/admin/lock') {
+        const result = await lockAdmin(req, res, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
+      if (method === 'POST' && pathname === '/api/admin/rotate') {
+        const body = await parseBody(req);
+        const result = await rotateAdmin(req, res, body, stateStore);
+        return sendJson(res, result.statusCode, result.payload);
+      }
+      if (method === 'GET' && pathname === '/api/admin/audit') {
+        const status = await getAdminStatus(req, stateStore);
+        if (!status.configured) return sendJson(res, 409, { error: 'Admin credential is not configured yet.' });
+        if (!status.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required to view audit history.' });
+        const limitRaw = Number(url.searchParams.get('limit') || 50);
+        const parsedLimit = Number.isFinite(limitRaw) ? limitRaw : 50;
+        const limit = Math.min(200, Math.max(1, Math.trunc(parsedLimit)));
+        return sendJson(res, 200, { entries: stateStore.listAdminAudit(limit) });
+      }
       if (method === 'POST' && pathname === '/api/homebase/config') {
         const body = await parseBody(req);
         const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
@@ -372,26 +428,88 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/homebase/update-self') {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'homebase-update-self',
+            target: 'homebase',
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
           return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
+        }
+        if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'homebase-update-self',
+              target: 'homebase',
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
         }
         const plan = buildHomeBaseUpdatePlan(effectiveConfig, body);
         const jobId = jobRunner.startHomeBaseUpdateJob(plan, {
           dryRun: body.dryRun !== false,
         });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'homebase-update-self',
+            target: 'homebase',
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
         return sendJson(res, 202, { ok: true, jobId, dryRun: body.dryRun !== false });
       }
       if (method === 'POST' && pathname === '/api/homebase/install-self') {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'homebase-install-self',
+            target: 'homebase',
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
         if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'homebase-install-self',
+              target: 'homebase',
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+        }
+        if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd', 'node']);
           if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'homebase-install-self',
+              target: 'homebase',
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before Home Base self-install: ${missing.join(', ')}`,
               missing,
@@ -402,6 +520,16 @@ function createApp(config) {
         const jobId = jobRunner.startHomeBaseRuntimeJob(plan, {
           dryRun: body.dryRun !== false,
         });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'homebase-install-self',
+            target: 'homebase',
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
         return sendJson(res, 202, {
           ok: true,
           jobId,
@@ -425,15 +553,45 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/bootstrap/execute') {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'bootstrap-execute',
+            target: 'local-host',
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
         if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'bootstrap-execute',
+              target: 'local-host',
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+        }
+        if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'bootstrap-execute',
+              target: 'local-host',
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real bootstrap execution: ${missing.join(', ')}`,
               missing,
@@ -451,6 +609,16 @@ function createApp(config) {
         const jobId = jobRunner.startBootstrapJob(plan, {
           dryRun: body.dryRun !== false,
         });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'bootstrap-execute',
+            target: 'local-host',
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
         return sendJson(res, 202, {
           ok: true,
           jobId,
@@ -499,10 +667,32 @@ function createApp(config) {
       const executeInstallMatch = pathname.match(/^\/api\/apps\/([^/]+)\/execute$/);
       if (method === 'POST' && executeInstallMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'app-install-execute',
+            target: executeInstallMatch[1],
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
+        }
+        if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'app-install-execute',
+              target: executeInstallMatch[1],
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
         }
         if (body.dryRun === false) {
           const app = getAppById(executeInstallMatch[1]);
@@ -512,6 +702,14 @@ function createApp(config) {
           const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, required);
           if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'app-install-execute',
+              target: executeInstallMatch[1],
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real install execution: ${missing.join(', ')}`,
               missing,
@@ -524,6 +722,16 @@ function createApp(config) {
         const jobId = jobRunner.startInstallJob(plan, {
           dryRun: body.dryRun !== false,
         });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'app-install-execute',
+            target: appId,
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
         return sendJson(res, 202, {
           ok: true,
           jobId,
@@ -534,16 +742,47 @@ function createApp(config) {
       const restartExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restart\/execute$/);
       if (method === 'POST' && restartExecuteMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'app-restart-execute',
+            target: restartExecuteMatch[1],
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
+        }
+        if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'app-restart-execute',
+              target: restartExecuteMatch[1],
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
         }
         const appId = restartExecuteMatch[1];
         const app = getAppById(appId);
         if (!app) return notFound(res);
         const install = (state.installations || {})[appId];
         if (!install) {
+          if (body.dryRun === false) {
+            recordAdminAudit(stateStore, {
+              action: 'app-restart-execute',
+              target: appId,
+              dryRun: false,
+              outcome: 'blocked-state',
+              reason: 'not-installed',
+            });
+          }
           return sendJson(res, 409, {
             error: `App ${appId} must be installed before restart is available.`,
           });
@@ -552,6 +791,14 @@ function createApp(config) {
           const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'app-restart-execute',
+              target: appId,
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real restart execution: ${missing.join(', ')}`,
               missing,
@@ -562,6 +809,16 @@ function createApp(config) {
         const jobId = jobRunner.startRestartJob(plan, {
           dryRun: body.dryRun !== false,
         });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'app-restart-execute',
+            target: appId,
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
         return sendJson(res, 202, {
           ok: true,
           jobId,
@@ -596,15 +853,45 @@ function createApp(config) {
       const backupExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup\/execute$/);
       if (method === 'POST' && backupExecuteMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'app-backup-execute',
+            target: backupExecuteMatch[1],
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
         if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'app-backup-execute',
+              target: backupExecuteMatch[1],
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+        }
+        if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'app-backup-execute',
+              target: backupExecuteMatch[1],
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real backup execution: ${missing.join(', ')}`,
               missing,
@@ -615,6 +902,16 @@ function createApp(config) {
         const jobId = jobRunner.startBackupJob(plan, {
           dryRun: body.dryRun !== false,
         });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'app-backup-execute',
+            target: backupExecuteMatch[1],
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
         return sendJson(res, 202, {
           ok: true,
           jobId,
@@ -636,15 +933,45 @@ function createApp(config) {
       const restoreExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restore\/execute$/);
       if (method === 'POST' && restoreExecuteMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'app-restore-execute',
+            target: restoreExecuteMatch[1],
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
           return sendJson(res, 400, {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
         if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'app-restore-execute',
+              target: restoreExecuteMatch[1],
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+        }
+        if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'app-restore-execute',
+              target: restoreExecuteMatch[1],
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real restore execution: ${missing.join(', ')}`,
               missing,
@@ -661,6 +988,16 @@ function createApp(config) {
         const jobId = jobRunner.startRestoreJob(plan, {
           dryRun: body.dryRun !== false,
         });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'app-restore-execute',
+            target: restoreExecuteMatch[1],
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
         return sendJson(res, 202, {
           ok: true,
           jobId,

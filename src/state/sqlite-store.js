@@ -56,6 +56,42 @@ class SqliteStateStore {
   setHomeBaseConfig(record) {
     return runSqliteOp(this.dbPath, 'set_homebase_config', { record });
   }
+
+  getAdminCredential() {
+    return runSqliteOp(this.dbPath, 'get_admin_credential');
+  }
+
+  setAdminCredential(record) {
+    return runSqliteOp(this.dbPath, 'set_admin_credential', { record });
+  }
+
+  createAdminSession(record) {
+    return runSqliteOp(this.dbPath, 'create_admin_session', { record });
+  }
+
+  getAdminSession(tokenHash) {
+    return runSqliteOp(this.dbPath, 'get_admin_session', { tokenHash });
+  }
+
+  deleteAdminSession(tokenHash) {
+    return runSqliteOp(this.dbPath, 'delete_admin_session', { tokenHash });
+  }
+
+  deleteAllAdminSessions() {
+    return runSqliteOp(this.dbPath, 'delete_all_admin_sessions');
+  }
+
+  pruneAdminSessions(nowIso) {
+    return runSqliteOp(this.dbPath, 'prune_admin_sessions', { nowIso });
+  }
+
+  createAdminAudit(record) {
+    return runSqliteOp(this.dbPath, 'create_admin_audit', { record });
+  }
+
+  listAdminAudit(limit = 50) {
+    return runSqliteOp(this.dbPath, 'list_admin_audit', { limit });
+  }
 }
 
 module.exports = {

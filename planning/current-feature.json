@@ -4,22 +4,22 @@
   "prdPath": "planning/features/feature-3-prd.json",
   "summaryPath": "planning/features/feature-3-summary.md",
   "branch": "feature/admin-auth-action-guardrails",
-  "status": "queued",
+  "status": "review",
   "stories": [
     {
       "id": "ADM-001",
       "title": "Require admin unlock for destructive operations",
-      "status": "queued"
+      "status": "review"
     },
     {
       "id": "ADM-002",
       "title": "Admin setup, unlock, lock, and rotation",
-      "status": "queued"
+      "status": "review"
     },
     {
       "id": "ADM-003",
       "title": "Audit destructive actions",
-      "status": "queued"
+      "status": "review"
     }
   ],
   "featureSequence": [

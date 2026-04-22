@@ -76,6 +76,31 @@ CREATE TABLE IF NOT EXISTS homebase_config (
   health_alerts_webhook_url TEXT,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS homebase_admin_credentials (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  passphrase_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS homebase_admin_sessions (
+  token_hash TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS homebase_admin_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL,
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  outcome TEXT NOT NULL,
+  reason TEXT,
+  job_id INTEGER,
+  session_token_hash TEXT
+);
 """
 
 def row_to_dict(row):
@@ -407,6 +432,139 @@ elif op == "set_homebase_config":
     )
     conn.commit()
     emit({"ok": True})
+
+elif op == "get_admin_credential":
+    row = conn.execute(
+        "SELECT passphrase_hash, created_at, updated_at FROM homebase_admin_credentials WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        emit(None)
+    else:
+        emit({
+            "passphraseHash": row["passphrase_hash"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        })
+
+elif op == "set_admin_credential":
+    record = payload["record"]
+    conn.execute(
+        """
+        INSERT INTO homebase_admin_credentials (
+          id, passphrase_hash, created_at, updated_at
+        ) VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          passphrase_hash=excluded.passphrase_hash,
+          updated_at=excluded.updated_at
+        """,
+        (
+            record["passphraseHash"],
+            record["createdAt"],
+            record["updatedAt"],
+        ),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "create_admin_session":
+    record = payload["record"]
+    conn.execute(
+        """
+        INSERT INTO homebase_admin_sessions (
+          token_hash, created_at, expires_at
+        ) VALUES (?, ?, ?)
+        ON CONFLICT(token_hash) DO UPDATE SET
+          created_at=excluded.created_at,
+          expires_at=excluded.expires_at
+        """,
+        (
+            record["tokenHash"],
+            record["createdAt"],
+            record["expiresAt"],
+        ),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "get_admin_session":
+    row = conn.execute(
+        "SELECT token_hash, created_at, expires_at FROM homebase_admin_sessions WHERE token_hash = ?",
+        (payload["tokenHash"],),
+    ).fetchone()
+    if row is None:
+        emit(None)
+    else:
+        emit({
+            "tokenHash": row["token_hash"],
+            "createdAt": row["created_at"],
+            "expiresAt": row["expires_at"],
+        })
+
+elif op == "delete_admin_session":
+    conn.execute(
+        "DELETE FROM homebase_admin_sessions WHERE token_hash = ?",
+        (payload["tokenHash"],),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "delete_all_admin_sessions":
+    conn.execute("DELETE FROM homebase_admin_sessions")
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "prune_admin_sessions":
+    conn.execute(
+        "DELETE FROM homebase_admin_sessions WHERE expires_at <= ?",
+        (payload["nowIso"],),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "create_admin_audit":
+    record = payload["record"]
+    cursor = conn.execute(
+        """
+        INSERT INTO homebase_admin_audit (
+          created_at, action, target, dry_run, outcome, reason, job_id, session_token_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record["createdAt"],
+            record["action"],
+            record["target"],
+            1 if record.get("dryRun") else 0,
+            record["outcome"],
+            record.get("reason"),
+            record.get("jobId"),
+            record.get("sessionTokenHash"),
+        ),
+    )
+    conn.commit()
+    emit({"id": cursor.lastrowid})
+
+elif op == "list_admin_audit":
+    limit = int(payload.get("limit", 50))
+    if limit < 1: limit = 1
+    if limit > 200: limit = 200
+    rows = [
+        {
+            "id": row["id"],
+            "createdAt": row["created_at"],
+            "action": row["action"],
+            "target": row["target"],
+            "dryRun": bool(row["dry_run"]),
+            "outcome": row["outcome"],
+            "reason": row["reason"],
+            "jobId": row["job_id"],
+            "sessionTokenHash": row["session_token_hash"],
+        }
+        for row in conn.execute(
+            "SELECT * FROM homebase_admin_audit ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+    ]
+    emit(rows)
 
 else:
     raise SystemExit(f"Unsupported sqlite driver op: {op}")

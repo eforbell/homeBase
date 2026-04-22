@@ -260,6 +260,237 @@ test('homebase config endpoint returns defaults and persists validated updates',
   }
 });
 
+test('admin status starts unconfigured and locked', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-status-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/admin/status`);
+    const payload = await res.json();
+    assert.equal(payload.configured, false);
+    assert.equal(payload.unlocked, false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('real execute requires admin setup/unlock', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-guard-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const withoutAdminRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const withoutAdmin = await withoutAdminRes.json();
+    assert.equal(withoutAdminRes.status, 409);
+    assert.match(withoutAdmin.error, /Admin setup is required/i);
+
+    const setupRes = await fetch(`${server.url}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'very-secure-passphrase' }),
+    });
+    assert.equal(setupRes.status, 200);
+    const setupCookie = (setupRes.headers.get('set-cookie') || '').split(';')[0];
+    assert.match(setupCookie, /hb_admin_session=/);
+
+    const lockRes = await fetch(`${server.url}/api/admin/lock`, {
+      method: 'POST',
+      headers: { cookie: setupCookie },
+    });
+    assert.equal(lockRes.status, 200);
+
+    const lockedExecuteRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const lockedExecute = await lockedExecuteRes.json();
+    assert.equal(lockedExecuteRes.status, 401);
+    assert.match(lockedExecute.error, /Admin unlock is required/i);
+
+    const unlockRes = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'very-secure-passphrase' }),
+    });
+    assert.equal(unlockRes.status, 200);
+    const unlockCookie = (unlockRes.headers.get('set-cookie') || '').split(';')[0];
+    assert.match(unlockCookie, /hb_admin_session=/);
+
+    const unlockedExecuteRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: unlockCookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const unlockedExecute = await unlockedExecuteRes.json();
+    assert.equal(unlockedExecuteRes.status, 409);
+    assert.doesNotMatch(unlockedExecute.error, /Admin unlock is required/i);
+    assert.doesNotMatch(unlockedExecute.error, /Admin setup is required/i);
+  } finally {
+    await server.close();
+  }
+});
+
+test('admin passphrase rotation requires unlock and invalidates prior sessions', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-rotate-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    await fetch(`${server.url}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'first-passphrase' }),
+    });
+    const unlockRes = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'first-passphrase' }),
+    });
+    const unlockCookie = (unlockRes.headers.get('set-cookie') || '').split(';')[0];
+
+    const badRotateRes = await fetch(`${server.url}/api/admin/rotate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: unlockCookie },
+      body: JSON.stringify({ currentPassphrase: 'wrong', newPassphrase: 'second-passphrase' }),
+    });
+    assert.equal(badRotateRes.status, 403);
+
+    const rotateRes = await fetch(`${server.url}/api/admin/rotate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: unlockCookie },
+      body: JSON.stringify({ currentPassphrase: 'first-passphrase', newPassphrase: 'second-passphrase' }),
+    });
+    assert.equal(rotateRes.status, 200);
+    const rotatedCookie = (rotateRes.headers.get('set-cookie') || '').split(';')[0];
+    assert.match(rotatedCookie, /hb_admin_session=/);
+
+    const oldSessionRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: unlockCookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const oldSessionPayload = await oldSessionRes.json();
+    assert.equal(oldSessionRes.status, 401);
+    assert.match(oldSessionPayload.error, /Admin unlock is required/i);
+
+    const newSessionRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: rotatedCookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const newSessionPayload = await newSessionRes.json();
+    assert.equal(newSessionRes.status, 409);
+    assert.doesNotMatch(newSessionPayload.error, /Admin unlock is required/i);
+
+    const oldPassUnlock = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'first-passphrase' }),
+    });
+    assert.equal(oldPassUnlock.status, 403);
+
+    const newPassUnlock = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'second-passphrase' }),
+    });
+    assert.equal(newPassUnlock.status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test('admin audit endpoint requires unlock and records destructive attempts', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-audit-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    await fetch(`${server.url}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'audit-passphrase' }),
+    });
+
+    const lockedAuditRes = await fetch(`${server.url}/api/admin/audit`);
+    assert.equal(lockedAuditRes.status, 401);
+
+    const unlockRes = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'audit-passphrase' }),
+    });
+    const cookie = (unlockRes.headers.get('set-cookie') || '').split(';')[0];
+
+    const attemptRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    assert.equal(attemptRes.status, 409);
+
+    const auditRes = await fetch(`${server.url}/api/admin/audit?limit=5`, {
+      headers: { cookie },
+    });
+    assert.equal(auditRes.status, 200);
+    const auditPayload = await auditRes.json();
+    assert.equal(Array.isArray(auditPayload.entries), true);
+    assert.equal(auditPayload.entries[0].action, 'bootstrap-execute');
+    assert.equal(auditPayload.entries[0].outcome, 'blocked-preflight');
+    assert.equal(typeof auditPayload.entries[0].sessionTokenHash, 'string');
+    assert.equal(auditPayload.entries[0].sessionTokenHash.length > 20, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test('health alert test endpoint posts to configured webhook target', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-test-'));
   const posted = [];

@@ -1,6 +1,24 @@
 (function settingsPage() {
   const root = document.getElementById('app');
 
+  function renderAdminAudit(entries) {
+    const items = Array.isArray(entries) ? entries : [];
+    if (!items.length) return '<p class="hb-muted" style="margin:0;">No destructive action audit entries yet.</p>';
+    return `
+      <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
+        ${items.map((item) => `
+          <li class="hb-row">
+            <span>${window.HB.escapeHtml(item.action)}</span>
+            <span class="${item.outcome === 'queued' ? 'hb-ok' : 'hb-warn'}">${window.HB.escapeHtml(item.outcome)}</span>
+            <span class="hb-muted">${window.HB.escapeHtml(item.target)}</span>
+            <span class="hb-muted">${window.HB.escapeHtml(window.HB.formatTimestamp(item.createdAt))}</span>
+            ${item.jobId ? `<a href="/jobs/${window.HB.escapeHtml(item.jobId)}">#${window.HB.escapeHtml(item.jobId)}</a>` : ''}
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  }
+
   function renderChecks(preflight) {
     const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
     if (!checks.length) return '<p class="hb-muted" style="margin:0;">No preflight checks returned.</p>';
@@ -101,16 +119,48 @@
       if (testAlerts) {
         event.preventDefault();
         triggerHomebaseAction('/api/alerts/test', {}, testAlerts.querySelector('[data-result]'));
+        return;
+      }
+      const adminSetup = event.target.closest('form[data-action="admin-setup"]');
+      if (adminSetup) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/setup', {
+          passphrase: adminSetup.elements.passphrase.value,
+        }, adminSetup.querySelector('[data-result]'));
+        return;
+      }
+      const adminUnlock = event.target.closest('form[data-action="admin-unlock"]');
+      if (adminUnlock) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/unlock', {
+          passphrase: adminUnlock.elements.passphrase.value,
+        }, adminUnlock.querySelector('[data-result]'));
+        return;
+      }
+      const adminLock = event.target.closest('form[data-action="admin-lock"]');
+      if (adminLock) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/lock', {}, adminLock.querySelector('[data-result]'));
+        return;
+      }
+      const adminRotate = event.target.closest('form[data-action="admin-rotate"]');
+      if (adminRotate) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/admin/rotate', {
+          currentPassphrase: adminRotate.elements.currentPassphrase.value,
+          newPassphrase: adminRotate.elements.newPassphrase.value,
+        }, adminRotate.querySelector('[data-result]'));
       }
     });
   }
 
   async function load() {
     try {
-      const [config, status, preflight] = await Promise.all([
+      const [config, status, preflight, adminStatus] = await Promise.all([
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/preflight'),
+        window.HB.getJson('/api/admin/status'),
       ]);
       root.innerHTML = `
         <div class="hb-stack">
@@ -146,6 +196,43 @@
               <button class="hb-btn hb-btn-primary" type="submit">Save config</button>
               <p class="hb-muted" data-config-result style="margin:0;"></p>
             </form>
+          </section>
+          <section class="hb-card">
+            <h2 style="margin-top:0;">Admin execution lock</h2>
+            <p class="hb-muted" style="margin:0.4rem 0 0.8rem;">
+              Status: ${adminStatus.configured ? (adminStatus.unlocked ? '<span class="hb-ok">Configured + unlocked</span>' : '<span class="hb-warn">Configured but locked</span>') : '<span class="hb-warn">Not configured</span>'}
+            </p>
+            ${adminStatus.unlocked && adminStatus.sessionExpiresAt ? `<p class="hb-muted" style="margin:0 0 0.8rem;">Session expires: ${window.HB.escapeHtml(window.HB.formatTimestamp(adminStatus.sessionExpiresAt))}</p>` : ''}
+            ${adminStatus.configured ? `
+              <div class="hb-grid hb-grid-2">
+                <form class="hb-form-grid" data-action="admin-unlock">
+                  <label class="hb-label">Passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="current-password"></label>
+                  <button class="hb-btn" type="submit">Unlock admin</button>
+                  <p class="hb-muted" data-result style="margin:0;"></p>
+                </form>
+                <form class="hb-form-grid" data-action="admin-lock">
+                  <p class="hb-muted" style="margin:0;">Lock the current admin session before leaving shared terminals.</p>
+                  <button class="hb-btn" type="submit">Lock admin</button>
+                  <p class="hb-muted" data-result style="margin:0;"></p>
+                </form>
+              </div>
+              <form class="hb-form-grid" data-action="admin-rotate" style="margin-top:0.85rem;">
+                <label class="hb-label">Current passphrase <input class="hb-input" name="currentPassphrase" type="password" autocomplete="current-password"></label>
+                <label class="hb-label">New passphrase <input class="hb-input" name="newPassphrase" type="password" autocomplete="new-password"></label>
+                <button class="hb-btn" type="submit">Rotate admin passphrase</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+              <div style="margin-top:0.85rem;">
+                <h3 style="margin:0 0 0.45rem;">Recent destructive action audit</h3>
+                <div data-admin-audit>${adminStatus.unlocked ? '<p class="hb-muted" style="margin:0;">Loading audit history…</p>' : '<p class="hb-muted" style="margin:0;">Unlock admin to view audit history.</p>'}</div>
+              </div>
+            ` : `
+              <form class="hb-form-grid" data-action="admin-setup">
+                <label class="hb-label">Create admin passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="new-password"></label>
+                <button class="hb-btn" type="submit">Set admin passphrase</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+            `}
           </section>
           <section class="hb-grid hb-grid-2">
             <article class="hb-card">
@@ -194,6 +281,14 @@
         </div>
       `;
       wireEvents();
+      if (adminStatus.unlocked) {
+        const auditNode = root.querySelector('[data-admin-audit]');
+        window.HB.getJson('/api/admin/audit?limit=10').then((payload) => {
+          if (auditNode) auditNode.innerHTML = renderAdminAudit(payload.entries || []);
+        }).catch((error) => {
+          if (auditNode) auditNode.innerHTML = `<p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(error.message)}</p>`;
+        });
+      }
     } catch (error) {
       root.innerHTML = `
         <section class="hb-card">

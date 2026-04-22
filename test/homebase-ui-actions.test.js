@@ -13,6 +13,15 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   assert.match(source, /data-action="bootstrap-host"/);
   assert.match(source, /data-action="test-alerts"/);
   assert.match(source, /\/api\/alerts\/test/);
+  assert.match(source, /\/api\/admin\/status/);
+  assert.match(source, /\/api\/admin\/setup/);
+  assert.match(source, /\/api\/admin\/unlock/);
+  assert.match(source, /\/api\/admin\/lock/);
+  assert.match(source, /\/api\/admin\/rotate/);
+  assert.match(source, /\/api\/admin\/audit/);
+  assert.match(source, /Rotate admin passphrase/);
+  assert.match(source, /Recent destructive action audit/);
+  assert.match(source, /Admin execution lock/);
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.match(source, /Update Home Base/);
   assert.match(source, /Run Home Base update/);
