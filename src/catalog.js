@@ -336,7 +336,7 @@ const catalog = [
     },
     network: {
       preferredMountPath: '/fte/',
-      preferredPort: 3005,
+      preferredPort: 3007,
       upstreamBind: '127.0.0.1',
       health: {
         type: 'http',
