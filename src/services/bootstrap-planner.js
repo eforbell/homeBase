@@ -104,7 +104,6 @@ function buildBootstrapPlan(input = {}) {
     'postgresql',
     'postgresql-client',
     'nodejs',
-    'npm',
     'python3',
     'python3-venv',
     'python3-pip',
@@ -128,6 +127,7 @@ function buildBootstrapPlan(input = {}) {
       [
         'sudo apt-get update',
         `sudo apt-get install -y ${packages.join(' ')}`,
+        'if ! command -v npm >/dev/null 2>&1; then sudo apt-get install -y npm; fi',
       ],
       ['dpkg -s git >/dev/null 2>&1', 'dpkg -s nginx >/dev/null 2>&1', 'dpkg -s postgresql >/dev/null 2>&1'],
       ['node --version', 'python3 --version', 'psql --version', 'nginx -v']

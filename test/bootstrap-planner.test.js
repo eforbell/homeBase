@@ -15,7 +15,8 @@ test('bootstrap plan includes Debian host setup essentials', () => {
   assert.ok(plan.steps.some((step) => step.id === 'install-base-packages'));
   assert.ok(plan.steps.some((step) => step.id === 'install-tailscale'));
   assert.ok(plan.steps.some((step) => step.id === 'configure-nginx-gateway'));
-  assert.match(plan.script, /apt-get install -y/);
+  assert.match(plan.script, /sudo apt-get install -y git curl ca-certificates ssl-cert nginx postgresql postgresql-client nodejs python3 python3-venv python3-pip/);
+  assert.match(plan.script, /if ! command -v npm >\/dev\/null 2>&1; then sudo apt-get install -y npm; fi/);
   assert.match(plan.script, /include \/etc\/nginx\/snippets\/\*\.conf;/);
   assert.match(plan.script, /listen 443 ssl default_server;/);
   assert.match(plan.script, /listen \[::\]:443 ssl default_server;/);
