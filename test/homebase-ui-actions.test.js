@@ -4,6 +4,10 @@ const fs = require('fs');
 const path = require('path');
 
 function readPublicScript(fileName) {
+  return readPublicFile(fileName);
+}
+
+function readPublicFile(fileName) {
   return fs.readFileSync(path.join(__dirname, '..', 'public', fileName), 'utf8');
 }
 
@@ -25,8 +29,20 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.match(source, /Update Home Base/);
   assert.match(source, /Run Home Base update/);
+  assert.match(source, /class="hb-table-wrap"/);
   assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /payload\.confirm = 'EXECUTE'/);
+});
+
+test('settings responsive styles contain table overflow and mobile-safe grid constraints', () => {
+  const style = readPublicFile('style.css');
+
+  assert.match(style, /\.hb-table-wrap \{/);
+  assert.match(style, /overflow-x: auto/);
+  assert.match(style, /-webkit-overflow-scrolling: touch/);
+  assert.match(style, /\.hb-card \{[\s\S]*min-width: 0;/);
+  assert.match(style, /\.hb-stack > \*, \.hb-grid > \*, \.hb-form-grid > \*, \.hb-label \{ min-width: 0; \}/);
+  assert.match(style, /\.hb-input, \.hb-select \{[\s\S]*width: 100%;/);
 });
 
 test('failed jobs expose rerun actions for supported job types on job detail', () => {
@@ -60,6 +76,12 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /View health details/);
   assert.match(apps, /Setup ↗/);
   assert.match(apps, /payload\.ref = ref/);
+  assert.match(apps, /activeJobs/);
+  assert.match(apps, /activeInstallJobsByTarget/);
+  assert.match(apps, /byTarget\.has\(job\.target\)/);
+  assert.match(apps, /Installing now/);
+  assert.match(apps, /View install job/);
+  assert.match(apps, /!installingByAppId\.has\(app\.id\)/);
   assert.match(apps, /scheduleRefresh/);
   assert.match(apps, /visibilitychange/);
 });

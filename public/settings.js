@@ -23,19 +23,21 @@
     const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
     if (!checks.length) return '<p class="hb-muted" style="margin:0;">No preflight checks returned.</p>';
     return `
-      <table class="hb-table">
-        <thead><tr><th>Check</th><th>Status</th><th>Summary</th><th>Hint</th></tr></thead>
-        <tbody>
-          ${checks.map((check) => `
-            <tr>
-              <td>${window.HB.escapeHtml(check.title || check.id)}</td>
-              <td>${check.ok ? '<span class="hb-ok">PASS</span>' : (check.severity === 'critical' ? '<span class="hb-err">FAIL</span>' : '<span class="hb-warn">WARN</span>')}</td>
-              <td>${window.HB.escapeHtml(check.summary || '')}</td>
-              <td>${window.HB.escapeHtml(check.hint || '')}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+      <div class="hb-table-wrap" role="region" aria-label="Preflight checks">
+        <table class="hb-table">
+          <thead><tr><th>Check</th><th>Status</th><th>Summary</th><th>Hint</th></tr></thead>
+          <tbody>
+            ${checks.map((check) => `
+              <tr>
+                <td>${window.HB.escapeHtml(check.title || check.id)}</td>
+                <td>${check.ok ? '<span class="hb-ok">PASS</span>' : (check.severity === 'critical' ? '<span class="hb-err">FAIL</span>' : '<span class="hb-warn">WARN</span>')}</td>
+                <td>${window.HB.escapeHtml(check.summary || '')}</td>
+                <td>${window.HB.escapeHtml(check.hint || '')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 

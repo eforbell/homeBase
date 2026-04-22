@@ -37,6 +37,7 @@ a:hover { text-decoration: underline; }
   background: var(--surface);
   border-radius: 14px;
   padding: 1rem;
+  min-width: 0;
 }
 
 .hb-muted { color: var(--muted); }
@@ -51,6 +52,7 @@ a:hover { text-decoration: underline; }
   background: var(--surface-2);
 }
 .hb-stack { display: grid; gap: 1rem; }
+.hb-stack > *, .hb-grid > *, .hb-form-grid > *, .hb-label { min-width: 0; }
 .hb-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
 .hb-pre {
   margin: 0;
@@ -66,6 +68,8 @@ a:hover { text-decoration: underline; }
 .hb-form-grid { display: grid; gap: 0.65rem; }
 .hb-label { display: grid; gap: 0.35rem; font-size: 0.9rem; }
 .hb-input, .hb-select {
+  width: 100%;
+  max-width: 100%;
   background: #08101c;
   color: var(--text);
   border: 1px solid var(--border);
@@ -84,8 +88,15 @@ a:hover { text-decoration: underline; }
 .hb-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .hb-btn-primary { background: var(--accent); border-color: transparent; }
 .hb-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.hb-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .hb-table {
   width: 100%;
+  min-width: 640px;
   border-collapse: collapse;
 }
 .hb-table th, .hb-table td {

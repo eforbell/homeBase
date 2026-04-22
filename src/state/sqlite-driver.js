@@ -142,8 +142,8 @@ elif op == "load_state":
             "plannedAt": record["planned_at"],
             "updatedAt": record["updated_at"],
         }
-    jobs = [
-        {
+    def serialize_job(row):
+        return {
             "id": row["id"],
             "kind": row["kind"],
             "target": row["target"],
@@ -155,8 +155,17 @@ elif op == "load_state":
             "currentStep": row["current_step"],
             "error": row["error_text"],
         }
+
+    jobs = [
+        serialize_job(row)
         for row in conn.execute(
             "SELECT * FROM jobs ORDER BY id DESC LIMIT 20"
+        )
+    ]
+    active_jobs = [
+        serialize_job(row)
+        for row in conn.execute(
+            "SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY id DESC"
         )
     ]
     backups = [
@@ -183,6 +192,7 @@ elif op == "load_state":
         ],
         "installations": installations,
         "jobs": jobs,
+        "activeJobs": active_jobs,
         "backups": backups,
     })
 

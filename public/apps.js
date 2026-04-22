@@ -80,6 +80,35 @@
     `;
   }
 
+
+  function activeInstallJobsByTarget(jobs) {
+    const activeStatuses = new Set(['queued', 'running']);
+    const byTarget = new Map();
+    (Array.isArray(jobs) ? jobs : []).forEach((job) => {
+      if (job.kind !== 'install' || !activeStatuses.has(job.status) || byTarget.has(job.target)) return;
+      byTarget.set(job.target, job);
+    });
+    return byTarget;
+  }
+
+  function installingCard(app, job) {
+    return `
+      <article class="hb-card">
+        <div class="hb-row">
+          <strong>${window.HB.escapeHtml(app.name)}</strong>
+          ${window.HB.statusBadge(job.status)}
+          <span class="hb-badge">Installing now</span>
+        </div>
+        <p class="hb-muted" style="margin:0.55rem 0 0;">
+          Home Base is already installing this app. It is hidden from Available until job #${window.HB.escapeHtml(job.id)} finishes.
+        </p>
+        <div class="hb-actions" style="margin-top:0.75rem;">
+          <a class="hb-btn" href="/jobs/${window.HB.escapeHtml(job.id)}">View install job</a>
+        </div>
+      </article>
+    `;
+  }
+
   async function handleInstallSubmit(form) {
     const appId = form.getAttribute('data-app-id');
     const mountPath = form.elements.mountPath.value.trim();
@@ -153,7 +182,10 @@
       const healthByAppId = healthPayload.byAppId || {};
       const installedIds = new Set(installations.map((item) => item.appId));
       const catalog = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
-      const available = catalog.filter((app) => !installedIds.has(app.id));
+      const activeJobs = Array.isArray(statePayload.activeJobs) ? statePayload.activeJobs : statePayload.jobs;
+      const installingByAppId = activeInstallJobsByTarget(activeJobs);
+      const installing = catalog.filter((app) => !installedIds.has(app.id) && installingByAppId.has(app.id));
+      const available = catalog.filter((app) => !installedIds.has(app.id) && !installingByAppId.has(app.id));
 
       root.innerHTML = `
         <div class="hb-stack">
@@ -165,6 +197,14 @@
           <section class="hb-grid hb-grid-2">
             ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
           </section>
+          ${installing.length ? `
+            <section>
+              <h2 style="margin:0 0 0.75rem;">Installing now (${installing.length})</h2>
+              <div class="hb-grid hb-grid-2">
+                ${installing.map((app) => installingCard(app, installingByAppId.get(app.id))).join('')}
+              </div>
+            </section>
+          ` : ''}
           <details ${available.length ? '' : 'open'}>
             <summary>Available to install (${available.length})</summary>
             <section class="hb-grid hb-grid-2" style="margin-top:0.75rem;">

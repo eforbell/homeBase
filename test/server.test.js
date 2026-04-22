@@ -67,6 +67,47 @@ test('HTTP API exposes catalog and can persist a planned install', async () => {
   }
 });
 
+test('state exposes active install jobs separately from recent jobs', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-active-install-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const store = new SqliteStateStore(dbPath);
+    const createdAt = new Date().toISOString();
+    const { id } = store.createJob({
+      kind: 'install',
+      target: 'family-plan',
+      status: 'running',
+      dryRun: false,
+      createdAt,
+      currentStep: 'install-app',
+      planJson: JSON.stringify({ app: { id: 'family-plan' } }),
+    });
+
+    const stateRes = await fetch(`${server.url}/api/state`);
+    const state = await stateRes.json();
+    const active = state.activeJobs.find((job) => job.id === id);
+
+    assert.equal(active.kind, 'install');
+    assert.equal(active.target, 'family-plan');
+    assert.equal(active.status, 'running');
+    assert.equal(active.dryRun, false);
+  } finally {
+    await server.close();
+  }
+});
+
 test('home page route serves static dashboard shell and state still carries external urls', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-setup-link-'));
   const server = await startServer({
