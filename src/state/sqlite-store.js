@@ -84,6 +84,14 @@ class SqliteStateStore {
   pruneAdminSessions(nowIso) {
     return runSqliteOp(this.dbPath, 'prune_admin_sessions', { nowIso });
   }
+
+  createAdminAudit(record) {
+    return runSqliteOp(this.dbPath, 'create_admin_audit', { record });
+  }
+
+  listAdminAudit(limit = 50) {
+    return runSqliteOp(this.dbPath, 'list_admin_audit', { limit });
+  }
 }
 
 module.exports = {

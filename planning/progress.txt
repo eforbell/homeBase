@@ -96,3 +96,11 @@
 - Added regression coverage for passphrase rotation, session invalidation, and new admin UI wiring.
 - Verification: npm test passed (78/78).
 - Story status update: ADM-002 moved to review (manual browser/VM admin lifecycle UX validation still pending).
+- ADM-003 implementation pass:
+  - added sqlite-backed admin destructive-action audit log table + store APIs,
+  - destructive real execution endpoints now record blocked-confirm, blocked-auth, blocked-preflight, and queued outcomes,
+  - exposed admin audit API (`/api/admin/audit`) gated by admin unlock,
+  - Settings now surfaces a concise recent destructive-action audit list when admin is unlocked.
+- Added regression coverage for audit endpoint auth gating and destructive-action audit recording.
+- Verification: npm test passed (79/79).
+- Story status update: ADM-003 moved to review; all Feature-3 stories are now in review pending manual VM/browser validation.

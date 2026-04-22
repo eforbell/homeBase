@@ -4,7 +4,7 @@
   "prdPath": "planning/features/feature-3-prd.json",
   "summaryPath": "planning/features/feature-3-summary.md",
   "branch": "feature/admin-auth-action-guardrails",
-  "status": "in_progress",
+  "status": "review",
   "stories": [
     {
       "id": "ADM-001",
@@ -19,7 +19,7 @@
     {
       "id": "ADM-003",
       "title": "Audit destructive actions",
-      "status": "queued"
+      "status": "review"
     }
   ],
   "featureSequence": [

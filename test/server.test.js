@@ -437,6 +437,58 @@ test('admin passphrase rotation requires unlock and invalidates prior sessions',
   }
 });
 
+test('admin audit endpoint requires unlock and records destructive attempts', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-audit-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    await fetch(`${server.url}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'audit-passphrase' }),
+    });
+
+    const lockedAuditRes = await fetch(`${server.url}/api/admin/audit`);
+    assert.equal(lockedAuditRes.status, 401);
+
+    const unlockRes = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'audit-passphrase' }),
+    });
+    const cookie = (unlockRes.headers.get('set-cookie') || '').split(';')[0];
+
+    const attemptRes = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    assert.equal(attemptRes.status, 409);
+
+    const auditRes = await fetch(`${server.url}/api/admin/audit?limit=5`, {
+      headers: { cookie },
+    });
+    assert.equal(auditRes.status, 200);
+    const auditPayload = await auditRes.json();
+    assert.equal(Array.isArray(auditPayload.entries), true);
+    assert.equal(auditPayload.entries[0].action, 'bootstrap-execute');
+    assert.equal(auditPayload.entries[0].outcome, 'blocked-preflight');
+  } finally {
+    await server.close();
+  }
+});
+
 test('health alert test endpoint posts to configured webhook target', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-test-'));
   const posted = [];

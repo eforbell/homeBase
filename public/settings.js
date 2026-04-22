@@ -1,6 +1,24 @@
 (function settingsPage() {
   const root = document.getElementById('app');
 
+  function renderAdminAudit(entries) {
+    const items = Array.isArray(entries) ? entries : [];
+    if (!items.length) return '<p class="hb-muted" style="margin:0;">No destructive action audit entries yet.</p>';
+    return `
+      <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
+        ${items.slice(0, 10).map((item) => `
+          <li class="hb-row">
+            <span>${window.HB.escapeHtml(item.action)}</span>
+            <span class="${item.outcome === 'queued' ? 'hb-ok' : 'hb-warn'}">${window.HB.escapeHtml(item.outcome)}</span>
+            <span class="hb-muted">${window.HB.escapeHtml(item.target)}</span>
+            <span class="hb-muted">${window.HB.escapeHtml(window.HB.formatTimestamp(item.createdAt))}</span>
+            ${item.jobId ? `<a href="/jobs/${window.HB.escapeHtml(item.jobId)}">#${window.HB.escapeHtml(item.jobId)}</a>` : ''}
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  }
+
   function renderChecks(preflight) {
     const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
     if (!checks.length) return '<p class="hb-muted" style="margin:0;">No preflight checks returned.</p>';
@@ -204,6 +222,10 @@
                 <button class="hb-btn" type="submit">Rotate admin passphrase</button>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
+              <div style="margin-top:0.85rem;">
+                <h3 style="margin:0 0 0.45rem;">Recent destructive action audit</h3>
+                <div data-admin-audit>${adminStatus.unlocked ? '<p class="hb-muted" style="margin:0;">Loading audit history…</p>' : '<p class="hb-muted" style="margin:0;">Unlock admin to view audit history.</p>'}</div>
+              </div>
             ` : `
               <form class="hb-form-grid" data-action="admin-setup">
                 <label class="hb-label">Create admin passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="new-password"></label>
@@ -259,6 +281,14 @@
         </div>
       `;
       wireEvents();
+      if (adminStatus.unlocked) {
+        const auditNode = root.querySelector('[data-admin-audit]');
+        window.HB.getJson('/api/admin/audit?limit=20').then((payload) => {
+          if (auditNode) auditNode.innerHTML = renderAdminAudit(payload.entries || []);
+        }).catch((error) => {
+          if (auditNode) auditNode.innerHTML = `<p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(error.message)}</p>`;
+        });
+      }
     } catch (error) {
       root.innerHTML = `
         <section class="hb-card">

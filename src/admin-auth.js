@@ -146,7 +146,8 @@ async function requireAdminForExecute(req, stateStore) {
   if (!status.unlocked) {
     return { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' } };
   }
-  return { ok: true };
+  const token = parseCookie(req.headers.cookie, COOKIE_NAME);
+  return { ok: true, sessionTokenHash: token ? hashToken(token) : null };
 }
 
 module.exports = {
