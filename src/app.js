@@ -377,7 +377,8 @@ function createApp(config) {
         if (!status.configured) return sendJson(res, 409, { error: 'Admin credential is not configured yet.' });
         if (!status.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required to view audit history.' });
         const limitRaw = Number(url.searchParams.get('limit') || 50);
-        const limit = Number.isFinite(limitRaw) ? limitRaw : 50;
+        const parsedLimit = Number.isFinite(limitRaw) ? limitRaw : 50;
+        const limit = Math.min(200, Math.max(1, Math.trunc(parsedLimit)));
         return sendJson(res, 200, { entries: stateStore.listAdminAudit(limit) });
       }
       if (method === 'POST' && pathname === '/api/homebase/config') {
@@ -427,6 +428,7 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/homebase/update-self') {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           recordAdminAudit(stateStore, {
             action: 'homebase-update-self',
@@ -438,7 +440,7 @@ function createApp(config) {
           return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
         }
         if (body.dryRun === false) {
-          const auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore);
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-update-self',
@@ -446,6 +448,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-auth',
               reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
@@ -461,12 +464,14 @@ function createApp(config) {
             dryRun: false,
             outcome: 'queued',
             jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
           });
         }
         return sendJson(res, 202, { ok: true, jobId, dryRun: body.dryRun !== false });
       }
       if (method === 'POST' && pathname === '/api/homebase/install-self') {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           recordAdminAudit(stateStore, {
             action: 'homebase-install-self',
@@ -480,7 +485,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore);
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-install-self',
@@ -488,6 +493,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-auth',
               reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
@@ -502,6 +508,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-preflight',
               reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
             });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before Home Base self-install: ${missing.join(', ')}`,
@@ -520,6 +527,7 @@ function createApp(config) {
             dryRun: false,
             outcome: 'queued',
             jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
           });
         }
         return sendJson(res, 202, {
@@ -545,6 +553,7 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/bootstrap/execute') {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           recordAdminAudit(stateStore, {
             action: 'bootstrap-execute',
@@ -558,7 +567,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore);
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'bootstrap-execute',
@@ -566,6 +575,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-auth',
               reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
@@ -580,6 +590,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-preflight',
               reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
             });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real bootstrap execution: ${missing.join(', ')}`,
@@ -605,6 +616,7 @@ function createApp(config) {
             dryRun: false,
             outcome: 'queued',
             jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
           });
         }
         return sendJson(res, 202, {
@@ -655,6 +667,7 @@ function createApp(config) {
       const executeInstallMatch = pathname.match(/^\/api\/apps\/([^/]+)\/execute$/);
       if (method === 'POST' && executeInstallMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           recordAdminAudit(stateStore, {
             action: 'app-install-execute',
@@ -668,7 +681,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore);
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-install-execute',
@@ -676,6 +689,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-auth',
               reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
@@ -694,6 +708,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-preflight',
               reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
             });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real install execution: ${missing.join(', ')}`,
@@ -714,6 +729,7 @@ function createApp(config) {
             dryRun: false,
             outcome: 'queued',
             jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
           });
         }
         return sendJson(res, 202, {
@@ -726,6 +742,7 @@ function createApp(config) {
       const restartExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restart\/execute$/);
       if (method === 'POST' && restartExecuteMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           recordAdminAudit(stateStore, {
             action: 'app-restart-execute',
@@ -739,7 +756,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore);
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restart-execute',
@@ -747,6 +764,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-auth',
               reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
@@ -779,6 +797,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-preflight',
               reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
             });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real restart execution: ${missing.join(', ')}`,
@@ -797,6 +816,7 @@ function createApp(config) {
             dryRun: false,
             outcome: 'queued',
             jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
           });
         }
         return sendJson(res, 202, {
@@ -833,6 +853,7 @@ function createApp(config) {
       const backupExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup\/execute$/);
       if (method === 'POST' && backupExecuteMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           recordAdminAudit(stateStore, {
             action: 'app-backup-execute',
@@ -846,7 +867,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore);
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-backup-execute',
@@ -854,6 +875,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-auth',
               reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
@@ -868,6 +890,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-preflight',
               reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
             });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real backup execution: ${missing.join(', ')}`,
@@ -886,6 +909,7 @@ function createApp(config) {
             dryRun: false,
             outcome: 'queued',
             jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
           });
         }
         return sendJson(res, 202, {
@@ -909,6 +933,7 @@ function createApp(config) {
       const restoreExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restore\/execute$/);
       if (method === 'POST' && restoreExecuteMatch) {
         const body = await parseBody(req);
+        let auth = null;
         if (body.dryRun === false && body.confirm !== 'EXECUTE') {
           recordAdminAudit(stateStore, {
             action: 'app-restore-execute',
@@ -922,7 +947,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore);
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restore-execute',
@@ -930,6 +955,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-auth',
               reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
@@ -944,6 +970,7 @@ function createApp(config) {
               dryRun: false,
               outcome: 'blocked-preflight',
               reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
             });
             return sendJson(res, 409, {
               error: `Preflight checks must pass before real restore execution: ${missing.join(', ')}`,
@@ -968,6 +995,7 @@ function createApp(config) {
             dryRun: false,
             outcome: 'queued',
             jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
           });
         }
         return sendJson(res, 202, {

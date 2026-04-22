@@ -139,15 +139,16 @@ async function rotateAdmin(req, res, body, stateStore) {
 }
 
 async function requireAdminForExecute(req, stateStore) {
+  const token = parseCookie(req.headers.cookie, COOKIE_NAME);
+  const sessionTokenHash = token ? hashToken(token) : null;
   const status = await getAdminStatus(req, stateStore);
   if (!status.configured) {
-    return { ok: false, statusCode: 409, payload: { error: 'Admin setup is required before real execution.' } };
+    return { ok: false, statusCode: 409, payload: { error: 'Admin setup is required before real execution.' }, sessionTokenHash };
   }
   if (!status.unlocked) {
-    return { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' } };
+    return { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' }, sessionTokenHash };
   }
-  const token = parseCookie(req.headers.cookie, COOKIE_NAME);
-  return { ok: true, sessionTokenHash: token ? hashToken(token) : null };
+  return { ok: true, sessionTokenHash };
 }
 
 module.exports = {

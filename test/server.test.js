@@ -484,6 +484,8 @@ test('admin audit endpoint requires unlock and records destructive attempts', as
     assert.equal(Array.isArray(auditPayload.entries), true);
     assert.equal(auditPayload.entries[0].action, 'bootstrap-execute');
     assert.equal(auditPayload.entries[0].outcome, 'blocked-preflight');
+    assert.equal(typeof auditPayload.entries[0].sessionTokenHash, 'string');
+    assert.equal(auditPayload.entries[0].sessionTokenHash.length > 20, true);
   } finally {
     await server.close();
   }

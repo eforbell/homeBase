@@ -6,7 +6,7 @@
     if (!items.length) return '<p class="hb-muted" style="margin:0;">No destructive action audit entries yet.</p>';
     return `
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
-        ${items.slice(0, 10).map((item) => `
+        ${items.map((item) => `
           <li class="hb-row">
             <span>${window.HB.escapeHtml(item.action)}</span>
             <span class="${item.outcome === 'queued' ? 'hb-ok' : 'hb-warn'}">${window.HB.escapeHtml(item.outcome)}</span>
@@ -283,7 +283,7 @@
       wireEvents();
       if (adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');
-        window.HB.getJson('/api/admin/audit?limit=20').then((payload) => {
+        window.HB.getJson('/api/admin/audit?limit=10').then((payload) => {
           if (auditNode) auditNode.innerHTML = renderAdminAudit(payload.entries || []);
         }).catch((error) => {
           if (auditNode) auditNode.innerHTML = `<p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(error.message)}</p>`;

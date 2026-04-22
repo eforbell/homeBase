@@ -104,3 +104,8 @@
 - Added regression coverage for audit endpoint auth gating and destructive-action audit recording.
 - Verification: npm test passed (79/79).
 - Story status update: ADM-003 moved to review; all Feature-3 stories are now in review pending manual VM/browser validation.
+- PR review follow-up:
+  - added session_token_hash propagation for authorized destructive-action audit events,
+  - added JS-side audit limit clamp + aligned audit fetch/render size,
+  - reverted accidental fastToEat catalog commit from this feature branch.
+- Verification: npm test passed (79/79) after review fixes.
