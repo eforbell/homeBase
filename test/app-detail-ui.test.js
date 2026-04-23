@@ -14,6 +14,7 @@ test('app detail UI exposes backup and restore execution without window.prompt',
   assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/backup\/execute/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/restart\/execute/);
+  assert.match(source, /\/api\/apps\/\$\{appId\}\/uninstall\/execute/);
   assert.match(source, /window\.HB\.confirmInline/);
   assert.match(source, /Restore will overwrite/);
 });
@@ -25,11 +26,13 @@ test('app detail exposes operations sections and anchors', () => {
   assert.match(source, /id="backup"/);
   assert.match(source, /id="restore"/);
   assert.match(source, /id="deploy"/);
+  assert.match(source, /id="uninstall"/);
   assert.match(source, /data-action="restart"/);
   assert.match(source, /Git ref/);
   assert.match(source, /href="#health"/);
   assert.match(source, /href="#backup"/);
   assert.match(source, /href="#restore"/);
+  assert.match(source, /href="#uninstall"/);
   assert.match(source, /scrollToCurrentHash/);
 });
 
@@ -54,6 +57,9 @@ test('app detail surfaces backup summary and local-only risk', () => {
   assert.match(source, /Runtime health/);
   assert.match(source, /probeSummary/);
   assert.match(source, /payload\.ref = ref/);
+  assert.match(source, /keepBackups/);
+  assert.match(source, /Run uninstall/);
+  assert.match(source, /Keep backups/);
   assert.match(source, /Open setup ↗/);
   assert.match(source, /Onboarding/);
 });

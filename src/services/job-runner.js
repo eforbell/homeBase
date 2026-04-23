@@ -105,6 +105,25 @@ class JobRunner {
     });
   }
 
+  startUninstallJob(plan, { dryRun = true } = {}) {
+    return this.startPlanJob({
+      kind: 'uninstall',
+      target: plan.app.id,
+      plan,
+      steps: plan.executionSteps || [],
+      dryRun,
+      onComplete: () => {
+        if (dryRun) return;
+        this.stateStore.deleteInstallation(plan.app.id);
+        this.stateStore.deleteBackups(plan.app.id);
+      },
+      extraResult: {
+        keepBackups: Boolean(plan.uninstall?.keepBackups),
+        backupRoot: plan.uninstall?.backupRoot,
+      },
+    });
+  }
+
   startHomeBaseUpdateJob(plan, { dryRun = true } = {}) {
     return this.startPlanJob({
       kind: 'homebase-update',

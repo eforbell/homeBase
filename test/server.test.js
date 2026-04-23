@@ -921,6 +921,7 @@ test('app actions endpoint documents currently supported operations', async () =
     assert.equal(payload.actions.backup, true);
     assert.equal(payload.actions.update, false);
     assert.equal(payload.actions.restart, false);
+    assert.equal(payload.actions.uninstall, false);
   } finally {
     await server.close();
   }
@@ -964,6 +965,35 @@ test('install execute dry-run creates a completed install job', async () => {
   }
 });
 
+test('app actions marks uninstall available after install record exists', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-actions-uninstall-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-help/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/help/' }),
+    });
+
+    const res = await fetch(`${server.url}/api/apps/family-help/actions`);
+    const payload = await res.json();
+    assert.equal(payload.actions.uninstall, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test('app actions marks restart available after install record exists', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-actions-restart-'));
   const server = await startServer({
@@ -987,6 +1017,52 @@ test('app actions marks restart available after install record exists', async ()
     const res = await fetch(`${server.url}/api/apps/family-help/actions`);
     const payload = await res.json();
     assert.equal(payload.actions.restart, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('uninstall execute dry-run creates a completed uninstall job', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-uninstall-job-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-help/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/help/' }),
+    });
+
+    const executeRes = await fetch(`${server.url}/api/apps/family-help/uninstall/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true, keepBackups: true }),
+    });
+    const execute = await executeRes.json();
+    assert.equal(execute.ok, true);
+    assert.equal(execute.keepBackups, true);
+
+    let job = null;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      job = await jobRes.json();
+      if (job.status === 'completed') break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.equal(job.status, 'completed');
+    assert.match(job.log, /Keeping backup archives under/);
+    assert.match(job.log, /family-help/i);
   } finally {
     await server.close();
   }

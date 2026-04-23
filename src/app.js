@@ -10,6 +10,7 @@ const { buildInstallPlan } = require('./services/install-planner');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { buildRestorePlan } = require('./services/restore-planner');
+const { buildUninstallPlan } = require('./services/uninstall-planner');
 const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planner');
 const { buildHomeBaseUpdatePlan } = require('./services/homebase-update-planner');
 const { JobRunner } = require('./services/job-runner');
@@ -639,6 +640,7 @@ function createApp(config) {
             restore: true,
             update: false,
             restart: Boolean(installation),
+            uninstall: Boolean(installation),
           },
           note: 'Update is not a separate API action yet; use install execute for deploy operations.',
         });
@@ -930,6 +932,104 @@ function createApp(config) {
         });
         return sendJson(res, 200, plan);
       }
+      const uninstallExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/uninstall\/execute$/);
+      if (method === 'POST' && uninstallExecuteMatch) {
+        const body = await parseBody(req);
+        let auth = null;
+        const appId = uninstallExecuteMatch[1];
+        const app = getAppById(appId);
+        if (!app) return notFound(res);
+        const install = (state.installations || {})[appId];
+        if (!install) {
+          if (body.dryRun === false) {
+            recordAdminAudit(stateStore, {
+              action: 'app-uninstall-execute',
+              target: appId,
+              dryRun: false,
+              outcome: 'blocked-state',
+              reason: 'not-installed',
+            });
+          }
+          return sendJson(res, 409, {
+            error: `App ${appId} must be installed before uninstall is available.`,
+          });
+        }
+        if (body.dryRun === false && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'app-uninstall-execute',
+            target: appId,
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
+          return sendJson(res, 400, {
+            error: 'Real execution requires confirm=EXECUTE',
+          });
+        }
+        if (body.dryRun === false) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'app-uninstall-execute',
+              target: appId,
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+        }
+        if (body.dryRun === false) {
+          const required = ['os', 'sudo', 'systemd', 'nginx'];
+          if (app.database?.engine && app.database.engine.includes('postgres')) {
+            required.push('psql', 'postgres-service');
+          }
+          const preflight = getPreflight(effectiveConfig, { force: true });
+          const missing = missingCheckIds(preflight, required);
+          if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'app-uninstall-execute',
+              target: appId,
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before real uninstall execution: ${missing.join(', ')}`,
+              missing,
+            });
+          }
+        }
+        const plan = buildUninstallPlan({
+          appId,
+          state,
+          config: effectiveConfig,
+          options: { keepBackups: body.keepBackups !== false },
+        });
+        const jobId = jobRunner.startUninstallJob(plan, {
+          dryRun: body.dryRun !== false,
+        });
+        if (body.dryRun === false) {
+          recordAdminAudit(stateStore, {
+            action: 'app-uninstall-execute',
+            target: appId,
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
+        return sendJson(res, 202, {
+          ok: true,
+          jobId,
+          appId,
+          dryRun: body.dryRun !== false,
+          keepBackups: body.keepBackups !== false,
+        });
+      }
+
       const restoreExecuteMatch = pathname.match(/^\/api\/apps\/([^/]+)\/restore\/execute$/);
       if (method === 'POST' && restoreExecuteMatch) {
         const body = await parseBody(req);
@@ -1017,6 +1117,7 @@ function createApp(config) {
     } catch (error) {
       const statusByCode = {
         APP_NOT_FOUND: 404,
+        APP_NOT_INSTALLED: 409,
         INVALID_GIT_REF: 400,
         GIT_SSH_KEY_PATH_REQUIRED: 400,
       };

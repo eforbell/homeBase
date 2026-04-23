@@ -52,7 +52,7 @@
     return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
   }
 
-  async function waitForJobCompletion(jobId, resultNode, { refreshOnComplete = true } = {}) {
+  async function waitForJobCompletion(jobId, resultNode, { refreshOnComplete = true, onComplete = null } = {}) {
     for (let attempt = 0; attempt < 120; attempt += 1) {
       try {
         const job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
@@ -60,7 +60,9 @@
           resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> ${window.HB.escapeHtml(job.status)}.`;
         }
         if (isTerminalJobStatus(job.status)) {
-          if (refreshOnComplete) {
+          if (typeof onComplete === 'function') {
+            onComplete(job);
+          } else if (refreshOnComplete) {
             setTimeout(() => load(), 650);
           }
           return job;
@@ -166,6 +168,40 @@
     }
   }
 
+  async function handleUninstall(form) {
+    const dryRun = form.elements.dryRun.checked;
+    const keepBackups = form.elements.keepBackups.checked;
+    const resultNode = form.querySelector('[data-result]');
+    const payload = { dryRun, keepBackups };
+    if (!dryRun) {
+      const backupClause = keepBackups
+        ? ' Backup archives will be preserved under the existing backup root.'
+        : ' Existing backup archives for this app will also be deleted.';
+      try {
+        await window.HB.confirmInline(resultNode, `Uninstall will stop and remove this app from Home Base.${backupClause} This cannot be undone from the UI.`);
+      } catch (_error) {
+        return;
+      }
+      payload.confirm = 'EXECUTE';
+    }
+    resultNode.textContent = 'Submitting...';
+    try {
+      const response = await window.HB.postJson(`/api/apps/${appId}/uninstall/execute`, payload);
+      const mode = dryRun ? 'Uninstall dry-run' : 'Uninstall';
+      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started.`;
+      void waitForJobCompletion(response.jobId, resultNode, {
+        refreshOnComplete: false,
+        onComplete: (job) => {
+          if (!dryRun && job.status === 'completed') {
+            window.location.href = '/apps';
+          }
+        },
+      });
+    } catch (error) {
+      resultNode.textContent = error.message;
+    }
+  }
+
   function wireActions() {
     root.addEventListener('submit', (event) => {
       const backupForm = event.target.closest('form[data-action="backup"]');
@@ -190,6 +226,12 @@
       if (restartForm) {
         event.preventDefault();
         handleRestart(restartForm);
+        return;
+      }
+      const uninstallForm = event.target.closest('form[data-action="uninstall"]');
+      if (uninstallForm) {
+        event.preventDefault();
+        handleUninstall(uninstallForm);
       }
     });
   }
@@ -240,6 +282,7 @@
               <a class="hb-btn" href="#backup">Backup</a>
               <a class="hb-btn" href="#restore">Restore</a>
               <a class="hb-btn" href="#deploy">Deploy / Reinstall</a>
+              <a class="hb-btn" href="#uninstall">Uninstall</a>
             </div>
             ${renderBackupSummary(backups, config)}
           </section>
@@ -281,7 +324,8 @@
               </form>
               <p class="hb-muted" style="margin:0.6rem 0 0;">
                 Restart: ${actions.restart ? 'Available' : 'Install app first'} ·
-                Update: ${actions.update ? 'Available' : 'Not exposed yet'}
+                Update: ${actions.update ? 'Available' : 'Not exposed yet'} ·
+                Uninstall: ${actions.uninstall ? 'Available' : 'Install app first'}
               </p>
             </article>
 
@@ -311,6 +355,22 @@
                 <input name="dryRun" type="checkbox" checked> Dry-run only
               </label>
               <button class="hb-btn" type="submit">Run restore</button>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
+          </section>
+
+          <section id="uninstall" class="hb-card">
+            <h2 style="margin-top:0;">Uninstall</h2>
+            <p class="hb-warn" style="margin:0 0 0.75rem;">Uninstall removes this app from Home Base management and is intended to fully remove the current install.</p>
+            <form class="hb-form-grid" data-action="uninstall">
+              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                <input name="keepBackups" type="checkbox" checked> Keep backups
+              </label>
+              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                <input name="dryRun" type="checkbox" checked> Dry-run only
+              </label>
+              <button class="hb-btn" type="submit" ${actions.uninstall ? '' : 'disabled'}>Run uninstall</button>
+              <p class="hb-muted" style="margin:0;">Backups are preserved by default under the existing backup root. Disable Keep backups to delete them too.</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
           </section>

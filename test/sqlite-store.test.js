@@ -70,4 +70,11 @@ test('sqlite state store persists installations and jobs', () => {
   const backups = store.listBackups('family-help');
   assert.equal(backups.length, 1);
   assert.equal(backups[0].includedFiles[0], '.env.backup');
+
+  store.deleteBackups('family-help');
+  store.deleteInstallation('family-help');
+
+  const afterDelete = store.loadState();
+  assert.equal(afterDelete.installations['family-help'], undefined);
+  assert.equal(store.listBackups('family-help').length, 0);
 });

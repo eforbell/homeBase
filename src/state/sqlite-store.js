@@ -49,6 +49,14 @@ class SqliteStateStore {
     return runSqliteOp(this.dbPath, 'list_backups', { appId });
   }
 
+  deleteBackups(appId) {
+    return runSqliteOp(this.dbPath, 'delete_backups', { appId });
+  }
+
+  deleteInstallation(appId) {
+    return runSqliteOp(this.dbPath, 'delete_installation', { appId });
+  }
+
   getHomeBaseConfig() {
     return runSqliteOp(this.dbPath, 'get_homebase_config');
   }

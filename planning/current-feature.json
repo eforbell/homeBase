@@ -70,6 +70,12 @@
       "featureName": "Suite Onboarding Baseline Convergence",
       "branch": "feature/suite-onboarding-baselines",
       "summary": "Converge app health/readiness/onboarding/manifest contracts."
+    },
+    {
+      "featureId": "feature-9",
+      "featureName": "Managed App Uninstall",
+      "branch": "feature/managed-app-uninstall",
+      "summary": "Add a destructive but explicit Uninstall flow that fully removes a managed app and returns it to Available to install."
     }
   ],
   "launchDefinition": {

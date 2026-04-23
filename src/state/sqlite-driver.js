@@ -397,6 +397,22 @@ elif op == "list_backups":
     ]
     emit(backups)
 
+elif op == "delete_backups":
+    conn.execute(
+        "DELETE FROM backup_records WHERE app_id = ?",
+        (payload["appId"],),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "delete_installation":
+    conn.execute(
+        "DELETE FROM installations WHERE app_id = ?",
+        (payload["appId"],),
+    )
+    conn.commit()
+    emit({"ok": True})
+
 elif op == "get_homebase_config":
     row = conn.execute(
         "SELECT hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, updated_at FROM homebase_config WHERE id = 1"

@@ -1,0 +1,113 @@
+{
+  "branchName": "feature/managed-app-uninstall",
+  "projectName": "Managed App Uninstall",
+  "description": "Add a first-class Uninstall action so a founder can fully remove a managed app from HomeBase without shell cleanup, stale reinstall blockers, or hidden retained restore state. The UI language should use 'Uninstall' consistently, and once an app is uninstalled it should return to the same product state as an app that is merely available to install.",
+  "timing": {
+    "draftedOn": "2026-04-23",
+    "plannedEarliestExecution": "After admin auth and core install/backup/restore flows are stable enough to support a destructive inverse operation",
+    "gatingCondition": "Requires admin-guarded destructive execution, trustworthy app metadata, and a clear decision on what artifacts are removed by default."
+  },
+  "principles": [
+    "Use the word 'Uninstall' in the UI; do not use 'Decommission'",
+    "Uninstall is destructive and must require an explicit extra confirmation",
+    "Once uninstalled, the app should behave as fully removed from HomeBase",
+    "A just-uninstalled app returns to the same visible state as any app that is simply available to install",
+    "Do not create surprise retained backups; preserving backups must be an explicit founder choice",
+    "Do not require or prompt for a fresh backup before uninstall; the founder may optionally keep existing backups",
+    "If backup preservation is offered, it should be a clear 'Keep backups' toggle that defaults ON"
+  ],
+  "techStack": {
+    "language": "Node.js planner/executor + vanilla JS UI",
+    "runtime": "systemd, nginx, git checkout cleanup, filesystem deletion, optional PostgreSQL/database teardown",
+    "storage": "SQLite installations/jobs/backup records plus app-specific runtime assets",
+    "testing": "Planner tests, dry-run endpoint tests, UI source assertions, manual VM uninstall/reinstall rehearsal"
+  },
+  "userStories": [
+    {
+      "id": "UNI-001",
+      "title": "Founder can see and understand a destructive Uninstall action",
+      "acceptanceCriteria": [
+        "Installed app detail presents an Uninstall action using that exact word",
+        "Uninstall is clearly marked destructive and requires admin unlock plus an extra explicit confirmation",
+        "The confirmation explains at a high level what will be removed: service/runtime wiring, install files, app state tracked by HomeBase, and that the 'Keep backups' toggle controls whether local backup archives are preserved",
+        "Uninstall is not available for apps that are not currently installed",
+        "The Uninstall UI includes a 'Keep backups' toggle that defaults ON"
+      ],
+      "priority": 1,
+      "estimatedLines": "+160/-20",
+      "testStrategy": "UI source assertions plus endpoint auth/confirm tests",
+      "passes": false
+    },
+    {
+      "id": "UNI-002",
+      "title": "Uninstall removes the app from HomeBase-managed state",
+      "acceptanceCriteria": [
+        "Execution stops and disables the app service/timers when applicable",
+        "Execution removes HomeBase-managed nginx/service/config/install artifacts for that app",
+        "Execution removes the app's installation record and backup records from HomeBase state so the app no longer appears as installed",
+        "If the founder leaves Keep backups enabled, backup archive files remain in place under the existing app backup root while install state is removed from HomeBase",
+        "After success, the app appears on the Apps page only under Available to install",
+        "A second uninstall attempt is blocked or reported as already uninstalled rather than failing messily"
+      ],
+      "priority": 2,
+      "estimatedLines": "+320/-40",
+      "testStrategy": "Planner tests, state transition tests, and manual VM uninstall/reinstall pass",
+      "passes": false
+    },
+    {
+      "id": "UNI-003",
+      "title": "Uninstall leaves the system in a clean reinstallable state",
+      "acceptanceCriteria": [
+        "After uninstall, reinstalling the same app from HomeBase does not require manual shell cleanup",
+        "No stale systemd unit, nginx snippet, install directory, or HomeBase state record blocks reinstall",
+        "Job detail makes the uninstall steps and final result auditable",
+        "Dry-run shows the full uninstall plan before execution"
+      ],
+      "priority": 3,
+      "estimatedLines": "+260/-30",
+      "testStrategy": "Dry-run endpoint tests plus manual VM uninstall-then-reinstall rehearsal",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [
+      "If uninstall leaves hidden state behind, HomeBase will give false confidence that the app is truly gone",
+      "Deleting backups is destructive and preserving backups changes later restore semantics, so the toggle behavior must be clearly communicated before execution",
+      "Database/file removal differs across apps and can create partial uninstall failures if contracts are inconsistent"
+    ],
+    "medium": [
+      "Some apps may have extra timers, sidecars, or data directories beyond the current manifest surface",
+      "Preserved on-disk backups may reappear after reinstall through disk discovery, which is acceptable if the UI explains it",
+      "Failure halfway through uninstall can leave the app neither clearly installed nor clearly removed",
+      "A founder may misread the 'Keep backups' toggle unless the default and consequences are explicit"
+    ],
+    "low": [
+      "The first version can target HomeBase-managed artifacts only and document any unsupported app-specific leftovers that emerge during rehearsal"
+    ]
+  },
+  "preFlightChecklist": [
+    "Define the default removal set precisely: install dir, config/env files, systemd units, nginx snippets, database, backup artifacts, SQLite backup records",
+    "Define the exact 'Keep backups' semantics; default is ON",
+    "Keep backups leaves archive files in place under the existing backup root in v1; do not invent a new quarantine location yet",
+    "Align uninstall gating with current destructive-job behavior; current HomeBase execute endpoints do not generally block on unrelated running jobs",
+    "Set 'Keep backups' toggle default to ON without requiring or prompting for a fresh backup before uninstall",
+    "Choose the confirmation UX pattern for a destructive irreversible action on mobile and desktop"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+740/-90",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "src/services/uninstall-planner.js",
+      "src/services/job-runner.js",
+      "src/state/sqlite-driver.js",
+      "src/state/sqlite-store.js",
+      "src/app.js",
+      "public/app-detail.js",
+      "public/apps.js",
+      "test/uninstall-planner.test.js",
+      "test/server.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}
