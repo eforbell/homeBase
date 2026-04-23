@@ -151,6 +151,21 @@ a:hover { text-decoration: underline; }
 .hb-status-dot--yellow { background: var(--yellow); }
 .hb-status-dot--red { background: var(--red); }
 
+/* Spinner */
+@keyframes hb-spin {
+  to { transform: rotate(360deg); }
+}
+.hb-spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: hb-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
 /* Skeleton loading placeholders */
 @keyframes hb-pulse {
   0%, 100% { opacity: 1; }
