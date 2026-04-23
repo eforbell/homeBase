@@ -11,10 +11,28 @@
 <body data-nav-page="apps">
   <div class="hb-shell">
     <main id="app" class="hb-main">
-      <section class="hb-card">
-        <h1>Apps</h1>
-        <p class="hb-muted" id="hb-loading-msg"></p>
-      </section>
+      <div class="hb-stack">
+        <section class="hb-card">
+          <div class="hb-skel hb-skel-title" style="width:40%;"></div>
+          <div class="hb-skel hb-skel-line" style="margin-top:0.7rem;width:68%;"></div>
+        </section>
+        <section class="hb-grid hb-grid-2">
+          <article class="hb-card">
+            <div class="hb-skel hb-skel-line" style="width:52%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.6rem;width:78%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.3rem;width:65%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.3rem;width:72%;"></div>
+            <div class="hb-skel" style="margin-top:0.8rem;height:2rem;width:56%;border-radius:10px;"></div>
+          </article>
+          <article class="hb-card">
+            <div class="hb-skel hb-skel-line" style="width:58%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.6rem;width:82%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.3rem;width:60%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.3rem;width:74%;"></div>
+            <div class="hb-skel" style="margin-top:0.8rem;height:2rem;width:56%;border-radius:10px;"></div>
+          </article>
+        </section>
+      </div>
     </main>
   </div>
   <script src="/api.js"></script>

@@ -11,10 +11,26 @@
 <body data-nav-page="jobs">
   <div class="hb-shell">
     <main id="app" class="hb-main">
-      <section class="hb-card">
-        <h1>Jobs</h1>
-        <p class="hb-muted" id="hb-loading-msg"></p>
-      </section>
+      <div class="hb-stack">
+        <section class="hb-card">
+          <div class="hb-skel hb-skel-title" style="width:28%;"></div>
+          <div class="hb-skel hb-skel-line" style="margin-top:0.6rem;width:66%;"></div>
+        </section>
+        <div class="hb-stack">
+          <div class="hb-card">
+            <div class="hb-skel hb-skel-line" style="width:44%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.55rem;width:72%;"></div>
+          </div>
+          <div class="hb-card">
+            <div class="hb-skel hb-skel-line" style="width:48%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.55rem;width:68%;"></div>
+          </div>
+          <div class="hb-card">
+            <div class="hb-skel hb-skel-line" style="width:40%;"></div>
+            <div class="hb-skel hb-skel-line" style="margin-top:0.55rem;width:76%;"></div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
   <script src="/api.js"></script>

@@ -151,6 +151,19 @@ a:hover { text-decoration: underline; }
 .hb-status-dot--yellow { background: var(--yellow); }
 .hb-status-dot--red { background: var(--red); }
 
+/* Skeleton loading placeholders */
+@keyframes hb-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+.hb-skel {
+  background: var(--surface-2);
+  border-radius: 4px;
+  animation: hb-pulse 1.4s ease-in-out infinite;
+}
+.hb-skel-title { height: 1.35em; }
+.hb-skel-line  { height: 0.8em; }
+
 @media (min-width: 980px) {
   body.app-has-nav {
     padding-left: 228px;
