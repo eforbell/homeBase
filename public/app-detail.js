@@ -169,10 +169,14 @@
   }
 
   async function handleUninstall(form) {
+    if (form.dataset.submitting === 'true') return;
+    form.dataset.submitting = 'true';
     const dryRun = form.elements.dryRun.checked;
     const keepBackups = form.elements.keepBackups.checked;
     const resultNode = form.querySelector('[data-result]');
+    const submitButton = form.querySelector('button[type="submit"]');
     const payload = { dryRun, keepBackups };
+    if (submitButton) submitButton.disabled = true;
     if (!dryRun) {
       const backupClause = keepBackups
         ? ' Backup archives will be preserved under the existing backup root.'
@@ -180,6 +184,8 @@
       try {
         await window.HB.confirmInline(resultNode, `Uninstall will stop and remove this app from Home Base.${backupClause} This cannot be undone from the UI.`);
       } catch (_error) {
+        form.dataset.submitting = 'false';
+        if (submitButton) submitButton.disabled = false;
         return;
       }
       payload.confirm = 'EXECUTE';
@@ -192,14 +198,19 @@
       void waitForJobCompletion(response.jobId, resultNode, {
         refreshOnComplete: false,
         onComplete: (job) => {
+          form.dataset.submitting = 'false';
+          if (submitButton) submitButton.disabled = false;
           if (!dryRun && job.status === 'completed') {
             window.location.href = '/apps';
           }
         },
       });
+      return;
     } catch (error) {
       resultNode.textContent = error.message;
     }
+    form.dataset.submitting = 'false';
+    if (submitButton) submitButton.disabled = false;
   }
 
   function wireActions() {

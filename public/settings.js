@@ -60,18 +60,59 @@
     }
   }
 
-  async function triggerHomebaseAction(endpoint, body, resultNode) {
+  function isTerminalJobStatus(status) {
+    return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
+  }
+
+  async function waitForJobCompletion(jobId, resultNode, { onComplete = null } = {}) {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        const job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
+        if (resultNode) {
+          resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> ${window.HB.escapeHtml(job.status)}.`;
+        }
+        if (isTerminalJobStatus(job.status)) {
+          if (typeof onComplete === 'function') onComplete(job);
+          return job;
+        }
+      } catch (error) {
+        if (resultNode) resultNode.textContent = error.message;
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    if (resultNode) {
+      resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> is still running. Open the job for details.`;
+    }
+    return null;
+  }
+
+  async function triggerHomebaseAction(endpoint, body, resultNode, form = null) {
+    if (form?.dataset.submitting === 'true') return;
+    if (form) form.dataset.submitting = 'true';
+    const buttons = form ? [...form.querySelectorAll('button[type="submit"]')] : [];
+    buttons.forEach((button) => { button.disabled = true; });
     resultNode.textContent = 'Submitting...';
     try {
       const payload = await window.HB.postJson(endpoint, body);
       if (payload && payload.jobId) {
-        resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a>.`;
+        resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a>. This page will refresh when it finishes.`;
+        void waitForJobCompletion(payload.jobId, resultNode, {
+          onComplete: () => {
+            if (form) form.dataset.submitting = 'false';
+            buttons.forEach((button) => { button.disabled = false; });
+            load();
+          },
+        });
+        return;
       } else {
         resultNode.textContent = 'Completed.';
       }
     } catch (error) {
       resultNode.textContent = error.message;
     }
+    if (form) form.dataset.submitting = 'false';
+    buttons.forEach((button) => { button.disabled = false; });
   }
 
   function wireEvents() {
@@ -91,7 +132,7 @@
         if (!dryRun) {
           payload.confirm = 'EXECUTE';
         }
-        triggerHomebaseAction('/api/homebase/install-self', payload, installSelf.querySelector('[data-result]'));
+        triggerHomebaseAction('/api/homebase/install-self', payload, installSelf.querySelector('[data-result]'), installSelf);
         return;
       }
       const bootstrapHost = event.target.closest('form[data-action="bootstrap-host"]');
@@ -102,7 +143,7 @@
         if (!dryRun) {
           payload.confirm = 'EXECUTE';
         }
-        triggerHomebaseAction('/api/bootstrap/execute', payload, bootstrapHost.querySelector('[data-result]'));
+        triggerHomebaseAction('/api/bootstrap/execute', payload, bootstrapHost.querySelector('[data-result]'), bootstrapHost);
         return;
       }
       const updateSelf = event.target.closest('form[data-action="update-self"]');
@@ -114,13 +155,13 @@
         if (!dryRun) {
           payload.confirm = 'EXECUTE';
         }
-        triggerHomebaseAction('/api/homebase/update-self', payload, updateSelf.querySelector('[data-result]'));
+        triggerHomebaseAction('/api/homebase/update-self', payload, updateSelf.querySelector('[data-result]'), updateSelf);
         return;
       }
       const testAlerts = event.target.closest('form[data-action="test-alerts"]');
       if (testAlerts) {
         event.preventDefault();
-        triggerHomebaseAction('/api/alerts/test', {}, testAlerts.querySelector('[data-result]'));
+        triggerHomebaseAction('/api/alerts/test', {}, testAlerts.querySelector('[data-result]'), testAlerts);
         return;
       }
       const adminSetup = event.target.closest('form[data-action="admin-setup"]');
@@ -128,7 +169,7 @@
         event.preventDefault();
         triggerHomebaseAction('/api/admin/setup', {
           passphrase: adminSetup.elements.passphrase.value,
-        }, adminSetup.querySelector('[data-result]'));
+        }, adminSetup.querySelector('[data-result]'), adminSetup);
         return;
       }
       const adminUnlock = event.target.closest('form[data-action="admin-unlock"]');
@@ -136,13 +177,13 @@
         event.preventDefault();
         triggerHomebaseAction('/api/admin/unlock', {
           passphrase: adminUnlock.elements.passphrase.value,
-        }, adminUnlock.querySelector('[data-result]'));
+        }, adminUnlock.querySelector('[data-result]'), adminUnlock);
         return;
       }
       const adminLock = event.target.closest('form[data-action="admin-lock"]');
       if (adminLock) {
         event.preventDefault();
-        triggerHomebaseAction('/api/admin/lock', {}, adminLock.querySelector('[data-result]'));
+        triggerHomebaseAction('/api/admin/lock', {}, adminLock.querySelector('[data-result]'), adminLock);
         return;
       }
       const adminRotate = event.target.closest('form[data-action="admin-rotate"]');
@@ -151,7 +192,7 @@
         triggerHomebaseAction('/api/admin/rotate', {
           currentPassphrase: adminRotate.elements.currentPassphrase.value,
           newPassphrase: adminRotate.elements.newPassphrase.value,
-        }, adminRotate.querySelector('[data-result]'));
+        }, adminRotate.querySelector('[data-result]'), adminRotate);
       }
     });
   }

@@ -42,6 +42,7 @@
           <a class="hb-btn" href="${detailUrl}">Details</a>
           <a class="hb-btn" href="${detailUrl}#backup">Backup…</a>
           <a class="hb-btn" href="${detailUrl}#restore">Restore…</a>
+          <a class="hb-btn" href="${detailUrl}#uninstall">Uninstall…</a>
         </div>
       </article>
     `;
@@ -109,17 +110,48 @@
     `;
   }
 
+  function isTerminalJobStatus(status) {
+    return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
+  }
+
+  async function waitForJobCompletion(jobId, resultNode, { onComplete = null } = {}) {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        const job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
+        if (resultNode) {
+          resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> ${window.HB.escapeHtml(job.status)}.`;
+        }
+        if (isTerminalJobStatus(job.status)) {
+          if (typeof onComplete === 'function') onComplete(job);
+          return job;
+        }
+      } catch (error) {
+        if (resultNode) resultNode.textContent = error.message;
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    if (resultNode) {
+      resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> is still running. Open the job for details.`;
+    }
+    return null;
+  }
+
   async function handleInstallSubmit(form) {
+    if (form.dataset.submitting === 'true') return;
+    form.dataset.submitting = 'true';
     const appId = form.getAttribute('data-app-id');
     const mountPath = form.elements.mountPath.value.trim();
     const portRaw = form.elements.port.value.trim();
     const ref = form.elements.ref.value.trim();
     const dryRun = form.elements.dryRun.checked;
     const resultNode = form.querySelector('[data-result]');
+    const submitButton = form.querySelector('button[type="submit"]');
     const payload = {
       mountPath,
       dryRun,
     };
+    if (submitButton) submitButton.disabled = true;
     if (portRaw) payload.port = Number(portRaw);
     if (ref) payload.ref = ref;
     if (!dryRun) {
@@ -128,10 +160,21 @@
     resultNode.textContent = 'Submitting...';
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/execute`, payload);
-      resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>.`;
+      const mode = dryRun ? 'Install dry-run' : 'Install';
+      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started. This page will refresh when it finishes.`;
+      void waitForJobCompletion(response.jobId, resultNode, {
+        onComplete: () => {
+          form.dataset.submitting = 'false';
+          if (submitButton) submitButton.disabled = false;
+          load();
+        },
+      });
+      return;
     } catch (error) {
       resultNode.textContent = error.message;
     }
+    form.dataset.submitting = 'false';
+    if (submitButton) submitButton.disabled = false;
   }
 
   function wireEvents() {

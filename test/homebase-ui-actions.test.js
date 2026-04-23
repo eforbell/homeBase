@@ -30,6 +30,10 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   assert.match(source, /Update Home Base/);
   assert.match(source, /Run Home Base update/);
   assert.match(source, /class="hb-table-wrap"/);
+  assert.match(source, /waitForJobCompletion/);
+  assert.match(source, /form\?\.dataset\.submitting/);
+  assert.match(source, /button\.disabled = true/);
+  assert.match(source, /This page will refresh when it finishes/);
   assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /payload\.confirm = 'EXECUTE'/);
 });
@@ -68,6 +72,8 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /Details/);
   assert.match(apps, /Backup…/);
   assert.match(apps, /Restore…/);
+  assert.match(apps, /Uninstall…/);
+  assert.match(apps, /#uninstall/);
   assert.match(apps, /Git ref/);
   assert.match(apps, /\/api\/apps\/health/);
   assert.match(apps, /runtimeStatusPill/);
@@ -87,6 +93,9 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /shouldOpenAvailable/);
   assert.match(apps, /isInstallFormInteractionActive/);
   assert.match(apps, /form\[data-action="install"\]/);
+  assert.match(apps, /waitForJobCompletion/);
+  assert.match(apps, /form\.dataset\.submitting/);
+  assert.match(apps, /This page will refresh when it finishes/);
   assert.match(apps, /scheduleRefresh/);
   assert.match(apps, /visibilitychange/);
 });

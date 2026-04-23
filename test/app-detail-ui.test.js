@@ -17,6 +17,8 @@ test('app detail UI exposes backup and restore execution without window.prompt',
   assert.match(source, /\/api\/apps\/\$\{appId\}\/uninstall\/execute/);
   assert.match(source, /window\.HB\.confirmInline/);
   assert.match(source, /Restore will overwrite/);
+  assert.match(source, /form\.dataset\.submitting/);
+  assert.match(source, /submitButton\.disabled = true/);
 });
 
 test('app detail exposes operations sections and anchors', () => {
