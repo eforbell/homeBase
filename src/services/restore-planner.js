@@ -15,6 +15,39 @@ function renderWaitForHttpCommand({ url, attempts = 20, sleepSeconds = 1 }) {
   return `for attempt in $(seq 1 ${attempts}); do curl --fail --silent --show-error ${url} && exit 0; sleep ${sleepSeconds}; done; echo "Timed out waiting for ${url}" >&2; exit 1`;
 }
 
+const PRESERVED_DB_ENV_KEYS = [
+  'DATABASE_URL',
+  'DB_BACKEND',
+  'PGHOST',
+  'PGPORT',
+  'PGUSER',
+  'PGPASSWORD',
+  'PGDATABASE',
+  'SQLITE_DB_PATH',
+];
+
+function renderRestoreEnvCommand({ installRoot, archiveDir }) {
+  const envPath = shellSingleQuote(`${installRoot}/.env`);
+  const backupEnvPath = shellSingleQuote(`${archiveDir}/.env.backup`);
+  const regex = shellSingleQuote(`^(${PRESERVED_DB_ENV_KEYS.join('|')})=`);
+  return [
+    `if sudo test -f ${backupEnvPath}; then`,
+    '  tmp_env="$(mktemp)";',
+    `  if sudo test -f ${envPath}; then sudo grep -E ${regex} ${envPath} > "$tmp_env" || true; fi;`,
+    `  sudo cp ${backupEnvPath} ${envPath};`,
+    '  if [ -s "$tmp_env" ]; then',
+    '    while IFS= read -r line; do',
+    '      key="${line%%=*}";',
+    `      sudo sed -i.bak "/^${'{'}key${'}'}=/d" ${envPath};`,
+    `      printf '%s\n' "$line" | sudo tee -a ${envPath} >/dev/null;`,
+    '    done < "$tmp_env";',
+    `    sudo rm -f ${envPath}.bak;`,
+    '  fi;',
+    '  rm -f "$tmp_env";',
+    'fi',
+  ].join(' ');
+}
+
 function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   const app = getAppById(appId);
   if (!app) {
@@ -41,7 +74,7 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   const serviceUser = config.serviceUser || 'sovereign';
   const commands = [
     `sudo test -d ${archiveDir}`,
-    `if sudo test -f ${archiveDir}/.env.backup; then sudo cp ${archiveDir}/.env.backup ${installRoot}/.env; fi`,
+    renderRestoreEnvCommand({ installRoot, archiveDir }),
   ];
 
   if (app.runtime.kind === 'python' && app.id === 'bitcoin-accounting') {
