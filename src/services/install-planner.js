@@ -281,10 +281,53 @@ function parseDotEnv(content) {
   return env;
 }
 
+function parseDatabaseUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    const dbName = parsed.pathname ? parsed.pathname.replace(/^\//, '') : '';
+    return {
+      databaseUrl: String(value),
+      dbUser: parsed.username ? decodeURIComponent(parsed.username) : '',
+      dbPassword: parsed.password ? decodeURIComponent(parsed.password) : '',
+      dbName,
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function resolveExistingDbContext(existing = {}, defaults = {}) {
+  const next = { ...defaults };
+
+  if (existing.DATABASE_URL) {
+    const parsed = parseDatabaseUrl(existing.DATABASE_URL);
+    if (parsed) {
+      if (parsed.dbUser) next.dbUser = parsed.dbUser;
+      if (parsed.dbPassword) next.dbPassword = parsed.dbPassword;
+      if (parsed.dbName) next.dbName = parsed.dbName;
+      next.databaseUrl = parsed.databaseUrl;
+    }
+  }
+
+  if (existing.PGUSER) next.dbUser = existing.PGUSER;
+  if (existing.PGPASSWORD) next.dbPassword = existing.PGPASSWORD;
+  if (existing.PGDATABASE) next.dbName = existing.PGDATABASE;
+
+  if (existing.DB_BACKEND) next.dbBackend = existing.DB_BACKEND;
+  if (existing.SQLITE_DB_PATH) next.sqliteDbPath = existing.SQLITE_DB_PATH;
+
+  if (!next.databaseUrl && next.dbUser && next.dbPassword && next.dbName) {
+    next.databaseUrl = `postgresql://${next.dbUser}:${next.dbPassword}@127.0.0.1:5432/${next.dbName}`;
+  }
+
+  return next;
+}
+
 function shouldPreserveExistingEnvValue(key, templateValue) {
   const template = String(templateValue == null ? '' : templateValue);
   if (template === '') return true;
   if (template.includes('{{secret')) return true;
+  if (key === 'DATABASE_URL' && template.includes('{{databaseUrl}}')) return true;
   if (/(SECRET|TOKEN|PASSWORD|PASSPHRASE|API_KEY|CLIENT_SECRET|CLIENT_ID|AUTH_)/i.test(key)) return true;
   return false;
 }
@@ -348,9 +391,33 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const port = options.port || allocatePort(app.network.preferredPort, usedPorts);
   const serviceUser = options.serviceUser || config.serviceUser || 'sovereign';
   const installRoot = `${(options.baseInstallDir || config.baseInstallDir || '/opt/sovereign-home/apps').replace(/\/$/, '')}/${app.repoKey}`;
-  const dbName = options.dbName || app.database.databaseName || app.id.replace(/-/g, '_');
-  const dbUser = options.dbUser || app.database.databaseUser || dbName;
-  const dbPassword = options.dbPassword || crypto.randomBytes(24).toString('base64url');
+  const existingEnvPath = `${installRoot}/.env`;
+  let existingEnv = null;
+  try {
+    if (fs.existsSync(existingEnvPath)) {
+      existingEnv = parseDotEnv(fs.readFileSync(existingEnvPath, 'utf8'));
+    }
+  } catch (_error) {
+    existingEnv = null;
+  }
+
+  const defaultDbName = options.dbName || app.database.databaseName || app.id.replace(/-/g, '_');
+  const defaultDbUser = options.dbUser || app.database.databaseUser || defaultDbName;
+  const defaultDbPassword = options.dbPassword || crypto.randomBytes(24).toString('base64url');
+  const defaultDatabaseUrl = `postgresql://${defaultDbUser}:${defaultDbPassword}@127.0.0.1:5432/${defaultDbName}`;
+  const existingDbContext = existingEnv
+    ? resolveExistingDbContext(existingEnv, {
+        dbName: defaultDbName,
+        dbUser: defaultDbUser,
+        dbPassword: defaultDbPassword,
+        databaseUrl: defaultDatabaseUrl,
+        dbBackend: existingEnv.DB_BACKEND || null,
+        sqliteDbPath: existingEnv.SQLITE_DB_PATH || null,
+      })
+    : null;
+  const dbName = existingDbContext?.dbName || defaultDbName;
+  const dbUser = existingDbContext?.dbUser || defaultDbUser;
+  const dbPassword = existingDbContext?.dbPassword || defaultDbPassword;
   const secret1 = crypto.randomBytes(32).toString('hex');
   const secret2 = crypto.randomBytes(32).toString('hex');
   const secret3 = crypto.randomBytes(32).toString('hex');
@@ -359,7 +426,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const publicBase = options.publicBaseUrl || `https://${hostname}.${domain}`;
   const externalUrl = `${trimTrailingSlash(publicBase)}${mountPath}`;
   const publicUrl = externalUrl;
-  const databaseUrl = `postgresql://${dbUser}:${dbPassword}@127.0.0.1:5432/${dbName}`;
+  const databaseUrl = existingDbContext?.databaseUrl || `postgresql://${dbUser}:${dbPassword}@127.0.0.1:5432/${dbName}`;
 
   const sidecarPorts = {};
   if (Array.isArray(app.sidecars)) {
@@ -387,25 +454,21 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     secret1,
     secret2,
     secret3,
+    dbBackend: existingDbContext?.dbBackend || null,
+    sqliteDbPath: existingDbContext?.sqliteDbPath || null,
   };
   const repositoryUrl = resolveRepositoryUrl(app, config);
   const gitRef = resolveGitRef(options, app);
   const gitRunPrefix = renderGitRunPrefix({ serviceUser, app, config });
 
   const env = resolveEnvTemplate(app.config.env, ctx);
-  const existingEnvPath = `${installRoot}/.env`;
   let mergedEnv = env;
-  try {
-    if (fs.existsSync(existingEnvPath)) {
-      const existingEnv = parseDotEnv(fs.readFileSync(existingEnvPath, 'utf8'));
-      mergedEnv = mergeExistingEnvValues({
-        template: app.config.env,
-        resolved: env,
-        existing: existingEnv,
-      });
-    }
-  } catch (_error) {
-    // Preserve install planning even when existing env cannot be parsed/read.
+  if (existingEnv) {
+    mergedEnv = mergeExistingEnvValues({
+      template: app.config.env,
+      resolved: env,
+      existing: existingEnv,
+    });
   }
   const files = {};
   files['.env'] = renderEnv(mergedEnv);

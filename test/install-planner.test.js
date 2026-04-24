@@ -187,3 +187,68 @@ test('install planner preserves existing secret and oauth env values during rein
   assert.match(plan.files['.env'], /PLAID_OAUTH_REDIRECT_URI=https:\/\/test\.example\/pulse\/oauth\/callback/);
   assert.match(plan.files['.env'], /BOOTSTRAP_SECRET=existing-bootstrap-secret/);
 });
+
+test('install planner preserves existing DATABASE_URL identity for legacy postgres installs', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-db-url-'));
+  const appDir = path.join(tempDir, 'familyHelp');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'DATABASE_URL=postgresql://forbell:legacy-pass@127.0.0.1:5432/family_help',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'family-help',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /DATABASE_URL=postgresql:\/\/forbell:legacy-pass@127\.0\.0\.1:5432\/family_help/);
+  assert.equal(plan.install.dbName, 'family_help');
+  assert.equal(plan.install.dbUser, 'forbell');
+  assert.match(plan.script, /CREATE ROLE forbell LOGIN PASSWORD 'legacy-pass'/);
+  assert.match(plan.script, /ALTER ROLE forbell PASSWORD 'legacy-pass'/);
+  assert.match(plan.script, /createdb --owner=forbell family_help/);
+});
+
+test('install planner preserves existing split postgres credentials for postgres-or-sqlite apps', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-pg-split-'));
+  const appDir = path.join(tempDir, 'bitcoinAccounting');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'DB_BACKEND=postgres',
+    'PGHOST=127.0.0.1',
+    'PGPORT=5432',
+    'PGUSER=forbell',
+    'PGPASSWORD=shared-postgres-pass',
+    'PGDATABASE=bitcoin_accounting',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'bitcoin-accounting',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /PGUSER=forbell/);
+  assert.match(plan.files['.env'], /PGPASSWORD=shared-postgres-pass/);
+  assert.match(plan.files['.env'], /PGDATABASE=bitcoin_accounting/);
+  assert.match(plan.script, /CREATE ROLE forbell LOGIN PASSWORD 'shared-postgres-pass'/);
+  assert.match(plan.script, /ALTER ROLE forbell PASSWORD 'shared-postgres-pass'/);
+  assert.match(plan.script, /createdb --owner=forbell bitcoin_accounting/);
+});
