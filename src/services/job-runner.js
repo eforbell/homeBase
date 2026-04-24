@@ -5,6 +5,25 @@ class JobRunner {
     this.stateStore = stateStore;
   }
 
+  reconcileStaleUpdateJobs() {
+    const jobs = this.stateStore.listRunningJobsByKind('homebase-update');
+    for (const job of jobs) {
+      if (job.dryRun) continue;
+      if (job.currentStep !== 'restart-service') continue;
+      if (!String(job.log || '').includes('systemctl restart homebase')) continue;
+
+      this.stateStore.appendJobLog(job.id, '\n[reconcile] Home Base restarted successfully; marking update job completed during startup.\n');
+      this.stateStore.updateJob(job.id, {
+        status: 'completed',
+        finishedAt: new Date().toISOString(),
+        resultJson: JSON.stringify({
+          dryRun: false,
+          reconciledAfterRestart: true,
+        }),
+      });
+    }
+  }
+
   startBootstrapJob(plan, { dryRun = true } = {}) {
     return this.startPlanJob({
       kind: 'bootstrap',

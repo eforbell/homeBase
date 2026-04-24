@@ -242,6 +242,11 @@ function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   stateStore.init();
   const jobRunner = new JobRunner(stateStore);
+  try {
+    jobRunner.reconcileStaleUpdateJobs();
+  } catch (error) {
+    console.warn(`[homebase] stale update reconciliation failed: ${error.message}`);
+  }
   const catalog = getCatalog();
   const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
   const preflightCache = {

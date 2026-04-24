@@ -200,6 +200,95 @@ test('homebase install-self dry-run creates a runtime job', async () => {
   }
 });
 
+test('startup reconciles stale homebase update jobs that already issued service restart', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-reconcile-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const { id } = store.createJob({
+    kind: 'homebase-update',
+    target: 'homebase',
+    status: 'running',
+    dryRun: false,
+    createdAt: '2026-04-23T00:00:00.000Z',
+    currentStep: 'restart-service',
+    planJson: JSON.stringify({
+      executionSteps: [
+        { id: 'git-pull' },
+        { id: 'install-deps' },
+        { id: 'restart-service' },
+      ],
+    }),
+  });
+  store.appendJobLog(id, '$ sudo systemctl restart homebase\n');
+
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const jobRes = await fetch(`${server.url}/api/jobs/${id}`);
+    const job = await jobRes.json();
+    assert.equal(job.status, 'completed');
+    assert.match(job.log, /marking update job completed during startup/i);
+    assert.match(job.resultJson, /reconciledAfterRestart/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('startup does not reconcile stale homebase update jobs that never issued restart command', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-no-reconcile-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const { id } = store.createJob({
+    kind: 'homebase-update',
+    target: 'homebase',
+    status: 'running',
+    dryRun: false,
+    createdAt: '2026-04-23T00:00:00.000Z',
+    currentStep: 'restart-service',
+    planJson: JSON.stringify({
+      executionSteps: [
+        { id: 'git-pull' },
+        { id: 'install-deps' },
+        { id: 'restart-service' },
+      ],
+    }),
+  });
+  store.appendJobLog(id, '$ sudo -u homebase -H bash -lc \'cd /opt/sovereign-home/homebase && npm ci --omit=dev\'\n');
+
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const jobRes = await fetch(`${server.url}/api/jobs/${id}`);
+    const job = await jobRes.json();
+    assert.equal(job.status, 'running');
+    assert.doesNotMatch(job.log, /marking update job completed during startup/i);
+  } finally {
+    await server.close();
+  }
+});
+
 test('homebase status endpoint returns runtime state summary', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-status-'));
   const server = await startServer({
