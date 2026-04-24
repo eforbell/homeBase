@@ -167,7 +167,7 @@
       root.innerHTML = `
         <div class="hb-stack">
           <section class="hb-card">
-            <h1 style="margin:0;">Home Base Dashboard</h1>
+            <h1 style="margin:0;">Dashboard</h1>
             <p class="hb-muted" style="margin:0.55rem 0 0;">
               Host: ${window.HB.escapeHtml(config.hostname)}.${window.HB.escapeHtml(config.domain)} · Service: ${window.HB.escapeHtml(status.systemd?.active || 'unknown')}
             </p>

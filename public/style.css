@@ -149,7 +149,50 @@ a:hover { text-decoration: underline; }
   background: linear-gradient(135deg, #3d68ff, #6b8eff);
   border-color: transparent;
 }
-.hb-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.hb-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+
+.hb-app-icon {
+  font-size: 1.4rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.hb-btn-icon {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 0.38rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  text-decoration: none;
+}
+
+.hb-btn-icon:hover {
+  border-color: #38507a;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.hb-btn-icon svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.hb-btn-icon--danger { color: var(--red); }
+
+.hb-btn-icon--danger:hover {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+  color: var(--red);
+}
 .hb-table-wrap {
   width: 100%;
   max-width: 100%;

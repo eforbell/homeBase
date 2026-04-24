@@ -3,7 +3,7 @@
   let refreshTimer = null;
   let eventsWired = false;
 
-  function installationCard(install, backupsByApp, config, healthByAppId) {
+  function installationCard(install, backupsByApp, config, healthByAppId, catalogEntry) {
     const appId = window.HB.escapeHtml(install.appId);
     const detailUrl = `/apps/${appId}`;
     const backups = backupsByApp[install.appId] || [];
@@ -13,36 +13,43 @@
     const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
     const needsAttention = attentionStatuses.has(runtimeStatus);
     const healthHint = health.recoveryHint
-      ? `<p class="${needsAttention ? 'hb-warn' : 'hb-muted'}" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(health.recoveryHint)}${needsAttention ? ` <a href="${detailUrl}#health">View health details →</a>` : ''}</p>`
+      ? `<p class="${needsAttention ? 'hb-warn' : 'hb-muted'}" style="margin:0.45rem 0 0;font-size:0.83rem;">${window.HB.escapeHtml(health.recoveryHint)}${needsAttention ? ` <a href="${detailUrl}#health">Inspect →</a>` : ''}</p>`
       : '';
     const openLink = install.externalUrl
-      ? `<a class="hb-btn" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>`
+      ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>`
       : '';
     const setupLink = runtimeStatus === 'needs-setup' && health.onboarding?.setupUrl
-      ? `<a class="hb-btn" href="${window.HB.escapeHtml(health.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Setup ↗</a>`
+      ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(health.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Setup ↗</a>`
       : '';
+    const icon = catalogEntry?.icon ? `<span class="hb-app-icon">${window.HB.escapeHtml(catalogEntry.icon)}</span>` : '';
     return `
       <article class="hb-card">
         <div class="hb-row">
-          <a href="${detailUrl}"><strong>${window.HB.escapeHtml(install.name || install.appId)}</strong></a>
+          ${icon}
+          <a href="${detailUrl}" style="font-weight:700;font-size:1rem;">${window.HB.escapeHtml(install.name || install.appId)}</a>
           ${window.HB.statusBadge(install.status)}
           ${runtimePill}
         </div>
-        <p class="hb-muted" style="margin:0.55rem 0 0;">
-          Port ${window.HB.escapeHtml(install.port)} · ${window.HB.escapeHtml(install.mountPath)}<br>
-          Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')} · Readiness: ${window.HB.escapeHtml(health.readiness?.status || 'unknown')}<br>
-          Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))}<br>
-          ${window.HB.backupSummary(backups)}
+        <p class="hb-muted" style="margin:0.45rem 0 0;font-size:0.83rem;line-height:1.6;">
+          Port ${window.HB.escapeHtml(install.port)} · ${window.HB.escapeHtml(install.mountPath)} · Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')} · Readiness: ${window.HB.escapeHtml(health.readiness?.status || 'unknown')}<br>
+          Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))} · ${window.HB.backupSummary(backups)}
         </p>
+        ${!backups.length ? '<p class="hb-warn" style="margin:0.45rem 0 0;font-size:0.83rem;">No backups yet.</p>' : ''}
         ${healthHint}
-        ${!backups.length ? '<p class="hb-warn" style="margin:0.55rem 0 0;">Recommended next step: take a first backup.</p>' : ''}
-        <div class="hb-actions" style="margin-top:0.75rem;">
-          ${openLink}
-          ${setupLink}
-          <a class="hb-btn" href="${detailUrl}">Details</a>
-          <a class="hb-btn" href="${detailUrl}#backup">Backup…</a>
-          <a class="hb-btn" href="${detailUrl}#restore">Restore…</a>
-          <a class="hb-btn" href="${detailUrl}#uninstall">Uninstall…</a>
+        <div class="hb-actions" style="margin-top:0.65rem;align-items:center;">
+          ${openLink || setupLink}
+          <a class="hb-btn-icon" href="${detailUrl}" title="View details">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5v4M8 5.5v.01"/></svg>
+          </a>
+          <a class="hb-btn-icon" href="${detailUrl}#backup" title="Backup">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 11v2h10v-2M8 2v7m0 0-2.5-2.5M8 9l2.5-2.5"/></svg>
+          </a>
+          <a class="hb-btn-icon" href="${detailUrl}#restore" title="Restore">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 8A4.5 4.5 0 1 0 5 4.5M3.5 8V5m0 3H6.5"/></svg>
+          </a>
+          <a class="hb-btn-icon hb-btn-icon--danger" href="${detailUrl}#uninstall" title="Uninstall">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M5 4V2.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5V4M6 7v5M10 7v5M3 4l.8 9.5a.5.5 0 0 0 .5.5h7.4a.5.5 0 0 0 .5-.5L13 4"/></svg>
+          </a>
         </div>
       </article>
     `;
@@ -53,10 +60,14 @@
     const mountDefault = app.network?.preferredMountPath || `/${app.id}/`;
     const portDefault = app.network?.preferredPort || '';
     const refDefault = app.repository?.defaultRef || 'main';
+    const icon = app.icon ? `<span class="hb-app-icon" style="font-size:1.6rem;">${window.HB.escapeHtml(app.icon)}</span>` : '';
     return `
       <article class="hb-card">
-        <h3 style="margin:0;">${window.HB.escapeHtml(app.name)}</h3>
-        <p class="hb-muted" style="margin:0.45rem 0 0.6rem;">${window.HB.escapeHtml(app.purpose || '')}</p>
+        <div class="hb-row" style="margin-bottom:0.45rem;">
+          ${icon}
+          <h3 style="margin:0;">${window.HB.escapeHtml(app.name)}</h3>
+        </div>
+        <p class="hb-muted" style="margin:0 0 0.75rem;font-size:0.85rem;">${window.HB.escapeHtml(app.purpose || '')}</p>
         <form class="hb-form-grid" data-action="install" data-app-id="${appId}">
           <label class="hb-label">
             Mount path
@@ -70,11 +81,11 @@
             Git ref
             <input class="hb-input" name="ref" value="${window.HB.escapeHtml(refDefault)}" placeholder="main">
           </label>
-          <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+          <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;flex-direction:row;">
             <input name="dryRun" type="checkbox" checked>
             Dry-run only
           </label>
-          <button class="hb-btn hb-btn-primary" type="submit">Install</button>
+          <div><button class="hb-btn hb-btn-primary" type="submit" style="min-width:100px;">Install</button></div>
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>
       </article>
@@ -93,9 +104,11 @@
   }
 
   function installingCard(app, job) {
+    const icon = app.icon ? `<span class="hb-app-icon">${window.HB.escapeHtml(app.icon)}</span>` : '';
     return `
       <article class="hb-card">
         <div class="hb-row">
+          ${icon}
           <strong>${window.HB.escapeHtml(app.name)}</strong>
           ${window.HB.statusBadge(job.status)}
           <span class="hb-badge">Installing now</span>
@@ -235,6 +248,7 @@
       const healthByAppId = healthPayload.byAppId || {};
       const installedIds = new Set(installations.map((item) => item.appId));
       const catalog = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
+      const catalogById = new Map(catalog.map((app) => [app.id, app]));
       const activeJobs = Array.isArray(statePayload.activeJobs) ? statePayload.activeJobs : statePayload.jobs;
       const installingByAppId = activeInstallJobsByTarget(activeJobs);
       const installing = catalog.filter((app) => !installedIds.has(app.id) && installingByAppId.has(app.id));
@@ -244,12 +258,12 @@
       root.innerHTML = `
         <div class="hb-stack">
           <section class="hb-card">
-            <h1 style="margin:0;">Installed apps</h1>
-            <p class="hb-muted" style="margin:0.55rem 0 0;">Open apps, inspect details, run backups, and start restores from one place.</p>
+            <h1 style="margin:0;">Apps</h1>
+            <p class="hb-muted" style="margin:0.55rem 0 0;">Open, inspect, back up, and restore your sovereign apps from one place.</p>
             <p class="hb-warn" style="margin:0.55rem 0 0;">${window.HB.localOnlyBackupNote(config)}</p>
           </section>
           <section class="hb-grid hb-grid-2">
-            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
+            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId, catalogById.get(install.appId))).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
           </section>
           ${installing.length ? `
             <section>

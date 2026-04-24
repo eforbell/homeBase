@@ -3,6 +3,7 @@ const catalog = [
     id: 'family-pulse',
     repoKey: 'familyPulse',
     name: 'Family Pulse',
+    icon: '💰',
     purpose: 'Cash flow visibility, budgeting, and household financial awareness.',
     repository: {
       url: 'https://github.com/eforbell/familyPulse.git',
@@ -93,6 +94,7 @@ const catalog = [
     id: 'family-help',
     repoKey: 'familyHelp',
     name: 'Family Help',
+    icon: '🤝',
     purpose: 'Household task intake, assignments, reminders, and first-tier help.',
     repository: {
       url: 'https://github.com/eforbell/familyHelp.git',
@@ -170,6 +172,7 @@ const catalog = [
     id: 'family-dinner',
     repoKey: 'familyDinner',
     name: 'Family Dinner',
+    icon: '🍽️',
     purpose: 'Meal planning, recipes, rotation scheduling, and grocery helpers.',
     repository: {
       url: 'https://github.com/eforbell/familyDinner.git',
@@ -239,6 +242,7 @@ const catalog = [
     id: 'family-plan',
     repoKey: 'familyPlan',
     name: 'Family Plan',
+    icon: '📅',
     purpose: 'Family calendar aggregation, daily briefings, and optional Google writeback.',
     repository: {
       url: 'https://github.com/eforbell/familyPlan.git',
@@ -322,6 +326,7 @@ const catalog = [
     id: 'fast-to-eat',
     repoKey: 'fastToEat',
     name: 'Fast to Eat',
+    icon: '⏱️',
     purpose: 'Intermittent fasting check-ins, streaks, and eating-window reminders for the household.',
     repository: {
       url: 'https://github.com/eforbell/fastToEat.git',
@@ -397,6 +402,7 @@ const catalog = [
     id: 'bitcoin-accounting',
     repoKey: 'bitcoinAccounting',
     name: 'Bitcoin Accounting',
+    icon: '🪙',
     purpose: 'Treasury management, tax reporting, and attestation for sovereign bitcoin holdings.',
     repository: {
       url: 'https://github.com/eforbell/bitcoinAccounting.git',
@@ -474,6 +480,7 @@ const catalog = [
     id: 'bug-base',
     repoKey: 'bugBase',
     name: 'Bug Base',
+    icon: '🐛',
     purpose: 'Household bug tracker and feature request log with an MCP sidecar for agent access.',
     repository: {
       url: 'https://github.com/eforbell/bugBase.git',
