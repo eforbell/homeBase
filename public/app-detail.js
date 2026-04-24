@@ -102,13 +102,17 @@
     }
   }
 
-  async function handleDeploy(form) {
+  async function handleUpdate(form) {
+    if (form.dataset.submitting === 'true') return;
+    form.dataset.submitting = 'true';
     const mountPath = form.elements.mountPath.value.trim();
     const portRaw = form.elements.port.value.trim();
     const ref = form.elements.ref.value.trim();
     const dryRun = form.elements.dryRun.checked;
     const resultNode = form.querySelector('[data-result]');
+    const submitButton = form.querySelector('button[type="submit"]');
     const payload = { mountPath, dryRun };
+    if (submitButton) submitButton.disabled = true;
     if (portRaw) payload.port = Number(portRaw);
     if (ref) payload.ref = ref;
     if (!dryRun) {
@@ -117,10 +121,21 @@
     resultNode.textContent = 'Submitting...';
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/execute`, payload);
-      resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>.`;
+      const mode = dryRun ? 'Update dry-run' : 'Update';
+      resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started. This page will refresh when it finishes.`;
+      void waitForJobCompletion(response.jobId, resultNode, {
+        onComplete: () => {
+          form.dataset.submitting = 'false';
+          if (submitButton) submitButton.disabled = false;
+          load();
+        },
+      });
+      return;
     } catch (error) {
       resultNode.textContent = error.message;
     }
+    form.dataset.submitting = 'false';
+    if (submitButton) submitButton.disabled = false;
   }
 
   async function handleRestore(form) {
@@ -221,10 +236,10 @@
         handleBackup(backupForm);
         return;
       }
-      const deployForm = event.target.closest('form[data-action="deploy"]');
-      if (deployForm) {
+      const updateForm = event.target.closest('form[data-action="update"]');
+      if (updateForm) {
         event.preventDefault();
-        handleDeploy(deployForm);
+        handleUpdate(updateForm);
         return;
       }
       const restoreForm = event.target.closest('form[data-action="restore"]');
@@ -292,7 +307,7 @@
               <a class="hb-btn" href="#health">Health</a>
               <a class="hb-btn" href="#backup">Backup</a>
               <a class="hb-btn" href="#restore">Restore</a>
-              <a class="hb-btn" href="#deploy">Deploy / Reinstall</a>
+              <a class="hb-btn" href="#update">Update</a>
               <a class="hb-btn" href="#uninstall">Uninstall</a>
             </div>
             ${renderBackupSummary(backups, config)}
@@ -335,22 +350,23 @@
               </form>
               <p class="hb-muted" style="margin:0.6rem 0 0;">
                 Restart: ${actions.restart ? 'Available' : 'Install app first'} ·
-                Update: ${actions.update ? 'Available' : 'Not exposed yet'} ·
+                Update: Available ·
                 Uninstall: ${actions.uninstall ? 'Available' : 'Install app first'}
               </p>
             </article>
 
-            <article id="deploy" class="hb-card">
-              <h2 style="margin-top:0;">Deploy / Reinstall</h2>
-              <form class="hb-form-grid" data-action="deploy">
+            <article id="update" class="hb-card">
+              <h2 style="margin-top:0;">Update</h2>
+              <form class="hb-form-grid" data-action="update">
                 <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
                 <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(port)}"></label>
                 <label class="hb-label">Git ref <input class="hb-input" name="ref" value="${window.HB.escapeHtml(ref)}" placeholder="main"></label>
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>
-                <button class="hb-btn hb-btn-primary" type="submit">Run deploy</button>
+                <button class="hb-btn hb-btn-primary" type="submit">Run update</button>
                 <p class="hb-muted" data-result style="margin:0;"></p>
+                <p class="hb-muted" style="margin:0;">Update code to a branch or ref, re-apply services, and fully redeploy this app.</p>
               </form>
             </article>
           </section>
