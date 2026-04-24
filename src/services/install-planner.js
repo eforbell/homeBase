@@ -159,6 +159,7 @@ function renderRunAsServiceUserCommand({ serviceUser, command }) {
 
 function buildDatabaseCommands(app, ctx) {
   if (!app.database.engine.includes('postgres')) return [];
+  if (ctx.skipDbBootstrap) return [];
 
   return [
     `sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname = '${ctx.dbUser}'" | grep -q 1 || sudo -u postgres psql -c \"CREATE ROLE ${ctx.dbUser} LOGIN PASSWORD '${ctx.dbPassword}';\"`,
@@ -323,10 +324,21 @@ function resolveExistingDbContext(existing = {}, defaults = {}) {
   return next;
 }
 
+function hasExistingDbConfig(existing = {}) {
+  return Boolean(
+    existing.DATABASE_URL
+      || existing.PGUSER
+      || existing.PGPASSWORD
+      || existing.PGDATABASE
+      || existing.SQLITE_DB_PATH
+  );
+}
+
 function shouldPreserveExistingEnvValue(key, templateValue) {
   const template = String(templateValue == null ? '' : templateValue);
   if (template === '') return true;
   if (template.includes('{{secret')) return true;
+  if (['DATABASE_URL', 'DB_BACKEND', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'SQLITE_DB_PATH'].includes(key)) return true;
   if (key === 'DATABASE_URL' && template.includes('{{databaseUrl}}')) return true;
   if (/(SECRET|TOKEN|PASSWORD|PASSPHRASE|API_KEY|CLIENT_SECRET|CLIENT_ID|AUTH_)/i.test(key)) return true;
   return false;
@@ -338,6 +350,12 @@ function mergeExistingEnvValues({ template, resolved, existing }) {
     const existingValue = existing[key];
     if (!existingValue) continue;
     if (!shouldPreserveExistingEnvValue(key, templateValue)) continue;
+    next[key] = existingValue;
+  }
+  for (const [key, existingValue] of Object.entries(existing || {})) {
+    if (!existingValue) continue;
+    if (key in next) continue;
+    if (!shouldPreserveExistingEnvValue(key, '')) continue;
     next[key] = existingValue;
   }
   return next;
@@ -405,7 +423,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const defaultDbUser = options.dbUser || app.database.databaseUser || defaultDbName;
   const defaultDbPassword = options.dbPassword || crypto.randomBytes(24).toString('base64url');
   const defaultDatabaseUrl = `postgresql://${defaultDbUser}:${defaultDbPassword}@127.0.0.1:5432/${defaultDbName}`;
-  const existingDbContext = existingEnv
+  const existingDbContext = existingEnv && hasExistingDbConfig(existingEnv)
     ? resolveExistingDbContext(existingEnv, {
         dbName: defaultDbName,
         dbUser: defaultDbUser,
@@ -456,6 +474,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     secret3,
     dbBackend: existingDbContext?.dbBackend || null,
     sqliteDbPath: existingDbContext?.sqliteDbPath || null,
+    skipDbBootstrap: Boolean(existingDbContext),
   };
   const repositoryUrl = resolveRepositoryUrl(app, config);
   const gitRef = resolveGitRef(options, app);

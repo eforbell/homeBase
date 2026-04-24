@@ -213,10 +213,11 @@ test('install planner preserves existing DATABASE_URL identity for legacy postgr
   assert.match(plan.files['.env'], /DATABASE_URL=postgresql:\/\/forbell:legacy-pass@127\.0\.0\.1:5432\/family_help/);
   assert.equal(plan.install.dbName, 'family_help');
   assert.equal(plan.install.dbUser, 'forbell');
-  assert.match(plan.script, /CREATE ROLE forbell LOGIN PASSWORD 'legacy-pass'/);
-  assert.match(plan.script, /ALTER ROLE forbell PASSWORD 'legacy-pass'/);
-  assert.match(plan.script, /createdb --owner=forbell family_help/);
+  assert.doesNotMatch(plan.script, /CREATE ROLE/);
+  assert.doesNotMatch(plan.script, /ALTER ROLE/);
+  assert.doesNotMatch(plan.script, /createdb --owner=/);
 });
+
 
 test('install planner preserves existing split postgres credentials for postgres-or-sqlite apps', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-pg-split-'));
@@ -248,7 +249,37 @@ test('install planner preserves existing split postgres credentials for postgres
   assert.match(plan.files['.env'], /PGUSER=forbell/);
   assert.match(plan.files['.env'], /PGPASSWORD=shared-postgres-pass/);
   assert.match(plan.files['.env'], /PGDATABASE=bitcoin_accounting/);
-  assert.match(plan.script, /CREATE ROLE forbell LOGIN PASSWORD 'shared-postgres-pass'/);
-  assert.match(plan.script, /ALTER ROLE forbell PASSWORD 'shared-postgres-pass'/);
-  assert.match(plan.script, /createdb --owner=forbell bitcoin_accounting/);
+  assert.doesNotMatch(plan.script, /CREATE ROLE/);
+  assert.doesNotMatch(plan.script, /ALTER ROLE/);
+  assert.doesNotMatch(plan.script, /createdb --owner=/);
+});
+
+test('install planner skips postgres bootstrap for existing sqlite-backed bitcoin accounting installs', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-sqlite-skip-'));
+  const appDir = path.join(tempDir, 'bitcoinAccounting');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'DB_BACKEND=sqlite',
+    'SQLITE_DB_PATH=/var/lib/bitcoin-accounting/ledger.db',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'bitcoin-accounting',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /DB_BACKEND=sqlite/);
+  assert.match(plan.files['.env'], /SQLITE_DB_PATH=\/var\/lib\/bitcoin-accounting\/ledger.db/);
+  assert.doesNotMatch(plan.script, /CREATE ROLE/);
+  assert.doesNotMatch(plan.script, /ALTER ROLE/);
+  assert.doesNotMatch(plan.script, /createdb --owner=/);
 });
