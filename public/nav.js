@@ -77,7 +77,11 @@
   const sidebar = document.createElement('aside');
   sidebar.className = 'hb-app-sidebar';
   sidebar.innerHTML = `
-    <div style="padding:0.4rem 0.65rem 0.8rem;font-weight:600;">Home Base <span class="hb-status-dot hb-status-dot--yellow"></span></div>
+    <div class="hb-nav-wordmark">
+      <svg class="hb-nav-logo" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2L1 9.5H4V18H9V14H11V18H16V9.5H19L10 2Z"/></svg>
+      <span>Home <strong>Base</strong></span>
+      <span class="hb-status-dot hb-status-dot--yellow"></span>
+    </div>
     ${renderLinks(activePage)}
   `;
 

@@ -4,7 +4,9 @@
   --surface-2: #1a2740;
   --text: #e5eef9;
   --muted: #9fb0cf;
-  --accent: #3559e0;
+  --accent: #4f7eff;
+  --accent-glow: rgba(79, 126, 255, 0.14);
+  --accent-border: rgba(79, 126, 255, 0.28);
   --border: #24324b;
   --green: #22c55e;
   --yellow: #eab308;
@@ -32,15 +34,60 @@ a:hover { text-decoration: underline; }
   margin: 0 auto;
 }
 
+.hb-main h1 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.hb-main h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin: 0;
+}
+
 .hb-card {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 14px;
   padding: 1rem;
   min-width: 0;
+  transition: border-color 0.2s;
+}
+
+.hb-card:hover {
+  border-color: #2e4060;
+}
+
+/* Hero gradient: first card on each page */
+.hb-main .hb-stack > .hb-card:first-child {
+  background: linear-gradient(160deg, #0d1b38 0%, var(--surface) 100%);
+  border-color: var(--accent-border);
+  position: relative;
+  overflow: hidden;
+}
+
+.hb-main .hb-stack > .hb-card:first-child::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 95% 0%, rgba(79, 126, 255, 0.1) 0%, transparent 65%);
+  pointer-events: none;
 }
 
 .hb-muted { color: var(--muted); }
+
+.hb-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 
 .hb-badge {
   display: inline-flex;
@@ -75,6 +122,12 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.52rem 0.58rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.hb-input:focus, .hb-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .hb-btn {
   border: 1px solid var(--border);
@@ -83,10 +136,19 @@ a:hover { text-decoration: underline; }
   border-radius: 10px;
   padding: 0.5rem 0.75rem;
   cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
 }
 .hb-btn:hover { border-color: #38507a; }
 .hb-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.hb-btn-primary { background: var(--accent); border-color: transparent; }
+.hb-btn-primary {
+  background: linear-gradient(135deg, var(--accent), #7a9eff);
+  border-color: transparent;
+  color: #fff;
+}
+.hb-btn-primary:hover {
+  background: linear-gradient(135deg, #3d68ff, #6b8eff);
+  border-color: transparent;
+}
 .hb-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .hb-table-wrap {
   width: 100%;
@@ -135,9 +197,33 @@ a:hover { text-decoration: underline; }
   gap: 0.2rem;
   padding: 0.6rem 0.2rem;
   font-size: 0.75rem;
+  transition: color 0.15s;
 }
 .hb-nav-link svg { width: 18px; height: 18px; }
 .hb-nav-link.is-active { color: var(--text); }
+.hb-app-bottom-bar .hb-nav-link.is-active { color: var(--accent); }
+
+.hb-nav-wordmark {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.65rem 0.8rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  user-select: none;
+}
+
+.hb-nav-logo {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.hb-nav-wordmark strong {
+  font-weight: 700;
+  color: var(--accent);
+}
 
 .hb-status-dot {
   width: 0.55rem;
@@ -147,9 +233,17 @@ a:hover { text-decoration: underline; }
   margin-left: 0.35rem;
   background: var(--yellow);
 }
-.hb-status-dot--green { background: var(--green); }
+.hb-status-dot--green {
+  background: var(--green);
+  animation: hb-dot-glow 2.5s ease-out infinite;
+}
 .hb-status-dot--yellow { background: var(--yellow); }
 .hb-status-dot--red { background: var(--red); }
+
+@keyframes hb-dot-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
+  60% { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
+}
 
 /* Spinner */
 @keyframes hb-spin {
@@ -203,7 +297,10 @@ a:hover { text-decoration: underline; }
     padding: 0.55rem 0.65rem;
   }
   .hb-app-sidebar .hb-nav-link.is-active {
-    background: var(--surface-2);
+    background: var(--accent-glow);
+    color: var(--text);
+    border-left: 2px solid var(--accent);
+    padding-left: calc(0.65rem - 2px);
   }
   .hb-app-bottom-bar {
     display: none;
