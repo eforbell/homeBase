@@ -25,7 +25,7 @@
       "id": "TS-001",
       "title": "Detect Tailscale identity and publishing readiness",
       "acceptanceCriteria": [
-        "Settings/setup page shows Tailscale installed/daemon/authenticated status",
+        "Network/setup page shows Tailscale installed/daemon/authenticated status",
         "Homebase identifies current node name and tailnet/MagicDNS hostname when available",
         "Current `tailscale serve get-config --all` is visible or summarized",
         "UI distinguishes not installed, not authenticated, authenticated but unpublished, and published states"
@@ -79,6 +79,7 @@
   "preFlightChecklist": [
     "Capture real `tailscale status --json` and `tailscale serve get-config --all` examples",
     "Lock policy for existing Serve config: manage only Home Base-owned endpoints and refuse silent overwrite of unrelated Serve config",
+    "Record policy source-of-truth in `docs/tailscale-serve-ownership-policy.md`",
     "Define whether Homebase stores a managed-service marker or derives state entirely from Serve config",
     "Confirm Network page scaffold from Feature-3a is ready for publishing UI"
   ],

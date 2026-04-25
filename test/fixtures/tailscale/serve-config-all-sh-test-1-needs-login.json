@@ -1,0 +1,15 @@
+{
+  "capturedAt": "2026-04-25T17:28:00Z",
+  "host": "host-test-1",
+  "command": [
+    "tailscale",
+    "serve",
+    "get-config",
+    "--all"
+  ],
+  "commandString": "tailscale serve get-config --all",
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "Logged out.\n",
+  "source": "user-provided raw capture (daemon up, not logged in)"
+}

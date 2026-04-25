@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-04-25T14:15:54.118667+00:00",
+  "host": "host-media-1",
+  "command": [
+    "tailscale",
+    "ssh",
+    "host-media-1",
+    "tailscale",
+    "serve",
+    "get-config",
+    "--all"
+  ],
+  "commandString": "tailscale ssh host-media-1 tailscale serve get-config --all",
+  "exitCode": 0,
+  "stdout": "{\n  \"version\": \"0.0.1\",\n  \"services\": {\n    \"svc:transmission\": {\n      \"endpoints\": {\n        \"tcp:9091\": \"http://127.0.0.1:9091\"\n      }\n    }\n  }\n}\n",
+  "stderr": ""
+}

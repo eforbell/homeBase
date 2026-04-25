@@ -1,0 +1,32 @@
+{
+  "capturedAt": "2026-04-25T14:15:48.812419+00:00",
+  "command": [
+    "tailscale",
+    "status",
+    "--json"
+  ],
+  "commandString": "tailscale status --json",
+  "exitCode": 0,
+  "snapshot": {
+    "Version": "1.96.5-t4ee448d3a-g74ffbefc2",
+    "BackendState": "Running",
+    "AuthURLPresent": false,
+    "HealthCount": 0,
+    "MagicDNSSuffix": "example.ts.net",
+    "CurrentTailnet": {
+      "Name": "example.tailnet",
+      "MagicDNSEnabled": true
+    },
+    "Self": {
+      "HostName": "local-dev-host",
+      "DNSName": "local-dev-host.example.ts.net.",
+      "OS": "macOS",
+      "Online": true,
+      "Active": false
+    },
+    "PeerCount": 18,
+    "OnlinePeerCount": 13,
+    "ActivePeerCount": 1,
+    "ServiceCount": 0
+  }
+}

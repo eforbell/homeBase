@@ -1,0 +1,14 @@
+{
+  "capturedAt": "2026-04-25T14:15:49.223447+00:00",
+  "host": "local-dev-host",
+  "command": [
+    "tailscale",
+    "serve",
+    "get-config",
+    "--all"
+  ],
+  "commandString": "tailscale serve get-config --all",
+  "exitCode": 0,
+  "stdout": "{\n  \"version\": \"0.0.1\"\n}\n",
+  "stderr": ""
+}

@@ -1,0 +1,13 @@
+{
+  "capturedAt": "2026-04-25T17:28:00Z",
+  "host": "host-test-1",
+  "command": [
+    "tailscale",
+    "version"
+  ],
+  "commandString": "tailscale version",
+  "exitCode": 0,
+  "stdout": "1.96.4\n  tailscale commit: 8cf541dfd1e0a97096c01cb775d5e26336f3bc6c\n  long version: 1.96.4-t8cf541dfd-g62bc84ce7\n  other commit: 62bc84ce7236dafdeb40272171dae03a66502ed1\n  go version: go1.26.1\n",
+  "stderr": "",
+  "source": "user-provided raw capture (daemon up, not logged in)"
+}

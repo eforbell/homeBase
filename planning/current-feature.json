@@ -1,25 +1,25 @@
 {
-  "currentFeature": "feature-3a",
-  "featureName": "Control Plane Navigation and Settings IA Split",
-  "prdPath": "planning/features/feature-3a-prd.json",
-  "summaryPath": "planning/features/feature-3a-summary.md",
-  "branch": "feature/control-plane-nav-ia-split",
-  "status": "review",
+  "currentFeature": "feature-4",
+  "featureName": "Tailscale Service Publishing Automation",
+  "prdPath": "planning/features/feature-4-prd.json",
+  "summaryPath": "planning/features/feature-4-summary.md",
+  "branch": "feature/tailscale-service-publishing",
+  "status": "in_progress",
   "stories": [
     {
-      "id": "IA-001",
-      "title": "Operational controls are split into functional pages",
-      "status": "review"
+      "id": "TS-001",
+      "title": "Detect Tailscale identity and publishing readiness",
+      "status": "in_progress"
     },
     {
-      "id": "IA-002",
-      "title": "Navigation scales for a larger control-plane surface",
-      "status": "review"
+      "id": "TS-002",
+      "title": "Plan and execute prescribed Serve topology",
+      "status": "queued"
     },
     {
-      "id": "IA-003",
-      "title": "Baseline UI tests are green before Feature-4 begins",
-      "status": "review"
+      "id": "TS-003",
+      "title": "Verify and repair service publishing",
+      "status": "queued"
     }
   ],
   "featureSequence": [
@@ -116,6 +116,12 @@
       "featureName": "Admin Auth and Destructive-Action Guardrails",
       "prNumber": 6,
       "mergedAt": "2026-04-22T01:18:21Z"
+    },
+    {
+      "featureId": "feature-3a",
+      "featureName": "Control Plane Navigation and Settings IA Split",
+      "prNumber": 7,
+      "mergedAt": "2026-04-25T14:04:10Z"
     }
   ],
   "branchAndPrPolicy": {

@@ -135,3 +135,37 @@
   - redirected legacy `/settings` to `/config`.
 - Cleaned up stale UI assertion tests that were already red on main and added route coverage for the new control-plane pages.
 - Verification: `npm test` passed (93/93). Manual browser/mobile verification is still pending, so Feature-3a remains in review rather than verified.
+
+2026-04-25 (Feature-3a merge / Feature-4 Phase A prep)
+- Confirmed Feature-3a merged via GitHub PR #7 (`feature/control-plane-nav-ia-split` -> `main`, merged 2026-04-25T14:04:10Z).
+- Marked Feature-3a complete and advanced planning/current-feature.json to Feature-4 on branch `feature/tailscale-service-publishing`.
+- Tightened Feature-4 acceptance wording so the Tailscale readiness surface is explicitly the new Network/setup path rather than the old Settings page.
+- Phase A prep focus is now:
+  - capture real `tailscale status --json` fixtures,
+  - capture real `tailscale serve get-config --all` fixtures,
+  - lock the Home Base-owned Serve endpoint policy before parser/executor work.
+
+2026-04-25 (Feature-4 Phase A grounding started)
+- Captured real Tailscale fixture envelopes under `test/fixtures/tailscale/`:
+  - local + remote `tailscale serve get-config --all` examples (empty config and populated multi-service configs),
+  - sanitized status snapshots for local + erebor from `tailscale status --json`,
+  - local version capture for CLI/version context.
+- Added reusable capture helper `scripts/capture_tailscale_fixtures.py` to refresh fixtures as host state changes.
+- Locked Serve ownership policy in `docs/tailscale-serve-ownership-policy.md`:
+  - Home Base only manages `services[\"svc:home\"]`,
+  - preserve unrelated services during merge/write,
+  - refuse silent overwrite when non-home services already own required endpoints (such as `tcp:443`).
+- Added `test/tailscale-phase-a.test.js` to lock fixture/policy assumptions before parser/executor implementation.
+
+2026-04-25 (Feature-4 Phase A fixture gap closed)
+- Added Linux unauthenticated/not-logged-in fixture set from user-provided host capture (`SH-Test-1`):
+  - `status-snapshot-sh-test-1-needs-login.json` (`BackendState: NeedsLogin`, `HealthCount: 1`),
+  - `serve-config-all-sh-test-1-needs-login.json` (`stderr: Logged out.` non-zero exit path),
+  - `version-sh-test-1.json` (CLI/version provenance).
+- Expanded Phase-A fixture regression tests to lock readiness/error-path expectations for unauthenticated Linux state.
+- Updated fixture README limitations: NeedsLogin state is now covered; only hard daemon-down capture remains optional future evidence.
+
+2026-04-25 (Fixture privacy hardening + daemon-stopped coverage)
+- Anonymized Tailscale fixture payloads to remove private tailnet/domain/host identifiers while preserving parser-relevant structure.
+- Added Linux `BackendState: Stopped` status snapshot fixture from user-provided daemon-off capture (`status-snapshot-sh-test-clean-stopped.json`).
+- Expanded Phase-A tests to lock stopped-backend readiness mapping in addition to existing NeedsLogin/logged-out paths.
