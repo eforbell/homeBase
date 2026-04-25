@@ -16,6 +16,7 @@ const { buildHomeBaseUpdatePlan } = require('./services/homebase-update-planner'
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
+const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const {
   mergeHomeBaseConfig,
   toClientHomeBaseConfig,
@@ -267,6 +268,11 @@ function createApp(config) {
     expiresAt: 0,
     value: null,
   };
+  const tailscalePublishPlanCache = {
+    key: '',
+    expiresAt: 0,
+    value: null,
+  };
   const validationErrors = catalog.flatMap((entry) =>
     validateManifestEntry(entry).map((error) => `${entry.id}: ${error}`)
   );
@@ -287,14 +293,31 @@ function createApp(config) {
     postJson: config.notificationsPostJson,
   });
 
-  function getTailscaleReadiness({ force = false } = {}) {
+  function getTailscaleReadiness(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
     if (!force && tailscaleReadinessCache.value && tailscaleReadinessCache.expiresAt > now) {
       return tailscaleReadinessCache.value;
     }
-    const value = getTailscalePublishingReadiness();
+    const value = getTailscalePublishingReadiness({ run: effectiveConfig.tailscaleRunCommand });
     tailscaleReadinessCache.value = value;
     tailscaleReadinessCache.expiresAt = now + 15_000;
+    return value;
+  }
+
+  function getTailscalePublishPlanCached(effectiveConfig, { force = false } = {}) {
+    const now = Date.now();
+    const cacheKey = `${effectiveConfig.defaultHostname || 'homebase'}.${effectiveConfig.defaultDomain || 'tailnet'}`;
+    if (!force && tailscalePublishPlanCache.value && tailscalePublishPlanCache.key === cacheKey && tailscalePublishPlanCache.expiresAt > now) {
+      return tailscalePublishPlanCache.value;
+    }
+    const value = getTailscalePublishPlan({
+      hostname: effectiveConfig.defaultHostname || 'homebase',
+      domain: effectiveConfig.defaultDomain || 'tailnet',
+      run: effectiveConfig.tailscaleRunCommand,
+    });
+    tailscalePublishPlanCache.key = cacheKey;
+    tailscalePublishPlanCache.value = value;
+    tailscalePublishPlanCache.expiresAt = now + 15_000;
     return value;
   }
 
@@ -370,7 +393,12 @@ function createApp(config) {
         }));
       }
       if (method === 'GET' && pathname === '/api/network/tailscale') {
-        return sendJson(res, 200, getTailscaleReadiness({
+        return sendJson(res, 200, getTailscaleReadiness(effectiveConfig, {
+          force: url.searchParams.get('refresh') === '1',
+        }));
+      }
+      if (method === 'GET' && pathname === '/api/network/tailscale/publish-plan') {
+        return sendJson(res, 200, getTailscalePublishPlanCached(effectiveConfig, {
           force: url.searchParams.get('refresh') === '1',
         }));
       }
@@ -662,6 +690,94 @@ function createApp(config) {
           ok: true,
           jobId,
           dryRun: body.dryRun !== false,
+        });
+      }
+
+      if (method === 'POST' && pathname === '/api/network/tailscale/publish-execute') {
+        const body = await parseBody(req);
+        const dryRun = body.dryRun !== false;
+        let auth = null;
+
+        const plan = getTailscalePublishPlanCached(effectiveConfig, { force: true });
+        if (!plan.canExecute) {
+          if (!dryRun) {
+            recordAdminAudit(stateStore, {
+              action: 'tailscale-publish-execute',
+              target: 'svc:home',
+              dryRun: false,
+              outcome: 'blocked-policy',
+              reason: plan.blockedReason || 'plan-not-executable',
+            });
+          }
+          return sendJson(res, 409, {
+            error: plan.summary,
+            blockedReason: plan.blockedReason,
+            conflicts: plan.conflicts || [],
+            canExecute: false,
+          });
+        }
+
+        if (!dryRun && body.confirm !== 'EXECUTE') {
+          recordAdminAudit(stateStore, {
+            action: 'tailscale-publish-execute',
+            target: 'svc:home',
+            dryRun: false,
+            outcome: 'blocked-confirm',
+            reason: 'confirm-missing',
+          });
+          return sendJson(res, 400, {
+            error: 'Real execution requires confirm=EXECUTE',
+          });
+        }
+
+        if (!dryRun) {
+          auth = await requireAdminForExecute(req, stateStore);
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, {
+              action: 'tailscale-publish-execute',
+              target: 'svc:home',
+              dryRun: false,
+              outcome: 'blocked-auth',
+              reason: auth.payload?.error,
+              sessionTokenHash: auth.sessionTokenHash,
+            });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+
+          const preflight = getPreflight(effectiveConfig, { force: true });
+          const missing = missingCheckIds(preflight, ['tailscale', 'nginx', 'nginx-config', 'nginx-snippets-include']);
+          if (missing.length) {
+            recordAdminAudit(stateStore, {
+              action: 'tailscale-publish-execute',
+              target: 'svc:home',
+              dryRun: false,
+              outcome: 'blocked-preflight',
+              reason: missing.join(', '),
+              sessionTokenHash: auth?.sessionTokenHash,
+            });
+            return sendJson(res, 409, {
+              error: `Preflight checks must pass before real publish execution: ${missing.join(', ')}`,
+              missing,
+            });
+          }
+        }
+
+        const jobId = jobRunner.startTailscalePublishJob(plan, { dryRun });
+        if (!dryRun) {
+          recordAdminAudit(stateStore, {
+            action: 'tailscale-publish-execute',
+            target: 'svc:home',
+            dryRun: false,
+            outcome: 'queued',
+            jobId,
+            sessionTokenHash: auth?.sessionTokenHash,
+          });
+        }
+
+        return sendJson(res, 202, {
+          ok: true,
+          dryRun,
+          jobId,
         });
       }
 

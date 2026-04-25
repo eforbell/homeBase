@@ -28,9 +28,12 @@ test('control-plane UI keeps operational actions available after the settings sp
   assert.match(source, /Recent destructive action audit/);
   assert.match(source, /Admin execution lock/);
   assert.match(source, /Home Base configuration/);
-  assert.match(source, /Tailscale publishing/);
+  assert.match(source, /Current Serve summary/);
   assert.match(source, /Tailscale readiness/);
+  assert.match(source, /Managed publish plan/);
   assert.match(source, /\/api\/network\/tailscale/);
+  assert.match(source, /\/api\/network\/tailscale\/publish-plan/);
+  assert.match(source, /\/api\/network\/tailscale\/publish-execute/);
   assert.match(source, /readiness\.label/);
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.match(source, /Update Home Base/);

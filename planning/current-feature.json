@@ -9,12 +9,12 @@
     {
       "id": "TS-001",
       "title": "Detect Tailscale identity and publishing readiness",
-      "status": "in_progress"
+      "status": "review"
     },
     {
       "id": "TS-002",
       "title": "Plan and execute prescribed Serve topology",
-      "status": "queued"
+      "status": "review"
     },
     {
       "id": "TS-003",

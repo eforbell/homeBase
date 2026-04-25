@@ -52,7 +52,13 @@
       "priority": 2,
       "estimatedLines": "+300/-20",
       "testStrategy": "Planner tests for generated commands and manual VM execution against tailnet",
-      "passes": false
+      "passes": true,
+      "implementationNotes": [
+        "Added `/api/network/tailscale/publish-plan` preview endpoint with conflict detection and merge-preserving config patch plan.",
+        "Added `/api/network/tailscale/publish-execute` guarded execution path with `confirm=EXECUTE` + admin-unlock requirement for real runs.",
+        "Execution refuses silent overwrite when non-home services already own required endpoints (e.g., tcp:443).",
+        "Dry-run execution now enqueues `tailscale-publish` jobs with explicit command preview steps."
+      ]
     },
     {
       "id": "TS-003",
