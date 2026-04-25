@@ -1,26 +1,32 @@
 (function dashboardPage() {
   const root = document.getElementById('app');
 
-  function renderInstallCards(installations, healthByAppId) {
+  function renderInstallCards(installations, healthByAppId, catalogById) {
     if (!installations.length) {
       return '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>';
     }
     return installations.map((item) => {
       const health = healthByAppId[item.appId] || {};
+      const catalogEntry = catalogById?.get(item.appId);
       const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
       const needsAttention = attentionStatuses.has(health.runtimeStatus);
+      const icon = catalogEntry?.icon ? `<span class="hb-app-icon">${window.HB.escapeHtml(catalogEntry.icon)}</span>` : '';
+      const openLink = item.externalUrl
+        ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(item.externalUrl)}" target="_blank" rel="noreferrer" style="font-size:0.8rem;padding:0.3rem 0.6rem;">Open ↗</a>`
+        : '';
       return `
       <article class="hb-card">
         <div class="hb-row">
-          <a href="/apps/${window.HB.escapeHtml(item.appId)}"><strong>${window.HB.escapeHtml(item.name || item.appId)}</strong></a>
+          ${icon}
+          <a href="/apps/${window.HB.escapeHtml(item.appId)}" style="font-weight:700;">${window.HB.escapeHtml(item.name || item.appId)}</a>
           ${window.HB.statusBadge(item.status)}
           ${window.HB.runtimeStatusPill(health.runtimeStatus || 'unknown')}
         </div>
-        <p class="hb-muted" style="margin:0.55rem 0 0;">
-          ${window.HB.escapeHtml(item.mountPath)} · Port ${window.HB.escapeHtml(item.port)}<br>
-          Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')}
+        <p class="hb-muted" style="margin:0.45rem 0 0;font-size:0.83rem;">
+          ${window.HB.escapeHtml(item.mountPath)} · Port ${window.HB.escapeHtml(item.port)} · Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')}
         </p>
-        ${health.recoveryHint ? `<p class="${needsAttention ? 'hb-warn' : 'hb-muted'}" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(health.recoveryHint)}${needsAttention ? ` <a href="/apps/${window.HB.escapeHtml(item.appId)}#health">Inspect app health →</a>` : ''}</p>` : ''}
+        ${health.recoveryHint ? `<p class="${needsAttention ? 'hb-warn' : 'hb-muted'}" style="margin:0.45rem 0 0;font-size:0.83rem;">${window.HB.escapeHtml(health.recoveryHint)}${needsAttention ? ` <a href="/apps/${window.HB.escapeHtml(item.appId)}#health">Inspect →</a>` : ''}</p>` : ''}
+        ${openLink ? `<div class="hb-actions" style="margin-top:0.55rem;">${openLink}</div>` : ''}
       </article>
     `;
     }).join('');
@@ -150,16 +156,18 @@
 
   async function load() {
     try {
-      const [state, status, config, bootstrapStatus, healthPayload] = await Promise.all([
+      const [state, status, config, bootstrapStatus, healthPayload, catalogPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/homebase/bootstrap-status'),
         window.HB.getJson('/api/apps/health'),
+        window.HB.getJson('/api/catalog'),
       ]);
       const installations = Object.values(state.installations || {});
       const jobs = Array.isArray(state.jobs) ? state.jobs : [];
       const healthByAppId = healthPayload.byAppId || {};
+      const catalogById = new Map((catalogPayload.apps || []).map((app) => [app.id, app]));
       const placeholderBanner = config.hostnameIsPlaceholder
         ? '<p class="hb-warn" style="margin:0.4rem 0 0;">Hostname is still default (`homebase`). Update in Settings before wider deployment.</p>'
         : '';
@@ -195,11 +203,11 @@
           </section>
           <section>
             <div class="hb-row" style="justify-content:space-between;">
-              <h2 style="margin:0;">Installed apps</h2>
-              <a href="/apps">Manage apps →</a>
+              <h2 style="margin:0;">Apps</h2>
+              <a href="/apps">Manage →</a>
             </div>
             <div class="hb-grid hb-grid-2" style="margin-top:0.75rem;">
-              ${renderInstallCards(installations, healthByAppId)}
+              ${renderInstallCards(installations, healthByAppId, catalogById)}
             </div>
           </section>
           <section class="hb-card">

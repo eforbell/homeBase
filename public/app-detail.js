@@ -290,25 +290,26 @@
       const port = install?.port || app.network?.preferredPort || '';
       const ref = install?.ref || app.repository?.defaultRef || 'main';
 
+      document.title = `${app.name} - Home Base`;
+
       root.innerHTML = `
         <div class="hb-stack">
           <section class="hb-card">
             <div class="hb-row">
+              ${app.icon ? `<span class="hb-app-icon" style="font-size:1.5rem;">${window.HB.escapeHtml(app.icon)}</span>` : ''}
               <h1 style="margin:0;">${window.HB.escapeHtml(app.name)}</h1>
               ${window.HB.statusBadge(install?.status || 'not-installed')}
             </div>
-            <p class="hb-muted" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(app.purpose || '')}</p>
-            <p class="hb-muted" style="margin:0.55rem 0 0;">
+            <p class="hb-muted" style="margin:0.45rem 0 0;font-size:0.9rem;">${window.HB.escapeHtml(app.purpose || '')}</p>
+            <p class="hb-muted" style="margin:0.35rem 0 0;font-size:0.83rem;">
               App ID: ${window.HB.escapeHtml(app.id)} · Port: ${window.HB.escapeHtml(port)} · Route: ${window.HB.escapeHtml(mountPath)}
             </p>
             <div class="hb-actions" style="margin-top:0.75rem;">
-              ${install?.externalUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open app ↗</a>` : ''}
-              ${appHealth?.onboarding?.setupUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(appHealth.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Open setup ↗</a>` : ''}
-              <a class="hb-btn" href="#health">Health</a>
-              <a class="hb-btn" href="#backup">Backup</a>
-              <a class="hb-btn" href="#restore">Restore</a>
-              <a class="hb-btn" href="#update">Update</a>
-              <a class="hb-btn" href="#uninstall">Uninstall</a>
+              ${install?.externalUrl ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>` : ''}
+              ${appHealth?.onboarding?.setupUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(appHealth.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Setup ↗</a>` : ''}
+              <span class="hb-muted" style="font-size:0.83rem;margin-left:0.25rem;">
+                <a href="#health">Health</a> · <a href="#backup">Backup</a> · <a href="#restore">Restore</a> · <a href="#update">Update</a> · <a href="#uninstall" style="color:var(--red);">Uninstall</a>
+              </span>
             </div>
             ${renderBackupSummary(backups, config)}
           </section>
@@ -338,14 +339,14 @@
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>
-                <button class="hb-btn" type="submit">Run backup</button>
+                <div><button class="hb-btn" type="submit">Run backup</button></div>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
               <form class="hb-form-grid" data-action="restart" style="margin-top:0.75rem;">
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>
-                <button class="hb-btn" type="submit" ${actions.restart ? '' : 'disabled'}>Run restart</button>
+                <div><button class="hb-btn" type="submit" ${actions.restart ? '' : 'disabled'}>Run restart</button></div>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
               <p class="hb-muted" style="margin:0.6rem 0 0;">
@@ -364,7 +365,7 @@
                 <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>
-                <button class="hb-btn hb-btn-primary" type="submit">Run update</button>
+                <div><button class="hb-btn hb-btn-primary" type="submit">Run update</button></div>
                 <p class="hb-muted" data-result style="margin:0;"></p>
                 <p class="hb-muted" style="margin:0;">Update code to a branch or ref, re-apply services, and fully redeploy this app.</p>
               </form>
@@ -381,7 +382,7 @@
               <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                 <input name="dryRun" type="checkbox" checked> Dry-run only
               </label>
-              <button class="hb-btn" type="submit">Run restore</button>
+              <div><button class="hb-btn" type="submit">Run restore</button></div>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
           </section>
@@ -396,7 +397,7 @@
               <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
                 <input name="dryRun" type="checkbox" checked> Dry-run only
               </label>
-              <button class="hb-btn" type="submit" ${actions.uninstall ? '' : 'disabled'}>Run uninstall</button>
+              <div><button class="hb-btn" type="submit" style="border-color:rgba(248,113,113,0.35);color:var(--red);" ${actions.uninstall ? '' : 'disabled'}>Run uninstall</button></div>
               <p class="hb-muted" style="margin:0;">Backups are preserved by default under the existing backup root. Disable Keep backups to delete them too.</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
