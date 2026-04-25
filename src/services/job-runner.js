@@ -154,6 +154,10 @@ class JobRunner {
       extraResult: {
         readinessState: plan.readiness?.state || null,
         conflictCount: Array.isArray(plan.conflicts) ? plan.conflicts.length : 0,
+        desiredHost: plan.desiredHost || null,
+        desiredDomain: plan.desiredDomain || null,
+        homebaseUrl: plan.previewUrls?.homebase || null,
+        appsBaseUrl: plan.previewUrls?.appsBase || null,
       },
     });
   }

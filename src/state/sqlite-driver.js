@@ -346,6 +346,31 @@ elif op == "get_latest_job_by_kind":
             "error": row["error_text"],
         })
 
+
+elif op == "get_latest_completed_real_job_by_kind":
+    row = conn.execute(
+        "SELECT * FROM jobs WHERE kind = ? AND dry_run = 0 AND status = 'completed' ORDER BY id DESC LIMIT 1",
+        (payload["kind"],),
+    ).fetchone()
+    if row is None:
+        emit(None)
+    else:
+        emit({
+            "id": row["id"],
+            "kind": row["kind"],
+            "target": row["target"],
+            "status": row["status"],
+            "dryRun": bool(row["dry_run"]),
+            "createdAt": row["created_at"],
+            "startedAt": row["started_at"],
+            "finishedAt": row["finished_at"],
+            "currentStep": row["current_step"],
+            "planJson": row["plan_json"],
+            "log": row["log_text"],
+            "resultJson": row["result_json"],
+            "error": row["error_text"],
+        })
+
 elif op == "list_running_jobs_by_kind":
     jobs = [
         {

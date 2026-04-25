@@ -200,3 +200,18 @@
   - `test/tailscale-publisher.test.js`,
   - `test/server.test.js` publish-plan/publish-execute cases.
 - Verification: `npm test` passed (114/114).
+
+2026-04-25 (Feature-4 TS-003 implementation pass)
+- Added `src/services/tailscale-verify.js` and `/api/network/tailscale/verify` to validate:
+  - local nginx listener presence on tcp:443,
+  - Home Base `svc:home` Serve endpoint posture,
+  - publish freshness against latest completed real `tailscale-publish` job.
+- Added stale-config detection: if hostname/domain has changed since last real publish, Network now flags a repair prompt with explicit stale reason.
+- Network UI now includes a dedicated “Verification & repair” section and copyable current target URLs:
+  - Home Base URL (`https://<host>:3080`),
+  - app base URL (`https://<host>`).
+- Added DB helper op `get_latest_completed_real_job_by_kind` to anchor stale detection on real publish history.
+- Added coverage:
+  - `test/tailscale-verify.test.js` (verification logic),
+  - `test/server.test.js` stale verification endpoint behavior.
+- Verification: `npm test` passed (118/118).

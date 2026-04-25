@@ -17,6 +17,7 @@ const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
+const { getTailscalePublishVerification } = require('./services/tailscale-verify');
 const {
   mergeHomeBaseConfig,
   toClientHomeBaseConfig,
@@ -273,6 +274,11 @@ function createApp(config) {
     expiresAt: 0,
     value: null,
   };
+  const tailscaleVerifyCache = {
+    key: '',
+    expiresAt: 0,
+    value: null,
+  };
   const validationErrors = catalog.flatMap((entry) =>
     validateManifestEntry(entry).map((error) => `${entry.id}: ${error}`)
   );
@@ -318,6 +324,25 @@ function createApp(config) {
     tailscalePublishPlanCache.key = cacheKey;
     tailscalePublishPlanCache.value = value;
     tailscalePublishPlanCache.expiresAt = now + 15_000;
+    return value;
+  }
+
+  function getTailscaleVerificationCached(effectiveConfig, { force = false } = {}) {
+    const now = Date.now();
+    const cacheKey = `${effectiveConfig.defaultHostname || 'homebase'}.${effectiveConfig.defaultDomain || 'tailnet'}`;
+    if (!force && tailscaleVerifyCache.value && tailscaleVerifyCache.key === cacheKey && tailscaleVerifyCache.expiresAt > now) {
+      return tailscaleVerifyCache.value;
+    }
+    const lastPublishedJob = stateStore.getLatestCompletedRealJobByKind('tailscale-publish');
+    const value = getTailscalePublishVerification({
+      hostname: effectiveConfig.defaultHostname || 'homebase',
+      domain: effectiveConfig.defaultDomain || 'tailnet',
+      run: effectiveConfig.tailscaleRunCommand,
+      lastPublishedJob,
+    });
+    tailscaleVerifyCache.key = cacheKey;
+    tailscaleVerifyCache.value = value;
+    tailscaleVerifyCache.expiresAt = now + 15_000;
     return value;
   }
 
@@ -399,6 +424,11 @@ function createApp(config) {
       }
       if (method === 'GET' && pathname === '/api/network/tailscale/publish-plan') {
         return sendJson(res, 200, getTailscalePublishPlanCached(effectiveConfig, {
+          force: url.searchParams.get('refresh') === '1',
+        }));
+      }
+      if (method === 'GET' && pathname === '/api/network/tailscale/verify') {
+        return sendJson(res, 200, getTailscaleVerificationCached(effectiveConfig, {
           force: url.searchParams.get('refresh') === '1',
         }));
       }

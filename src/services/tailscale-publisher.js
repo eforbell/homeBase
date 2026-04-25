@@ -91,6 +91,10 @@ function buildTailscalePublishPlan({
   domain = 'tailnet',
 } = {}) {
   const publishHost = `${hostname}.${domain}`;
+  const previewUrls = {
+    homebase: `https://${publishHost}:3080`,
+    appsBase: `https://${publishHost}`,
+  };
   const parsedServe = parseServeConfigFromCommandResult(serveResult || {});
   const currentConfig = parsedServe.ok ? parsedServe.config : { version: '0.0.1', services: {} };
   const currentServices = currentConfig.services || {};
@@ -172,10 +176,9 @@ function buildTailscalePublishPlan({
         : (requiresChanges
           ? 'Publish plan ready: Home Base endpoints will be created/repaired under svc:home.'
           : 'Publish plan ready: Home Base endpoints already match the required topology.')),
-    previewUrls: {
-      homebase: `https://${publishHost}:3080`,
-      appsBase: `https://${publishHost}`,
-    },
+    desiredHost: hostname,
+    desiredDomain: domain,
+    previewUrls,
     mergedConfig,
     executionSteps,
   };

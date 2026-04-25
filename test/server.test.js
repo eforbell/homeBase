@@ -1594,3 +1594,68 @@ test('network tailscale publish execute refuses non-home endpoint ownership conf
     await server.close();
   }
 });
+
+test('network tailscale verify endpoint reports stale config when hostname/domain changed after real publish', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-network-verify-stale-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase-new',
+    defaultDomain: 'tailnet',
+    tailscaleRunCommand: makeFakeTailscaleRunner({
+      serveStdout: JSON.stringify({
+        version: '0.0.1',
+        services: {
+          'svc:home': {
+            endpoints: {
+              'tcp:3080': 'http://127.0.0.1:3080',
+              'tcp:443': 'https+insecure://localhost:443',
+            },
+          },
+        },
+      }),
+    }),
+  });
+
+  try {
+    const store = new SqliteStateStore(dbPath);
+    const createdAt = new Date().toISOString();
+    const { id } = store.createJob({
+      kind: 'tailscale-publish',
+      target: 'svc:home',
+      status: 'completed',
+      dryRun: false,
+      createdAt,
+      currentStep: null,
+      planJson: JSON.stringify({}),
+    });
+    store.updateJob(id, {
+      startedAt: createdAt,
+      finishedAt: createdAt,
+      resultJson: JSON.stringify({
+        desiredHost: 'homebase-old',
+        desiredDomain: 'tailnet',
+        homebaseUrl: 'https://homebase-old.tailnet:3080',
+        appsBaseUrl: 'https://homebase-old.tailnet',
+      }),
+    });
+
+    const res = await fetch(`${server.url}/api/network/tailscale/verify`);
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(payload.staleBecauseConfigChanged, true);
+    assert.equal(payload.repairRequired, true);
+    assert.match(payload.staleReason, /homebase-new\.tailnet/i);
+    assert.match(payload.staleReason, /homebase-old\.tailnet/i);
+    assert.equal(typeof payload.recommendedUrls?.homebase, 'string');
+    assert.equal(typeof payload.recommendedUrls?.appsBase, 'string');
+  } finally {
+    await server.close();
+  }
+});

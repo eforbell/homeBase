@@ -385,7 +385,29 @@
     `;
   }
 
-  function renderNetworkPage(config, preflight, tailscale = null, publishPlan = null) {
+  function renderVerificationSummary(verification) {
+    if (!verification) return '<p class="hb-muted" style="margin:0;">Verification unavailable.</p>';
+    const checks = Array.isArray(verification.checks) ? verification.checks : [];
+    return `
+      <div class="hb-stack">
+        <p style="margin:0;"><span class="${verification.repairRequired ? 'hb-warn' : 'hb-ok'}">${window.HB.escapeHtml(verification.repairRequired ? 'Repair recommended' : 'Publishing verified')}</span></p>
+        ${verification.staleBecauseConfigChanged ? `<p class="hb-warn" style="margin:0.35rem 0 0;">${window.HB.escapeHtml(verification.staleReason || 'Hostname/domain changed since last publish.')}</p>` : ''}
+        <ul class="hb-stack" style="list-style:none;padding:0;margin:0.7rem 0 0;">
+          ${checks.map((check) => `<li class="hb-row"><strong>${window.HB.escapeHtml(check.title)}</strong><span>${check.ok ? '<span class="hb-ok">ok</span>' : '<span class="hb-warn">needs attention</span>'}</span></li>`).join('')}
+        </ul>
+        <div class="hb-form-grid" style="margin-top:0.7rem;">
+          <label class="hb-label">Home Base URL
+            <input class="hb-input" readonly value="${window.HB.escapeHtml(verification.recommendedUrls?.homebase || '')}">
+          </label>
+          <label class="hb-label">Apps base URL
+            <input class="hb-input" readonly value="${window.HB.escapeHtml(verification.recommendedUrls?.appsBase || '')}">
+          </label>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderNetworkPage(config, preflight, tailscale = null, publishPlan = null, verification = null) {
     const host = `${config.hostname}.${config.domain}`;
     const readiness = tailscale?.readiness || {};
     const status = tailscale?.status || {};
@@ -439,6 +461,10 @@
           </form>
         </section>
         <section class="hb-card">
+          <h2 style="margin-top:0;">Verification & repair</h2>
+          ${renderVerificationSummary(verification)}
+        </section>
+        <section class="hb-card">
           <h2 style="margin-top:0;">Publishing prerequisites</h2>
           ${renderChecks(preflight, { ids: ['tailscale', 'nginx', 'nginx-config', 'nginx-snippets-include'], label: 'Network publishing checks' })}
         </section>
@@ -460,17 +486,17 @@
     `;
   }
 
-  function renderPage(config, status, preflight, adminStatus, tailscale, publishPlan) {
+  function renderPage(config, status, preflight, adminStatus, tailscale, publishPlan, verification) {
     if (page === 'status') return renderStatusPage(config, status, preflight);
     if (page === 'admin') return renderAdminPage(adminStatus);
-    if (page === 'network') return renderNetworkPage(config, preflight, tailscale, publishPlan);
+    if (page === 'network') return renderNetworkPage(config, preflight, tailscale, publishPlan, verification);
     if (page === 'settings') return renderLegacySettingsPage();
     return renderConfigPage(config, status);
   }
 
   async function load() {
     try {
-      const [config, status, preflight, adminStatus, tailscale, publishPlan] = await Promise.all([
+      const [config, status, preflight, adminStatus, tailscale, publishPlan, verification] = await Promise.all([
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/preflight'),
@@ -481,8 +507,11 @@
         page === 'network'
           ? window.HB.getJson('/api/network/tailscale/publish-plan').catch((error) => ({ canExecute: false, summary: error.message, conflicts: [], diff: [] }))
           : Promise.resolve(null),
+        page === 'network'
+          ? window.HB.getJson('/api/network/tailscale/verify').catch((error) => ({ repairRequired: true, checks: [], staleBecauseConfigChanged: false, staleReason: error.message, recommendedUrls: {} }))
+          : Promise.resolve(null),
       ]);
-      root.innerHTML = renderPage(config, status, preflight, adminStatus, tailscale, publishPlan);
+      root.innerHTML = renderPage(config, status, preflight, adminStatus, tailscale, publishPlan, verification);
       wireEvents();
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');

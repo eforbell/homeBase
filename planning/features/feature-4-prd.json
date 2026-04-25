@@ -72,7 +72,13 @@
       "priority": 3,
       "estimatedLines": "+260/-20",
       "testStrategy": "Manual VM verification plus fixture tests for stale/missing Serve config parsing",
-      "passes": false
+      "passes": true,
+      "implementationNotes": [
+        "Added `/api/network/tailscale/verify` for nginx listener + serve endpoint + config-freshness verification.",
+        "Network UI now surfaces explicit repair prompt when verification fails or hostname/domain changed since last real publish.",
+        "Verification section includes copyable Home Base and app base URLs derived from current hostname/domain target.",
+        "Publish verification uses latest completed real `tailscale-publish` job to detect stale publishing after config changes."
+      ]
     }
   ],
   "riskAssessment": {
