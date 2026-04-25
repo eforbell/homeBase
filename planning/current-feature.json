@@ -1,24 +1,24 @@
 {
-  "currentFeature": "feature-3",
-  "featureName": "Admin Auth and Destructive-Action Guardrails",
-  "prdPath": "planning/features/feature-3-prd.json",
-  "summaryPath": "planning/features/feature-3-summary.md",
-  "branch": "feature/admin-auth-action-guardrails",
+  "currentFeature": "feature-3a",
+  "featureName": "Control Plane Navigation and Settings IA Split",
+  "prdPath": "planning/features/feature-3a-prd.json",
+  "summaryPath": "planning/features/feature-3a-summary.md",
+  "branch": "feature/control-plane-nav-ia-split",
   "status": "review",
   "stories": [
     {
-      "id": "ADM-001",
-      "title": "Require admin unlock for destructive operations",
+      "id": "IA-001",
+      "title": "Operational controls are split into functional pages",
       "status": "review"
     },
     {
-      "id": "ADM-002",
-      "title": "Admin setup, unlock, lock, and rotation",
+      "id": "IA-002",
+      "title": "Navigation scales for a larger control-plane surface",
       "status": "review"
     },
     {
-      "id": "ADM-003",
-      "title": "Audit destructive actions",
+      "id": "IA-003",
+      "title": "Baseline UI tests are green before Feature-4 begins",
       "status": "review"
     }
   ],
@@ -40,6 +40,12 @@
       "featureName": "Admin Auth and Destructive-Action Guardrails",
       "branch": "feature/admin-auth-action-guardrails",
       "summary": "Add server-enforced admin unlock before destructive host/app actions."
+    },
+    {
+      "featureId": "feature-3a",
+      "featureName": "Control Plane Navigation and Settings IA Split",
+      "branch": "feature/control-plane-nav-ia-split",
+      "summary": "Split the Settings junk drawer into Status/Admin/Config/Network and add scalable control-plane navigation before Tailscale publishing."
     },
     {
       "featureId": "feature-4",
@@ -104,6 +110,12 @@
       "featureName": "App Health, Readiness, and Alerts",
       "prNumber": 4,
       "mergedAt": "2026-04-19T16:46:43Z"
+    },
+    {
+      "featureId": "feature-3",
+      "featureName": "Admin Auth and Destructive-Action Guardrails",
+      "prNumber": 6,
+      "mergedAt": "2026-04-22T01:18:21Z"
     }
   ],
   "branchAndPrPolicy": {

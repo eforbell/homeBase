@@ -109,3 +109,29 @@
   - added JS-side audit limit clamp + aligned audit fetch/render size,
   - reverted accidental fastToEat catalog commit from this feature branch.
 - Verification: npm test passed (79/79) after review fixes.
+
+2026-04-25 (Feature-3 closeout / Feature-4 readying)
+- Confirmed Feature-3 merged via GitHub PR #6 (`feature/admin-auth-action-guardrails` -> `main`, merged 2026-04-22T01:18:21Z).
+- Marked Feature-3 complete and moved it to completedFeatures in planning/current-feature.json.
+- Advanced queue pointer to Feature-4 (Tailscale Service Publishing Automation) with queued story statuses so implementation can start from the publishing lane next.
+
+2026-04-25 (Pre-slice inserted before Feature-4)
+- User-directed planning change: add a separate PR before Feature-4 to uncrowd the Settings junk drawer and preserve recent UI cleanup.
+- Drafted Feature-3a `feature/control-plane-nav-ia-split` as a contained IA/nav slice:
+  - split current Settings into Status, Admin, Config, and Network,
+  - add scalable desktop/mobile navigation with a More-sheet pattern,
+  - clean up the three red baseline UI tests before Tailscale work starts.
+- Re-pointed planning/current-feature.json to Feature-3a so the next implementation lane is the IA split, not Tailscale publishing yet.
+- Tightened Feature-4 planning to assume:
+  - Network is the dedicated Tailscale page,
+  - real `tailscale status --json` and `tailscale serve get-config --all` fixtures are captured before parser/executor work,
+  - Home Base only manages Home Base-owned Serve endpoints and refuses silent overwrite of unrelated config.
+
+2026-04-25 (Feature-3a implementation pass)
+- Implemented the control-plane page split in Home Base:
+  - added dedicated `/status`, `/admin`, `/config`, and `/network` page shells,
+  - moved Home Base operational sections out of the old Settings junk drawer into those pages,
+  - updated nav to surface Status directly and move Network/Admin/Config into a mobile Base overflow sheet,
+  - redirected legacy `/settings` to `/config`.
+- Cleaned up stale UI assertion tests that were already red on main and added route coverage for the new control-plane pages.
+- Verification: `npm test` passed (93/93). Manual browser/mobile verification is still pending, so Feature-3a remains in review rather than verified.

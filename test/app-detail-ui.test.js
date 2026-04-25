@@ -66,6 +66,6 @@ test('app detail surfaces backup summary and local-only risk', () => {
   assert.match(source, /keepBackups/);
   assert.match(source, /Run uninstall/);
   assert.match(source, /Keep backups/);
-  assert.match(source, /Open setup ↗/);
+  assert.match(source, /Setup ↗/);
   assert.match(source, /Onboarding/);
 });

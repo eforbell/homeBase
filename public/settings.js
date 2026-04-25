@@ -1,5 +1,6 @@
-(function settingsPage() {
+(function controlPlanePages() {
   const root = document.getElementById('app');
+  const page = document.body.getAttribute('data-nav-page') || 'config';
 
   function renderAdminAudit(entries) {
     const items = Array.isArray(entries) ? entries : [];
@@ -19,11 +20,12 @@
     `;
   }
 
-  function renderChecks(preflight) {
-    const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
-    if (!checks.length) return '<p class="hb-muted" style="margin:0;">No preflight checks returned.</p>';
+  function renderChecks(preflight, { ids = null, label = 'checks' } = {}) {
+    const requestedIds = Array.isArray(ids) && ids.length ? new Set(ids) : null;
+    const checks = (Array.isArray(preflight?.checks) ? preflight.checks : []).filter((check) => !requestedIds || requestedIds.has(check.id));
+    if (!checks.length) return `<p class="hb-muted" style="margin:0;">No ${window.HB.escapeHtml(label)} returned.</p>`;
     return `
-      <div class="hb-table-wrap" role="region" aria-label="Preflight checks">
+      <div class="hb-table-wrap" role="region" aria-label="${window.HB.escapeHtml(label)}">
         <table class="hb-table">
           <thead><tr><th>Check</th><th>Status</th><th>Summary</th><th>Hint</th></tr></thead>
           <tbody>
@@ -105,9 +107,8 @@
           },
         });
         return;
-      } else {
-        resultNode.textContent = 'Completed.';
       }
+      resultNode.textContent = 'Completed.';
     } catch (error) {
       resultNode.textContent = error.message;
     }
@@ -129,9 +130,7 @@
         const port = Number(installSelf.elements.port.value);
         const dryRun = installSelf.elements.dryRun.checked;
         const payload = { port, dryRun };
-        if (!dryRun) {
-          payload.confirm = 'EXECUTE';
-        }
+        if (!dryRun) payload.confirm = 'EXECUTE';
         triggerHomebaseAction('/api/homebase/install-self', payload, installSelf.querySelector('[data-result]'), installSelf);
         return;
       }
@@ -140,9 +139,7 @@
         event.preventDefault();
         const dryRun = bootstrapHost.elements.dryRun.checked;
         const payload = { dryRun };
-        if (!dryRun) {
-          payload.confirm = 'EXECUTE';
-        }
+        if (!dryRun) payload.confirm = 'EXECUTE';
         triggerHomebaseAction('/api/bootstrap/execute', payload, bootstrapHost.querySelector('[data-result]'), bootstrapHost);
         return;
       }
@@ -152,9 +149,7 @@
         const ref = updateSelf.elements.ref.value.trim();
         const dryRun = updateSelf.elements.dryRun.checked;
         const payload = { ref, dryRun };
-        if (!dryRun) {
-          payload.confirm = 'EXECUTE';
-        }
+        if (!dryRun) payload.confirm = 'EXECUTE';
         triggerHomebaseAction('/api/homebase/update-self', payload, updateSelf.querySelector('[data-result]'), updateSelf);
         return;
       }
@@ -197,6 +192,218 @@
     });
   }
 
+  function renderOverviewCard({ title, description, statusLine = '' }) {
+    return `
+      <section class="hb-card">
+        <h1 style="margin:0;">${window.HB.escapeHtml(title)}</h1>
+        <p class="hb-muted" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(description)}</p>
+        ${statusLine ? `<p class="hb-muted" style="margin:0.55rem 0 0;">${statusLine}</p>` : ''}
+      </section>
+    `;
+  }
+
+  function renderStatusPage(config, status, preflight) {
+    return `
+      <div class="hb-stack">
+        ${renderOverviewCard({
+          title: 'Status',
+          description: 'Host readiness, Home Base runtime posture, and repair actions.',
+          statusLine: `Runtime user: ${status.runtimeUser} · systemd: ${status.systemd?.active || 'unknown'}`,
+        })}
+        <section class="hb-grid hb-grid-2">
+          <article class="hb-card">
+            <h2 style="margin-top:0;">Bootstrap / repair host</h2>
+            <form class="hb-form-grid" data-action="bootstrap-host">
+              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+              <button class="hb-btn" type="submit">Run bootstrap</button>
+              <p class="hb-muted" style="margin:0;">Use this to recover from failed auto-bootstrap jobs or re-apply host repair steps such as nginx/Tailscale prerequisites.</p>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
+          </article>
+          <article class="hb-card">
+            <h2 style="margin-top:0;">Install/enable Home Base service</h2>
+            <form class="hb-form-grid" data-action="install-self">
+              <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(config.port)}"></label>
+              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+              <button class="hb-btn" type="submit">Install/enable service</button>
+              <p class="hb-muted" style="margin:0;">When installed as a systemd service, Home Base can auto-start bootstrap on first service launch.</p>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
+          </article>
+        </section>
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Runtime details</h2>
+          <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
+            <li class="hb-row"><strong>Service</strong><span>${window.HB.escapeHtml(status.serviceName || 'homebase')}</span><span class="hb-muted">${window.HB.escapeHtml(status.systemd?.active || 'unknown')}</span></li>
+            <li class="hb-row"><strong>App dir</strong><span class="hb-muted">${window.HB.escapeHtml(status.appDir || '')}</span><span>${status.paths?.appDirExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
+            <li class="hb-row"><strong>State dir</strong><span class="hb-muted">${window.HB.escapeHtml(status.stateDir || '')}</span><span>${status.paths?.stateDirExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
+            <li class="hb-row"><strong>Env file</strong><span class="hb-muted">${window.HB.escapeHtml(status.envFile || '')}</span><span>${status.paths?.envFileExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
+            <li class="hb-row"><strong>systemd unit</strong><span class="hb-muted">/etc/systemd/system/homebase.service</span><span>${status.paths?.serviceFileExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
+          </ul>
+        </section>
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Preflight checks</h2>
+          ${renderChecks(preflight, { label: 'Preflight checks' })}
+        </section>
+      </div>
+    `;
+  }
+
+  function renderAdminPage(adminStatus) {
+    return `
+      <div class="hb-stack">
+        ${renderOverviewCard({
+          title: 'Admin',
+          description: 'Execution lock posture and destructive-action audit for Home Base.',
+          statusLine: `Status: ${adminStatus.configured ? (adminStatus.unlocked ? 'Configured + unlocked' : 'Configured but locked') : 'Not configured'}`,
+        })}
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Admin execution lock</h2>
+          <p class="hb-muted" style="margin:0.4rem 0 0.8rem;">
+            Status: ${adminStatus.configured ? (adminStatus.unlocked ? '<span class="hb-ok">Configured + unlocked</span>' : '<span class="hb-warn">Configured but locked</span>') : '<span class="hb-warn">Not configured</span>'}
+          </p>
+          ${adminStatus.unlocked && adminStatus.sessionExpiresAt ? `<p class="hb-muted" style="margin:0 0 0.8rem;">Session expires: ${window.HB.escapeHtml(window.HB.formatTimestamp(adminStatus.sessionExpiresAt))}</p>` : ''}
+          ${adminStatus.configured ? `
+            <div class="hb-grid hb-grid-2">
+              <form class="hb-form-grid" data-action="admin-unlock">
+                <label class="hb-label">Passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="current-password"></label>
+                <button class="hb-btn" type="submit">Unlock admin</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+              <form class="hb-form-grid" data-action="admin-lock">
+                <p class="hb-muted" style="margin:0;">Lock the current admin session before leaving shared terminals.</p>
+                <button class="hb-btn" type="submit">Lock admin</button>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+            </div>
+            <form class="hb-form-grid" data-action="admin-rotate" style="margin-top:0.85rem;">
+              <label class="hb-label">Current passphrase <input class="hb-input" name="currentPassphrase" type="password" autocomplete="current-password"></label>
+              <label class="hb-label">New passphrase <input class="hb-input" name="newPassphrase" type="password" autocomplete="new-password"></label>
+              <button class="hb-btn" type="submit">Rotate admin passphrase</button>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
+          ` : `
+            <form class="hb-form-grid" data-action="admin-setup">
+              <label class="hb-label">Create admin passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="new-password"></label>
+              <button class="hb-btn" type="submit">Set admin passphrase</button>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
+          `}
+        </section>
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Recent destructive action audit</h2>
+          <div data-admin-audit>${adminStatus.unlocked ? '<p class="hb-muted" style="margin:0;">Loading audit history…</p>' : '<p class="hb-muted" style="margin:0;">Unlock admin to view audit history.</p>'}</div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderConfigPage(config, status) {
+    return `
+      <div class="hb-stack">
+        ${renderOverviewCard({
+          title: 'Config',
+          description: 'Home Base identity, update posture, and alert preferences.',
+          statusLine: `Current host: ${config.hostname}.${config.domain} · systemd: ${status.systemd?.active || 'unknown'}`,
+        })}
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Home Base configuration</h2>
+          <form class="hb-form-grid" data-action="config">
+            <label class="hb-label">Hostname <input class="hb-input" name="hostname" value="${window.HB.escapeHtml(config.hostname)}" required></label>
+            <label class="hb-label">Domain <input class="hb-input" name="domain" value="${window.HB.escapeHtml(config.domain)}" required></label>
+            <label class="hb-label">
+              Git transport
+              <select class="hb-select" name="gitTransport">
+                <option value="https" ${config.gitTransport === 'https' ? 'selected' : ''}>https</option>
+                <option value="ssh" ${config.gitTransport === 'ssh' ? 'selected' : ''}>ssh</option>
+                <option value="ssh-key" ${config.gitTransport === 'ssh-key' ? 'selected' : ''}>ssh-key</option>
+              </select>
+            </label>
+            <label class="hb-label">SSH key path (for ssh-key transport)
+              <input class="hb-input" name="gitSshKeyPath" value="${window.HB.escapeHtml(config.gitSshKeyPath || '')}">
+            </label>
+            <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+              <input type="checkbox" name="healthAlertsEnabled" ${config.healthAlertsEnabled ? 'checked' : ''}>
+              Enable critical health alerts
+            </label>
+            <label class="hb-label">Health alert webhook URL
+              <input class="hb-input" name="healthAlertsWebhookUrl" placeholder="https://..." value="${window.HB.escapeHtml(config.healthAlertsWebhookUrl || '')}">
+            </label>
+            <button class="hb-btn hb-btn-primary" type="submit">Save config</button>
+            <p class="hb-muted" data-config-result style="margin:0;"></p>
+          </form>
+        </section>
+        <section class="hb-grid hb-grid-2">
+          <article class="hb-card">
+            <h2 style="margin-top:0;">Update Home Base</h2>
+            <form class="hb-form-grid" data-action="update-self">
+              <label class="hb-label">Git ref <input class="hb-input" name="ref" value="main"></label>
+              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+              <button class="hb-btn" type="submit">Run Home Base update</button>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
+          </article>
+          <article class="hb-card">
+            <h2 style="margin-top:0;">Health alerts</h2>
+            <form class="hb-form-grid" data-action="test-alerts">
+              <p class="hb-muted" style="margin:0;">Send a test notification to confirm your configured alert target works before relying on automated critical alerts.</p>
+              <button class="hb-btn" type="submit">Send test alert</button>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
+          </article>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderNetworkPage(config, preflight) {
+    const host = `${config.hostname}.${config.domain}`;
+    return `
+      <div class="hb-stack">
+        ${renderOverviewCard({
+          title: 'Network',
+          description: 'Tailnet reachability and the future home of Tailscale publishing automation.',
+          statusLine: `Current intended host: ${host}`,
+        })}
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Tailscale publishing</h2>
+          <p class="hb-muted" style="margin:0;">Feature-4 will land here. The goal is to detect Tailscale readiness, preview the managed Serve topology, and repair Home Base-owned publishing without crowding Config.</p>
+          <ul class="hb-stack" style="margin:0.8rem 0 0 1rem;padding:0;">
+            <li>Show current tailnet identity and Serve status.</li>
+            <li>Preview <code>tailscale serve</code> changes before execution.</li>
+            <li>Refuse silent overwrite of unrelated Serve config.</li>
+          </ul>
+        </section>
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Publishing prerequisites</h2>
+          ${renderChecks(preflight, { ids: ['tailscale', 'nginx', 'nginx-config', 'nginx-snippets-include'], label: 'Network publishing checks' })}
+        </section>
+      </div>
+    `;
+  }
+
+  function renderLegacySettingsPage() {
+    return `
+      <div class="hb-stack">
+        ${renderOverviewCard({
+          title: 'Settings moved',
+          description: 'Home Base now organizes this control plane into Status, Admin, Config, and Network pages.',
+        })}
+        <section class="hb-card">
+          <p class="hb-muted" style="margin:0;">Use <a href="/config">Config</a> for Home Base settings, <a href="/admin">Admin</a> for execution lock and audit, <a href="/status">Status</a> for host readiness, and <a href="/network">Network</a> for Tailscale-related work.</p>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderPage(config, status, preflight, adminStatus) {
+    if (page === 'status') return renderStatusPage(config, status, preflight);
+    if (page === 'admin') return renderAdminPage(adminStatus);
+    if (page === 'network') return renderNetworkPage(config, preflight);
+    if (page === 'settings') return renderLegacySettingsPage();
+    return renderConfigPage(config, status);
+  }
+
   async function load() {
     try {
       const [config, status, preflight, adminStatus] = await Promise.all([
@@ -205,126 +412,9 @@
         window.HB.getJson('/api/preflight'),
         window.HB.getJson('/api/admin/status'),
       ]);
-      root.innerHTML = `
-        <div class="hb-stack">
-          <section class="hb-card">
-            <h1 style="margin:0;">Settings</h1>
-            <p class="hb-muted" style="margin-top:0.55rem;">
-              Runtime user: ${window.HB.escapeHtml(status.runtimeUser)} · systemd: ${window.HB.escapeHtml(status.systemd?.active || 'unknown')}
-            </p>
-          </section>
-          <section class="hb-card">
-            <h2 style="margin-top:0;">Home Base configuration</h2>
-            <form class="hb-form-grid" data-action="config">
-              <label class="hb-label">Hostname <input class="hb-input" name="hostname" value="${window.HB.escapeHtml(config.hostname)}" required></label>
-              <label class="hb-label">Domain <input class="hb-input" name="domain" value="${window.HB.escapeHtml(config.domain)}" required></label>
-              <label class="hb-label">
-                Git transport
-                <select class="hb-select" name="gitTransport">
-                  <option value="https" ${config.gitTransport === 'https' ? 'selected' : ''}>https</option>
-                  <option value="ssh" ${config.gitTransport === 'ssh' ? 'selected' : ''}>ssh</option>
-                  <option value="ssh-key" ${config.gitTransport === 'ssh-key' ? 'selected' : ''}>ssh-key</option>
-                </select>
-              </label>
-              <label class="hb-label">SSH key path (for ssh-key transport)
-                <input class="hb-input" name="gitSshKeyPath" value="${window.HB.escapeHtml(config.gitSshKeyPath || '')}">
-              </label>
-              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
-                <input type="checkbox" name="healthAlertsEnabled" ${config.healthAlertsEnabled ? 'checked' : ''}>
-                Enable critical health alerts
-              </label>
-              <label class="hb-label">Health alert webhook URL
-                <input class="hb-input" name="healthAlertsWebhookUrl" placeholder="https://..." value="${window.HB.escapeHtml(config.healthAlertsWebhookUrl || '')}">
-              </label>
-              <button class="hb-btn hb-btn-primary" type="submit">Save config</button>
-              <p class="hb-muted" data-config-result style="margin:0;"></p>
-            </form>
-          </section>
-          <section class="hb-card">
-            <h2 style="margin-top:0;">Admin execution lock</h2>
-            <p class="hb-muted" style="margin:0.4rem 0 0.8rem;">
-              Status: ${adminStatus.configured ? (adminStatus.unlocked ? '<span class="hb-ok">Configured + unlocked</span>' : '<span class="hb-warn">Configured but locked</span>') : '<span class="hb-warn">Not configured</span>'}
-            </p>
-            ${adminStatus.unlocked && adminStatus.sessionExpiresAt ? `<p class="hb-muted" style="margin:0 0 0.8rem;">Session expires: ${window.HB.escapeHtml(window.HB.formatTimestamp(adminStatus.sessionExpiresAt))}</p>` : ''}
-            ${adminStatus.configured ? `
-              <div class="hb-grid hb-grid-2">
-                <form class="hb-form-grid" data-action="admin-unlock">
-                  <label class="hb-label">Passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="current-password"></label>
-                  <button class="hb-btn" type="submit">Unlock admin</button>
-                  <p class="hb-muted" data-result style="margin:0;"></p>
-                </form>
-                <form class="hb-form-grid" data-action="admin-lock">
-                  <p class="hb-muted" style="margin:0;">Lock the current admin session before leaving shared terminals.</p>
-                  <button class="hb-btn" type="submit">Lock admin</button>
-                  <p class="hb-muted" data-result style="margin:0;"></p>
-                </form>
-              </div>
-              <form class="hb-form-grid" data-action="admin-rotate" style="margin-top:0.85rem;">
-                <label class="hb-label">Current passphrase <input class="hb-input" name="currentPassphrase" type="password" autocomplete="current-password"></label>
-                <label class="hb-label">New passphrase <input class="hb-input" name="newPassphrase" type="password" autocomplete="new-password"></label>
-                <button class="hb-btn" type="submit">Rotate admin passphrase</button>
-                <p class="hb-muted" data-result style="margin:0;"></p>
-              </form>
-              <div style="margin-top:0.85rem;">
-                <h3 style="margin:0 0 0.45rem;">Recent destructive action audit</h3>
-                <div data-admin-audit>${adminStatus.unlocked ? '<p class="hb-muted" style="margin:0;">Loading audit history…</p>' : '<p class="hb-muted" style="margin:0;">Unlock admin to view audit history.</p>'}</div>
-              </div>
-            ` : `
-              <form class="hb-form-grid" data-action="admin-setup">
-                <label class="hb-label">Create admin passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="new-password"></label>
-                <button class="hb-btn" type="submit">Set admin passphrase</button>
-                <p class="hb-muted" data-result style="margin:0;"></p>
-              </form>
-            `}
-          </section>
-          <section class="hb-grid hb-grid-2">
-            <article class="hb-card">
-              <h2 style="margin-top:0;">Bootstrap / repair host</h2>
-              <form class="hb-form-grid" data-action="bootstrap-host">
-                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-                <button class="hb-btn" type="submit">Run bootstrap</button>
-                <p class="hb-muted" style="margin:0;">Use this to recover from failed auto-bootstrap jobs or re-apply host repair steps such as nginx/Tailscale prerequisites.</p>
-                <p class="hb-muted" data-result style="margin:0;"></p>
-              </form>
-            </article>
-            <article class="hb-card">
-              <h2 style="margin-top:0;">Install/enable Home Base service</h2>
-              <form class="hb-form-grid" data-action="install-self">
-                <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(config.port)}"></label>
-                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-                <button class="hb-btn" type="submit">Install/enable service</button>
-                <p class="hb-muted" style="margin:0;">When installed as a systemd service, Home Base can auto-start bootstrap on first service launch.</p>
-                <p class="hb-muted" data-result style="margin:0;"></p>
-              </form>
-            </article>
-          </section>
-          <section class="hb-grid hb-grid-2">
-            <article class="hb-card">
-              <h2 style="margin-top:0;">Update Home Base</h2>
-              <form class="hb-form-grid" data-action="update-self">
-                <label class="hb-label">Git ref <input class="hb-input" name="ref" value="main"></label>
-                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-                <button class="hb-btn" type="submit">Run Home Base update</button>
-                <p class="hb-muted" data-result style="margin:0;"></p>
-              </form>
-            </article>
-            <article class="hb-card">
-              <h2 style="margin-top:0;">Health alerts</h2>
-              <form class="hb-form-grid" data-action="test-alerts">
-                <p class="hb-muted" style="margin:0;">Send a test notification to confirm your configured alert target works before relying on automated critical alerts.</p>
-                <button class="hb-btn" type="submit">Send test alert</button>
-                <p class="hb-muted" data-result style="margin:0;"></p>
-              </form>
-            </article>
-          </section>
-          <section class="hb-card">
-            <h2 style="margin-top:0;">Preflight checks</h2>
-            ${renderChecks(preflight)}
-          </section>
-        </div>
-      `;
+      root.innerHTML = renderPage(config, status, preflight, adminStatus);
       wireEvents();
-      if (adminStatus.unlocked) {
+      if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');
         window.HB.getJson('/api/admin/audit?limit=10').then((payload) => {
           if (auditNode) auditNode.innerHTML = renderAdminAudit(payload.entries || []);
@@ -333,9 +423,10 @@
         });
       }
     } catch (error) {
+      const pageTitle = page === 'config' ? 'Config' : (page ? page.charAt(0).toUpperCase() + page.slice(1) : 'Control plane');
       root.innerHTML = `
         <section class="hb-card">
-          <h1 style="margin:0;">Settings</h1>
+          <h1 style="margin:0;">${window.HB.escapeHtml(pageTitle)}</h1>
           <p class="hb-muted" style="margin-top:0.5rem;">${window.HB.escapeHtml(error.message)}</p>
         </section>
       `;

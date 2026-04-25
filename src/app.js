@@ -52,6 +52,14 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload, null, 2));
 }
 
+function redirect(res, location, statusCode = 302) {
+  res.writeHead(statusCode, {
+    location,
+    'cache-control': 'no-store',
+  });
+  res.end();
+}
+
 function notFound(res) {
   sendJson(res, 404, { error: 'Not found' });
 }
@@ -306,7 +314,11 @@ function createApp(config) {
         if (normalizedPath === '/apps') return servePublicPage(res, 'apps.html');
         if (normalizedPath === '/jobs') return servePublicPage(res, 'jobs.html');
         if (normalizedPath === '/setup') return servePublicPage(res, 'setup.html');
-        if (normalizedPath === '/settings') return servePublicPage(res, 'settings.html');
+        if (normalizedPath === '/settings') return redirect(res, '/config');
+        if (normalizedPath === '/status') return servePublicPage(res, 'status.html');
+        if (normalizedPath === '/admin') return servePublicPage(res, 'admin.html');
+        if (normalizedPath === '/config') return servePublicPage(res, 'config.html');
+        if (normalizedPath === '/network') return servePublicPage(res, 'network.html');
         if (/^\/apps\/[^/]+$/.test(normalizedPath)) return servePublicPage(res, 'app.html');
         if (/^\/jobs\/\d+$/.test(normalizedPath)) return servePublicPage(res, 'job.html');
       }

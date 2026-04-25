@@ -4,8 +4,8 @@
   "description": "Productize the recommended private-access path so Homebase can plan, execute, verify, and repair Tailscale Serve publishing instead of relying on manual operator commands.",
   "timing": {
     "draftedOn": "2026-04-18",
-    "plannedEarliestExecution": "After Admin Auth and Destructive-Action Guardrails",
-    "gatingCondition": "Requires admin-protected execution and careful merge/ownership policy for existing Tailscale Serve config. Authentication via `tailscale up` may remain manual."
+    "plannedEarliestExecution": "After Admin Auth and the control-plane IA split",
+    "gatingCondition": "Requires admin-protected execution, captured real tailscale CLI fixtures, and a locked merge/ownership policy for existing Tailscale Serve config. Authentication via `tailscale up` may remain manual."
   },
   "principles": [
     "Sovereign Home should feel like a named service, not a host with ports",
@@ -78,9 +78,9 @@
   },
   "preFlightChecklist": [
     "Capture real `tailscale status --json` and `tailscale serve get-config --all` examples",
-    "Choose policy for existing Serve config: merge managed endpoints vs require explicit replace",
+    "Lock policy for existing Serve config: manage only Home Base-owned endpoints and refuse silent overwrite of unrelated Serve config",
     "Define whether Homebase stores a managed-service marker or derives state entirely from Serve config",
-    "Confirm UI placement: Settings vs Setup Wizard vs Dashboard card"
+    "Confirm Network page scaffold from Feature-3a is ready for publishing UI"
   ],
   "metrics": {
     "estimatedTotalLines": "+780/-50",
@@ -89,10 +89,13 @@
       "src/services/tailscale-publisher.js",
       "src/app.js",
       "src/services/job-runner.js",
-      "public/settings.js",
+      "public/network.js",
+      "public/network.html",
       "public/setup.js",
       "public/dashboard.js",
       "test/tailscale-publisher.test.js",
+      "test/fixtures/tailscale-status.json",
+      "test/fixtures/tailscale-serve-config.json",
       "planning/current-feature.json",
       "planning/progress.txt"
     ]

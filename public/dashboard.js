@@ -169,7 +169,7 @@
       const healthByAppId = healthPayload.byAppId || {};
       const catalogById = new Map((catalogPayload.apps || []).map((app) => [app.id, app]));
       const placeholderBanner = config.hostnameIsPlaceholder
-        ? '<p class="hb-warn" style="margin:0.4rem 0 0;">Hostname is still default (`homebase`). Update in Settings before wider deployment.</p>'
+        ? '<p class="hb-warn" style="margin:0.4rem 0 0;">Hostname is still default (`homebase`). Update in Config before wider deployment.</p>'
         : '';
 
       root.innerHTML = `

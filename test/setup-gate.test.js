@@ -9,7 +9,7 @@ const {
 test('normalizePathname strips trailing slash except root', () => {
   assert.equal(normalizePathname('/'), '/');
   assert.equal(normalizePathname('/apps/'), '/apps');
-  assert.equal(normalizePathname('/settings'), '/settings');
+  assert.equal(normalizePathname('/status'), '/status');
 });
 
 test('isOperationallyReady treats installed apps as ready', () => {
@@ -30,6 +30,7 @@ test('shouldRedirectToSetup only for bootstrap targets with critical failures an
   const state = { installations: {} };
   assert.equal(shouldRedirectToSetup({ pathname: '/', state, preflight }), true);
   assert.equal(shouldRedirectToSetup({ pathname: '/apps/', state, preflight }), true);
+  assert.equal(shouldRedirectToSetup({ pathname: '/status', state, preflight }), true);
   assert.equal(shouldRedirectToSetup({ pathname: '/setup', state, preflight }), false);
   assert.equal(shouldRedirectToSetup({ pathname: '/api/state', state, preflight }), false);
 });

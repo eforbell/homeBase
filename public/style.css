@@ -225,7 +225,7 @@ a:hover { text-decoration: underline; }
   right: 0;
   bottom: 0;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   border-top: 1px solid var(--border);
   background: rgba(11, 18, 32, 0.98);
   backdrop-filter: blur(4px);
@@ -245,6 +245,12 @@ a:hover { text-decoration: underline; }
 .hb-nav-link svg { width: 18px; height: 18px; }
 .hb-nav-link.is-active { color: var(--text); }
 .hb-app-bottom-bar .hb-nav-link.is-active { color: var(--accent); }
+.hb-nav-link--more {
+  background: transparent;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
 
 .hb-nav-wordmark {
   display: flex;
@@ -282,6 +288,60 @@ a:hover { text-decoration: underline; }
 }
 .hb-status-dot--yellow { background: var(--yellow); }
 .hb-status-dot--red { background: var(--red); }
+
+.hb-more-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.hb-more-sheet.hidden {
+  display: none;
+}
+.hb-more-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 6, 14, 0.5);
+}
+.hb-more-sheet-panel {
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: calc(4.8rem + env(safe-area-inset-bottom, 0px));
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 0.8rem;
+  background: rgba(11, 18, 32, 0.98);
+  box-shadow: 0 16px 36px rgba(3, 6, 14, 0.4);
+}
+.hb-more-sheet-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.2rem 0.2rem 0.75rem;
+}
+.hb-more-sheet-title {
+  font-weight: 700;
+}
+.hb-more-sheet-copy {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.hb-more-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--muted);
+  padding: 0.7rem 0.55rem;
+  border-radius: 12px;
+}
+.hb-more-sheet-item.is-active {
+  color: var(--text);
+  background: var(--accent-glow);
+}
+.hb-more-sheet-item svg {
+  width: 18px;
+  height: 18px;
+}
 
 @keyframes hb-dot-glow {
   0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
@@ -346,6 +406,9 @@ a:hover { text-decoration: underline; }
     padding-left: calc(0.65rem - 2px);
   }
   .hb-app-bottom-bar {
+    display: none;
+  }
+  .hb-more-sheet {
     display: none;
   }
   .hb-shell {

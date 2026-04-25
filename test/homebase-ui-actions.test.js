@@ -11,8 +11,9 @@ function readPublicFile(fileName) {
   return fs.readFileSync(path.join(__dirname, '..', 'public', fileName), 'utf8');
 }
 
-test('settings UI exposes bootstrap and update-self actions without window.prompt', () => {
+test('control-plane UI keeps operational actions available after the settings split', () => {
   const source = readPublicScript('settings.js');
+  const nav = readPublicScript('nav.js');
 
   assert.match(source, /data-action="bootstrap-host"/);
   assert.match(source, /data-action="test-alerts"/);
@@ -26,6 +27,9 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   assert.match(source, /Rotate admin passphrase/);
   assert.match(source, /Recent destructive action audit/);
   assert.match(source, /Admin execution lock/);
+  assert.match(source, /Home Base configuration/);
+  assert.match(source, /Tailscale publishing/);
+  assert.match(source, /Feature-4 will land here/);
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.match(source, /Update Home Base/);
   assert.match(source, /Run Home Base update/);
@@ -36,9 +40,17 @@ test('settings UI exposes bootstrap and update-self actions without window.promp
   assert.match(source, /This page will refresh when it finishes/);
   assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /payload\.confirm = 'EXECUTE'/);
+
+  assert.match(nav, /\/status/);
+  assert.match(nav, /\/network/);
+  assert.match(nav, /\/admin/);
+  assert.match(nav, /\/config/);
+  assert.match(nav, /hb-more-sheet/);
+  assert.match(nav, /hb-more-nav-btn/);
+  assert.match(nav, /Base/);
 });
 
-test('settings responsive styles contain table overflow and mobile-safe grid constraints', () => {
+test('control-plane responsive styles contain table overflow, mobile-safe grids, and more-sheet support', () => {
   const style = readPublicFile('style.css');
 
   assert.match(style, /\.hb-table-wrap \{/);
@@ -47,6 +59,8 @@ test('settings responsive styles contain table overflow and mobile-safe grid con
   assert.match(style, /\.hb-card \{[\s\S]*min-width: 0;/);
   assert.match(style, /\.hb-stack > \*, \.hb-grid > \*, \.hb-form-grid > \*, \.hb-label \{ min-width: 0; \}/);
   assert.match(style, /\.hb-input, \.hb-select \{[\s\S]*width: 100%;/);
+  assert.match(style, /\.hb-more-sheet \{/);
+  assert.match(style, /\.hb-nav-link--more/);
 });
 
 test('failed jobs expose rerun actions for supported job types on job detail', () => {
@@ -69,17 +83,17 @@ test('failed jobs expose rerun actions for supported job types on job detail', (
 test('installed app cards expose operations and backup posture', () => {
   const apps = readPublicScript('apps.js');
 
-  assert.match(apps, /Details/);
-  assert.match(apps, /Backup…/);
-  assert.match(apps, /Restore…/);
-  assert.match(apps, /Uninstall…/);
+  assert.match(apps, /title="View details"/);
+  assert.match(apps, /title="Backup"/);
+  assert.match(apps, /title="Restore"/);
+  assert.match(apps, /title="Uninstall"/);
   assert.match(apps, /#uninstall/);
   assert.match(apps, /Git ref/);
   assert.match(apps, /\/api\/apps\/health/);
   assert.match(apps, /runtimeStatusPill/);
   assert.match(apps, /window\.HB\.backupSummary/);
   assert.match(apps, /window\.HB\.localOnlyBackupNote/);
-  assert.match(apps, /View health details/);
+  assert.match(apps, /Inspect →/);
   assert.match(apps, /Setup ↗/);
   assert.match(apps, /payload\.ref = ref/);
   assert.match(apps, /activeJobs/);
@@ -110,7 +124,8 @@ test('dashboard surfaces local-only backup posture warning', () => {
   assert.match(dashboard, /renderHostWarnings/);
   assert.match(dashboard, /needs-setup/);
   assert.match(dashboard, /\/api\/apps\/health/);
-  assert.match(dashboard, /Inspect app health/);
+  assert.match(dashboard, /Inspect →/);
+  assert.match(dashboard, /Update in Config before wider deployment/);
 });
 
 test('shared API exposes backup summary helpers', () => {

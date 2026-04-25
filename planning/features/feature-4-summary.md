@@ -16,7 +16,7 @@ Tailscale is what makes Sovereign Home deployable for real households without pu
 
 ## Recommended UX
 
-- Present this as `Publish Sovereign Home on your tailnet`.
+- Present this on the dedicated Network page as `Publish Sovereign Home on your tailnet`.
 - Preview exactly what will be changed.
 - Preserve advanced/manual mode for existing Serve users.
 - Show final copyable URLs.
