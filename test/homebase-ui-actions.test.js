@@ -29,7 +29,9 @@ test('control-plane UI keeps operational actions available after the settings sp
   assert.match(source, /Admin execution lock/);
   assert.match(source, /Home Base configuration/);
   assert.match(source, /Tailscale publishing/);
-  assert.match(source, /Feature-4 will land here/);
+  assert.match(source, /Tailscale readiness/);
+  assert.match(source, /\/api\/network\/tailscale/);
+  assert.match(source, /readiness\.label/);
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.match(source, /Update Home Base/);
   assert.match(source, /Run Home Base update/);

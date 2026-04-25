@@ -356,23 +356,48 @@
     `;
   }
 
-  function renderNetworkPage(config, preflight) {
+  function renderNetworkPage(config, preflight, tailscale = null) {
     const host = `${config.hostname}.${config.domain}`;
+    const readiness = tailscale?.readiness || {};
+    const status = tailscale?.status || {};
+    const serve = tailscale?.serve || {};
+    const readinessClass = readiness.state === 'published'
+      ? 'hb-ok'
+      : (readiness.state === 'authenticated-unpublished' ? 'hb-warn' : 'hb-err');
+
+    const serviceRows = Array.isArray(serve.services) ? serve.services : [];
+    const serviceList = serviceRows.length
+      ? `<ul class="hb-stack" style="list-style:none;padding:0;margin:0;">${serviceRows.map((service) => `<li class="hb-row"><strong>${window.HB.escapeHtml(service.id)}</strong><span class="hb-muted">${window.HB.escapeHtml((service.endpointCount || 0) + ' endpoint(s)')}</span></li>`).join('')}</ul>`
+      : '<p class="hb-muted" style="margin:0;">No Tailscale Serve services reported yet.</p>';
+
     return `
       <div class="hb-stack">
         ${renderOverviewCard({
           title: 'Network',
-          description: 'Tailnet reachability and the future home of Tailscale publishing automation.',
+          description: 'Tailnet reachability and managed Tailscale publishing readiness.',
           statusLine: `Current intended host: ${host}`,
         })}
         <section class="hb-card">
-          <h2 style="margin-top:0;">Tailscale publishing</h2>
-          <p class="hb-muted" style="margin:0;">Feature-4 will land here. The goal is to detect Tailscale readiness, preview the managed Serve topology, and repair Home Base-owned publishing without crowding Config.</p>
-          <ul class="hb-stack" style="margin:0.8rem 0 0 1rem;padding:0;">
-            <li>Show current tailnet identity and Serve status.</li>
-            <li>Preview <code>tailscale serve</code> changes before execution.</li>
-            <li>Refuse silent overwrite of unrelated Serve config.</li>
-          </ul>
+          <h2 style="margin-top:0;">Tailscale readiness</h2>
+          ${tailscale?.error ? `<p class="hb-err" style="margin:0;">${window.HB.escapeHtml(tailscale.error)}</p>` : `
+            <p style="margin:0;"><span class="${readinessClass}">${window.HB.escapeHtml(readiness.label || 'Unknown')}</span></p>
+            <p class="hb-muted" style="margin:0.45rem 0 0;">${window.HB.escapeHtml(readiness.summary || 'Unable to determine readiness state.')}</p>
+            <ul class="hb-stack" style="list-style:none;padding:0;margin:0.8rem 0 0;">
+              <li class="hb-row"><strong>Installed</strong><span>${tailscale?.installed?.ok ? '<span class="hb-ok">yes</span>' : '<span class="hb-err">no</span>'}</span></li>
+              <li class="hb-row"><strong>Backend state</strong><span>${window.HB.escapeHtml(status.backendState || 'unknown')}</span></li>
+              <li class="hb-row"><strong>Authenticated</strong><span>${status.authenticated ? '<span class="hb-ok">yes</span>' : '<span class="hb-warn">no</span>'}</span></li>
+              <li class="hb-row"><strong>Daemon running</strong><span>${status.daemonRunning ? '<span class="hb-ok">yes</span>' : '<span class="hb-warn">no</span>'}</span></li>
+              <li class="hb-row"><strong>Node</strong><span class="hb-muted">${window.HB.escapeHtml(status.nodeName || 'n/a')}</span></li>
+              <li class="hb-row"><strong>MagicDNS</strong><span class="hb-muted">${window.HB.escapeHtml(status.dnsName || 'n/a')}</span></li>
+              <li class="hb-row"><strong>Tailnet</strong><span class="hb-muted">${window.HB.escapeHtml(status.tailnetName || 'n/a')}</span></li>
+              <li class="hb-row"><strong>Serve services</strong><span>${window.HB.escapeHtml(String(serve.serviceCount || 0))}</span></li>
+            </ul>
+          `}
+        </section>
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Current Serve summary</h2>
+          ${serve.error ? `<p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(serve.error)}</p>` : serviceList}
+          ${serve.tcp443Owners?.length ? `<p class="hb-muted" style="margin:0.7rem 0 0;">tcp:443 owners: ${window.HB.escapeHtml(serve.tcp443Owners.join(', '))}</p>` : ''}
         </section>
         <section class="hb-card">
           <h2 style="margin-top:0;">Publishing prerequisites</h2>
@@ -396,23 +421,26 @@
     `;
   }
 
-  function renderPage(config, status, preflight, adminStatus) {
+  function renderPage(config, status, preflight, adminStatus, tailscale) {
     if (page === 'status') return renderStatusPage(config, status, preflight);
     if (page === 'admin') return renderAdminPage(adminStatus);
-    if (page === 'network') return renderNetworkPage(config, preflight);
+    if (page === 'network') return renderNetworkPage(config, preflight, tailscale);
     if (page === 'settings') return renderLegacySettingsPage();
     return renderConfigPage(config, status);
   }
 
   async function load() {
     try {
-      const [config, status, preflight, adminStatus] = await Promise.all([
+      const [config, status, preflight, adminStatus, tailscale] = await Promise.all([
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/homebase/status'),
         window.HB.getJson('/api/preflight'),
         window.HB.getJson('/api/admin/status'),
+        page === 'network'
+          ? window.HB.getJson('/api/network/tailscale').catch((error) => ({ error: error.message }))
+          : Promise.resolve(null),
       ]);
-      root.innerHTML = renderPage(config, status, preflight, adminStatus);
+      root.innerHTML = renderPage(config, status, preflight, adminStatus, tailscale);
       wireEvents();
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');

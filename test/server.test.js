@@ -1425,3 +1425,30 @@ test('restore execute dry-run creates a completed restore job', async () => {
     await server.close();
   }
 });
+
+test('network tailscale endpoint returns structured readiness payload', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-network-ts-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/network/tailscale`);
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(typeof payload.generatedAt, 'string');
+    assert.equal(typeof payload.installed?.ok, 'boolean');
+    assert.equal(typeof payload.readiness?.state, 'string');
+    assert.equal(['not-installed', 'not-authenticated', 'authenticated-unpublished', 'published'].includes(payload.readiness.state), true);
+  } finally {
+    await server.close();
+  }
+});

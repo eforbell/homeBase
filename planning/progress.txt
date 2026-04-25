@@ -169,3 +169,20 @@
 - Anonymized Tailscale fixture payloads to remove private tailnet/domain/host identifiers while preserving parser-relevant structure.
 - Added Linux `BackendState: Stopped` status snapshot fixture from user-provided daemon-off capture (`status-snapshot-sh-test-clean-stopped.json`).
 - Expanded Phase-A tests to lock stopped-backend readiness mapping in addition to existing NeedsLogin/logged-out paths.
+
+2026-04-25 (Feature-4 TS-001 implementation pass)
+- Added `src/services/tailscale-readiness.js` and `/api/network/tailscale` to detect and summarize:
+  - Tailscale installed status,
+  - backend/auth posture (`NeedsLogin`, `Stopped`, `Running`),
+  - node + tailnet identity details,
+  - current `tailscale serve get-config --all` service summary.
+- Implemented explicit readiness state mapping used by Network page:
+  - `not-installed`,
+  - `not-authenticated`,
+  - `authenticated-unpublished`,
+  - `published`.
+- Upgraded Network UI to show real readiness summary and current Serve ownership overview (including `tcp:443` owners).
+- Added regression coverage:
+  - `test/tailscale-readiness.test.js` for readiness mapping across real fixture cases,
+  - `test/server.test.js` endpoint contract check for `/api/network/tailscale`.
+- Verification: `npm test` passed (105/105).

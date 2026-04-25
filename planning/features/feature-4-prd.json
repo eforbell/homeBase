@@ -33,7 +33,12 @@
       "priority": 1,
       "estimatedLines": "+220/-10",
       "testStrategy": "Unit tests around parser/status mapping plus VM check with authenticated and unauthenticated states",
-      "passes": false
+      "passes": true,
+      "implementationNotes": [
+        "Added `/api/network/tailscale` readiness endpoint with installed/authenticated/daemon/serve-state summary.",
+        "Network page now renders Tailscale readiness state, identity summary, and Serve service overview.",
+        "Readiness states currently mapped to: not-installed, not-authenticated, authenticated-unpublished, published."
+      ]
     },
     {
       "id": "TS-002",

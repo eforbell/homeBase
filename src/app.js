@@ -15,6 +15,7 @@ const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planne
 const { buildHomeBaseUpdatePlan } = require('./services/homebase-update-planner');
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
+const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const {
   mergeHomeBaseConfig,
   toClientHomeBaseConfig,
@@ -262,6 +263,10 @@ function createApp(config) {
     expiresAt: 0,
     value: null,
   };
+  const tailscaleReadinessCache = {
+    expiresAt: 0,
+    value: null,
+  };
   const validationErrors = catalog.flatMap((entry) =>
     validateManifestEntry(entry).map((error) => `${entry.id}: ${error}`)
   );
@@ -281,6 +286,17 @@ function createApp(config) {
   const healthAlertNotifier = new HealthAlertNotifier({
     postJson: config.notificationsPostJson,
   });
+
+  function getTailscaleReadiness({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && tailscaleReadinessCache.value && tailscaleReadinessCache.expiresAt > now) {
+      return tailscaleReadinessCache.value;
+    }
+    const value = getTailscalePublishingReadiness();
+    tailscaleReadinessCache.value = value;
+    tailscaleReadinessCache.expiresAt = now + 15_000;
+    return value;
+  }
 
   function getPreflight(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
@@ -350,6 +366,11 @@ function createApp(config) {
       }
       if (method === 'GET' && pathname === '/api/preflight') {
         return sendJson(res, 200, getPreflight(effectiveConfig, {
+          force: url.searchParams.get('refresh') === '1',
+        }));
+      }
+      if (method === 'GET' && pathname === '/api/network/tailscale') {
+        return sendJson(res, 200, getTailscaleReadiness({
           force: url.searchParams.get('refresh') === '1',
         }));
       }
