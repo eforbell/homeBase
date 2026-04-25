@@ -47,7 +47,9 @@
 
   function statusBadge(status) {
     const safe = escapeHtml(status || 'unknown');
-    return `<span class="hb-badge">${safe}</span>`;
+    const colorVar = { completed: '--green', failed: '--red', running: '--yellow', queued: '--yellow' }[status];
+    const style = colorVar ? ` style="color:var(${colorVar})"` : '';
+    return `<span class="hb-badge"${style}>${safe}</span>`;
   }
 
   function latestBackup(backups) {
