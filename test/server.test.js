@@ -140,6 +140,35 @@ test('home page route serves static dashboard shell and state still carries exte
   }
 });
 
+test('control-plane routes serve their page shells and legacy /settings redirects to /config', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-control-plane-pages-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    for (const route of ['/status', '/admin', '/config', '/network']) {
+      const res = await fetch(`${server.url}${route}`);
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get('content-type') || '', /text\/html/);
+    }
+
+    const redirectRes = await fetch(`${server.url}/settings`, { redirect: 'manual' });
+    assert.equal(redirectRes.status, 302);
+    assert.equal(redirectRes.headers.get('location'), '/config');
+  } finally {
+    await server.close();
+  }
+});
+
 test('homebase runtime plan endpoint returns service-install scaffolding', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-runtime-plan-'));
   const server = await startServer({

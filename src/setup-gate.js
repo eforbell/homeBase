@@ -1,4 +1,4 @@
-const PAGE_BOOTSTRAP_TARGETS = new Set(['/', '/apps', '/jobs', '/settings']);
+const PAGE_BOOTSTRAP_TARGETS = new Set(['/', '/apps', '/jobs', '/status']);
 
 function normalizePathname(pathname) {
   if (!pathname || pathname === '/') return '/';

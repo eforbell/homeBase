@@ -1,0 +1,106 @@
+{
+  "branchName": "feature/control-plane-nav-ia-split",
+  "projectName": "Control Plane Navigation and Settings IA Split",
+  "description": "Uncrowd the current Settings junk-drawer by reorganizing Home Base into clearer control-plane areas before adding Tailscale publishing. Preserve recent UI polish, keep backend behavior stable, and create a dedicated Network home for Feature-4.",
+  "timing": {
+    "draftedOn": "2026-04-25",
+    "plannedEarliestExecution": "Immediately before Feature-4",
+    "gatingCondition": "Should land before Tailscale publishing UI so Feature-4 does not re-concentrate operational controls into the current Settings page."
+  },
+  "principles": [
+    "Home Base is itself a control plane and should organize operational surfaces by function, not hide everything under Settings",
+    "Preserve recent UI cleanup and avoid re-mucking the app with another catch-all page",
+    "Prefer route and section extraction over backend redesign",
+    "Fix stale baseline tests before stacking more UI work",
+    "Give Network a dedicated landing zone before Tailscale publishing ships"
+  ],
+  "techStack": {
+    "language": "Node.js + vanilla browser JavaScript",
+    "runtime": "existing static page routing via raw http.createServer",
+    "storage": "No new data model required; reuse current config/admin/preflight/runtime endpoints",
+    "testing": "node --test UI assertions, route tests, manual browser/mobile-nav verification"
+  },
+  "userStories": [
+    {
+      "id": "IA-001",
+      "title": "Operational controls are split into functional pages",
+      "acceptanceCriteria": [
+        "Status page owns preflight checks, Home Base runtime/systemd status, and bootstrap/repair host entry points",
+        "Admin page owns execution lock, unlock/lock/rotate controls, and destructive-action audit",
+        "Config page owns hostname/domain, git transport, alert configuration, and Home Base self-update controls",
+        "Network page exists as a first-class route and placeholder home for Tailscale publishing work",
+        "Legacy /settings either redirects cleanly to /config or becomes an intentionally minimal handoff page"
+      ],
+      "priority": 1,
+      "estimatedLines": "+280/-180",
+      "testStrategy": "Route/UI source assertions plus manual browser pass across desktop and phone-width layouts",
+      "passes": false
+    },
+    {
+      "id": "IA-002",
+      "title": "Navigation scales for a larger control-plane surface",
+      "acceptanceCriteria": [
+        "Desktop nav includes Status, Admin, Config, and Network with clear labels",
+        "Mobile bottom nav keeps the primary four surfaces and moves overflow pages into a More sheet pattern",
+        "Active-page highlighting works for both direct items and More-sheet items",
+        "The nav change preserves current app/dashboard/jobs flows and recent visual polish"
+      ],
+      "priority": 2,
+      "estimatedLines": "+180/-60",
+      "testStrategy": "UI source assertions plus manual mobile-nav verification modeled on the Family Pulse overflow pattern",
+      "passes": false
+    },
+    {
+      "id": "IA-003",
+      "title": "Baseline UI tests are green before Feature-4 begins",
+      "acceptanceCriteria": [
+        "The three currently red baseline tests are updated or corrected so Home Base starts this slice green",
+        "Copy/selector assertions match the intended post-split UI labels rather than stale wording",
+        "No new failing baseline tests are introduced by the route split"
+      ],
+      "priority": 3,
+      "estimatedLines": "+60/-30",
+      "testStrategy": "Run `npm test` to green after the navigation/page split",
+      "passes": false
+    }
+  ],
+  "riskAssessment": {
+    "high": [],
+    "medium": [
+      "Route churn can create broken links or nav-state regressions if redirects are inconsistent",
+      "A too-ambitious redesign could sprawl past the intended pre-slice and delay Feature-4"
+    ],
+    "low": [
+      "Most work is extraction/reorganization of existing UI sections rather than new backend capability"
+    ]
+  },
+  "preFlightChecklist": [
+    "Choose exact /settings migration behavior: redirect to /config vs slim handoff page",
+    "Decide primary mobile nav four: Dashboard, Apps, Jobs, Status",
+    "Confirm Network page can initially ship as a thin scaffold before Tailscale functionality lands",
+    "Inventory any hard-coded /settings links so the split does not leave dead routes"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+520/-270",
+    "storiesCount": 3,
+    "filesLikelyModified": [
+      "public/nav.js",
+      "public/settings.js",
+      "public/settings.html",
+      "public/style.css",
+      "public/status.html",
+      "public/status.js",
+      "public/admin.html",
+      "public/admin.js",
+      "public/config.html",
+      "public/config.js",
+      "public/network.html",
+      "public/network.js",
+      "src/app.js",
+      "test/homebase-ui-actions.test.js",
+      "test/server.test.js",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}
