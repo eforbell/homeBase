@@ -92,3 +92,25 @@ test('publish plan is blocked when serve config cannot be read', () => {
   assert.equal(plan.blockedReason, 'serve-config-unavailable');
   assert.match(plan.summary, /cannot plan publish changes/i);
 });
+
+
+test('publish plan honors configurable managed service id', () => {
+  const plan = buildTailscalePublishPlan({
+    managedServiceId: 'svc:test',
+    serveResult: {
+      command: 'tailscale serve get-config --all',
+      ok: true,
+      exitCode: 0,
+      stdout: JSON.stringify({ version: '0.0.1', services: { 'svc:test': { endpoints: { 'tcp:3080': 'http://127.0.0.1:3080', 'tcp:443': 'https+insecure://localhost:443' } } } }),
+      stderr: '',
+    },
+    readiness: { readiness: { state: 'published' } },
+    hostname: 'test',
+    domain: 'tailnet',
+  });
+
+  assert.equal(plan.policy.managedServiceId, 'svc:test');
+  assert.equal(plan.canExecute, true);
+  assert.equal(plan.requiresChanges, false);
+  assert.equal(plan.current.homeServicePresent, true);
+});

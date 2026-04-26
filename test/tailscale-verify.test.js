@@ -96,3 +96,31 @@ test('verify returns copyable recommended urls for current hostname/domain', () 
   assert.equal(payload.recommendedUrls.homebase, 'https://hb.tailnet:3080');
   assert.equal(payload.recommendedUrls.appsBase, 'https://hb.tailnet');
 });
+
+
+test('verify uses configurable managed service id in checks', () => {
+  const payload = getTailscalePublishVerification({
+    hostname: 'hb',
+    domain: 'tailnet',
+    managedServiceId: 'svc:test',
+    run: fakeRunner({
+      listen443: true,
+      serveConfig: {
+        version: '0.0.1',
+        services: {
+          'svc:test': {
+            endpoints: {
+              'tcp:3080': 'http://127.0.0.1:3080',
+              'tcp:443': 'https+insecure://localhost:443',
+            },
+          },
+        },
+      },
+    }),
+  });
+
+  assert.equal(payload.managedServiceId, 'svc:test');
+  const serveCheck = payload.checks.find((c) => c.id === 'serve-home-endpoints');
+  assert.match(serveCheck.title, /svc:test/);
+  assert.equal(serveCheck.ok, true);
+});

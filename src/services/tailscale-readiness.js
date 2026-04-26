@@ -1,4 +1,9 @@
 const { spawnSync } = require('child_process');
+const {
+  DEFAULT_MANAGED_SERVICE_ID,
+  REQUIRED_MANAGED_ENDPOINTS,
+  normalizeManagedServiceId,
+} = require('./tailscale-policy');
 
 const NOT_AUTHENTICATED_BACKEND_STATES = new Set(['NeedsLogin', 'NeedsMachineAuth', 'NoState']);
 
@@ -44,7 +49,9 @@ function normalizeStatusPayload(raw = {}) {
   return raw || {};
 }
 
-function summarizeServePayload(payload) {
+function summarizeServePayload(payload, { managedServiceId = DEFAULT_MANAGED_SERVICE_ID } = {}) {
+  const normalizedManagedServiceId = normalizeManagedServiceId(managedServiceId);
+  const desiredEndpoints = { ...REQUIRED_MANAGED_ENDPOINTS };
   const services = payload && typeof payload === 'object' ? (payload.services || {}) : {};
   const serviceEntries = Object.entries(services).map(([id, value]) => {
     const endpoints = value && typeof value === 'object' ? (value.endpoints || {}) : {};
@@ -55,21 +62,27 @@ function summarizeServePayload(payload) {
     };
   });
 
-  const home = services['svc:home'] || {};
-  const homeEndpoints = home.endpoints && typeof home.endpoints === 'object' ? home.endpoints : {};
+  const managedService = services[normalizedManagedServiceId] || {};
+  const managedEndpoints = managedService.endpoints && typeof managedService.endpoints === 'object' ? managedService.endpoints : {};
   const tcp443Owners = serviceEntries
     .filter((entry) => Object.prototype.hasOwnProperty.call(entry.endpoints || {}, 'tcp:443'))
     .map((entry) => entry.id);
 
+  const managedRecommendedReady = Object.entries(desiredEndpoints)
+    .every(([endpoint, target]) => managedEndpoints[endpoint] === target);
+
   return {
     serviceCount: serviceEntries.length,
     services: serviceEntries,
-    managedHomeServicePresent: Boolean(services['svc:home']),
-    managedHomeEndpoints: homeEndpoints,
-    homeRecommendedReady:
-      homeEndpoints['tcp:3080'] === 'http://127.0.0.1:3080'
-      && homeEndpoints['tcp:443'] === 'https+insecure://localhost:443',
+    managedServiceId: normalizedManagedServiceId,
+    managedServicePresent: Boolean(services[normalizedManagedServiceId]),
+    managedServiceEndpoints: managedEndpoints,
+    managedRecommendedReady,
     tcp443Owners,
+    // Backward compatibility aliases
+    managedHomeServicePresent: Boolean(services[normalizedManagedServiceId]),
+    managedHomeEndpoints: managedEndpoints,
+    homeRecommendedReady: managedRecommendedReady,
   };
 }
 
@@ -92,11 +105,11 @@ function deriveReadiness({ installed, statusSummary, serveSummary }) {
     };
   }
 
-  if (!serveSummary.homeRecommendedReady) {
+  if (!serveSummary.managedRecommendedReady) {
     return {
       state: 'authenticated-unpublished',
       label: 'Authenticated, unpublished',
-      summary: 'Tailscale is authenticated, but Home Base publishing is not fully configured yet.',
+      summary: `Tailscale is authenticated, but managed service ${serveSummary.managedServiceId || DEFAULT_MANAGED_SERVICE_ID} is not fully configured yet.`,
       blockers: ['homebase-serve-missing-or-stale'],
     };
   }
@@ -104,7 +117,7 @@ function deriveReadiness({ installed, statusSummary, serveSummary }) {
   return {
     state: 'published',
     label: 'Published',
-    summary: 'Home Base managed publishing endpoints are present.',
+    summary: 'Managed publishing endpoints are present.',
     blockers: [],
   };
 }
@@ -112,7 +125,9 @@ function deriveReadiness({ installed, statusSummary, serveSummary }) {
 function buildTailscaleReadinessFromResults({
   commandResults,
   generatedAt = new Date().toISOString(),
+  managedServiceId = DEFAULT_MANAGED_SERVICE_ID,
 } = {}) {
+  const normalizedManagedServiceId = normalizeManagedServiceId(managedServiceId);
   const commandMap = commandResults || {};
   const installProbe = commandMap.installProbe || { command: 'command -v tailscale', ok: false, exitCode: 1, stdout: '', stderr: '' };
   const installed = installProbe.ok;
@@ -123,6 +138,7 @@ function buildTailscaleReadinessFromResults({
 
   const response = {
     generatedAt,
+    managedServiceId: normalizedManagedServiceId,
     installed: {
       ok: installed,
       command: installProbe.command,
@@ -170,20 +186,12 @@ function buildTailscaleReadinessFromResults({
     healthCount: Number(statusPayload.HealthCount || (Array.isArray(statusPayload.Health) ? statusPayload.Health.length : 0) || 0),
   };
 
-  let serveSummary = {
-    serviceCount: 0,
-    services: [],
-    managedHomeServicePresent: false,
-    managedHomeEndpoints: {},
-    homeRecommendedReady: false,
-    tcp443Owners: [],
-  };
-
+  let serveSummary = summarizeServePayload({}, { managedServiceId: normalizedManagedServiceId });
   let serveParseError = null;
   if (serveRaw?.ok) {
     const parsedServe = parseJson(serveRaw.stdout);
     if (parsedServe.ok) {
-      serveSummary = summarizeServePayload(parsedServe.value);
+      serveSummary = summarizeServePayload(parsedServe.value, { managedServiceId: normalizedManagedServiceId });
     } else {
       serveParseError = parsedServe.error;
     }
@@ -212,18 +220,19 @@ function buildTailscaleReadinessFromResults({
   return response;
 }
 
-function getTailscalePublishingReadiness({ run = runCommand } = {}) {
+function getTailscalePublishingReadiness({ run = runCommand, managedServiceId = DEFAULT_MANAGED_SERVICE_ID } = {}) {
+  const normalizedManagedServiceId = normalizeManagedServiceId(managedServiceId);
   const commandResults = {};
   commandResults.installProbe = run('command -v tailscale');
 
   if (!commandResults.installProbe.ok) {
-    return buildTailscaleReadinessFromResults({ commandResults });
+    return buildTailscaleReadinessFromResults({ commandResults, managedServiceId: normalizedManagedServiceId });
   }
 
   commandResults.version = run('tailscale version');
   commandResults.status = run('tailscale status --json');
   commandResults.serve = run('tailscale serve get-config --all');
-  return buildTailscaleReadinessFromResults({ commandResults });
+  return buildTailscaleReadinessFromResults({ commandResults, managedServiceId: normalizedManagedServiceId });
 }
 
 module.exports = {

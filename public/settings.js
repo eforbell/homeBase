@@ -52,6 +52,7 @@
       gitSshKeyPath: form.elements.gitSshKeyPath.value.trim(),
       healthAlertsEnabled: form.elements.healthAlertsEnabled.checked,
       healthAlertsWebhookUrl: form.elements.healthAlertsWebhookUrl.value.trim(),
+      tailscaleManagedServiceId: form.elements.tailscaleManagedServiceId.value.trim(),
     };
     result.textContent = 'Saving...';
     try {
@@ -313,7 +314,7 @@
         ${renderOverviewCard({
           title: 'Config',
           description: 'Home Base identity, update posture, and alert preferences.',
-          statusLine: `Current host: ${config.hostname}.${config.domain} · systemd: ${status.systemd?.active || 'unknown'}`,
+          statusLine: `Current host: ${config.hostname}.${config.domain} · service ID: ${config.tailscaleManagedServiceId || 'svc:home'} · systemd: ${status.systemd?.active || 'unknown'}`,
         })}
         <section class="hb-card">
           <h2 style="margin-top:0;">Home Base configuration</h2>
@@ -337,6 +338,9 @@
             </label>
             <label class="hb-label">Health alert webhook URL
               <input class="hb-input" name="healthAlertsWebhookUrl" placeholder="https://..." value="${window.HB.escapeHtml(config.healthAlertsWebhookUrl || '')}">
+            </label>
+            <label class="hb-label">Managed Tailscale service ID
+              <input class="hb-input" name="tailscaleManagedServiceId" placeholder="svc:home" value="${window.HB.escapeHtml(config.tailscaleManagedServiceId || 'svc:home')}">
             </label>
             <button class="hb-btn hb-btn-primary" type="submit">Save config</button>
             <p class="hb-muted" data-config-result style="margin:0;"></p>
@@ -412,6 +416,7 @@
     const readiness = tailscale?.readiness || {};
     const status = tailscale?.status || {};
     const serve = tailscale?.serve || {};
+    const managedServiceId = publishPlan?.policy?.managedServiceId || tailscale?.managedServiceId || serve?.managedServiceId || verification?.managedServiceId || 'svc:home';
     const readinessClass = readiness.state === 'published'
       ? 'hb-ok'
       : (readiness.state === 'authenticated-unpublished' ? 'hb-warn' : 'hb-err');
@@ -451,12 +456,12 @@
           ${serve.tcp443Owners?.length ? `<p class="hb-muted" style="margin:0.7rem 0 0;">tcp:443 owners: ${window.HB.escapeHtml(serve.tcp443Owners.join(', '))}</p>` : ''}
         </section>
         <section class="hb-card">
-          <h2 style="margin-top:0;">Managed publish plan (svc:home)</h2>
+          <h2 style="margin-top:0;">Managed publish plan (${window.HB.escapeHtml(managedServiceId)})</h2>
           ${renderPublishPlanSummary(publishPlan)}
           <form class="hb-form-grid" data-action="tailscale-publish-execute" style="margin-top:0.85rem;">
             <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
             <button class="hb-btn" type="submit">Apply managed publish plan</button>
-            <p class="hb-muted" style="margin:0;">Real execution requires Admin unlock and will refuse endpoint ownership conflicts by policy.</p>
+            <p class="hb-muted" style="margin:0;">Real execution requires Admin unlock and will refuse endpoint ownership conflicts by policy for ${window.HB.escapeHtml(managedServiceId)}.</p>
             <p class="hb-muted" data-result style="margin:0;"></p>
           </form>
         </section>

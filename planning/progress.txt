@@ -215,3 +215,11 @@
   - `test/tailscale-verify.test.js` (verification logic),
   - `test/server.test.js` stale verification endpoint behavior.
 - Verification: `npm test` passed (118/118).
+
+2026-04-26 (Feature-4 follow-up: configurable managed service ID + verify runner fix)
+- Fixed `/api/network/tailscale/verify` runner fallback bug so nginx tcp:443 check now uses the same command runner path as other network probes.
+- Added configurable managed Tailscale service ID (`tailscaleManagedServiceId`, default `svc:home`) to Home Base config.
+- Wired managed service ID through readiness, publish-plan, execute, and verification lanes so non-`svc:home` tailnets (for example `svc:test`) can be policy-compliant.
+- Added config persistence/migration support for `tailscale_managed_service_id` in sqlite state storage.
+- Added regression coverage for configurable service IDs in readiness/publisher/verify logic and server config API behavior.
+- Verification: `npm test` passed (121/121).

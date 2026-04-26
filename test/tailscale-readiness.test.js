@@ -130,3 +130,36 @@ test('readiness maps to not-installed when tailscale cli is missing', () => {
   assert.equal(readiness.status, null);
   assert.equal(readiness.serve, null);
 });
+
+
+test('readiness supports configurable managed service id', () => {
+  const readiness = buildTailscaleReadinessFromResults({
+    managedServiceId: 'svc:test',
+    commandResults: {
+      installProbe: installProbe(true),
+      version: versionResult(),
+      status: statusResult('status-snapshot-erebor.json'),
+      serve: {
+        command: 'tailscale serve get-config --all',
+        ok: true,
+        exitCode: 0,
+        stdout: JSON.stringify({
+          version: '0.0.1',
+          services: {
+            'svc:test': {
+              endpoints: {
+                'tcp:3080': 'http://127.0.0.1:3080',
+                'tcp:443': 'https+insecure://localhost:443',
+              },
+            },
+          },
+        }),
+        stderr: '',
+      },
+    },
+  });
+
+  assert.equal(readiness.managedServiceId, 'svc:test');
+  assert.equal(readiness.serve.managedServicePresent, true);
+  assert.equal(readiness.readiness.state, 'published');
+});

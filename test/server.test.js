@@ -399,6 +399,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(before.gitTransport, 'https');
     assert.equal(before.healthAlertsEnabled, false);
     assert.equal(before.healthAlertsWebhookUrl, '');
+    assert.equal(before.tailscaleManagedServiceId, 'svc:home');
 
     const updateRes = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
@@ -410,6 +411,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
         gitSshKeyPath: '/home/sovereign/.ssh/id_ed25519',
         healthAlertsEnabled: true,
         healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
       }),
     });
     assert.equal(updateRes.status, 200);
@@ -420,6 +422,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(updated.gitSshKeyPath, '/home/sovereign/.ssh/id_ed25519');
     assert.equal(updated.healthAlertsEnabled, true);
     assert.equal(updated.healthAlertsWebhookUrl, 'https://alerts.example.test/hook');
+    assert.equal(updated.tailscaleManagedServiceId, 'svc:test');
     assert.equal(updated.hostnameIsPlaceholder, false);
 
     const afterRes = await fetch(`${server.url}/api/homebase/config`);
@@ -427,6 +430,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(after.hostname, 'erebor');
     assert.equal(after.gitTransport, 'ssh-key');
     assert.equal(after.healthAlertsEnabled, true);
+    assert.equal(after.tailscaleManagedServiceId, 'svc:test');
   } finally {
     await server.close();
   }
@@ -689,6 +693,7 @@ test('health alert test endpoint posts to configured webhook target', async () =
         gitTransport: 'https',
         healthAlertsEnabled: true,
         healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
       }),
     });
 
@@ -751,6 +756,7 @@ test('apps health endpoint still responds when webhook delivery fails', async ()
         gitTransport: 'https',
         healthAlertsEnabled: true,
         healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
       }),
     });
     assert.equal(cfgRes.status, 200);

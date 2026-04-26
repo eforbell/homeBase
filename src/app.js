@@ -304,7 +304,11 @@ function createApp(config) {
     if (!force && tailscaleReadinessCache.value && tailscaleReadinessCache.expiresAt > now) {
       return tailscaleReadinessCache.value;
     }
-    const value = getTailscalePublishingReadiness({ run: effectiveConfig.tailscaleRunCommand });
+    const value = getTailscalePublishingReadiness({
+      run: effectiveConfig.tailscaleRunCommand,
+      managedServiceId: effectiveConfig.tailscaleManagedServiceId,
+      managedServiceId: effectiveConfig.tailscaleManagedServiceId,
+    });
     tailscaleReadinessCache.value = value;
     tailscaleReadinessCache.expiresAt = now + 15_000;
     return value;
@@ -312,7 +316,7 @@ function createApp(config) {
 
   function getTailscalePublishPlanCached(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
-    const cacheKey = `${effectiveConfig.defaultHostname || 'homebase'}.${effectiveConfig.defaultDomain || 'tailnet'}`;
+    const cacheKey = `${effectiveConfig.defaultHostname || 'homebase'}.${effectiveConfig.defaultDomain || 'tailnet'}|${effectiveConfig.tailscaleManagedServiceId || 'svc:home'}`;
     if (!force && tailscalePublishPlanCache.value && tailscalePublishPlanCache.key === cacheKey && tailscalePublishPlanCache.expiresAt > now) {
       return tailscalePublishPlanCache.value;
     }
@@ -320,6 +324,7 @@ function createApp(config) {
       hostname: effectiveConfig.defaultHostname || 'homebase',
       domain: effectiveConfig.defaultDomain || 'tailnet',
       run: effectiveConfig.tailscaleRunCommand,
+      managedServiceId: effectiveConfig.tailscaleManagedServiceId,
     });
     tailscalePublishPlanCache.key = cacheKey;
     tailscalePublishPlanCache.value = value;
@@ -329,7 +334,7 @@ function createApp(config) {
 
   function getTailscaleVerificationCached(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
-    const cacheKey = `${effectiveConfig.defaultHostname || 'homebase'}.${effectiveConfig.defaultDomain || 'tailnet'}`;
+    const cacheKey = `${effectiveConfig.defaultHostname || 'homebase'}.${effectiveConfig.defaultDomain || 'tailnet'}|${effectiveConfig.tailscaleManagedServiceId || 'svc:home'}`;
     if (!force && tailscaleVerifyCache.value && tailscaleVerifyCache.key === cacheKey && tailscaleVerifyCache.expiresAt > now) {
       return tailscaleVerifyCache.value;
     }
@@ -338,6 +343,7 @@ function createApp(config) {
       hostname: effectiveConfig.defaultHostname || 'homebase',
       domain: effectiveConfig.defaultDomain || 'tailnet',
       run: effectiveConfig.tailscaleRunCommand,
+      managedServiceId: effectiveConfig.tailscaleManagedServiceId,
       lastPublishedJob,
     });
     tailscaleVerifyCache.key = cacheKey;

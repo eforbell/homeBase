@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS homebase_config (
   git_ssh_key_path TEXT,
   health_alerts_enabled INTEGER NOT NULL DEFAULT 0,
   health_alerts_webhook_url TEXT,
+  tailscale_managed_service_id TEXT,
   updated_at TEXT NOT NULL
 );
 
@@ -116,6 +117,8 @@ if op == "init":
         conn.execute("ALTER TABLE homebase_config ADD COLUMN health_alerts_enabled INTEGER NOT NULL DEFAULT 0")
     if "health_alerts_webhook_url" not in columns:
         conn.execute("ALTER TABLE homebase_config ADD COLUMN health_alerts_webhook_url TEXT")
+    if "tailscale_managed_service_id" not in columns:
+        conn.execute("ALTER TABLE homebase_config ADD COLUMN tailscale_managed_service_id TEXT")
     conn.commit()
     emit({"ok": True})
 
@@ -464,7 +467,7 @@ elif op == "delete_installation":
 
 elif op == "get_homebase_config":
     row = conn.execute(
-        "SELECT hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, updated_at FROM homebase_config WHERE id = 1"
+        "SELECT hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, tailscale_managed_service_id, updated_at FROM homebase_config WHERE id = 1"
     ).fetchone()
     if row is None:
         emit(None)
@@ -476,6 +479,7 @@ elif op == "get_homebase_config":
             "gitSshKeyPath": row["git_ssh_key_path"] or "",
             "healthAlertsEnabled": bool(row["health_alerts_enabled"]),
             "healthAlertsWebhookUrl": row["health_alerts_webhook_url"] or "",
+            "tailscaleManagedServiceId": row["tailscale_managed_service_id"] or "svc:home",
             "updatedAt": row["updated_at"],
         })
 
@@ -484,8 +488,8 @@ elif op == "set_homebase_config":
     conn.execute(
         """
         INSERT INTO homebase_config (
-          id, hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+          id, hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, tailscale_managed_service_id, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           hostname=excluded.hostname,
           domain=excluded.domain,
@@ -493,6 +497,7 @@ elif op == "set_homebase_config":
           git_ssh_key_path=excluded.git_ssh_key_path,
           health_alerts_enabled=excluded.health_alerts_enabled,
           health_alerts_webhook_url=excluded.health_alerts_webhook_url,
+          tailscale_managed_service_id=excluded.tailscale_managed_service_id,
           updated_at=excluded.updated_at
         """,
         (
@@ -502,6 +507,7 @@ elif op == "set_homebase_config":
             record.get("gitSshKeyPath", ""),
             1 if record.get("healthAlertsEnabled") else 0,
             record.get("healthAlertsWebhookUrl", ""),
+            record.get("tailscaleManagedServiceId", "svc:home"),
             record["updatedAt"],
         ),
     )

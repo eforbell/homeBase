@@ -1,4 +1,6 @@
 const { getTailscalePublishPlan } = require('./tailscale-publisher');
+const { runCommand } = require('./tailscale-readiness');
+const { DEFAULT_MANAGED_SERVICE_ID, normalizeManagedServiceId } = require('./tailscale-policy');
 
 function safeJsonParse(value) {
   try {
@@ -11,11 +13,13 @@ function safeJsonParse(value) {
 function getTailscalePublishVerification({
   hostname = 'homebase',
   domain = 'tailnet',
-  run,
+  run = runCommand,
+  managedServiceId = DEFAULT_MANAGED_SERVICE_ID,
   lastPublishedJob = null,
 } = {}) {
-  const plan = getTailscalePublishPlan({ hostname, domain, run });
-  const nginxListenResult = (run || (() => ({ ok: false, exitCode: 127, stdout: '', stderr: 'no runner' })))(
+  const normalizedManagedServiceId = normalizeManagedServiceId(managedServiceId);
+  const plan = getTailscalePublishPlan({ hostname, domain, run, managedServiceId: normalizedManagedServiceId });
+  const nginxListenResult = run(
     "ss -lnt 2>/dev/null | awk '{print $4}' | grep -E '(^|:)443$' | head -n 1"
   );
 
@@ -55,11 +59,11 @@ function getTailscalePublishVerification({
     },
     {
       id: 'serve-home-endpoints',
-      title: 'svc:home endpoints match required topology',
+      title: `${normalizedManagedServiceId} endpoints match required topology`,
       ok: serveHomeReady,
       summary: serveHomeReady
-        ? 'svc:home endpoints are in desired state.'
-        : 'svc:home endpoints are missing/stale or blocked by conflicts.',
+        ? `${normalizedManagedServiceId} endpoints are in desired state.`
+        : `${normalizedManagedServiceId} endpoints are missing/stale or blocked by conflicts.`,
     },
     {
       id: 'publish-config-freshness',
@@ -89,6 +93,7 @@ function getTailscalePublishVerification({
       homebase: `https://${hostname}.${domain}:3080`,
       appsBase: `https://${hostname}.${domain}`,
     },
+    managedServiceId: normalizedManagedServiceId,
     planSummary: {
       canExecute: plan.canExecute,
       conflicts: plan.conflicts || [],
