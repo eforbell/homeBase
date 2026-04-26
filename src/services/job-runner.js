@@ -143,6 +143,25 @@ class JobRunner {
     });
   }
 
+
+  startTailscalePublishJob(plan, { dryRun = true } = {}) {
+    return this.startPlanJob({
+      kind: 'tailscale-publish',
+      target: 'svc:home',
+      plan,
+      steps: plan.executionSteps || [],
+      dryRun,
+      extraResult: {
+        readinessState: plan.readiness?.state || null,
+        conflictCount: Array.isArray(plan.conflicts) ? plan.conflicts.length : 0,
+        desiredHost: plan.desiredHost || null,
+        desiredDomain: plan.desiredDomain || null,
+        homebaseUrl: plan.previewUrls?.homebase || null,
+        appsBaseUrl: plan.previewUrls?.appsBase || null,
+      },
+    });
+  }
+
   startHomeBaseUpdateJob(plan, { dryRun = true } = {}) {
     return this.startPlanJob({
       kind: 'homebase-update',

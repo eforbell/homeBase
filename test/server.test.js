@@ -399,6 +399,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(before.gitTransport, 'https');
     assert.equal(before.healthAlertsEnabled, false);
     assert.equal(before.healthAlertsWebhookUrl, '');
+    assert.equal(before.tailscaleManagedServiceId, 'svc:home');
 
     const updateRes = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
@@ -410,6 +411,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
         gitSshKeyPath: '/home/sovereign/.ssh/id_ed25519',
         healthAlertsEnabled: true,
         healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
       }),
     });
     assert.equal(updateRes.status, 200);
@@ -420,6 +422,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(updated.gitSshKeyPath, '/home/sovereign/.ssh/id_ed25519');
     assert.equal(updated.healthAlertsEnabled, true);
     assert.equal(updated.healthAlertsWebhookUrl, 'https://alerts.example.test/hook');
+    assert.equal(updated.tailscaleManagedServiceId, 'svc:test');
     assert.equal(updated.hostnameIsPlaceholder, false);
 
     const afterRes = await fetch(`${server.url}/api/homebase/config`);
@@ -427,6 +430,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(after.hostname, 'erebor');
     assert.equal(after.gitTransport, 'ssh-key');
     assert.equal(after.healthAlertsEnabled, true);
+    assert.equal(after.tailscaleManagedServiceId, 'svc:test');
   } finally {
     await server.close();
   }
@@ -689,6 +693,7 @@ test('health alert test endpoint posts to configured webhook target', async () =
         gitTransport: 'https',
         healthAlertsEnabled: true,
         healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
       }),
     });
 
@@ -751,6 +756,7 @@ test('apps health endpoint still responds when webhook delivery fails', async ()
         gitTransport: 'https',
         healthAlertsEnabled: true,
         healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
       }),
     });
     assert.equal(cfgRes.status, 200);
@@ -1421,6 +1427,240 @@ test('restore execute dry-run creates a completed restore job', async () => {
 
     assert.equal(job.status, 'completed');
     assert.match(job.log, /Restore Family Help/i);
+  } finally {
+    await server.close();
+  }
+});
+
+test('network tailscale endpoint returns structured readiness payload', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-network-ts-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/network/tailscale`);
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(typeof payload.generatedAt, 'string');
+    assert.equal(typeof payload.installed?.ok, 'boolean');
+    assert.equal(typeof payload.readiness?.state, 'string');
+    assert.equal(['not-installed', 'not-authenticated', 'authenticated-unpublished', 'published'].includes(payload.readiness.state), true);
+  } finally {
+    await server.close();
+  }
+});
+
+function makeFakeTailscaleRunner({ statusSnapshot, serveStdout, serveExitCode = 0, serveStderr = '' } = {}) {
+  return (command) => {
+    if (command === 'command -v tailscale') {
+      return { command, ok: true, exitCode: 0, stdout: '/usr/bin/tailscale\n', stderr: '' };
+    }
+    if (command === 'tailscale version') {
+      return { command, ok: true, exitCode: 0, stdout: '1.96.4\n', stderr: '' };
+    }
+    if (command === 'tailscale status --json') {
+      return { command, ok: true, exitCode: 0, stdout: JSON.stringify(statusSnapshot || {
+        BackendState: 'Running',
+        Self: { HostName: 'host-apps-1', DNSName: 'host-apps-1.example.ts.net.' },
+        CurrentTailnet: { Name: 'example.tailnet' },
+        MagicDNSSuffix: 'example.ts.net',
+      }), stderr: '' };
+    }
+    if (command === 'tailscale serve get-config --all') {
+      return { command, ok: serveExitCode === 0, exitCode: serveExitCode, stdout: serveStdout || '{"version":"0.0.1"}', stderr: serveStderr };
+    }
+    return { command, ok: false, exitCode: 127, stdout: '', stderr: 'unsupported command' };
+  };
+}
+
+test('network tailscale publish plan endpoint returns executable plan when no conflicts exist', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-network-plan-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    tailscaleRunCommand: makeFakeTailscaleRunner({
+      serveStdout: JSON.stringify({
+        version: '0.0.1',
+        services: {
+          'svc:home': {
+            endpoints: {
+              'tcp:3080': 'http://127.0.0.1:3080',
+              'tcp:443': 'https+insecure://localhost:443',
+            },
+          },
+        },
+      }),
+    }),
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/network/tailscale/publish-plan`);
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(payload.canExecute, true);
+    assert.equal(payload.conflicts.length, 0);
+    assert.equal(payload.policy.managedServiceId, 'svc:home');
+  } finally {
+    await server.close();
+  }
+});
+
+test('network tailscale publish execute dry-run enqueues tailscale-publish job', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-network-exec-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    tailscaleRunCommand: makeFakeTailscaleRunner({
+      serveStdout: JSON.stringify({ version: '0.0.1', services: {} }),
+    }),
+  });
+
+  try {
+    const executeRes = await fetch(`${server.url}/api/network/tailscale/publish-execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true }),
+    });
+    assert.equal(executeRes.status, 202);
+    const execute = await executeRes.json();
+    assert.equal(execute.ok, true);
+
+    const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+    assert.equal(jobRes.status, 200);
+    const job = await jobRes.json();
+    assert.equal(job.kind, 'tailscale-publish');
+    assert.equal(job.dryRun, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('network tailscale publish execute refuses non-home endpoint ownership conflicts', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-network-conflict-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    tailscaleRunCommand: makeFakeTailscaleRunner({
+      serveStdout: JSON.stringify({
+        version: '0.0.1',
+        services: {
+          'svc:bitcoin': {
+            endpoints: {
+              'tcp:443': 'https+insecure://localhost:443',
+            },
+          },
+        },
+      }),
+    }),
+  });
+
+  try {
+    const executeRes = await fetch(`${server.url}/api/network/tailscale/publish-execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true }),
+    });
+    assert.equal(executeRes.status, 409);
+    const payload = await executeRes.json();
+    assert.equal(payload.canExecute, false);
+    assert.equal(payload.blockedReason, 'endpoint-ownership-conflict');
+    assert.equal(Array.isArray(payload.conflicts), true);
+    assert.equal(payload.conflicts.length >= 1, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('network tailscale verify endpoint reports stale config when hostname/domain changed after real publish', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-network-verify-stale-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase-new',
+    defaultDomain: 'tailnet',
+    tailscaleRunCommand: makeFakeTailscaleRunner({
+      serveStdout: JSON.stringify({
+        version: '0.0.1',
+        services: {
+          'svc:home': {
+            endpoints: {
+              'tcp:3080': 'http://127.0.0.1:3080',
+              'tcp:443': 'https+insecure://localhost:443',
+            },
+          },
+        },
+      }),
+    }),
+  });
+
+  try {
+    const store = new SqliteStateStore(dbPath);
+    const createdAt = new Date().toISOString();
+    const { id } = store.createJob({
+      kind: 'tailscale-publish',
+      target: 'svc:home',
+      status: 'completed',
+      dryRun: false,
+      createdAt,
+      currentStep: null,
+      planJson: JSON.stringify({}),
+    });
+    store.updateJob(id, {
+      startedAt: createdAt,
+      finishedAt: createdAt,
+      resultJson: JSON.stringify({
+        desiredHost: 'homebase-old',
+        desiredDomain: 'tailnet',
+        homebaseUrl: 'https://homebase-old.tailnet:3080',
+        appsBaseUrl: 'https://homebase-old.tailnet',
+      }),
+    });
+
+    const res = await fetch(`${server.url}/api/network/tailscale/verify`);
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(payload.staleBecauseConfigChanged, true);
+    assert.equal(payload.repairRequired, true);
+    assert.match(payload.staleReason, /homebase-new\.tailnet/i);
+    assert.match(payload.staleReason, /homebase-old\.tailnet/i);
+    assert.equal(typeof payload.recommendedUrls?.homebase, 'string');
+    assert.equal(typeof payload.recommendedUrls?.appsBase, 'string');
   } finally {
     await server.close();
   }

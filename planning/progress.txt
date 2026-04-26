@@ -135,3 +135,91 @@
   - redirected legacy `/settings` to `/config`.
 - Cleaned up stale UI assertion tests that were already red on main and added route coverage for the new control-plane pages.
 - Verification: `npm test` passed (93/93). Manual browser/mobile verification is still pending, so Feature-3a remains in review rather than verified.
+
+2026-04-25 (Feature-3a merge / Feature-4 Phase A prep)
+- Confirmed Feature-3a merged via GitHub PR #7 (`feature/control-plane-nav-ia-split` -> `main`, merged 2026-04-25T14:04:10Z).
+- Marked Feature-3a complete and advanced planning/current-feature.json to Feature-4 on branch `feature/tailscale-service-publishing`.
+- Tightened Feature-4 acceptance wording so the Tailscale readiness surface is explicitly the new Network/setup path rather than the old Settings page.
+- Phase A prep focus is now:
+  - capture real `tailscale status --json` fixtures,
+  - capture real `tailscale serve get-config --all` fixtures,
+  - lock the Home Base-owned Serve endpoint policy before parser/executor work.
+
+2026-04-25 (Feature-4 Phase A grounding started)
+- Captured real Tailscale fixture envelopes under `test/fixtures/tailscale/`:
+  - local + remote `tailscale serve get-config --all` examples (empty config and populated multi-service configs),
+  - sanitized status snapshots for local + erebor from `tailscale status --json`,
+  - local version capture for CLI/version context.
+- Added reusable capture helper `scripts/capture_tailscale_fixtures.py` to refresh fixtures as host state changes.
+- Locked Serve ownership policy in `docs/tailscale-serve-ownership-policy.md`:
+  - Home Base only manages `services[\"svc:home\"]`,
+  - preserve unrelated services during merge/write,
+  - refuse silent overwrite when non-home services already own required endpoints (such as `tcp:443`).
+- Added `test/tailscale-phase-a.test.js` to lock fixture/policy assumptions before parser/executor implementation.
+
+2026-04-25 (Feature-4 Phase A fixture gap closed)
+- Added Linux unauthenticated/not-logged-in fixture set from user-provided host capture (`SH-Test-1`):
+  - `status-snapshot-sh-test-1-needs-login.json` (`BackendState: NeedsLogin`, `HealthCount: 1`),
+  - `serve-config-all-sh-test-1-needs-login.json` (`stderr: Logged out.` non-zero exit path),
+  - `version-sh-test-1.json` (CLI/version provenance).
+- Expanded Phase-A fixture regression tests to lock readiness/error-path expectations for unauthenticated Linux state.
+- Updated fixture README limitations: NeedsLogin state is now covered; only hard daemon-down capture remains optional future evidence.
+
+2026-04-25 (Fixture privacy hardening + daemon-stopped coverage)
+- Anonymized Tailscale fixture payloads to remove private tailnet/domain/host identifiers while preserving parser-relevant structure.
+- Added Linux `BackendState: Stopped` status snapshot fixture from user-provided daemon-off capture (`status-snapshot-sh-test-clean-stopped.json`).
+- Expanded Phase-A tests to lock stopped-backend readiness mapping in addition to existing NeedsLogin/logged-out paths.
+
+2026-04-25 (Feature-4 TS-001 implementation pass)
+- Added `src/services/tailscale-readiness.js` and `/api/network/tailscale` to detect and summarize:
+  - Tailscale installed status,
+  - backend/auth posture (`NeedsLogin`, `Stopped`, `Running`),
+  - node + tailnet identity details,
+  - current `tailscale serve get-config --all` service summary.
+- Implemented explicit readiness state mapping used by Network page:
+  - `not-installed`,
+  - `not-authenticated`,
+  - `authenticated-unpublished`,
+  - `published`.
+- Upgraded Network UI to show real readiness summary and current Serve ownership overview (including `tcp:443` owners).
+- Added regression coverage:
+  - `test/tailscale-readiness.test.js` for readiness mapping across real fixture cases,
+  - `test/server.test.js` endpoint contract check for `/api/network/tailscale`.
+- Verification: `npm test` passed (105/105).
+
+2026-04-25 (Feature-4 TS-002 implementation pass)
+- Added `src/services/tailscale-publisher.js` to build managed `svc:home` publish plans from live `tailscale serve get-config --all` output.
+- Added Network API endpoints:
+  - `GET /api/network/tailscale/publish-plan` (preview merged plan + conflict analysis),
+  - `POST /api/network/tailscale/publish-execute` (job enqueue; real execution requires admin unlock + `confirm=EXECUTE`).
+- Enforced ownership policy at execution gate:
+  - block execution when required endpoints are owned by non-home services,
+  - refuse silent overwrite and return conflict details.
+- Added `tailscale-publish` job lane in `JobRunner` and wired Network page UI controls to preview/apply plan.
+- Added regression coverage for planner logic and API behavior:
+  - `test/tailscale-publisher.test.js`,
+  - `test/server.test.js` publish-plan/publish-execute cases.
+- Verification: `npm test` passed (114/114).
+
+2026-04-25 (Feature-4 TS-003 implementation pass)
+- Added `src/services/tailscale-verify.js` and `/api/network/tailscale/verify` to validate:
+  - local nginx listener presence on tcp:443,
+  - Home Base `svc:home` Serve endpoint posture,
+  - publish freshness against latest completed real `tailscale-publish` job.
+- Added stale-config detection: if hostname/domain has changed since last real publish, Network now flags a repair prompt with explicit stale reason.
+- Network UI now includes a dedicated “Verification & repair” section and copyable current target URLs:
+  - Home Base URL (`https://<host>:3080`),
+  - app base URL (`https://<host>`).
+- Added DB helper op `get_latest_completed_real_job_by_kind` to anchor stale detection on real publish history.
+- Added coverage:
+  - `test/tailscale-verify.test.js` (verification logic),
+  - `test/server.test.js` stale verification endpoint behavior.
+- Verification: `npm test` passed (118/118).
+
+2026-04-26 (Feature-4 follow-up: configurable managed service ID + verify runner fix)
+- Fixed `/api/network/tailscale/verify` runner fallback bug so nginx tcp:443 check now uses the same command runner path as other network probes.
+- Added configurable managed Tailscale service ID (`tailscaleManagedServiceId`, default `svc:home`) to Home Base config.
+- Wired managed service ID through readiness, publish-plan, execute, and verification lanes so non-`svc:home` tailnets (for example `svc:test`) can be policy-compliant.
+- Added config persistence/migration support for `tailscale_managed_service_id` in sqlite state storage.
+- Added regression coverage for configurable service IDs in readiness/publisher/verify logic and server config API behavior.
+- Verification: `npm test` passed (121/121).

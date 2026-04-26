@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-04-25T14:12:12.232319+00:00",
+  "host": "host-test-clean",
+  "command": [
+    "tailscale",
+    "ssh",
+    "host-test-clean",
+    "tailscale",
+    "serve",
+    "get-config",
+    "--all"
+  ],
+  "commandString": "tailscale ssh host-test-clean tailscale serve get-config --all",
+  "exitCode": 255,
+  "stdout": "",
+  "stderr": "tailscale: tailnet policy does not permit you to SSH as user \"operator\"\nConnection closed by 100.64.0.1 port 22\n"
+}

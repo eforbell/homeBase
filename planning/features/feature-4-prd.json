@@ -25,7 +25,7 @@
       "id": "TS-001",
       "title": "Detect Tailscale identity and publishing readiness",
       "acceptanceCriteria": [
-        "Settings/setup page shows Tailscale installed/daemon/authenticated status",
+        "Network/setup page shows Tailscale installed/daemon/authenticated status",
         "Homebase identifies current node name and tailnet/MagicDNS hostname when available",
         "Current `tailscale serve get-config --all` is visible or summarized",
         "UI distinguishes not installed, not authenticated, authenticated but unpublished, and published states"
@@ -33,7 +33,12 @@
       "priority": 1,
       "estimatedLines": "+220/-10",
       "testStrategy": "Unit tests around parser/status mapping plus VM check with authenticated and unauthenticated states",
-      "passes": false
+      "passes": true,
+      "implementationNotes": [
+        "Added `/api/network/tailscale` readiness endpoint with installed/authenticated/daemon/serve-state summary.",
+        "Network page now renders Tailscale readiness state, identity summary, and Serve service overview.",
+        "Readiness states currently mapped to: not-installed, not-authenticated, authenticated-unpublished, published."
+      ]
     },
     {
       "id": "TS-002",
@@ -47,7 +52,14 @@
       "priority": 2,
       "estimatedLines": "+300/-20",
       "testStrategy": "Planner tests for generated commands and manual VM execution against tailnet",
-      "passes": false
+      "passes": true,
+      "implementationNotes": [
+        "Added `/api/network/tailscale/publish-plan` preview endpoint with conflict detection and merge-preserving config patch plan.",
+        "Added `/api/network/tailscale/publish-execute` guarded execution path with `confirm=EXECUTE` + admin-unlock requirement for real runs.",
+        "Execution refuses silent overwrite when non-home services already own required endpoints (e.g., tcp:443).",
+        "Dry-run execution now enqueues `tailscale-publish` jobs with explicit command preview steps.",
+        "Managed service ID is configurable via Home Base config (`tailscaleManagedServiceId`) instead of hardcoded `svc:home`."
+      ]
     },
     {
       "id": "TS-003",
@@ -61,7 +73,13 @@
       "priority": 3,
       "estimatedLines": "+260/-20",
       "testStrategy": "Manual VM verification plus fixture tests for stale/missing Serve config parsing",
-      "passes": false
+      "passes": true,
+      "implementationNotes": [
+        "Added `/api/network/tailscale/verify` for nginx listener + serve endpoint + config-freshness verification.",
+        "Network UI now surfaces explicit repair prompt when verification fails or hostname/domain changed since last real publish.",
+        "Verification section includes copyable Home Base and app base URLs derived from current hostname/domain target.",
+        "Publish verification uses latest completed real `tailscale-publish` job to detect stale publishing after config changes."
+      ]
     }
   ],
   "riskAssessment": {
@@ -79,6 +97,7 @@
   "preFlightChecklist": [
     "Capture real `tailscale status --json` and `tailscale serve get-config --all` examples",
     "Lock policy for existing Serve config: manage only Home Base-owned endpoints and refuse silent overwrite of unrelated Serve config",
+    "Record policy source-of-truth in `docs/tailscale-serve-ownership-policy.md`",
     "Define whether Homebase stores a managed-service marker or derives state entirely from Serve config",
     "Confirm Network page scaffold from Feature-3a is ready for publishing UI"
   ],

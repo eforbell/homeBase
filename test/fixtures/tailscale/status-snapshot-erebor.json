@@ -1,0 +1,35 @@
+{
+  "capturedAt": "2026-04-25T14:15:50.243987+00:00",
+  "command": [
+    "tailscale",
+    "ssh",
+    "host-apps-1",
+    "tailscale",
+    "status",
+    "--json"
+  ],
+  "commandString": "tailscale ssh host-apps-1 tailscale status --json",
+  "exitCode": 0,
+  "snapshot": {
+    "Version": "1.96.4-t8cf541dfd-g62bc84ce7",
+    "BackendState": "Running",
+    "AuthURLPresent": false,
+    "HealthCount": 0,
+    "MagicDNSSuffix": "example.ts.net",
+    "CurrentTailnet": {
+      "Name": "example.tailnet",
+      "MagicDNSEnabled": true
+    },
+    "Self": {
+      "HostName": "host-apps-1",
+      "DNSName": "host-apps-1.example.ts.net.",
+      "OS": "linux",
+      "Online": true,
+      "Active": false
+    },
+    "PeerCount": 18,
+    "OnlinePeerCount": 13,
+    "ActivePeerCount": 1,
+    "ServiceCount": 0
+  }
+}

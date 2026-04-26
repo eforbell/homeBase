@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-04-25T14:15:52.455230+00:00",
+  "host": "host-btc-1",
+  "command": [
+    "tailscale",
+    "ssh",
+    "host-btc-1",
+    "tailscale",
+    "serve",
+    "get-config",
+    "--all"
+  ],
+  "commandString": "tailscale ssh host-btc-1 tailscale serve get-config --all",
+  "exitCode": 0,
+  "stdout": "{\n  \"version\": \"0.0.1\",\n  \"services\": {\n    \"svc:bitcoin\": {\n      \"endpoints\": {\n        \"tcp:443\": \"https+insecure://localhost:443\",\n        \"tcp:5432\": \"tcp://localhost:5432\"\n      }\n    },\n    \"svc:lightning\": {\n      \"endpoints\": {\n        \"tcp:443\": \"http://localhost:8029\",\n        \"tcp:8029\": \"http://127.0.0.1:8029\"\n      }\n    }\n  }\n}\n",
+  "stderr": ""
+}

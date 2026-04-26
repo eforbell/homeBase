@@ -1,6 +1,7 @@
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/i;
 const ALLOWED_GIT_TRANSPORTS = new Set(['https', 'ssh', 'ssh-key']);
+const TAILSCALE_MANAGED_SERVICE_ID_PATTERN = /^svc:[a-z0-9](?:[a-z0-9-_.]{0,61}[a-z0-9])?$/i;
 
 function mergeHomeBaseConfig(baseConfig, override = {}) {
   return {
@@ -11,6 +12,7 @@ function mergeHomeBaseConfig(baseConfig, override = {}) {
     gitSshKeyPath: override.gitSshKeyPath != null ? override.gitSshKeyPath : (baseConfig.gitSshKeyPath || ''),
     healthAlertsEnabled: override.healthAlertsEnabled != null ? Boolean(override.healthAlertsEnabled) : Boolean(baseConfig.healthAlertsEnabled),
     healthAlertsWebhookUrl: override.healthAlertsWebhookUrl != null ? String(override.healthAlertsWebhookUrl) : String(baseConfig.healthAlertsWebhookUrl || ''),
+    tailscaleManagedServiceId: override.tailscaleManagedServiceId || baseConfig.tailscaleManagedServiceId || 'svc:home',
   };
 }
 
@@ -25,6 +27,7 @@ function toClientHomeBaseConfig(config, override = {}) {
     gitSshKeyPath: effective.gitSshKeyPath || '',
     healthAlertsEnabled: Boolean(effective.healthAlertsEnabled),
     healthAlertsWebhookUrl: effective.healthAlertsWebhookUrl || '',
+    tailscaleManagedServiceId: effective.tailscaleManagedServiceId || 'svc:home',
     serviceUser: config.serviceUser,
     baseInstallDir: config.baseInstallDir,
     baseBackupDir: config.baseBackupDir,
@@ -54,7 +57,7 @@ function validateDomain(domain) {
 
 function validateHomeBaseConfigPatch(payload, currentConfig) {
   const patch = payload && typeof payload === 'object' ? payload : {};
-  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl'];
+  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId'];
   const unknownFields = Object.keys(patch).filter((field) => !allowedFields.includes(field));
   if (unknownFields.length) {
     return { error: `Unknown field(s): ${unknownFields.join(', ')}` };
@@ -70,6 +73,7 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
     gitSshKeyPath: patch.gitSshKeyPath != null ? String(patch.gitSshKeyPath).trim() : (currentConfig.gitSshKeyPath || ''),
     healthAlertsEnabled: patch.healthAlertsEnabled != null ? Boolean(patch.healthAlertsEnabled) : Boolean(currentConfig.healthAlertsEnabled),
     healthAlertsWebhookUrl: patch.healthAlertsWebhookUrl != null ? String(patch.healthAlertsWebhookUrl).trim() : String(currentConfig.healthAlertsWebhookUrl || ''),
+    tailscaleManagedServiceId: patch.tailscaleManagedServiceId != null ? String(patch.tailscaleManagedServiceId).trim() : String(currentConfig.tailscaleManagedServiceId || 'svc:home'),
   };
 
   const hostnameError = validateHostname(candidate.hostname);
@@ -98,6 +102,10 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
   }
   if (candidate.healthAlertsEnabled && !candidate.healthAlertsWebhookUrl) {
     return { error: 'healthAlertsWebhookUrl is required when healthAlertsEnabled=true' };
+  }
+
+  if (!TAILSCALE_MANAGED_SERVICE_ID_PATTERN.test(candidate.tailscaleManagedServiceId)) {
+    return { error: 'tailscaleManagedServiceId must look like svc:<name> using letters, numbers, dashes, underscores, or dots' };
   }
 
   return { value: candidate };

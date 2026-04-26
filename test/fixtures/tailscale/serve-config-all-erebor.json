@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-04-25T14:15:50.857901+00:00",
+  "host": "host-apps-1",
+  "command": [
+    "tailscale",
+    "ssh",
+    "host-apps-1",
+    "tailscale",
+    "serve",
+    "get-config",
+    "--all"
+  ],
+  "commandString": "tailscale ssh host-apps-1 tailscale serve get-config --all",
+  "exitCode": 0,
+  "stdout": "{\n  \"version\": \"0.0.1\",\n  \"services\": {\n    \"svc:family-pulse-mcp\": {\n      \"endpoints\": {\n        \"tcp:3004\": \"http://127.0.0.1:3004\",\n        \"tcp:443\": \"http://127.0.0.1:3004\"\n      }\n    },\n    \"svc:home\": {\n      \"endpoints\": {\n        \"tcp:3080\": \"http://127.0.0.1:3080\",\n        \"tcp:443\": \"https+insecure://localhost:443\"\n      }\n    }\n  }\n}\n",
+  "stderr": ""
+}

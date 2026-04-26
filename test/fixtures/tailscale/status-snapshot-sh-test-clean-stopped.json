@@ -1,0 +1,33 @@
+{
+  "capturedAt": "2026-04-25T19:45:00Z",
+  "command": [
+    "tailscale",
+    "status",
+    "--json"
+  ],
+  "commandString": "tailscale status --json",
+  "exitCode": 0,
+  "snapshot": {
+    "Version": "1.96.4-t8cf541dfd-g62bc84ce7",
+    "BackendState": "Stopped",
+    "AuthURLPresent": false,
+    "HealthCount": 2,
+    "MagicDNSSuffix": "example.ts.net",
+    "CurrentTailnet": {
+      "Name": "example.tailnet",
+      "MagicDNSEnabled": true
+    },
+    "Self": {
+      "HostName": "host-test-clean",
+      "DNSName": "host-test-clean.example.ts.net.",
+      "OS": "linux",
+      "Online": false,
+      "Active": false
+    },
+    "PeerCount": 18,
+    "OnlinePeerCount": 13,
+    "ActivePeerCount": 0,
+    "ServiceCount": 0
+  },
+  "source": "user-provided raw capture (daemon off -> BackendState: Stopped)"
+}
