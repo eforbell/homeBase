@@ -477,6 +477,79 @@ const catalog = [
     ],
   },
   {
+    id: 'home-source',
+    repoKey: 'homeSource',
+    name: 'Home Source',
+    icon: '📁',
+    purpose: 'Sovereign family document vault — store, organize, and protect household records.',
+    repository: {
+      url: 'https://github.com/eforbell/homeSource.git',
+      sshUrl: 'git@github.com:eforbell/homeSource.git',
+      defaultRef: 'main',
+    },
+    runtime: {
+      kind: 'node',
+      installCommand: 'npm ci --omit=dev',
+      startCommand: 'node server.js',
+      nodeEnv: 'production',
+    },
+    network: {
+      preferredMountPath: '/source/',
+      preferredPort: 3008,
+      upstreamBind: '127.0.0.1',
+      health: {
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/ready',
+      },
+      notes: [
+        'Set client_max_body_size 55M in the nginx location block to allow large document uploads.',
+        'First-run household setup is handled in the browser when family_members is empty.',
+        'Share links at /share/:token are public routes — no auth required.',
+      ],
+    },
+    database: {
+      engine: 'postgres',
+      bootstrap: 'migrations',
+      databaseName: 'homesource',
+      databaseUser: 'homesource',
+      migrationCommand: 'node db/migrate.js',
+      seedPolicy: 'app-onboarding',
+    },
+    onboarding: {
+      mode: 'browser',
+      setupPath: '/setup',
+      statusPath: '/api/bootstrap',
+      readyWhen: 'household_initialized',
+      notes: [
+        'No production seed required; household is created from the browser.',
+        'Passphrases are set per-member during or after setup.',
+      ],
+    },
+    service: {
+      name: 'home-source',
+      description: 'Home Source App',
+      envFile: '.env',
+    },
+    config: {
+      env: {
+        DATABASE_URL: '{{databaseUrl}}',
+        PORT: '{{port}}',
+        STORAGE_PATH: '/var/lib/sovereign-home/home-source/data',
+        HOUSEHOLD_TIMEZONE: 'America/New_York',
+        MAX_FILE_SIZE_MB: '50',
+      },
+    },
+    storage: {
+      paths: ['data/documents', 'data/thumbnails', 'data/exports'],
+    },
+    updateNotes: [
+      'Back up the STORAGE_PATH directory alongside PostgreSQL dumps — documents live on disk, not in the database.',
+      'Backup exports are written to data/exports/ and can be downloaded from the Backup page.',
+      'Encryption schema (encryption_keys, key_holders) is present but unused until day-2 features land.',
+    ],
+  },
+  {
     id: 'bug-base',
     repoKey: 'bugBase',
     name: 'Bug Base',
