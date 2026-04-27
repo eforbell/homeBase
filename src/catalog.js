@@ -541,9 +541,11 @@ const catalog = [
       },
     },
     storage: {
-      paths: ['data/documents', 'data/thumbnails', 'data/exports'],
+      absoluteRoot: '/var/lib/sovereign-home/home-source/data',
+      paths: ['documents', 'thumbnails', 'exports'],
     },
     updateNotes: [
+      'The STORAGE_PATH directory must exist and be writable by the service user before first start.',
       'Back up the STORAGE_PATH directory alongside PostgreSQL dumps — documents live on disk, not in the database.',
       'Backup exports are written to data/exports/ and can be downloaded from the Backup page.',
       'Encryption schema (encryption_keys, key_holders) is present but unused until day-2 features land.',
