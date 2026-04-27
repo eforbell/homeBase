@@ -49,6 +49,12 @@ function buildUninstallPlan({ appId, state = {}, config = {}, options = {} }) {
     ...(app.sidecars || []).map((sidecar) => `${sidecar.name}.service`),
     ...(app.timers || []).flatMap((timer) => [`${timer.serviceName}.service`, timer.timerName]),
   ]);
+  const nginxSnippetFiles = unique([
+    `${app.id}.conf`,
+    ...(app.sidecars || [])
+      .filter((sidecar) => sidecar.nginx)
+      .map((sidecar) => `${sidecar.name}.conf`),
+  ]);
 
   const dbName = app.database?.databaseName || app.id.replace(/-/g, '_');
   const dbUser = app.database?.databaseUser || dbName;
@@ -58,7 +64,7 @@ function buildUninstallPlan({ appId, state = {}, config = {}, options = {} }) {
     makeStep('remove-runtime-artifacts', `Remove ${app.name} systemd and nginx artifacts`, [
       ...unitFiles.map((fileName) => systemctlRemoveUnitCommand(fileName)),
       'sudo systemctl daemon-reload',
-      `sudo rm -f /etc/nginx/snippets/${app.id}.conf`,
+      ...nginxSnippetFiles.map((fileName) => `sudo rm -f /etc/nginx/snippets/${fileName}`),
       'if command -v nginx >/dev/null 2>&1; then sudo nginx -t && sudo systemctl reload nginx; fi',
     ]),
     app.database?.engine && app.database.engine.includes('postgres')

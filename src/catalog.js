@@ -603,6 +603,10 @@ const catalog = [
         env: {
           NODE_ENV: 'production',
         },
+        nginx: {
+          mountPathSuffix: 'mcp/',
+          upstreamPath: '/mcp/',
+        },
       },
     ],
     config: {

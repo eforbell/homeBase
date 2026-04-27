@@ -54,5 +54,6 @@ test('uninstall plan can remove backups when keepBackups is disabled', () => {
 
   assert.equal(plan.uninstall.keepBackups, false);
   assert.match(plan.script, /bug-base-mcp\.service/);
+  assert.match(plan.script, /rm -f \/etc\/nginx\/snippets\/bug-base-mcp\.conf/);
   assert.match(plan.script, /rm -rf \/var\/lib\/sovereign-home\/backups\/bug-base/);
 });

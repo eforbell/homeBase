@@ -57,6 +57,20 @@ test('family pulse nginx route strips mount prefix for vanilla Express app', () 
   assert.match(plan.files['family-pulse.nginx.conf'], /X-Forwarded-Prefix \/pulse/);
 });
 
+test('bug base install planner renders nginx snippet for bug-base-mcp sidecar', () => {
+  const plan = buildInstallPlan({
+    appId: 'bug-base',
+    state: { installations: {} },
+    options: {},
+    config: { port: 3080, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', defaultHostname: 'homebase', defaultDomain: 'tailnet' },
+  });
+
+  assert.match(plan.files['bug-base-mcp.nginx.conf'], /location \/bugs\/mcp\//);
+  assert.match(plan.files['bug-base-mcp.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:\d+\/mcp\//);
+  assert.match(plan.script, /\/etc\/nginx\/snippets\/bug-base-mcp\.conf/);
+  assert.match(plan.files['.env'], /MCP_PORT=\d+/);
+});
+
 test('install planner uses HTTPS repository URLs by default', () => {
   const plan = buildInstallPlan({
     appId: 'family-help',

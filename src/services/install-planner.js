@@ -17,6 +17,12 @@ function normalizeMountPath(value) {
   return next;
 }
 
+function appendMountPathSuffix(mountPath, suffix) {
+  const base = trimTrailingSlash(normalizeMountPath(mountPath));
+  const cleanedSuffix = String(suffix || '').replace(/^\/+/, '');
+  return normalizeMountPath(`${base}/${cleanedSuffix}`);
+}
+
 function isValidGitRef(value) {
   const ref = String(value || '').trim();
   if (!ref) return false;
@@ -117,15 +123,23 @@ function renderTimerUnit({ description, onCalendar, serviceName }) {
   ].join('\n');
 }
 
-function renderNginxSnippet({ mountPath, port, appId, extraProxyHeaders = [], preserveMountPath = false }) {
+function renderNginxSnippet({
+  mountPath,
+  port,
+  appId,
+  extraProxyHeaders = [],
+  preserveMountPath = false,
+  upstreamPath = '/',
+}) {
   const basePath = trimTrailingSlash(mountPath === '/' ? '' : mountPath);
+  const normalizedUpstreamPath = normalizeMountPath(upstreamPath || '/');
   const lines = [`# ${appId}`];
   if (basePath) {
     lines.push(`location = ${basePath} {`, `    return 301 ${mountPath};`, '}');
   }
   lines.push(
     `location ${mountPath} {`,
-    `    proxy_pass http://127.0.0.1:${port}${preserveMountPath ? '' : '/'};`,
+    `    proxy_pass http://127.0.0.1:${port}${preserveMountPath ? '' : normalizedUpstreamPath};`,
     '    proxy_set_header Host $host;',
     '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
     '    proxy_set_header X-Forwarded-Proto $scheme;',
@@ -510,6 +524,20 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
         execStart: sidecar.execStart,
         extraEnvironment: sidecar.env || {},
       });
+
+      if (sidecar.nginx) {
+        const sidecarMountPath = sidecar.nginx.mountPath
+          ? normalizeMountPath(sidecar.nginx.mountPath)
+          : appendMountPathSuffix(mountPath, sidecar.nginx.mountPathSuffix || sidecar.name);
+        files[`${sidecar.name}.nginx.conf`] = renderNginxSnippet({
+          mountPath: sidecarMountPath,
+          port: sidecarPorts[sidecar.name],
+          appId: sidecar.name,
+          preserveMountPath: sidecar.nginx.preserveMountPath === true,
+          upstreamPath: sidecar.nginx.upstreamPath || '/',
+          extraProxyHeaders: sidecar.nginx.extraProxyHeaders || [],
+        });
+      }
     }
   }
 
@@ -572,6 +600,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   if (Array.isArray(app.sidecars)) {
     for (const sidecar of app.sidecars) {
       executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${sidecar.name}.service`, files[`${sidecar.name}.service`]));
+      if (files[`${sidecar.name}.nginx.conf`]) {
+        executionSteps[3].run.push(renderFileWriteCommand(`/etc/nginx/snippets/${sidecar.name}.conf`, files[`${sidecar.name}.nginx.conf`]));
+      }
       executionSteps[5].run.push(`sudo systemctl enable ${sidecar.name}`);
       executionSteps[5].run.push(`sudo systemctl restart ${sidecar.name}`);
     }
