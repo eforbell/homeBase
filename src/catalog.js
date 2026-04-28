@@ -493,6 +493,7 @@ const catalog = [
       startCommand: 'node server.js',
       nodeEnv: 'production',
     },
+    systemPackages: ['poppler-utils'],
     network: {
       preferredMountPath: '/source/',
       preferredPort: 3008,

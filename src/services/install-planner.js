@@ -182,6 +182,19 @@ function buildDatabaseCommands(app, ctx) {
   ];
 }
 
+function buildSystemPackageCommands(app) {
+  const packages = Array.isArray(app.systemPackages)
+    ? app.systemPackages
+      .map((pkg) => String(pkg || '').trim())
+      .filter(Boolean)
+    : [];
+  if (!packages.length) return [];
+  return [
+    'sudo apt-get update',
+    `sudo apt-get install -y ${packages.join(' ')}`,
+  ];
+}
+
 function buildAppBootstrapCommands(app, ctx) {
   const commands = [];
 
@@ -576,6 +589,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       `${gitRunPrefix} git -C ${installRoot} checkout ${gitRef}`,
       `${gitRunPrefix} git -C ${installRoot} pull --ff-only origin ${gitRef}`,
     ]),
+    makeStep('system-packages', 'Install app-specific system packages', buildSystemPackageCommands(app)),
     makeStep('database-bootstrap', 'Create database role and database', buildDatabaseCommands(app, ctx)),
     makeStep('render-config', 'Render application environment and unit files', [
       renderFileWriteCommand(`${installRoot}/.env`, files['.env']),
@@ -597,22 +611,25 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     ]),
   ];
 
+  const renderConfigStep = executionSteps.find((step) => step.id === 'render-config');
+  const enableServicesStep = executionSteps.find((step) => step.id === 'enable-services');
+
   if (Array.isArray(app.sidecars)) {
     for (const sidecar of app.sidecars) {
-      executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${sidecar.name}.service`, files[`${sidecar.name}.service`]));
+      renderConfigStep.run.push(renderFileWriteCommand(`/etc/systemd/system/${sidecar.name}.service`, files[`${sidecar.name}.service`]));
       if (files[`${sidecar.name}.nginx.conf`]) {
-        executionSteps[3].run.push(renderFileWriteCommand(`/etc/nginx/snippets/${sidecar.name}.conf`, files[`${sidecar.name}.nginx.conf`]));
+        renderConfigStep.run.push(renderFileWriteCommand(`/etc/nginx/snippets/${sidecar.name}.conf`, files[`${sidecar.name}.nginx.conf`]));
       }
-      executionSteps[5].run.push(`sudo systemctl enable ${sidecar.name}`);
-      executionSteps[5].run.push(`sudo systemctl restart ${sidecar.name}`);
+      enableServicesStep.run.push(`sudo systemctl enable ${sidecar.name}`);
+      enableServicesStep.run.push(`sudo systemctl restart ${sidecar.name}`);
     }
   }
   if (Array.isArray(app.timers)) {
     for (const timer of app.timers) {
-      executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.serviceName}.service`, files[`${timer.serviceName}.service`]));
-      executionSteps[3].run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.timerName}`, files[timer.timerName]));
-      executionSteps[5].run.push(`sudo systemctl enable ${timer.timerName}`);
-      executionSteps[5].run.push(`sudo systemctl restart ${timer.timerName}`);
+      renderConfigStep.run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.serviceName}.service`, files[`${timer.serviceName}.service`]));
+      renderConfigStep.run.push(renderFileWriteCommand(`/etc/systemd/system/${timer.timerName}`, files[timer.timerName]));
+      enableServicesStep.run.push(`sudo systemctl enable ${timer.timerName}`);
+      enableServicesStep.run.push(`sudo systemctl restart ${timer.timerName}`);
     }
   }
 

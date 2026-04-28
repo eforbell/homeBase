@@ -81,6 +81,7 @@ test('home source install planner provisions import worker service sidecar', () 
 
   assert.match(plan.files['home-source-import-worker.service'], /Description=Home Source Import Worker/);
   assert.match(plan.files['home-source-import-worker.service'], /ExecStart=node bin\/import-worker\.js/);
+  assert.match(plan.script, /sudo apt-get install -y poppler-utils/);
   assert.match(plan.script, /\/etc\/systemd\/system\/home-source-import-worker\.service/);
   assert.match(plan.script, /systemctl enable home-source-import-worker/);
   assert.match(plan.script, /systemctl restart home-source-import-worker/);
