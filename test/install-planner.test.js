@@ -71,6 +71,21 @@ test('bug base install planner renders nginx snippet for bug-base-mcp sidecar', 
   assert.match(plan.files['.env'], /MCP_PORT=\d+/);
 });
 
+test('home source install planner provisions import worker service sidecar', () => {
+  const plan = buildInstallPlan({
+    appId: 'home-source',
+    state: { installations: {} },
+    options: {},
+    config: { port: 3080, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', defaultHostname: 'homebase', defaultDomain: 'tailnet' },
+  });
+
+  assert.match(plan.files['home-source-import-worker.service'], /Description=Home Source Import Worker/);
+  assert.match(plan.files['home-source-import-worker.service'], /ExecStart=node bin\/import-worker\.js/);
+  assert.match(plan.script, /\/etc\/systemd\/system\/home-source-import-worker\.service/);
+  assert.match(plan.script, /systemctl enable home-source-import-worker/);
+  assert.match(plan.script, /systemctl restart home-source-import-worker/);
+});
+
 test('install planner uses HTTPS repository URLs by default', () => {
   const plan = buildInstallPlan({
     appId: 'family-help',

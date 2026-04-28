@@ -531,6 +531,16 @@ const catalog = [
       description: 'Home Source App',
       envFile: '.env',
     },
+    sidecars: [
+      {
+        name: 'home-source-import-worker',
+        description: 'Home Source Import Worker',
+        execStart: 'node bin/import-worker.js',
+        env: {
+          NODE_ENV: 'production',
+        },
+      },
+    ],
     config: {
       env: {
         DATABASE_URL: '{{databaseUrl}}',
