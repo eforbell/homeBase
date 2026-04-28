@@ -493,7 +493,7 @@ const catalog = [
       startCommand: 'node server.js',
       nodeEnv: 'production',
     },
-    systemPackages: ['poppler-utils'],
+    systemPackages: ['poppler-utils', 'tesseract-ocr'],
     network: {
       preferredMountPath: '/source/',
       preferredPort: 3008,
