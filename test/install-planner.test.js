@@ -87,6 +87,21 @@ test('home source install planner provisions import worker service sidecar', () 
   assert.match(plan.script, /systemctl restart home-source-import-worker/);
 });
 
+test('family pulse plan renders notification timer units', () => {
+  const plan = buildInstallPlan({
+    appId: 'family-pulse',
+    state: { installations: {} },
+    options: {},
+    config: { port: 3080, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', defaultHostname: 'homebase', defaultDomain: 'tailnet' },
+  });
+
+  assert.match(plan.files['family-pulse-notifications.service'], /Description=Family Pulse notification runner/);
+  assert.match(plan.files['family-pulse-notifications.service'], /ExecStart=node scripts\/send-notifications\.js/);
+  assert.match(plan.files['family-pulse-notifications.timer'], /OnCalendar=\*:0\/30/);
+  assert.match(plan.script, /systemctl enable family-pulse-notifications\.timer/);
+  assert.match(plan.script, /systemctl restart family-pulse-notifications\.timer/);
+});
+
 test('install planner uses HTTPS repository URLs by default', () => {
   const plan = buildInstallPlan({
     appId: 'family-help',

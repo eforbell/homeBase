@@ -54,6 +54,15 @@ const catalog = [
       description: 'Family Pulse App',
       envFile: '.env',
     },
+    timers: [
+      {
+        serviceName: 'family-pulse-notifications',
+        description: 'Family Pulse notification runner',
+        execStart: 'node scripts/send-notifications.js',
+        timerName: 'family-pulse-notifications.timer',
+        onCalendar: '*:0/30',
+      },
+    ],
     sidecars: [
       {
         name: 'family-pulse-mcp',
