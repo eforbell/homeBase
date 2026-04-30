@@ -102,6 +102,7 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /runtimeStatusPill/);
   assert.match(apps, /Update: available/);
   assert.match(apps, /Update: up to date/);
+  assert.match(apps, /helper-failing/);
   assert.match(apps, /window\.HB\.backupSummary/);
   assert.match(apps, /window\.HB\.localOnlyBackupNote/);
   assert.match(apps, /Inspect →/);
@@ -150,6 +151,7 @@ test('dashboard surfaces local-only backup posture warning', () => {
   assert.match(dashboard, /renderAppHealthWarnings/);
   assert.match(dashboard, /renderHostWarnings/);
   assert.match(dashboard, /needs-setup/);
+  assert.match(dashboard, /helper-failing/);
   assert.match(dashboard, /\/api\/apps\/health/);
   assert.match(dashboard, /Inspect →/);
   assert.match(dashboard, /Update in Config before wider deployment/);
@@ -163,6 +165,7 @@ test('shared API exposes backup summary helpers', () => {
   assert.match(api, /function localOnlyBackupNote\(config\)/);
   assert.match(api, /function runtimeStatusMeta\(status\)/);
   assert.match(api, /function runtimeStatusPill\(status\)/);
+  assert.match(api, /Helper failing/);
   assert.match(api, /Needs setup/);
   assert.match(api, /No backups yet/);
   assert.match(api, /latestBackup,/);
@@ -170,4 +173,12 @@ test('shared API exposes backup summary helpers', () => {
   assert.match(api, /localOnlyBackupNote,/);
   assert.match(api, /runtimeStatusMeta,/);
   assert.match(api, /runtimeStatusPill,/);
+});
+
+test('app detail page surfaces helper unit health rows', () => {
+  const appDetail = readPublicScript('app-detail.js');
+
+  assert.match(appDetail, /Helper units/);
+  assert.match(appDetail, /helperUnits/);
+  assert.match(appDetail, /helper-failing/);
 });

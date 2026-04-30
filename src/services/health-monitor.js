@@ -7,6 +7,10 @@ function asTrimmedString(value, fallback = '') {
   return next || fallback;
 }
 
+function isSafeSystemdUnitName(value) {
+  return /^[A-Za-z0-9@%:_.-]+$/.test(String(value || ''));
+}
+
 function statusFromHttpCode(statusCode) {
   if (!Number.isFinite(statusCode)) return 'unknown';
   return statusCode >= 200 && statusCode < 400 ? 'ok' : 'failed';
@@ -14,11 +18,11 @@ function statusFromHttpCode(statusCode) {
 
 function defaultProbeServiceState(serviceName) {
   const safeName = asTrimmedString(serviceName);
-  if (!safeName) {
+  if (!safeName || !isSafeSystemdUnitName(safeName)) {
     return {
       state: 'unknown',
       ok: false,
-      message: 'No service name configured',
+      message: 'Invalid or missing service name',
     };
   }
 
@@ -30,6 +34,32 @@ function defaultProbeServiceState(serviceName) {
   const state = asTrimmedString(result.stdout, 'unknown');
   const ok = state === 'active';
   const message = ok ? 'Service active' : (state === 'unknown' ? 'Service state unavailable' : `Service ${state}`);
+
+  return {
+    state,
+    ok,
+    message,
+  };
+}
+
+function defaultProbeUnitFailed(unitName) {
+  const safeName = asTrimmedString(unitName);
+  if (!safeName || !isSafeSystemdUnitName(safeName)) {
+    return {
+      state: 'unknown',
+      ok: false,
+      message: 'Invalid or missing unit name',
+    };
+  }
+
+  const cmd = `command -v systemctl >/dev/null 2>&1 && systemctl is-failed ${safeName} || true`;
+  const result = spawnSync('/bin/bash', ['-lc', cmd], {
+    encoding: 'utf8',
+    timeout: 3000,
+  });
+  const state = asTrimmedString(result.stdout, 'unknown');
+  const ok = state !== 'failed';
+  const message = ok ? 'No failed state reported' : 'Unit is in failed state';
 
   return {
     state,
@@ -140,12 +170,63 @@ function readOnboardingReadyValue(payload, readyWhen) {
   return null;
 }
 
-function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessProbe, readinessProbe, onboarding }) {
+function buildHelperUnitProbes({ catalogEntry, probeServiceState, probeUnitFailed }) {
+  const sidecars = Array.isArray(catalogEntry?.sidecars) ? catalogEntry.sidecars : [];
+  const timers = Array.isArray(catalogEntry?.timers) ? catalogEntry.timers : [];
+  const helperUnits = [];
+
+  for (const sidecar of sidecars) {
+    const unitName = asTrimmedString(sidecar?.name);
+    if (!unitName) continue;
+    const probe = probeServiceState(unitName);
+    helperUnits.push({
+      kind: 'sidecar-service',
+      unitName,
+      label: sidecar?.description || unitName,
+      state: probe.state,
+      ok: probe.ok,
+      message: probe.message,
+    });
+  }
+
+  for (const timer of timers) {
+    const timerUnitName = asTrimmedString(timer?.timerName || (timer?.serviceName ? `${timer.serviceName}.timer` : ''));
+    if (timerUnitName) {
+      const timerProbe = probeServiceState(timerUnitName);
+      helperUnits.push({
+        kind: 'timer-unit',
+        unitName: timerUnitName,
+        label: timer?.description ? `${timer.description} schedule` : timerUnitName,
+        state: timerProbe.state,
+        ok: timerProbe.ok,
+        message: timerProbe.message,
+      });
+    }
+
+    const timerServiceUnit = asTrimmedString(timer?.serviceName ? `${timer.serviceName}.service` : '');
+    if (timerServiceUnit) {
+      const failureProbe = probeUnitFailed(timerServiceUnit);
+      helperUnits.push({
+        kind: 'timer-service-result',
+        unitName: timerServiceUnit,
+        label: timer?.description ? `${timer.description} last run` : timerServiceUnit,
+        state: failureProbe.state,
+        ok: failureProbe.ok,
+        message: failureProbe.message,
+      });
+    }
+  }
+
+  return helperUnits;
+}
+
+function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessProbe, readinessProbe, onboarding, helperUnits }) {
   const deploymentStatus = asTrimmedString(install?.status, 'unknown');
   const service = serviceProbe || { state: 'unknown', ok: false, message: 'Service probe unavailable' };
   const liveness = livenessProbe || { status: 'unknown', ok: false, message: 'No liveness probe configured' };
   const readiness = readinessProbe || { status: 'unknown', ok: false, message: 'No readiness probe configured' };
   const onboardingState = onboarding || { status: 'unknown', ok: false, message: 'No onboarding status configured', setupUrl: null };
+  const helperUnitStates = Array.isArray(helperUnits) ? helperUnits : [];
 
   if (deploymentStatus !== 'installed') {
     return {
@@ -156,6 +237,7 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
       liveness,
       readiness,
       onboarding: onboardingState,
+      helperUnits: helperUnitStates,
     };
   }
 
@@ -168,6 +250,7 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
       liveness,
       readiness,
       onboarding: onboardingState,
+      helperUnits: helperUnitStates,
     };
   }
 
@@ -180,6 +263,7 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
       liveness,
       readiness,
       onboarding: onboardingState,
+      helperUnits: helperUnitStates,
     };
   }
 
@@ -192,6 +276,7 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
       liveness,
       readiness,
       onboarding: onboardingState,
+      helperUnits: helperUnitStates,
     };
   }
 
@@ -204,6 +289,20 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
       liveness,
       readiness,
       onboarding: onboardingState,
+      helperUnits: helperUnitStates,
+    };
+  }
+
+  if (helperUnitStates.some((unit) => unit && unit.ok === false)) {
+    return {
+      runtimeStatus: 'helper-failing',
+      severity: 'warning',
+      recoveryHint: 'A helper unit is failing (timer or sidecar). Open app detail and inspect helper statuses.',
+      service,
+      liveness,
+      readiness,
+      onboarding: onboardingState,
+      helperUnits: helperUnitStates,
     };
   }
 
@@ -216,6 +315,7 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
       liveness,
       readiness,
       onboarding: onboardingState,
+      helperUnits: helperUnitStates,
     };
   }
 
@@ -227,10 +327,11 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
     liveness,
     readiness,
     onboarding: onboardingState,
+    helperUnits: helperUnitStates,
   };
 }
 
-async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeHttp, probeHttpJson = defaultProbeHttpJson, nowIso }) {
+async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeUnitFailed = defaultProbeUnitFailed, probeHttp, probeHttpJson = defaultProbeHttpJson, nowIso }) {
   const healthConfig = catalogEntry?.network?.health || null;
   const serviceProbe = probeServiceState(install?.serviceName);
   const onboardingConfig = catalogEntry?.onboarding || null;
@@ -260,6 +361,12 @@ async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, 
     };
   }
 
+  const helperUnits = buildHelperUnitProbes({
+    catalogEntry,
+    probeServiceState,
+    probeUnitFailed,
+  });
+
   const runtime = evaluateRuntimeState({
     install,
     healthConfig,
@@ -267,6 +374,7 @@ async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, 
     livenessProbe,
     readinessProbe,
     onboarding,
+    helperUnits,
   });
 
   return {
@@ -280,6 +388,7 @@ async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, 
     liveness: runtime.liveness,
     readiness: runtime.readiness,
     onboarding: runtime.onboarding,
+    helperUnits: runtime.helperUnits,
   };
 }
 
@@ -294,9 +403,10 @@ function computeInstallationsKey(installations) {
 }
 
 class HealthMonitor {
-  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeHttp = defaultProbeHttp, probeHttpJson = defaultProbeHttpJson, ttlMs = 15000, now = () => Date.now() } = {}) {
+  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeUnitFailed = defaultProbeUnitFailed, probeHttp = defaultProbeHttp, probeHttpJson = defaultProbeHttpJson, ttlMs = 15000, now = () => Date.now() } = {}) {
     this.catalogById = catalogById;
     this.probeServiceState = probeServiceState;
+    this.probeUnitFailed = probeUnitFailed;
     this.probeHttp = probeHttp;
     this.probeHttpJson = probeHttpJson;
     this.ttlMs = ttlMs;
@@ -322,6 +432,7 @@ class HealthMonitor {
       install,
       catalogEntry: this.catalogById.get(install.appId) || null,
       probeServiceState: this.probeServiceState,
+      probeUnitFailed: this.probeUnitFailed,
       probeHttp: this.probeHttp,
       probeHttpJson: this.probeHttpJson,
       nowIso,
@@ -347,6 +458,7 @@ module.exports = {
   HealthMonitor,
   buildAppHealthRecord,
   defaultProbeServiceState,
+  defaultProbeUnitFailed,
   defaultProbeHttp,
   defaultProbeHttpJson,
   evaluateRuntimeState,

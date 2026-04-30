@@ -66,6 +66,21 @@
     return `<span style="color:var(${color})">Last ${window.HB.escapeHtml(lastJob.kind)} <a href="/jobs/${window.HB.escapeHtml(lastJob.id)}">#${window.HB.escapeHtml(lastJob.id)}</a> ${label}${ts}</span>`;
   }
 
+  function helperProbeSummary(helperProbe) {
+    const state = helperProbe?.state || 'unknown';
+    const message = helperProbe?.message || '';
+    const unitName = helperProbe?.unitName || '';
+    const label = helperProbe?.label || unitName || 'Helper unit';
+    return `
+      <li class="hb-row">
+        <strong>${window.HB.escapeHtml(label)}</strong>
+        <span class="hb-badge">${window.HB.escapeHtml(state)}</span>
+        <span class="hb-muted">${window.HB.escapeHtml(unitName)}${message ? ` · ${window.HB.escapeHtml(message)}` : ''}</span>
+      </li>
+    `;
+  }
+
+
   function isTerminalJobStatus(status) {
     return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
   }
@@ -398,13 +413,21 @@
             <p class="hb-muted" style="margin:0.55rem 0 0;">
               Last check: ${window.HB.escapeHtml(window.HB.formatTimestamp(appHealth?.checkedAt))}
             </p>
-            ${appHealth?.recoveryHint ? `<p class="${['service-down', 'http-failing', 'readiness-failing'].includes(appHealth.runtimeStatus) ? 'hb-warn' : 'hb-muted'}" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(appHealth.recoveryHint)}</p>` : ''}
+            ${appHealth?.recoveryHint ? `<p class="${['service-down', 'http-failing', 'readiness-failing', 'helper-failing'].includes(appHealth.runtimeStatus) ? 'hb-warn' : 'hb-muted'}" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(appHealth.recoveryHint)}</p>` : ''}
             <ul class="hb-stack" style="list-style:none;padding:0;margin:0.75rem 0 0;">
               ${probeSummary('Service state', appHealth?.service)}
               ${probeSummary('HTTP liveness', appHealth?.liveness)}
               ${probeSummary('HTTP readiness', appHealth?.readiness)}
               ${probeSummary('Onboarding', appHealth?.onboarding)}
             </ul>
+            ${(appHealth?.helperUnits || []).length
+    ? `
+            <h3 style="margin:0.85rem 0 0.35rem;font-size:0.95rem;">Helper units</h3>
+            <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
+              ${(appHealth.helperUnits || []).map(helperProbeSummary).join('')}
+            </ul>
+            `
+    : ''}
           </section>
 
           ${install?.status === 'planned' ? `

@@ -48,6 +48,24 @@ test('evaluateRuntimeState prioritizes needs-setup over readiness-failing', () =
   assert.equal(runtime.runtimeStatus, 'needs-setup');
 });
 
+test('evaluateRuntimeState marks helper-failing when helper units fail', () => {
+  const runtime = evaluateRuntimeState({
+    install: { status: 'installed' },
+    healthConfig: { readinessPath: '/api/ready' },
+    serviceProbe: { state: 'active', ok: true, message: 'Service active' },
+    livenessProbe: { status: 'ok', ok: true },
+    readinessProbe: { status: 'ok', ok: true },
+    onboarding: { status: 'ready', ok: true, message: 'Onboarding complete' },
+    helperUnits: [
+      { unitName: 'family-pulse-notifications.timer', state: 'active', ok: true, message: 'Service active' },
+      { unitName: 'family-pulse-notifications.service', state: 'failed', ok: false, message: 'Unit is in failed state' },
+    ],
+  });
+
+  assert.equal(runtime.runtimeStatus, 'helper-failing');
+  assert.equal(runtime.severity, 'warning');
+});
+
 test('health monitor caches snapshots by installation key', async () => {
   let serviceProbeCalls = 0;
   let httpProbeCalls = 0;
@@ -172,4 +190,53 @@ test('buildAppHealthRecord uses bootstrap.ready when readyWhen key is missing', 
 
   assert.equal(record.onboarding.status, 'ready');
   assert.equal(record.runtimeStatus, 'healthy');
+});
+
+test('buildAppHealthRecord captures helper timer and sidecar states', async () => {
+  const serviceStates = new Map([
+    ['family-pulse', { state: 'active', ok: true, message: 'Service active' }],
+    ['family-pulse-mcp', { state: 'active', ok: true, message: 'Service active' }],
+    ['family-pulse-notifications.timer', { state: 'active', ok: true, message: 'Service active' }],
+  ]);
+  const failureStates = new Map([
+    ['family-pulse-notifications.service', { state: 'failed', ok: false, message: 'Unit is in failed state' }],
+  ]);
+
+  const record = await buildAppHealthRecord({
+    install: {
+      appId: 'family-pulse',
+      status: 'installed',
+      serviceName: 'family-pulse',
+      port: 3003,
+      externalUrl: 'https://test.example.ts.net/pulse',
+    },
+    catalogEntry: {
+      network: {
+        health: {
+          livenessPath: '/api/health',
+          readinessPath: '/api/health',
+        },
+      },
+      sidecars: [
+        { name: 'family-pulse-mcp', description: 'Family Pulse MCP Server' },
+      ],
+      timers: [
+        {
+          serviceName: 'family-pulse-notifications',
+          description: 'Family Pulse notification runner',
+          timerName: 'family-pulse-notifications.timer',
+        },
+      ],
+    },
+    probeServiceState: (unitName) => serviceStates.get(unitName) || { state: 'unknown', ok: false, message: 'Service state unavailable' },
+    probeUnitFailed: (unitName) => failureStates.get(unitName) || { state: 'inactive', ok: true, message: 'No failed state reported' },
+    probeHttp: async () => ({ status: 'ok', ok: true, statusCode: 200, message: 'HTTP 200' }),
+    probeHttpJson: async () => ({ status: 'unknown', ok: false, payload: null }),
+    nowIso: '2026-04-30T20:00:00.000Z',
+  });
+
+  assert.equal(record.runtimeStatus, 'helper-failing');
+  assert.equal(Array.isArray(record.helperUnits), true);
+  assert.equal(record.helperUnits.length, 3);
+  assert.equal(record.helperUnits.some((probe) => probe.unitName === 'family-pulse-notifications.service' && probe.ok === false), true);
 });

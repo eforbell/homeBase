@@ -18,7 +18,7 @@
     const updateStatus = updatesByAppId[install.appId] || install.updateStatus || null;
     const runtimeStatus = health.runtimeStatus || 'unknown';
     const runtimePill = window.HB.runtimeStatusPill(runtimeStatus);
-    const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
+    const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'helper-failing', 'needs-setup']);
     const needsAttention = attentionStatuses.has(runtimeStatus);
     const healthHint = health.recoveryHint
       ? `<p class="${needsAttention ? 'hb-warn' : 'hb-muted'}" style="margin:0.45rem 0 0;font-size:0.83rem;">${window.HB.escapeHtml(health.recoveryHint)}${needsAttention ? ` <a href="${detailUrl}#health">Inspect →</a>` : ''}</p>`
