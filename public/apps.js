@@ -6,10 +6,8 @@
   function updateStatusLabel(updateStatus) {
     if (!updateStatus) return 'Update: checking';
     if (updateStatus.status === 'update-available') return 'Update: available';
-    if (updateStatus.status === 'up-to-date') return 'Update: up to date';
-    if (updateStatus.status === 'ahead') return 'Update: local ahead';
-    if (updateStatus.status === 'diverged') return 'Update: needs review';
-    return 'Update: check failed';
+    if (updateStatus.status === 'check-failed') return 'Update: check failed';
+    return 'Update: up to date';
   }
 
   function installationCard(install, backupsByApp, config, healthByAppId, catalogEntry, updatesByAppId) {

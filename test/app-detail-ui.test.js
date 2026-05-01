@@ -11,10 +11,12 @@ test('app detail UI exposes backup and restore execution without window.prompt',
   const source = readAppDetail();
 
   assert.match(source, /data-action="backup"/);
+  assert.match(source, /data-action="update-check"/);
   assert.doesNotMatch(source, /window\.prompt/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/backup\/execute/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/restart\/execute/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/uninstall\/execute/);
+  assert.match(source, /\/api\/apps\/updates\?refresh=1/);
   assert.match(source, /window\.HB\.confirmInline/);
   assert.match(source, /Restore will overwrite/);
   assert.match(source, /form\.dataset\.submitting/);
@@ -62,6 +64,8 @@ test('app detail surfaces backup summary and local-only risk', () => {
   assert.match(source, /probeSummary/);
   assert.match(source, /payload\.ref = ref/);
   assert.match(source, /Run update/);
+  assert.match(source, /Check now/);
+  assert.match(source, /data-update-status/);
   assert.match(source, /fully redeploy this app/);
   assert.match(source, /keepBackups/);
   assert.match(source, /Run uninstall/);
