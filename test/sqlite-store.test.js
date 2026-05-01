@@ -71,10 +71,32 @@ test('sqlite state store persists installations and jobs', () => {
   assert.equal(backups.length, 1);
   assert.equal(backups[0].includedFiles[0], '.env.backup');
 
+  store.upsertAppUpdateStatus({
+    appId: 'family-help',
+    trackedRef: 'main',
+    status: 'update-available',
+    canUpdate: true,
+    aheadCount: 0,
+    behindCount: 3,
+    localHeadSha: 'abc123',
+    remoteHeadSha: 'def456',
+    lastCheckedAt: '2026-04-12T00:00:00.000Z',
+    lastError: '',
+  });
+  const updateStatuses = store.listAppUpdateStatuses();
+  assert.equal(updateStatuses.length, 1);
+  assert.equal(updateStatuses[0].appId, 'family-help');
+  assert.equal(updateStatuses[0].canUpdate, true);
+
+  const withUpdateStatus = store.loadState();
+  assert.equal(withUpdateStatus.installations['family-help'].updateStatus.status, 'update-available');
+  assert.equal(withUpdateStatus.installations['family-help'].updateStatus.behindCount, 3);
+
   store.deleteBackups('family-help');
   store.deleteInstallation('family-help');
 
   const afterDelete = store.loadState();
   assert.equal(afterDelete.installations['family-help'], undefined);
   assert.equal(store.listBackups('family-help').length, 0);
+  assert.equal(store.listAppUpdateStatuses().length, 0);
 });

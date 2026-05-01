@@ -98,7 +98,10 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /#uninstall/);
   assert.match(apps, /Git ref/);
   assert.match(apps, /\/api\/apps\/health/);
+  assert.match(apps, /\/api\/apps\/updates/);
   assert.match(apps, /runtimeStatusPill/);
+  assert.match(apps, /Update: available/);
+  assert.match(apps, /Update: up to date/);
   assert.match(apps, /window\.HB\.backupSummary/);
   assert.match(apps, /window\.HB\.localOnlyBackupNote/);
   assert.match(apps, /Inspect →/);

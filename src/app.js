@@ -26,6 +26,7 @@ const {
 const { scheduleAutoBootstrap } = require('./auto-bootstrap');
 const { HealthMonitor } = require('./services/health-monitor');
 const { HealthAlertNotifier } = require('./services/notifications');
+const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
 const {
   getAdminStatus,
@@ -298,6 +299,11 @@ function createApp(config) {
   const healthAlertNotifier = new HealthAlertNotifier({
     postJson: config.notificationsPostJson,
   });
+  const appUpdateMonitor = new AppUpdateMonitor(stateStore, {
+    checkIntervalMs: config.appUpdateCheckIntervalMs,
+    staleAfterMs: config.appUpdateStatusTtlMs,
+  });
+  appUpdateMonitor.schedule(() => Object.values(stateStore.loadState().installations || {}));
 
   function getTailscaleReadiness(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
@@ -409,6 +415,15 @@ function createApp(config) {
           console.warn(`[homebase] health alert notify failed: ${error.message}`);
         }
         return sendJson(res, 200, snapshot);
+      }
+      if (method === 'GET' && pathname === '/api/apps/updates') {
+        const installations = Object.values(state.installations || {});
+        const snapshot = await appUpdateMonitor.getSnapshot(installations, {
+          force: url.searchParams.get('refresh') === '1',
+        });
+        return sendJson(res, 200, {
+          byAppId: snapshot,
+        });
       }
       if (method === 'POST' && pathname === '/api/alerts/test') {
         try {
@@ -828,11 +843,11 @@ function createApp(config) {
             install: true,
             backup: true,
             restore: true,
-            update: false,
+            update: Boolean(installation),
             restart: Boolean(installation),
             uninstall: Boolean(installation),
           },
-          note: 'Update is not a separate API action yet; use install execute for deploy operations.',
+          note: 'Update currently runs through install execute (same deployment pipeline).',
         });
       }
 
@@ -913,6 +928,18 @@ function createApp(config) {
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {
           dryRun: body.dryRun !== false,
+          onComplete: body.dryRun === false
+            ? () => {
+                try {
+                  const latestState = stateStore.loadState();
+                  const installed = (latestState.installations || {})[appId];
+                  if (!installed) return;
+                  void appUpdateMonitor.refreshInstalledApps([installed], { force: true });
+                } catch (error) {
+                  console.warn(`[homebase] update status refresh failed for ${appId}: ${error.message}`);
+                }
+              }
+            : null,
         });
         if (body.dryRun === false) {
           recordAdminAudit(stateStore, {
