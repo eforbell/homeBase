@@ -17,13 +17,6 @@ function isValidGitRef(value) {
   return true;
 }
 
-function runGit({ installRoot, args, timeoutMs }) {
-  return spawnSync('git', ['-C', installRoot, ...args], {
-    encoding: 'utf8',
-    timeout: timeoutMs,
-  });
-}
-
 function parseRevListCounts(output) {
   const trimmed = String(output || '').trim();
   const [aheadRaw, behindRaw] = trimmed.split(/\s+/);
@@ -45,17 +38,30 @@ function formatGitFailure(message, result) {
 class AppUpdateMonitor {
   constructor(stateStore, {
     logger = console,
+    serviceUser = '',
     checkIntervalMs = DEFAULT_CHECK_INTERVAL_MS,
     staleAfterMs = DEFAULT_STALE_AFTER_MS,
     gitTimeoutMs = DEFAULT_GIT_TIMEOUT_MS,
   } = {}) {
     this.stateStore = stateStore;
     this.logger = logger;
+    this.serviceUser = String(serviceUser || '').trim();
     this.checkIntervalMs = Number.isFinite(checkIntervalMs) ? Math.max(10_000, checkIntervalMs) : DEFAULT_CHECK_INTERVAL_MS;
     this.staleAfterMs = Number.isFinite(staleAfterMs) ? Math.max(1_000, staleAfterMs) : DEFAULT_STALE_AFTER_MS;
     this.gitTimeoutMs = Number.isFinite(gitTimeoutMs) ? Math.max(1_000, gitTimeoutMs) : DEFAULT_GIT_TIMEOUT_MS;
     this.timer = null;
     this.scanPromise = null;
+  }
+
+  runGit(args, installRoot) {
+    const commandArgs = this.serviceUser
+      ? ['-u', this.serviceUser, 'git', '-C', installRoot, ...args]
+      : ['-C', installRoot, ...args];
+    const command = this.serviceUser ? 'sudo' : 'git';
+    return spawnSync(command, commandArgs, {
+      encoding: 'utf8',
+      timeout: this.gitTimeoutMs,
+    });
   }
 
   buildSnapshotByApp() {
@@ -134,7 +140,7 @@ class AppUpdateMonitor {
       };
     }
 
-    const localHead = runGit({ installRoot, args: ['rev-parse', 'HEAD'], timeoutMs: this.gitTimeoutMs });
+    const localHead = this.runGit(['rev-parse', 'HEAD'], installRoot);
     if (localHead.status !== 0) {
       return {
         appId,
@@ -152,7 +158,7 @@ class AppUpdateMonitor {
 
     const localHeadSha = String(localHead.stdout || '').trim();
 
-    const fetch = runGit({ installRoot, args: ['fetch', 'origin', '--prune'], timeoutMs: this.gitTimeoutMs });
+    const fetch = this.runGit(['fetch', 'origin', '--prune'], installRoot);
     if (fetch.status !== 0) {
       return {
         appId,
@@ -168,7 +174,7 @@ class AppUpdateMonitor {
       };
     }
 
-    const remoteHead = runGit({ installRoot, args: ['rev-parse', `origin/${trackedRef}`], timeoutMs: this.gitTimeoutMs });
+    const remoteHead = this.runGit(['rev-parse', `origin/${trackedRef}`], installRoot);
     if (remoteHead.status !== 0) {
       return {
         appId,
@@ -185,7 +191,7 @@ class AppUpdateMonitor {
     }
 
     const remoteHeadSha = String(remoteHead.stdout || '').trim();
-    const revList = runGit({ installRoot, args: ['rev-list', '--left-right', '--count', `HEAD...origin/${trackedRef}`], timeoutMs: this.gitTimeoutMs });
+    const revList = this.runGit(['rev-list', '--left-right', '--count', `HEAD...origin/${trackedRef}`], installRoot);
     if (revList.status !== 0) {
       return {
         appId,

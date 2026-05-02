@@ -300,6 +300,7 @@ function createApp(config) {
     postJson: config.notificationsPostJson,
   });
   const appUpdateMonitor = new AppUpdateMonitor(stateStore, {
+    serviceUser: initialEffectiveConfig.serviceUser || 'sovereign',
     checkIntervalMs: config.appUpdateCheckIntervalMs,
     staleAfterMs: config.appUpdateStatusTtlMs,
   });
