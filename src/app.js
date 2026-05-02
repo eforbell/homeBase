@@ -301,6 +301,10 @@ function createApp(config) {
   });
   const appUpdateMonitor = new AppUpdateMonitor(stateStore, {
     serviceUser: initialEffectiveConfig.serviceUser || 'sovereign',
+    gitTransport: initialEffectiveConfig.gitTransport || 'https',
+    gitSshKeyPath: initialEffectiveConfig.gitSshKeyPath || '',
+    gitSshKnownHostsPath: initialEffectiveConfig.gitSshKnownHostsPath || '',
+    gitSshStrictHostKeyChecking: initialEffectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
     checkIntervalMs: config.appUpdateCheckIntervalMs,
     staleAfterMs: config.appUpdateStatusTtlMs,
   });
@@ -418,6 +422,13 @@ function createApp(config) {
         return sendJson(res, 200, snapshot);
       }
       if (method === 'GET' && pathname === '/api/apps/updates') {
+        appUpdateMonitor.configureGit({
+          serviceUser: effectiveConfig.serviceUser || 'sovereign',
+          gitTransport: effectiveConfig.gitTransport || 'https',
+          gitSshKeyPath: effectiveConfig.gitSshKeyPath || '',
+          gitSshKnownHostsPath: effectiveConfig.gitSshKnownHostsPath || '',
+          gitSshStrictHostKeyChecking: effectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
+        });
         const installations = Object.values(state.installations || {});
         const snapshot = await appUpdateMonitor.getSnapshot(installations, {
           force: url.searchParams.get('refresh') === '1',

@@ -39,6 +39,10 @@ class AppUpdateMonitor {
   constructor(stateStore, {
     logger = console,
     serviceUser = '',
+    gitTransport = 'https',
+    gitSshKeyPath = '',
+    gitSshKnownHostsPath = '',
+    gitSshStrictHostKeyChecking = 'accept-new',
     checkIntervalMs = DEFAULT_CHECK_INTERVAL_MS,
     staleAfterMs = DEFAULT_STALE_AFTER_MS,
     gitTimeoutMs = DEFAULT_GIT_TIMEOUT_MS,
@@ -46,6 +50,10 @@ class AppUpdateMonitor {
     this.stateStore = stateStore;
     this.logger = logger;
     this.serviceUser = String(serviceUser || '').trim();
+    this.gitTransport = String(gitTransport || 'https').trim() || 'https';
+    this.gitSshKeyPath = String(gitSshKeyPath || '').trim();
+    this.gitSshKnownHostsPath = String(gitSshKnownHostsPath || '').trim();
+    this.gitSshStrictHostKeyChecking = String(gitSshStrictHostKeyChecking || 'accept-new').trim() || 'accept-new';
     this.checkIntervalMs = Number.isFinite(checkIntervalMs) ? Math.max(10_000, checkIntervalMs) : DEFAULT_CHECK_INTERVAL_MS;
     this.staleAfterMs = Number.isFinite(staleAfterMs) ? Math.max(1_000, staleAfterMs) : DEFAULT_STALE_AFTER_MS;
     this.gitTimeoutMs = Number.isFinite(gitTimeoutMs) ? Math.max(1_000, gitTimeoutMs) : DEFAULT_GIT_TIMEOUT_MS;
@@ -53,12 +61,57 @@ class AppUpdateMonitor {
     this.scanPromise = null;
   }
 
+  configureGit({
+    serviceUser = this.serviceUser,
+    gitTransport = this.gitTransport,
+    gitSshKeyPath = this.gitSshKeyPath,
+    gitSshKnownHostsPath = this.gitSshKnownHostsPath,
+    gitSshStrictHostKeyChecking = this.gitSshStrictHostKeyChecking,
+  } = {}) {
+    this.serviceUser = String(serviceUser || '').trim();
+    this.gitTransport = String(gitTransport || 'https').trim() || 'https';
+    this.gitSshKeyPath = String(gitSshKeyPath || '').trim();
+    this.gitSshKnownHostsPath = String(gitSshKnownHostsPath || '').trim();
+    this.gitSshStrictHostKeyChecking = String(gitSshStrictHostKeyChecking || 'accept-new').trim() || 'accept-new';
+  }
+
+  buildGitSshCommand() {
+    const parts = [
+      'ssh',
+      '-i', this.gitSshKeyPath,
+      '-o', 'IdentitiesOnly=yes',
+      '-o', `StrictHostKeyChecking=${this.gitSshStrictHostKeyChecking}`,
+    ];
+    if (this.gitSshKnownHostsPath) {
+      parts.push('-o', `UserKnownHostsFile=${this.gitSshKnownHostsPath}`);
+    }
+    return parts.join(' ');
+  }
+
+  buildGitInvocation(args, installRoot) {
+    const env = { ...process.env };
+    const gitArgs = ['-C', installRoot, ...args];
+    let command = 'git';
+    let commandArgs = gitArgs;
+    if (this.serviceUser) {
+      command = 'sudo';
+      if (this.gitTransport === 'ssh') {
+        commandArgs = ['--preserve-env=SSH_AUTH_SOCK', '-u', this.serviceUser, 'git', ...gitArgs];
+      } else if (this.gitTransport === 'ssh-key') {
+        commandArgs = ['-u', this.serviceUser, 'env', `GIT_SSH_COMMAND=${this.buildGitSshCommand()}`, 'git', ...gitArgs];
+      } else {
+        commandArgs = ['-u', this.serviceUser, 'git', ...gitArgs];
+      }
+    } else if (this.gitTransport === 'ssh-key') {
+      env.GIT_SSH_COMMAND = this.buildGitSshCommand();
+    }
+    return { command, commandArgs, env };
+  }
+
   runGit(args, installRoot) {
-    const commandArgs = this.serviceUser
-      ? ['-u', this.serviceUser, 'git', '-C', installRoot, ...args]
-      : ['-C', installRoot, ...args];
-    const command = this.serviceUser ? 'sudo' : 'git';
+    const { command, commandArgs, env } = this.buildGitInvocation(args, installRoot);
     return spawnSync(command, commandArgs, {
+      env,
       encoding: 'utf8',
       timeout: this.gitTimeoutMs,
     });
@@ -137,6 +190,20 @@ class AppUpdateMonitor {
         remoteHeadSha: '',
         lastCheckedAt: checkedAt,
         lastError: 'Install root is not recorded for this app.',
+      };
+    }
+    if (this.gitTransport === 'ssh-key' && !this.gitSshKeyPath) {
+      return {
+        appId,
+        trackedRef,
+        status: 'check-failed',
+        canUpdate: null,
+        aheadCount: 0,
+        behindCount: 0,
+        localHeadSha: '',
+        remoteHeadSha: '',
+        lastCheckedAt: checkedAt,
+        lastError: 'HOME_BASE_GIT_SSH_KEY_PATH is required when HOME_BASE_GIT_TRANSPORT=ssh-key',
       };
     }
 

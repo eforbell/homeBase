@@ -97,3 +97,27 @@ test('app update monitor records check failure for invalid git ref', async () =>
   assert.equal(statuses[0].canUpdate, null);
   assert.match(statuses[0].lastError, /Invalid git ref/i);
 });
+
+test('app update monitor uses ssh-key transport invocation for service user git checks', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-monitor-ssh-key-'));
+  const store = createStateStore(tempDir);
+  const monitor = new AppUpdateMonitor(store, {
+    serviceUser: 'sovereign',
+    gitTransport: 'ssh-key',
+    gitSshKeyPath: '/opt/sovereign-home/.ssh/id_founder_homebase',
+    gitSshKnownHostsPath: '/opt/sovereign-home/.ssh/known_hosts',
+    gitSshStrictHostKeyChecking: 'accept-new',
+  });
+
+  const { command, commandArgs } = monitor.buildGitInvocation(['fetch', 'origin', '--prune'], '/opt/sovereign-home/apps/familyPulse');
+  assert.equal(command, 'sudo');
+  assert.equal(commandArgs[0], '-u');
+  assert.equal(commandArgs[1], 'sovereign');
+  assert.equal(commandArgs[2], 'env');
+  assert.match(commandArgs[3], /^GIT_SSH_COMMAND=ssh -i \/opt\/sovereign-home\/\.ssh\/id_founder_homebase /);
+  assert.match(commandArgs[3], /StrictHostKeyChecking=accept-new/);
+  assert.match(commandArgs[3], /UserKnownHostsFile=\/opt\/sovereign-home\/\.ssh\/known_hosts/);
+  assert.equal(commandArgs[4], 'git');
+  assert.equal(commandArgs[5], '-C');
+  assert.equal(commandArgs[6], '/opt/sovereign-home/apps/familyPulse');
+});
