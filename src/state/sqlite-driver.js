@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS backup_records (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS app_update_status (
+  app_id TEXT PRIMARY KEY,
+  tracked_ref TEXT NOT NULL,
+  status TEXT NOT NULL,
+  can_update INTEGER,
+  ahead_count INTEGER NOT NULL DEFAULT 0,
+  behind_count INTEGER NOT NULL DEFAULT 0,
+  local_head_sha TEXT,
+  remote_head_sha TEXT,
+  last_checked_at TEXT NOT NULL,
+  last_error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS homebase_config (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   hostname TEXT,
@@ -131,6 +144,24 @@ elif op == "load_state":
         "SELECT * FROM installations ORDER BY name"
     ):
         record = row_to_dict(row)
+        update_row = conn.execute(
+            "SELECT * FROM app_update_status WHERE app_id = ?",
+            (record["app_id"],),
+        ).fetchone()
+        update_status = None
+        if update_row is not None:
+            update_status = {
+                "appId": update_row["app_id"],
+                "trackedRef": update_row["tracked_ref"],
+                "status": update_row["status"],
+                "canUpdate": None if update_row["can_update"] is None else bool(update_row["can_update"]),
+                "aheadCount": update_row["ahead_count"] or 0,
+                "behindCount": update_row["behind_count"] or 0,
+                "localHeadSha": update_row["local_head_sha"] or "",
+                "remoteHeadSha": update_row["remote_head_sha"] or "",
+                "lastCheckedAt": update_row["last_checked_at"],
+                "lastError": update_row["last_error"] or "",
+            }
         installations[record["app_id"]] = {
             "appId": record["app_id"],
             "name": record["name"],
@@ -144,6 +175,7 @@ elif op == "load_state":
             "status": record["status"],
             "plannedAt": record["planned_at"],
             "updatedAt": record["updated_at"],
+            "updateStatus": update_status,
         }
     def serialize_job(row):
         return {
@@ -462,8 +494,67 @@ elif op == "delete_installation":
         "DELETE FROM installations WHERE app_id = ?",
         (payload["appId"],),
     )
+    conn.execute(
+        "DELETE FROM app_update_status WHERE app_id = ?",
+        (payload["appId"],),
+    )
     conn.commit()
     emit({"ok": True})
+
+elif op == "upsert_app_update_status":
+    record = payload["record"]
+    conn.execute(
+        """
+        INSERT INTO app_update_status (
+          app_id, tracked_ref, status, can_update, ahead_count, behind_count,
+          local_head_sha, remote_head_sha, last_checked_at, last_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(app_id) DO UPDATE SET
+          tracked_ref=excluded.tracked_ref,
+          status=excluded.status,
+          can_update=excluded.can_update,
+          ahead_count=excluded.ahead_count,
+          behind_count=excluded.behind_count,
+          local_head_sha=excluded.local_head_sha,
+          remote_head_sha=excluded.remote_head_sha,
+          last_checked_at=excluded.last_checked_at,
+          last_error=excluded.last_error
+        """,
+        (
+            record["appId"],
+            record.get("trackedRef", "main"),
+            record.get("status", "check-failed"),
+            None if record.get("canUpdate") is None else (1 if record.get("canUpdate") else 0),
+            int(record.get("aheadCount", 0)),
+            int(record.get("behindCount", 0)),
+            record.get("localHeadSha", ""),
+            record.get("remoteHeadSha", ""),
+            record["lastCheckedAt"],
+            record.get("lastError", ""),
+        ),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "list_app_update_statuses":
+    rows = [
+        {
+            "appId": row["app_id"],
+            "trackedRef": row["tracked_ref"],
+            "status": row["status"],
+            "canUpdate": None if row["can_update"] is None else bool(row["can_update"]),
+            "aheadCount": row["ahead_count"] or 0,
+            "behindCount": row["behind_count"] or 0,
+            "localHeadSha": row["local_head_sha"] or "",
+            "remoteHeadSha": row["remote_head_sha"] or "",
+            "lastCheckedAt": row["last_checked_at"],
+            "lastError": row["last_error"] or "",
+        }
+        for row in conn.execute(
+            "SELECT * FROM app_update_status ORDER BY app_id"
+        )
+    ]
+    emit(rows)
 
 elif op == "get_homebase_config":
     row = conn.execute(

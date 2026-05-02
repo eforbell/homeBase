@@ -1051,6 +1051,61 @@ test('app actions endpoint documents currently supported operations', async () =
   }
 });
 
+test('apps update endpoint returns status by app id when persisted', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-status-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  store.upsertInstallation({
+    appId: 'family-help',
+    name: 'Family Help',
+    purpose: 'help desk',
+    port: 3002,
+    mountPath: '/help/',
+    externalUrl: 'https://homebase.tailnet/help/',
+    installRoot: '/tmp/does-not-matter',
+    serviceName: 'family-help',
+    ref: 'main',
+    status: 'installed',
+    plannedAt: '2026-04-03T00:00:00.000Z',
+    updatedAt: '2026-04-03T00:00:00.000Z',
+  });
+  store.upsertAppUpdateStatus({
+    appId: 'family-help',
+    trackedRef: 'main',
+    status: 'update-available',
+    canUpdate: true,
+    aheadCount: 0,
+    behindCount: 2,
+    localHeadSha: 'aaa111',
+    remoteHeadSha: 'bbb222',
+    lastCheckedAt: new Date().toISOString(),
+    lastError: '',
+  });
+
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/apps/updates`);
+    const payload = await res.json();
+    assert.equal(payload.byAppId['family-help'].status, 'update-available');
+    assert.equal(payload.byAppId['family-help'].canUpdate, true);
+    assert.equal(payload.byAppId['family-help'].behindCount, 2);
+  } finally {
+    await server.close();
+  }
+});
+
 test('install execute dry-run creates a completed install job', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-job-'));
   const server = await startServer({
@@ -1112,6 +1167,7 @@ test('app actions marks uninstall available after install record exists', async 
 
     const res = await fetch(`${server.url}/api/apps/family-help/actions`);
     const payload = await res.json();
+    assert.equal(payload.actions.update, true);
     assert.equal(payload.actions.uninstall, true);
   } finally {
     await server.close();

@@ -3,11 +3,19 @@
   let refreshTimer = null;
   let eventsWired = false;
 
-  function installationCard(install, backupsByApp, config, healthByAppId, catalogEntry) {
+  function updateStatusLabel(updateStatus) {
+    if (!updateStatus) return 'Update: checking';
+    if (updateStatus.status === 'update-available') return 'Update: available';
+    if (updateStatus.status === 'check-failed') return 'Update: check failed';
+    return 'Update: up to date';
+  }
+
+  function installationCard(install, backupsByApp, config, healthByAppId, catalogEntry, updatesByAppId) {
     const appId = window.HB.escapeHtml(install.appId);
     const detailUrl = `/apps/${appId}`;
     const backups = backupsByApp[install.appId] || [];
     const health = healthByAppId[install.appId] || {};
+    const updateStatus = updatesByAppId[install.appId] || install.updateStatus || null;
     const runtimeStatus = health.runtimeStatus || 'unknown';
     const runtimePill = window.HB.runtimeStatusPill(runtimeStatus);
     const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
@@ -32,7 +40,7 @@
         </div>
         <p class="hb-muted" style="margin:0.45rem 0 0;font-size:0.83rem;line-height:1.6;">
           Port ${window.HB.escapeHtml(install.port)} · ${window.HB.escapeHtml(install.mountPath)} · Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')} · Readiness: ${window.HB.escapeHtml(health.readiness?.status || 'unknown')}<br>
-          Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))} · ${window.HB.backupSummary(backups)}
+          Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))} · ${window.HB.backupSummary(backups)} · ${window.HB.escapeHtml(updateStatusLabel(updateStatus))}
         </p>
         ${!backups.length ? '<p class="hb-warn" style="margin:0.45rem 0 0;font-size:0.83rem;">No backups yet.</p>' : ''}
         ${healthHint}
@@ -236,16 +244,18 @@
   async function load() {
     const availableWasOpen = root.querySelector('[data-available-install]')?.open;
     try {
-      const [statePayload, catalogPayload, config, healthPayload] = await Promise.all([
+      const [statePayload, catalogPayload, config, healthPayload, updatesPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/apps/health'),
+        window.HB.getJson('/api/apps/updates'),
       ]);
       const installationsMap = statePayload.installations || {};
       const installations = Object.values(installationsMap);
       const backupsByApp = await loadBackupsForInstallations(installations);
       const healthByAppId = healthPayload.byAppId || {};
+      const updatesByAppId = updatesPayload.byAppId || {};
       const installedIds = new Set(installations.map((item) => item.appId));
       const catalog = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const catalogById = new Map(catalog.map((app) => [app.id, app]));
@@ -263,7 +273,7 @@
             <p class="hb-warn" style="margin:0.55rem 0 0;">${window.HB.localOnlyBackupNote(config)}</p>
           </section>
           <section class="hb-grid hb-grid-2">
-            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId, catalogById.get(install.appId))).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
+            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId, catalogById.get(install.appId), updatesByAppId)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
           </section>
           ${installing.length ? `
             <section>

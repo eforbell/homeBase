@@ -47,6 +47,13 @@
     `;
   }
 
+  function updateStatusSummary(updateStatus) {
+    if (!updateStatus) return 'Checking update status...';
+    if (updateStatus.status === 'update-available') return 'Update available';
+    if (updateStatus.status === 'check-failed') return 'Update check failed';
+    return 'Up to date';
+  }
+
 
   function isTerminalJobStatus(status) {
     return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
@@ -136,6 +143,25 @@
     }
     form.dataset.submitting = 'false';
     if (submitButton) submitButton.disabled = false;
+  }
+
+  async function handleUpdateCheck(form) {
+    const resultNode = form.querySelector('[data-result]');
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton) submitButton.disabled = true;
+    if (resultNode) resultNode.textContent = 'Checking...';
+    try {
+      const payload = await window.HB.getJson('/api/apps/updates?refresh=1');
+      const updateStatus = payload?.byAppId?.[appId] || null;
+      const summary = updateStatusSummary(updateStatus);
+      const statusNode = root.querySelector('[data-update-status]');
+      if (statusNode) statusNode.textContent = summary;
+      if (resultNode) resultNode.textContent = summary;
+    } catch (error) {
+      if (resultNode) resultNode.textContent = error.message;
+    } finally {
+      if (submitButton) submitButton.disabled = false;
+    }
   }
 
   async function handleRestore(form) {
@@ -242,6 +268,12 @@
         handleUpdate(updateForm);
         return;
       }
+      const updateCheckForm = event.target.closest('form[data-action="update-check"]');
+      if (updateCheckForm) {
+        event.preventDefault();
+        handleUpdateCheck(updateCheckForm);
+        return;
+      }
       const restoreForm = event.target.closest('form[data-action="restore"]');
       if (restoreForm) {
         event.preventDefault();
@@ -268,13 +300,14 @@
       return;
     }
     try {
-      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload] = await Promise.all([
+      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload, updatesPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson(`/api/apps/${appId}/backups`),
         window.HB.getJson(`/api/apps/${appId}/actions`),
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/apps/health'),
+        window.HB.getJson('/api/apps/updates'),
       ]);
       const catalogApps = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const app = catalogApps.find((item) => item.id === appId);
@@ -286,6 +319,7 @@
       const backups = Array.isArray(backupPayload.backups) ? backupPayload.backups : [];
       const actions = actionsPayload.actions || {};
       const appHealth = (healthPayload.byAppId || {})[appId] || null;
+      const updateStatus = (updatesPayload.byAppId || {})[appId] || install?.updateStatus || null;
       const mountPath = install?.mountPath || app.network?.preferredMountPath || `/${appId}/`;
       const port = install?.port || app.network?.preferredPort || '';
       const ref = install?.ref || app.repository?.defaultRef || 'main';
@@ -358,6 +392,11 @@
 
             <article id="update" class="hb-card">
               <h2 style="margin-top:0;">Update</h2>
+              <p class="hb-muted" data-update-status style="margin:0 0 0.6rem;">${window.HB.escapeHtml(updateStatusSummary(updateStatus))}</p>
+              <form class="hb-form-grid" data-action="update-check" style="margin-bottom:0.75rem;">
+                <div><button class="hb-btn" type="submit">Check now</button></div>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
               <form class="hb-form-grid" data-action="update">
                 <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
                 <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(port)}"></label>

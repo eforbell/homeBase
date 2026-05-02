@@ -66,6 +66,14 @@ class SqliteStateStore {
     return runSqliteOp(this.dbPath, 'delete_installation', { appId });
   }
 
+  upsertAppUpdateStatus(record) {
+    return runSqliteOp(this.dbPath, 'upsert_app_update_status', { record });
+  }
+
+  listAppUpdateStatuses() {
+    return runSqliteOp(this.dbPath, 'list_app_update_statuses');
+  }
+
   getHomeBaseConfig() {
     return runSqliteOp(this.dbPath, 'get_homebase_config');
   }

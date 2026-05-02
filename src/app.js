@@ -26,6 +26,7 @@ const {
 const { scheduleAutoBootstrap } = require('./auto-bootstrap');
 const { HealthMonitor } = require('./services/health-monitor');
 const { HealthAlertNotifier } = require('./services/notifications');
+const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
 const {
   getAdminStatus,
@@ -298,6 +299,29 @@ function createApp(config) {
   const healthAlertNotifier = new HealthAlertNotifier({
     postJson: config.notificationsPostJson,
   });
+  const appUpdateMonitor = new AppUpdateMonitor(stateStore, {
+    serviceUser: initialEffectiveConfig.serviceUser || 'sovereign',
+    gitTransport: initialEffectiveConfig.gitTransport || 'https',
+    gitSshKeyPath: initialEffectiveConfig.gitSshKeyPath || '',
+    gitSshKnownHostsPath: initialEffectiveConfig.gitSshKnownHostsPath || '',
+    gitSshStrictHostKeyChecking: initialEffectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
+    checkIntervalMs: config.appUpdateCheckIntervalMs,
+    staleAfterMs: config.appUpdateStatusTtlMs,
+  });
+  appUpdateMonitor.schedule({
+    installationsProvider: () => Object.values(stateStore.loadState().installations || {}),
+    gitConfigProvider: () => {
+      const override = stateStore.getHomeBaseConfig() || {};
+      const effective = mergeHomeBaseConfig(config, override);
+      return {
+        serviceUser: effective.serviceUser || 'sovereign',
+        gitTransport: effective.gitTransport || 'https',
+        gitSshKeyPath: effective.gitSshKeyPath || '',
+        gitSshKnownHostsPath: effective.gitSshKnownHostsPath || '',
+        gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
+      };
+    },
+  });
 
   function getTailscaleReadiness(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
@@ -409,6 +433,22 @@ function createApp(config) {
           console.warn(`[homebase] health alert notify failed: ${error.message}`);
         }
         return sendJson(res, 200, snapshot);
+      }
+      if (method === 'GET' && pathname === '/api/apps/updates') {
+        const installations = Object.values(state.installations || {});
+        const snapshot = await appUpdateMonitor.getSnapshot(installations, {
+          force: url.searchParams.get('refresh') === '1',
+          gitConfig: {
+            serviceUser: effectiveConfig.serviceUser || 'sovereign',
+            gitTransport: effectiveConfig.gitTransport || 'https',
+            gitSshKeyPath: effectiveConfig.gitSshKeyPath || '',
+            gitSshKnownHostsPath: effectiveConfig.gitSshKnownHostsPath || '',
+            gitSshStrictHostKeyChecking: effectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
+          },
+        });
+        return sendJson(res, 200, {
+          byAppId: snapshot,
+        });
       }
       if (method === 'POST' && pathname === '/api/alerts/test') {
         try {
@@ -828,11 +868,11 @@ function createApp(config) {
             install: true,
             backup: true,
             restore: true,
-            update: false,
+            update: Boolean(installation),
             restart: Boolean(installation),
             uninstall: Boolean(installation),
           },
-          note: 'Update is not a separate API action yet; use install execute for deploy operations.',
+          note: 'Update currently runs through install execute (same deployment pipeline).',
         });
       }
 
@@ -913,6 +953,18 @@ function createApp(config) {
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {
           dryRun: body.dryRun !== false,
+          onComplete: body.dryRun === false
+            ? () => {
+                try {
+                  const latestState = stateStore.loadState();
+                  const installed = (latestState.installations || {})[appId];
+                  if (!installed) return;
+                  void appUpdateMonitor.refreshInstalledApps([installed], { force: true });
+                } catch (error) {
+                  console.warn(`[homebase] update status refresh failed for ${appId}: ${error.message}`);
+                }
+              }
+            : null,
         });
         if (body.dryRun === false) {
           recordAdminAudit(stateStore, {

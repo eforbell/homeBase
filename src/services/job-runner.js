@@ -34,7 +34,7 @@ class JobRunner {
     });
   }
 
-  startInstallJob(plan, { dryRun = true } = {}) {
+  startInstallJob(plan, { dryRun = true, onComplete = null } = {}) {
     return this.startPlanJob({
       kind: 'install',
       target: plan.app.id,
@@ -47,6 +47,7 @@ class JobRunner {
           updatedAt: new Date().toISOString(),
           status: dryRun ? 'planned' : 'installed',
         });
+        if (typeof onComplete === 'function') onComplete();
       },
     });
   }
