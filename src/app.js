@@ -308,7 +308,20 @@ function createApp(config) {
     checkIntervalMs: config.appUpdateCheckIntervalMs,
     staleAfterMs: config.appUpdateStatusTtlMs,
   });
-  appUpdateMonitor.schedule(() => Object.values(stateStore.loadState().installations || {}));
+  appUpdateMonitor.schedule({
+    installationsProvider: () => Object.values(stateStore.loadState().installations || {}),
+    gitConfigProvider: () => {
+      const override = stateStore.getHomeBaseConfig() || {};
+      const effective = mergeHomeBaseConfig(config, override);
+      return {
+        serviceUser: effective.serviceUser || 'sovereign',
+        gitTransport: effective.gitTransport || 'https',
+        gitSshKeyPath: effective.gitSshKeyPath || '',
+        gitSshKnownHostsPath: effective.gitSshKnownHostsPath || '',
+        gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
+      };
+    },
+  });
 
   function getTailscaleReadiness(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
@@ -422,16 +435,16 @@ function createApp(config) {
         return sendJson(res, 200, snapshot);
       }
       if (method === 'GET' && pathname === '/api/apps/updates') {
-        appUpdateMonitor.configureGit({
-          serviceUser: effectiveConfig.serviceUser || 'sovereign',
-          gitTransport: effectiveConfig.gitTransport || 'https',
-          gitSshKeyPath: effectiveConfig.gitSshKeyPath || '',
-          gitSshKnownHostsPath: effectiveConfig.gitSshKnownHostsPath || '',
-          gitSshStrictHostKeyChecking: effectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
-        });
         const installations = Object.values(state.installations || {});
         const snapshot = await appUpdateMonitor.getSnapshot(installations, {
           force: url.searchParams.get('refresh') === '1',
+          gitConfig: {
+            serviceUser: effectiveConfig.serviceUser || 'sovereign',
+            gitTransport: effectiveConfig.gitTransport || 'https',
+            gitSshKeyPath: effectiveConfig.gitSshKeyPath || '',
+            gitSshKnownHostsPath: effectiveConfig.gitSshKnownHostsPath || '',
+            gitSshStrictHostKeyChecking: effectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
+          },
         });
         return sendJson(res, 200, {
           byAppId: snapshot,

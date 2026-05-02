@@ -98,6 +98,30 @@ test('app update monitor records check failure for invalid git ref', async () =>
   assert.match(statuses[0].lastError, /Invalid git ref/i);
 });
 
+test('app update monitor skips fresh statuses when force=false and ttl is not expired', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-monitor-ttl-'));
+  const store = createStateStore(tempDir);
+  store.upsertAppUpdateStatus({
+    appId: 'family-help',
+    trackedRef: 'main',
+    status: 'up-to-date',
+    canUpdate: false,
+    aheadCount: 0,
+    behindCount: 0,
+    localHeadSha: 'aaa111',
+    remoteHeadSha: 'aaa111',
+    lastCheckedAt: new Date().toISOString(),
+    lastError: '',
+  });
+  const monitor = new AppUpdateMonitor(store, { staleAfterMs: 10 * 60 * 1000 });
+  await monitor.refreshInstalledApps([
+    baseInstallRecord({ ref: 'main..invalid-ref' }),
+  ], { force: false });
+  const statuses = store.listAppUpdateStatuses();
+  assert.equal(statuses[0].status, 'up-to-date');
+  assert.equal(statuses[0].lastError, '');
+});
+
 test('app update monitor uses ssh-key transport invocation for service user git checks', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-monitor-ssh-key-'));
   const store = createStateStore(tempDir);
@@ -114,9 +138,9 @@ test('app update monitor uses ssh-key transport invocation for service user git 
   assert.equal(commandArgs[0], '-u');
   assert.equal(commandArgs[1], 'sovereign');
   assert.equal(commandArgs[2], 'env');
-  assert.match(commandArgs[3], /^GIT_SSH_COMMAND=ssh -i \/opt\/sovereign-home\/\.ssh\/id_founder_homebase /);
-  assert.match(commandArgs[3], /StrictHostKeyChecking=accept-new/);
-  assert.match(commandArgs[3], /UserKnownHostsFile=\/opt\/sovereign-home\/\.ssh\/known_hosts/);
+  assert.match(commandArgs[3], /^GIT_SSH_COMMAND=ssh -i '\/opt\/sovereign-home\/\.ssh\/id_founder_homebase' /);
+  assert.match(commandArgs[3], /StrictHostKeyChecking='accept-new'/);
+  assert.match(commandArgs[3], /UserKnownHostsFile='\/opt\/sovereign-home\/\.ssh\/known_hosts'/);
   assert.equal(commandArgs[4], 'git');
   assert.equal(commandArgs[5], '-C');
   assert.equal(commandArgs[6], '/opt/sovereign-home/apps/familyPulse');

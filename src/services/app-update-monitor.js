@@ -1,4 +1,4 @@
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 
 const DEFAULT_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const DEFAULT_STALE_AFTER_MS = 30 * 60 * 1000;
@@ -35,6 +35,63 @@ function formatGitFailure(message, result) {
   return suffix ? `${message}: ${suffix}` : message;
 }
 
+function shellSingleQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function runProcess(command, args, { env = process.env, timeoutMs = DEFAULT_GIT_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        if (!settled) child.kill('SIGKILL');
+      }, 500).unref?.();
+    }, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        status: 1,
+        stdout,
+        stderr: stderr || error.message,
+      });
+    });
+
+    child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const timeoutHit = signal === 'SIGTERM' || signal === 'SIGKILL';
+      resolve({
+        status: Number.isInteger(code) ? code : 1,
+        stdout,
+        stderr: timeoutHit && !stderr ? `Process timed out after ${timeoutMs}ms` : stderr,
+      });
+    });
+  });
+}
+
 class AppUpdateMonitor {
   constructor(stateStore, {
     logger = console,
@@ -49,11 +106,13 @@ class AppUpdateMonitor {
   } = {}) {
     this.stateStore = stateStore;
     this.logger = logger;
-    this.serviceUser = String(serviceUser || '').trim();
-    this.gitTransport = String(gitTransport || 'https').trim() || 'https';
-    this.gitSshKeyPath = String(gitSshKeyPath || '').trim();
-    this.gitSshKnownHostsPath = String(gitSshKnownHostsPath || '').trim();
-    this.gitSshStrictHostKeyChecking = String(gitSshStrictHostKeyChecking || 'accept-new').trim() || 'accept-new';
+    this.defaultGitConfig = {
+      serviceUser: String(serviceUser || '').trim(),
+      gitTransport: String(gitTransport || 'https').trim() || 'https',
+      gitSshKeyPath: String(gitSshKeyPath || '').trim(),
+      gitSshKnownHostsPath: String(gitSshKnownHostsPath || '').trim(),
+      gitSshStrictHostKeyChecking: String(gitSshStrictHostKeyChecking || 'accept-new').trim() || 'accept-new',
+    };
     this.checkIntervalMs = Number.isFinite(checkIntervalMs) ? Math.max(10_000, checkIntervalMs) : DEFAULT_CHECK_INTERVAL_MS;
     this.staleAfterMs = Number.isFinite(staleAfterMs) ? Math.max(1_000, staleAfterMs) : DEFAULT_STALE_AFTER_MS;
     this.gitTimeoutMs = Number.isFinite(gitTimeoutMs) ? Math.max(1_000, gitTimeoutMs) : DEFAULT_GIT_TIMEOUT_MS;
@@ -61,59 +120,58 @@ class AppUpdateMonitor {
     this.scanPromise = null;
   }
 
-  configureGit({
-    serviceUser = this.serviceUser,
-    gitTransport = this.gitTransport,
-    gitSshKeyPath = this.gitSshKeyPath,
-    gitSshKnownHostsPath = this.gitSshKnownHostsPath,
-    gitSshStrictHostKeyChecking = this.gitSshStrictHostKeyChecking,
-  } = {}) {
-    this.serviceUser = String(serviceUser || '').trim();
-    this.gitTransport = String(gitTransport || 'https').trim() || 'https';
-    this.gitSshKeyPath = String(gitSshKeyPath || '').trim();
-    this.gitSshKnownHostsPath = String(gitSshKnownHostsPath || '').trim();
-    this.gitSshStrictHostKeyChecking = String(gitSshStrictHostKeyChecking || 'accept-new').trim() || 'accept-new';
+  resolveGitConfig(overrides = null) {
+    if (!overrides || typeof overrides !== 'object') return this.defaultGitConfig;
+    return {
+      serviceUser: String(overrides.serviceUser ?? this.defaultGitConfig.serviceUser).trim(),
+      gitTransport: String(overrides.gitTransport ?? this.defaultGitConfig.gitTransport).trim() || 'https',
+      gitSshKeyPath: String(overrides.gitSshKeyPath ?? this.defaultGitConfig.gitSshKeyPath).trim(),
+      gitSshKnownHostsPath: String(overrides.gitSshKnownHostsPath ?? this.defaultGitConfig.gitSshKnownHostsPath).trim(),
+      gitSshStrictHostKeyChecking: String(overrides.gitSshStrictHostKeyChecking ?? this.defaultGitConfig.gitSshStrictHostKeyChecking).trim() || 'accept-new',
+    };
   }
 
-  buildGitSshCommand() {
+  buildGitSshCommand(gitConfig) {
     const parts = [
       'ssh',
-      '-i', this.gitSshKeyPath,
+      '-i', shellSingleQuote(gitConfig.gitSshKeyPath),
       '-o', 'IdentitiesOnly=yes',
-      '-o', `StrictHostKeyChecking=${this.gitSshStrictHostKeyChecking}`,
+      '-o', `StrictHostKeyChecking=${shellSingleQuote(gitConfig.gitSshStrictHostKeyChecking)}`,
     ];
-    if (this.gitSshKnownHostsPath) {
-      parts.push('-o', `UserKnownHostsFile=${this.gitSshKnownHostsPath}`);
+    if (gitConfig.gitSshKnownHostsPath) {
+      parts.push('-o', `UserKnownHostsFile=${shellSingleQuote(gitConfig.gitSshKnownHostsPath)}`);
     }
     return parts.join(' ');
   }
 
-  buildGitInvocation(args, installRoot) {
+  buildGitInvocation(args, installRoot, overrides = null) {
+    const gitConfig = this.resolveGitConfig(overrides);
     const env = { ...process.env };
     const gitArgs = ['-C', installRoot, ...args];
     let command = 'git';
     let commandArgs = gitArgs;
-    if (this.serviceUser) {
+
+    if (gitConfig.serviceUser) {
       command = 'sudo';
-      if (this.gitTransport === 'ssh') {
-        commandArgs = ['--preserve-env=SSH_AUTH_SOCK', '-u', this.serviceUser, 'git', ...gitArgs];
-      } else if (this.gitTransport === 'ssh-key') {
-        commandArgs = ['-u', this.serviceUser, 'env', `GIT_SSH_COMMAND=${this.buildGitSshCommand()}`, 'git', ...gitArgs];
+      if (gitConfig.gitTransport === 'ssh') {
+        commandArgs = ['--preserve-env=SSH_AUTH_SOCK', '-u', gitConfig.serviceUser, 'git', ...gitArgs];
+      } else if (gitConfig.gitTransport === 'ssh-key') {
+        commandArgs = ['-u', gitConfig.serviceUser, 'env', `GIT_SSH_COMMAND=${this.buildGitSshCommand(gitConfig)}`, 'git', ...gitArgs];
       } else {
-        commandArgs = ['-u', this.serviceUser, 'git', ...gitArgs];
+        commandArgs = ['-u', gitConfig.serviceUser, 'git', ...gitArgs];
       }
-    } else if (this.gitTransport === 'ssh-key') {
-      env.GIT_SSH_COMMAND = this.buildGitSshCommand();
+    } else if (gitConfig.gitTransport === 'ssh-key') {
+      env.GIT_SSH_COMMAND = this.buildGitSshCommand(gitConfig);
     }
-    return { command, commandArgs, env };
+
+    return { command, commandArgs, env, gitConfig };
   }
 
-  runGit(args, installRoot) {
-    const { command, commandArgs, env } = this.buildGitInvocation(args, installRoot);
-    return spawnSync(command, commandArgs, {
+  async runGit(args, installRoot, overrides = null) {
+    const { command, commandArgs, env } = this.buildGitInvocation(args, installRoot, overrides);
+    return runProcess(command, commandArgs, {
       env,
-      encoding: 'utf8',
-      timeout: this.gitTimeoutMs,
+      timeoutMs: this.gitTimeoutMs,
     });
   }
 
@@ -133,7 +191,7 @@ class AppUpdateMonitor {
     return (now - checkedAt) >= this.staleAfterMs;
   }
 
-  async refreshInstalledApps(installations = [], { force = false } = {}) {
+  async refreshInstalledApps(installations = [], { force = false, gitConfig = null } = {}) {
     if (this.scanPromise) return this.scanPromise;
     const task = (async () => {
       const snapshot = this.buildSnapshotByApp();
@@ -142,7 +200,7 @@ class AppUpdateMonitor {
         if (!install?.appId) continue;
         const current = snapshot[install.appId];
         if (!this.shouldRefreshStatus(current, now, force)) continue;
-        const next = this.evaluateInstallation(install);
+        const next = await this.evaluateInstallation(install, gitConfig);
         this.stateStore.upsertAppUpdateStatus(next);
         snapshot[install.appId] = next;
       }
@@ -157,7 +215,8 @@ class AppUpdateMonitor {
     }
   }
 
-  evaluateInstallation(install) {
+  async evaluateInstallation(install, overrides = null) {
+    const gitConfig = this.resolveGitConfig(overrides);
     const appId = install.appId;
     const trackedRef = String(install.ref || 'main').trim() || 'main';
     const installRoot = String(install.installRoot || '').trim();
@@ -192,7 +251,8 @@ class AppUpdateMonitor {
         lastError: 'Install root is not recorded for this app.',
       };
     }
-    if (this.gitTransport === 'ssh-key' && !this.gitSshKeyPath) {
+
+    if (gitConfig.gitTransport === 'ssh-key' && !gitConfig.gitSshKeyPath) {
       return {
         appId,
         trackedRef,
@@ -207,7 +267,7 @@ class AppUpdateMonitor {
       };
     }
 
-    const localHead = this.runGit(['rev-parse', 'HEAD'], installRoot);
+    const localHead = await this.runGit(['rev-parse', 'HEAD'], installRoot, gitConfig);
     if (localHead.status !== 0) {
       return {
         appId,
@@ -225,7 +285,7 @@ class AppUpdateMonitor {
 
     const localHeadSha = String(localHead.stdout || '').trim();
 
-    const fetch = this.runGit(['fetch', 'origin', '--prune'], installRoot);
+    const fetch = await this.runGit(['fetch', 'origin', '--prune'], installRoot, gitConfig);
     if (fetch.status !== 0) {
       return {
         appId,
@@ -241,7 +301,7 @@ class AppUpdateMonitor {
       };
     }
 
-    const remoteHead = this.runGit(['rev-parse', `origin/${trackedRef}`], installRoot);
+    const remoteHead = await this.runGit(['rev-parse', `origin/${trackedRef}`], installRoot, gitConfig);
     if (remoteHead.status !== 0) {
       return {
         appId,
@@ -258,7 +318,7 @@ class AppUpdateMonitor {
     }
 
     const remoteHeadSha = String(remoteHead.stdout || '').trim();
-    const revList = this.runGit(['rev-list', '--left-right', '--count', `HEAD...origin/${trackedRef}`], installRoot);
+    const revList = await this.runGit(['rev-list', '--left-right', '--count', `HEAD...origin/${trackedRef}`], installRoot, gitConfig);
     if (revList.status !== 0) {
       return {
         appId,
@@ -294,17 +354,26 @@ class AppUpdateMonitor {
     };
   }
 
-  async getSnapshot(installations = [], { force = false } = {}) {
-    await this.refreshInstalledApps(installations, { force });
+  async getSnapshot(installations = [], { force = false, gitConfig = null } = {}) {
+    await this.refreshInstalledApps(installations, { force, gitConfig });
     return this.buildSnapshotByApp();
   }
 
-  schedule(installationsProvider) {
+  schedule({ installationsProvider, gitConfigProvider = null } = {}) {
+    if (typeof installationsProvider !== 'function') {
+      throw new Error('installationsProvider is required');
+    }
     if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(() => {
       Promise.resolve()
         .then(() => installationsProvider())
-        .then((installations) => this.refreshInstalledApps(Array.isArray(installations) ? installations : [], { force: true }))
+        .then((installations) => this.refreshInstalledApps(
+          Array.isArray(installations) ? installations : [],
+          {
+            force: true,
+            gitConfig: typeof gitConfigProvider === 'function' ? gitConfigProvider() : null,
+          }
+        ))
         .catch((error) => {
           this.logger.warn?.(`[homebase] app update scan failed: ${error.message}`);
         });
