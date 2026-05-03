@@ -175,7 +175,7 @@ Follow familyDinner's `fd-` prefix convention → use `hb-` prefix for nav compo
 
 ### 1.5 `public/nav.js` — IIFE reactive nav bar
 
-Follow the familyDinner pattern (`/Users/forbell/workspace/homeApps/familyDinner/public/nav.js`):
+Follow the familyDinner pattern (`familyDinner/public/nav.js`):
 
 - Read `data-nav-page` from `<body>` to set active state
 - 4 nav items: Dashboard (`/`), Apps (`/apps`), Jobs (`/jobs`), Settings (`/settings`)

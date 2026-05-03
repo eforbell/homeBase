@@ -238,7 +238,7 @@ test('install planner preserves existing DATABASE_URL identity for legacy postgr
   const appDir = path.join(tempDir, 'familyHelp');
   fs.mkdirSync(appDir, { recursive: true });
   fs.writeFileSync(path.join(appDir, '.env'), [
-    'DATABASE_URL=postgresql://forbell:legacy-pass@127.0.0.1:5432/family_help',
+    'DATABASE_URL=postgresql://dbuser:legacy-pass@127.0.0.1:5432/family_help',
     '',
   ].join('\n'));
 
@@ -255,9 +255,9 @@ test('install planner preserves existing DATABASE_URL identity for legacy postgr
     },
   });
 
-  assert.match(plan.files['.env'], /DATABASE_URL=postgresql:\/\/forbell:legacy-pass@127\.0\.0\.1:5432\/family_help/);
+  assert.match(plan.files['.env'], /DATABASE_URL=postgresql:\/\/dbuser:legacy-pass@127\.0\.0\.1:5432\/family_help/);
   assert.equal(plan.install.dbName, 'family_help');
-  assert.equal(plan.install.dbUser, 'forbell');
+  assert.equal(plan.install.dbUser, 'dbuser');
   assert.doesNotMatch(plan.script, /CREATE ROLE/);
   assert.doesNotMatch(plan.script, /ALTER ROLE/);
   assert.doesNotMatch(plan.script, /createdb --owner=/);
@@ -272,7 +272,7 @@ test('install planner preserves existing split postgres credentials for postgres
     'DB_BACKEND=postgres',
     'PGHOST=127.0.0.1',
     'PGPORT=5432',
-    'PGUSER=forbell',
+    'PGUSER=dbuser',
     'PGPASSWORD=shared-postgres-pass',
     'PGDATABASE=bitcoin_accounting',
     '',
@@ -291,7 +291,7 @@ test('install planner preserves existing split postgres credentials for postgres
     },
   });
 
-  assert.match(plan.files['.env'], /PGUSER=forbell/);
+  assert.match(plan.files['.env'], /PGUSER=dbuser/);
   assert.match(plan.files['.env'], /PGPASSWORD=shared-postgres-pass/);
   assert.match(plan.files['.env'], /PGDATABASE=bitcoin_accounting/);
   assert.doesNotMatch(plan.script, /CREATE ROLE/);
