@@ -55,6 +55,9 @@
           <a class="hb-btn-icon" href="${detailUrl}#restore" title="Restore">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 8A4.5 4.5 0 1 0 5 4.5M3.5 8V5m0 3H6.5"/></svg>
           </a>
+          <a class="hb-btn-icon" href="${detailUrl}#update" title="Update">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v9m0-9L5.5 4.5M8 2l2.5 2.5M3 12h10"/></svg>
+          </a>
           <a class="hb-btn-icon hb-btn-icon--danger" href="${detailUrl}#uninstall" title="Uninstall">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M5 4V2.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5V4M6 7v5M10 7v5M3 4l.8 9.5a.5.5 0 0 0 .5.5h7.4a.5.5 0 0 0 .5-.5L13 4"/></svg>
           </a>
