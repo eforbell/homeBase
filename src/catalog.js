@@ -649,6 +649,98 @@ const catalog = [
       'BUGBASE_BROWSER_ACCESS_CODE is optional; leave blank for open family-LAN access.',
     ],
   },
+  {
+    id: 'home-ops',
+    repoKey: 'homeOps',
+    name: 'Home Ops',
+    icon: '🔧',
+    purpose: 'Home maintenance management — recurring tasks, asset tracking, service records, photo documentation, and emergency preparedness.',
+    repository: {
+      url: 'https://github.com/eforbell/homeOps.git',
+      sshUrl: 'git@github.com:eforbell/homeOps.git',
+      defaultRef: 'main',
+    },
+    runtime: {
+      kind: 'node',
+      installCommand: 'npm ci --omit=dev',
+      startCommand: 'node server.js',
+      nodeEnv: 'production',
+    },
+    network: {
+      preferredMountPath: '/ops/',
+      preferredPort: 3009,
+      upstreamBind: '127.0.0.1',
+      health: {
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/ready',
+      },
+      notes: [
+        'First-run household setup is handled in the browser when family_members is empty.',
+        'Set client_max_body_size 20M in the nginx location block for photo uploads.',
+        'iCal feed at /api/calendar.ics is unauthenticated for calendar subscription.',
+      ],
+    },
+    database: {
+      engine: 'postgres',
+      bootstrap: 'migrations',
+      databaseName: 'homeops',
+      databaseUser: 'homeops',
+      migrationCommand: 'node db/migrate.js',
+      seedPolicy: 'app-onboarding',
+    },
+    onboarding: {
+      mode: 'browser',
+      setupPath: '/setup',
+      statusPath: '/api/bootstrap',
+      readyWhen: 'household_initialized',
+      notes: [
+        'Six-step wizard creates household, property, zones, assets, and emergency contacts.',
+        'Seed maintenance schedules are generated from zone config during onboarding.',
+        'MagicMaintenance (OpenAI) can generate additional schedules post-onboarding.',
+      ],
+    },
+    service: {
+      name: 'home-ops',
+      description: 'Home Ops App',
+      envFile: '.env',
+    },
+    timers: [
+      {
+        serviceName: 'home-ops-reminders',
+        description: 'Home Ops reminder runner',
+        execStart: 'node scripts/send-reminders.js',
+        timerName: 'home-ops-reminders.timer',
+        onCalendar: '*:0/30',
+      },
+      {
+        serviceName: 'home-ops-tasks',
+        description: 'Home Ops task instance generator',
+        execStart: 'node scripts/generate-task-instances.js',
+        timerName: 'home-ops-tasks.timer',
+        onCalendar: '*-*-* 05:00:00',
+      },
+    ],
+    config: {
+      env: {
+        DATABASE_URL: '{{databaseUrl}}',
+        PORT: '{{port}}',
+        HOUSEHOLD_TIMEZONE: 'America/New_York',
+        SETTINGS_PIN: '',
+        OPENAI_API_KEY: '',
+        OPENAI_MODEL: 'gpt-4o-mini',
+        OPENAI_VISION_MODEL: 'gpt-4o',
+      },
+    },
+    storage: {
+      paths: ['uploads'],
+    },
+    updateNotes: [
+      'Run node db/migrate.js after every deploy.',
+      'Two systemd timers must be enabled: home-ops-reminders.timer (30min) and home-ops-tasks.timer (daily 5AM).',
+      'OPENAI_API_KEY is optional — MagicMaintenance and photo analysis degrade gracefully without it.',
+    ],
+  },
 ];
 
 function getCatalog() {
