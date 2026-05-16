@@ -281,6 +281,7 @@ function resolveEnvTemplate(template, ctx) {
     next = next.replaceAll('{{secret1}}', ctx.secret1);
     next = next.replaceAll('{{secret2}}', ctx.secret2);
     next = next.replaceAll('{{secret3}}', ctx.secret3);
+    next = next.replaceAll('{{householdTimezone}}', ctx.householdTimezone);
     if (ctx.sidecarPorts) {
       for (const [sidecarName, sidecarPort] of Object.entries(ctx.sidecarPorts)) {
         next = next.replaceAll(`{{sidecar.${sidecarName}.port}}`, String(sidecarPort));
@@ -466,6 +467,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const secret1 = crypto.randomBytes(32).toString('hex');
   const secret2 = crypto.randomBytes(32).toString('hex');
   const secret3 = crypto.randomBytes(32).toString('hex');
+  const householdTimezone = options.householdTimezone || config.householdTimezone || 'America/New_York';
   const hostname = options.hostname || config.defaultHostname || 'homebase';
   const domain = options.domain || config.defaultDomain || 'tailnet';
   const publicBase = options.publicBaseUrl || `https://${hostname}.${domain}`;
@@ -499,6 +501,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     secret1,
     secret2,
     secret3,
+    householdTimezone,
     dbBackend: existingDbContext?.dbBackend || null,
     sqliteDbPath: existingDbContext?.sqliteDbPath || null,
     skipDbBootstrap: Boolean(existingDbContext),
@@ -518,13 +521,14 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   }
   const files = {};
   files['.env'] = renderEnv(mergedEnv);
+  const runtimeEnv = app.runtime.kind === 'node' ? { NODE_ENV: app.runtime.nodeEnv || 'production' } : { PYTHONUNBUFFERED: '1' };
   files[`${app.service.name}.service`] = renderServiceUnit({
     description: app.service.description,
     serviceUser,
     installRoot,
     envFile: app.service.envFile,
     execStart: renderStartCommand(app, ctx),
-    extraEnvironment: app.runtime.kind === 'node' ? { NODE_ENV: app.runtime.nodeEnv || 'production' } : { PYTHONUNBUFFERED: '1' },
+    extraEnvironment: { TZ: householdTimezone, ...runtimeEnv },
   });
 
   if (Array.isArray(app.sidecars)) {
@@ -535,7 +539,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
         installRoot,
         envFile: app.service.envFile,
         execStart: sidecar.execStart,
-        extraEnvironment: sidecar.env || {},
+        extraEnvironment: { TZ: householdTimezone, ...(sidecar.env || {}) },
       });
 
       if (sidecar.nginx) {
@@ -562,7 +566,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
         installRoot,
         envFile: app.service.envFile,
         execStart: timer.execStart,
-        extraEnvironment: { NODE_ENV: 'production' },
+        extraEnvironment: { TZ: householdTimezone, NODE_ENV: 'production' },
       });
       files[timer.timerName] = renderTimerUnit({
         description: `Run ${timer.description.toLowerCase()}`,

@@ -320,7 +320,7 @@ const catalog = [
         GOOGLE_REDIRECT_URI: '{{externalUrl}}api/google-calendar/oauth/callback',
         SETTINGS_PIN: '',
         CALENDAR_WRITE_PIN: '',
-        HOUSEHOLD_TIMEZONE: 'America/New_York',
+        HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',
       },
     },
     storage: {
@@ -394,7 +394,7 @@ const catalog = [
       env: {
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
-        HOUSEHOLD_TIMEZONE: 'America/Los_Angeles',
+        HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',
         APP_PUBLIC_URL: '{{externalUrl}}',
         LOG_LEVEL: 'info',
       },
@@ -556,7 +556,7 @@ const catalog = [
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         STORAGE_PATH: '/var/lib/sovereign-home/home-source/data',
-        HOUSEHOLD_TIMEZONE: 'America/New_York',
+        HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',
         MAX_FILE_SIZE_MB: '50',
       },
     },
@@ -725,7 +725,7 @@ const catalog = [
       env: {
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
-        HOUSEHOLD_TIMEZONE: 'America/New_York',
+        HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',
         SETTINGS_PIN: '',
         OPENAI_API_KEY: '',
         OPENAI_MODEL: 'gpt-4o-mini',
