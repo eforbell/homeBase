@@ -53,6 +53,7 @@
       healthAlertsEnabled: form.elements.healthAlertsEnabled.checked,
       healthAlertsWebhookUrl: form.elements.healthAlertsWebhookUrl.value.trim(),
       tailscaleManagedServiceId: form.elements.tailscaleManagedServiceId.value.trim(),
+      householdTimezone: form.elements.householdTimezone.value.trim(),
     };
     result.textContent = 'Saving...';
     try {
@@ -338,6 +339,17 @@
             </label>
             <label class="hb-label">Health alert webhook URL
               <input class="hb-input" name="healthAlertsWebhookUrl" placeholder="https://..." value="${window.HB.escapeHtml(config.healthAlertsWebhookUrl || '')}">
+            </label>
+            <label class="hb-label">Household timezone
+              <select class="hb-select" name="householdTimezone">
+                <option value="America/New_York" ${(config.householdTimezone || 'America/New_York') === 'America/New_York' ? 'selected' : ''}>Eastern (America/New_York)</option>
+                <option value="America/Chicago" ${config.householdTimezone === 'America/Chicago' ? 'selected' : ''}>Central (America/Chicago)</option>
+                <option value="America/Denver" ${config.householdTimezone === 'America/Denver' ? 'selected' : ''}>Mountain (America/Denver)</option>
+                <option value="America/Phoenix" ${config.householdTimezone === 'America/Phoenix' ? 'selected' : ''}>Arizona (America/Phoenix)</option>
+                <option value="America/Los_Angeles" ${config.householdTimezone === 'America/Los_Angeles' ? 'selected' : ''}>Pacific (America/Los_Angeles)</option>
+                <option value="America/Anchorage" ${config.householdTimezone === 'America/Anchorage' ? 'selected' : ''}>Alaska (America/Anchorage)</option>
+                <option value="Pacific/Honolulu" ${config.householdTimezone === 'Pacific/Honolulu' ? 'selected' : ''}>Hawaii (Pacific/Honolulu)</option>
+              </select>
             </label>
             <label class="hb-label">Managed Tailscale service ID
               <input class="hb-input" name="tailscaleManagedServiceId" placeholder="svc:home" value="${window.HB.escapeHtml(config.tailscaleManagedServiceId || 'svc:home')}">

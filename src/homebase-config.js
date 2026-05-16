@@ -2,6 +2,7 @@ const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/i;
 const ALLOWED_GIT_TRANSPORTS = new Set(['https', 'ssh', 'ssh-key']);
 const TAILSCALE_MANAGED_SERVICE_ID_PATTERN = /^svc:[a-z0-9](?:[a-z0-9-_.]{0,61}[a-z0-9])?$/i;
+const TIMEZONE_PATTERN = /^[A-Za-z_]+\/[A-Za-z_\/-]+$/;
 
 function mergeHomeBaseConfig(baseConfig, override = {}) {
   return {
@@ -13,6 +14,7 @@ function mergeHomeBaseConfig(baseConfig, override = {}) {
     healthAlertsEnabled: override.healthAlertsEnabled != null ? Boolean(override.healthAlertsEnabled) : Boolean(baseConfig.healthAlertsEnabled),
     healthAlertsWebhookUrl: override.healthAlertsWebhookUrl != null ? String(override.healthAlertsWebhookUrl) : String(baseConfig.healthAlertsWebhookUrl || ''),
     tailscaleManagedServiceId: override.tailscaleManagedServiceId || baseConfig.tailscaleManagedServiceId || 'svc:home',
+    householdTimezone: override.householdTimezone || baseConfig.householdTimezone || 'America/New_York',
   };
 }
 
@@ -28,6 +30,7 @@ function toClientHomeBaseConfig(config, override = {}) {
     healthAlertsEnabled: Boolean(effective.healthAlertsEnabled),
     healthAlertsWebhookUrl: effective.healthAlertsWebhookUrl || '',
     tailscaleManagedServiceId: effective.tailscaleManagedServiceId || 'svc:home',
+    householdTimezone: effective.householdTimezone || 'America/New_York',
     serviceUser: config.serviceUser,
     baseInstallDir: config.baseInstallDir,
     baseBackupDir: config.baseBackupDir,
@@ -57,7 +60,7 @@ function validateDomain(domain) {
 
 function validateHomeBaseConfigPatch(payload, currentConfig) {
   const patch = payload && typeof payload === 'object' ? payload : {};
-  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId'];
+  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId', 'householdTimezone'];
   const unknownFields = Object.keys(patch).filter((field) => !allowedFields.includes(field));
   if (unknownFields.length) {
     return { error: `Unknown field(s): ${unknownFields.join(', ')}` };
@@ -74,6 +77,7 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
     healthAlertsEnabled: patch.healthAlertsEnabled != null ? Boolean(patch.healthAlertsEnabled) : Boolean(currentConfig.healthAlertsEnabled),
     healthAlertsWebhookUrl: patch.healthAlertsWebhookUrl != null ? String(patch.healthAlertsWebhookUrl).trim() : String(currentConfig.healthAlertsWebhookUrl || ''),
     tailscaleManagedServiceId: patch.tailscaleManagedServiceId != null ? String(patch.tailscaleManagedServiceId).trim() : String(currentConfig.tailscaleManagedServiceId || 'svc:home'),
+    householdTimezone: patch.householdTimezone != null ? String(patch.householdTimezone).trim() : String(currentConfig.householdTimezone || 'America/New_York'),
   };
 
   const hostnameError = validateHostname(candidate.hostname);
@@ -106,6 +110,10 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
 
   if (!TAILSCALE_MANAGED_SERVICE_ID_PATTERN.test(candidate.tailscaleManagedServiceId)) {
     return { error: 'tailscaleManagedServiceId must look like svc:<name> using letters, numbers, dashes, underscores, or dots' };
+  }
+
+  if (!TIMEZONE_PATTERN.test(candidate.householdTimezone)) {
+    return { error: 'householdTimezone must be a valid IANA timezone (e.g. America/New_York)' };
   }
 
   return { value: candidate };
