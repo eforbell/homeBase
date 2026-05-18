@@ -370,14 +370,14 @@
             <article id="backup" class="hb-card">
               <h2 style="margin-top:0;">Backup</h2>
               <form class="hb-form-grid" data-action="backup">
-                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                <label class="hb-label hb-check-row">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>
                 <div><button class="hb-btn" type="submit">Run backup</button></div>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
               <form class="hb-form-grid" data-action="restart" style="margin-top:0.75rem;">
-                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                <label class="hb-label hb-check-row">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>
                 <div><button class="hb-btn" type="submit" ${actions.restart ? '' : 'disabled'}>Run restart</button></div>
@@ -401,7 +401,7 @@
                 <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
                 <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(port)}"></label>
                 <label class="hb-label">Git ref <input class="hb-input" name="ref" value="${window.HB.escapeHtml(ref)}" placeholder="main"></label>
-                <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+                <label class="hb-label hb-check-row">
                   <input name="dryRun" type="checkbox" checked> Dry-run only
                 </label>
                 <div><button class="hb-btn hb-btn-primary" type="submit">Run update</button></div>
@@ -418,7 +418,7 @@
                 Backup snapshot
                 <select class="hb-select" name="backupDir">${buildBackupOptions(backups)}</select>
               </label>
-              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+              <label class="hb-label hb-check-row">
                 <input name="dryRun" type="checkbox" checked> Dry-run only
               </label>
               <div><button class="hb-btn" type="submit">Run restore</button></div>
@@ -430,10 +430,10 @@
             <h2 style="margin-top:0;">Uninstall</h2>
             <p class="hb-warn" style="margin:0 0 0.75rem;">Uninstall removes this app from Home Base management and is intended to fully remove the current install.</p>
             <form class="hb-form-grid" data-action="uninstall">
-              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+              <label class="hb-label hb-check-row">
                 <input name="keepBackups" type="checkbox" checked> Keep backups
               </label>
-              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+              <label class="hb-label hb-check-row">
                 <input name="dryRun" type="checkbox" checked> Dry-run only
               </label>
               <div><button class="hb-btn" type="submit" style="border-color:rgba(248,113,113,0.35);color:var(--red);" ${actions.uninstall ? '' : 'disabled'}>Run uninstall</button></div>

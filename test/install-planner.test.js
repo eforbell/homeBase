@@ -328,3 +328,55 @@ test('install planner skips postgres bootstrap for existing sqlite-backed bitcoi
   assert.doesNotMatch(plan.script, /ALTER ROLE/);
   assert.doesNotMatch(plan.script, /createdb --owner=/);
 });
+
+test('install planner uses local sovereign font env values when shared nginx fonts are available', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-font-local-'));
+  const sharedRoot = path.join(tempDir, 'sovereign-home');
+  const fontDir = path.join(sharedRoot, 'assets', 'fonts');
+  fs.mkdirSync(fontDir, { recursive: true });
+  fs.writeFileSync(path.join(fontDir, 'source-sans-3.css'), '/* test */\n');
+  fs.writeFileSync(path.join(fontDir, 'jetbrains-mono.css'), '/* test */\n');
+
+  const plan = buildInstallPlan({
+    appId: 'family-help',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: path.join(sharedRoot, 'apps'),
+      homeBaseSharedRoot: sharedRoot,
+      homeBaseAssetsRoot: path.join(sharedRoot, 'assets'),
+      sovereignFontMountPath: '/_sovereign/fonts/',
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /SOVEREIGN_FONT_SOURCE=local/);
+  assert.match(plan.files['.env'], /SOVEREIGN_FONT_SANS_CSS_URL_LOCAL=https:\/\/homebase\.tailnet\/_sovereign\/fonts\/source-sans-3\.css/);
+  assert.match(plan.files['.env'], /SOVEREIGN_FONT_MONO_CSS_URL_LOCAL=https:\/\/homebase\.tailnet\/_sovereign\/fonts\/jetbrains-mono\.css/);
+});
+
+test('install planner falls back to google sovereign font env values when local fonts are unavailable', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-font-google-'));
+  const sharedRoot = path.join(tempDir, 'sovereign-home');
+
+  const plan = buildInstallPlan({
+    appId: 'family-help',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: path.join(sharedRoot, 'apps'),
+      homeBaseSharedRoot: sharedRoot,
+      homeBaseAssetsRoot: path.join(sharedRoot, 'assets'),
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /SOVEREIGN_FONT_SOURCE=google/);
+  assert.match(plan.files['.env'], /SOVEREIGN_FONT_SANS_CSS_URL="?https:\/\/fonts\.googleapis\.com\/css2\?family=Source\+Sans\+3:wght@400;500;600;700&display=swap"?/);
+});

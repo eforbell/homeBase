@@ -88,10 +88,63 @@ default_site.write_text(text)
 `;
 }
 
+function renderSovereignFontSyncPython(sharedRoot = '/opt/sovereign-home') {
+  return `import hashlib
+import json
+import re
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+root = Path(${JSON.stringify(sharedRoot)})
+font_dir = root / 'assets' / 'fonts'
+font_dir.mkdir(parents=True, exist_ok=True)
+
+sources = [
+    ('source-sans-3.css', 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap'),
+    ('jetbrains-mono.css', 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap'),
+]
+
+def fetch_text(url):
+    req = Request(url, headers={'User-Agent': 'SovereignHomeFontSync/1.0'})
+    with urlopen(req, timeout=30) as resp:
+        return resp.read().decode('utf-8')
+
+def fetch_bytes(url):
+    req = Request(url, headers={'User-Agent': 'SovereignHomeFontSync/1.0'})
+    with urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+manifest = {'updated_at': None, 'files': []}
+try:
+    for css_name, css_url in sources:
+        css = fetch_text(css_url)
+        urls = re.findall(r"url\\\\((https://fonts\\\\.gstatic\\\\.com/[^)]+)\\\\)", css)
+        rewritten = css
+        for remote in sorted(set(urls)):
+            data = fetch_bytes(remote)
+            digest = hashlib.sha1(remote.encode('utf-8')).hexdigest()[:12]
+            stem = remote.split('/')[-1].split('?')[0]
+            local_name = f'{digest}-{stem}'
+            (font_dir / local_name).write_bytes(data)
+            rewritten = rewritten.replace(remote, f'./{local_name}')
+            manifest['files'].append(local_name)
+        (font_dir / css_name).write_text(rewritten)
+        manifest['files'].append(css_name)
+    manifest['updated_at'] = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
+    (font_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\\\\n')
+    print(f'[homebase] synced sovereign fonts to {font_dir}')
+except Exception as exc:
+    print(f'[homebase] sovereign font sync skipped: {exc}')
+`;
+}
+
 function buildBootstrapPlan(input = {}) {
   const serviceUser = input.serviceUser || 'sovereign';
   const baseInstallDir = input.baseInstallDir || '/opt/sovereign-home/apps';
   const serviceUserHome = baseInstallDir.includes('/') ? baseInstallDir.slice(0, baseInstallDir.lastIndexOf('/')) : '/opt/sovereign-home';
+  const sharedRoot = input.homeBaseSharedRoot || serviceUserHome || '/opt/sovereign-home';
+  const assetsRoot = input.homeBaseAssetsRoot || `${sharedRoot}/assets`;
+  const fontDir = `${assetsRoot}/fonts`;
   const baseBackupDir = input.baseBackupDir || '/var/lib/sovereign-home/backups';
   const baseConfigDir = input.baseConfigDir || '/etc/sovereign-home';
   const generatedAt = new Date().toISOString();
@@ -150,6 +203,9 @@ function buildBootstrapPlan(input = {}) {
       'Create the Sovereign Home directory layout',
       [
         `sudo install -d -o ${serviceUser} -g ${serviceUser} ${baseInstallDir}`,
+        `sudo install -d -o ${serviceUser} -g ${serviceUser} ${sharedRoot}`,
+        `sudo install -d -o ${serviceUser} -g ${serviceUser} ${assetsRoot}`,
+        `sudo install -d -o ${serviceUser} -g ${serviceUser} ${fontDir}`,
         `sudo install -d -o ${serviceUser} -g ${serviceUser} ${baseBackupDir}`,
         `sudo install -d -o root -g root ${baseConfigDir}`,
         `sudo install -d -o root -g root ${baseConfigDir}/manifests`,
@@ -157,7 +213,33 @@ function buildBootstrapPlan(input = {}) {
         'sudo install -d -o root -g root /etc/nginx/snippets',
       ],
       [`test -d ${baseInstallDir}`],
-      [`sudo ls -ld ${baseInstallDir} ${baseBackupDir} ${baseConfigDir} /etc/nginx/snippets`]
+      [`sudo ls -ld ${baseInstallDir} ${sharedRoot} ${assetsRoot} ${fontDir} ${baseBackupDir} ${baseConfigDir} /etc/nginx/snippets`]
+    ),
+    makeStep(
+      'configure-sovereign-font-assets',
+      'Provision shared sovereign font assets and nginx route',
+      [
+        `sudo tee /etc/nginx/snippets/sovereign-fonts.conf > /dev/null <<'EOF'
+location ^~ /_sovereign/fonts/ {
+    alias ${fontDir}/;
+    add_header Cache-Control "public, max-age=604800, immutable";
+    add_header Access-Control-Allow-Origin "*";
+    try_files $uri =404;
+}
+EOF`,
+        `sudo python3 - <<'PY'
+${renderSovereignFontSyncPython(sharedRoot)}
+PY`,
+      ],
+      [
+        `test -f /etc/nginx/snippets/sovereign-fonts.conf`,
+        `test -f ${fontDir}/source-sans-3.css`,
+        `test -f ${fontDir}/jetbrains-mono.css`,
+      ],
+      [
+        `sudo ls -l ${fontDir}`,
+        'sudo nginx -T | grep -n "/_sovereign/fonts/"',
+      ]
     ),
     makeStep(
       'configure-nginx-gateway',

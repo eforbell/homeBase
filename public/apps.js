@@ -92,7 +92,7 @@
             Git ref
             <input class="hb-input" name="ref" value="${window.HB.escapeHtml(refDefault)}" placeholder="main">
           </label>
-          <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;flex-direction:row;">
+          <label class="hb-label hb-check-row">
             <input name="dryRun" type="checkbox" checked>
             Dry-run only
           </label>

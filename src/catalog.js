@@ -1,3 +1,11 @@
+const SOVEREIGN_FONT_ENV_TEMPLATE = {
+  SOVEREIGN_FONT_SOURCE: '{{sovereignFontSource}}',
+  SOVEREIGN_FONT_SANS_CSS_URL: '{{sovereignFontSansCssUrl}}',
+  SOVEREIGN_FONT_MONO_CSS_URL: '{{sovereignFontMonoCssUrl}}',
+  SOVEREIGN_FONT_SANS_CSS_URL_LOCAL: '{{sovereignFontSansCssUrlLocal}}',
+  SOVEREIGN_FONT_MONO_CSS_URL_LOCAL: '{{sovereignFontMonoCssUrlLocal}}',
+};
+
 const catalog = [
   {
     id: 'family-pulse',
@@ -75,6 +83,7 @@ const catalog = [
     ],
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         PLAID_CLIENT_ID: '',
@@ -162,6 +171,7 @@ const catalog = [
     ],
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         OPENAI_API_KEY: '',
@@ -232,6 +242,7 @@ const catalog = [
     },
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         OPENAI_API_KEY: '',
@@ -311,6 +322,7 @@ const catalog = [
     ],
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         OPENAI_API_KEY: '',
@@ -392,6 +404,7 @@ const catalog = [
     ],
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',
@@ -454,6 +467,7 @@ const catalog = [
     },
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DB_BACKEND: 'postgres',
         PGHOST: '127.0.0.1',
         PGPORT: '5432',
@@ -553,6 +567,7 @@ const catalog = [
     ],
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         STORAGE_PATH: '/var/lib/sovereign-home/home-source/data',
@@ -631,6 +646,7 @@ const catalog = [
     ],
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         MCP_PORT: '{{sidecar.bug-base-mcp.port}}',
@@ -723,6 +739,7 @@ const catalog = [
     ],
     config: {
       env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',

@@ -14,6 +14,9 @@ function loadConfig() {
   const rootDir = process.cwd();
   const dataDir = process.env.HOME_BASE_DATA_DIR || path.join(rootDir, '.data');
   const stateDbPath = process.env.HOME_BASE_STATE_DB || path.join(dataDir, 'home-base.sqlite3');
+  const baseInstallDir = process.env.HOME_BASE_INSTALL_DIR || '/opt/sovereign-home/apps';
+  const sharedRoot = process.env.HOME_BASE_SHARED_ROOT || path.dirname(baseInstallDir);
+  const assetsRoot = process.env.HOME_BASE_ASSETS_ROOT || path.join(sharedRoot, 'assets');
 
   return {
     appName: 'Home Base',
@@ -22,7 +25,9 @@ function loadConfig() {
     stateDbPath,
     port: numberFromEnv(process.env.PORT, 3080),
     serviceUser: process.env.HOME_BASE_SERVICE_USER || 'sovereign',
-    baseInstallDir: process.env.HOME_BASE_INSTALL_DIR || '/opt/sovereign-home/apps',
+    baseInstallDir,
+    homeBaseSharedRoot: sharedRoot,
+    homeBaseAssetsRoot: assetsRoot,
     baseBackupDir: process.env.HOME_BASE_BACKUP_DIR || '/var/lib/sovereign-home/backups',
     baseConfigDir: process.env.HOME_BASE_CONFIG_DIR || '/etc/sovereign-home',
     defaultHostname: process.env.HOME_BASE_DEFAULT_HOSTNAME || process.env.HOME_BASE_HOSTNAME || 'homebase',
@@ -41,6 +46,9 @@ function loadConfig() {
     homeBaseAutoBootstrap: boolFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP, false),
     homeBaseAutoBootstrapMode: process.env.HOME_BASE_AUTO_BOOTSTRAP_MODE || 'execute',
     homeBaseAutoBootstrapDelayMs: numberFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP_DELAY_MS, 5000),
+    sovereignFontMountPath: process.env.SOVEREIGN_FONT_MOUNT_PATH || '/_sovereign/fonts/',
+    sovereignFontGoogleSansCssUrl: process.env.SOVEREIGN_FONT_SANS_CSS_URL || 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap',
+    sovereignFontGoogleMonoCssUrl: process.env.SOVEREIGN_FONT_MONO_CSS_URL || 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap',
   };
 }
 

@@ -45,8 +45,67 @@ const PUBLIC_MIME_TYPES = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ttf': 'font/ttf',
 };
 const ALLOWED_PUBLIC_EXTENSIONS = new Set(Object.keys(PUBLIC_MIME_TYPES));
+
+const DEFAULT_SOVEREIGN_FONT_SANS_CSS_URL = 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap';
+const DEFAULT_SOVEREIGN_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap';
+
+function buildSovereignFontsCss() {
+  const configuredSource = String(process.env.SOVEREIGN_FONT_SOURCE || 'auto').trim().toLowerCase();
+  const sharedAssetsRoot = process.env.HOME_BASE_ASSETS_ROOT || '/opt/sovereign-home/assets';
+  const localFontDir = path.join(sharedAssetsRoot, 'fonts');
+  const localFontsAvailable = fs.existsSync(path.join(localFontDir, 'source-sans-3.css'))
+    && fs.existsSync(path.join(localFontDir, 'jetbrains-mono.css'));
+  const mountPath = String(process.env.SOVEREIGN_FONT_MOUNT_PATH || '/_sovereign/fonts/').endsWith('/')
+    ? String(process.env.SOVEREIGN_FONT_MOUNT_PATH || '/_sovereign/fonts/')
+    : `${String(process.env.SOVEREIGN_FONT_MOUNT_PATH || '/_sovereign/fonts/')}/`;
+
+  const source = configuredSource === 'auto'
+    ? (localFontsAvailable ? 'local' : 'google')
+    : configuredSource;
+  if (source === 'off') return '/* Sovereign fonts disabled via SOVEREIGN_FONT_SOURCE=off */\n';
+
+  const isLocal = source === 'local';
+  const sansUrl = (isLocal ? process.env.SOVEREIGN_FONT_SANS_CSS_URL_LOCAL : process.env.SOVEREIGN_FONT_SANS_CSS_URL)
+    || (isLocal ? `${mountPath}source-sans-3.css` : DEFAULT_SOVEREIGN_FONT_SANS_CSS_URL);
+  const monoUrl = (isLocal ? process.env.SOVEREIGN_FONT_MONO_CSS_URL_LOCAL : process.env.SOVEREIGN_FONT_MONO_CSS_URL)
+    || (isLocal ? `${mountPath}jetbrains-mono.css` : DEFAULT_SOVEREIGN_FONT_MONO_CSS_URL);
+
+  return [
+    '/* Generated from environment: /sovereign-fonts.css */',
+    `@import url('${sansUrl}');`,
+    `@import url('${monoUrl}');`,
+    '',
+  ].join('\n');
+}
+
+function resolveSovereignFontAssetPath(requestPathname) {
+  const configuredMount = String(process.env.SOVEREIGN_FONT_MOUNT_PATH || '/_sovereign/fonts/');
+  const normalizedConfiguredMount = configuredMount.endsWith('/') ? configuredMount : `${configuredMount}/`;
+  const candidatePrefixes = [
+    normalizedConfiguredMount,
+    '/_sovereign/fonts/',
+    '/sovereign/fonts/',
+  ];
+  const matchedPrefix = candidatePrefixes.find((prefix) => requestPathname.startsWith(prefix));
+  if (!matchedPrefix) return null;
+
+  const suffix = requestPathname.slice(matchedPrefix.length);
+  if (!suffix || suffix.includes('\0') || suffix.includes('..')) return null;
+  const ext = path.extname(suffix).toLowerCase();
+  if (!['.css', '.woff2', '.woff', '.ttf'].includes(ext)) return null;
+
+  const sharedAssetsRoot = process.env.HOME_BASE_ASSETS_ROOT || '/opt/sovereign-home/assets';
+  const fontDir = path.join(sharedAssetsRoot, 'fonts');
+  const absolute = path.resolve(fontDir, suffix);
+  if (!absolute.startsWith(`${fontDir}${path.sep}`)) return null;
+  return absolute;
+}
+
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
@@ -179,6 +238,12 @@ function getHomeBaseStatus(config) {
   const stateDbPath = config.stateDbPath || `${stateDir}/home-base.sqlite3`;
   const serviceFile = '/etc/systemd/system/homebase.service';
   const sudoersFile = '/etc/sudoers.d/homebase';
+  const sharedAssetsRoot = config.homeBaseAssetsRoot || '/opt/sovereign-home/assets';
+  const fontDir = path.join(sharedAssetsRoot, 'fonts');
+  const sansCssPath = path.join(fontDir, 'source-sans-3.css');
+  const monoCssPath = path.join(fontDir, 'jetbrains-mono.css');
+  const configuredSource = String(process.env.SOVEREIGN_FONT_SOURCE || 'auto').trim().toLowerCase();
+  const mountPath = String(config.sovereignFontMountPath || '/_sovereign/fonts/');
   const status = {
     runtimeUser,
     appDir,
@@ -187,6 +252,19 @@ function getHomeBaseStatus(config) {
     envFile,
     serviceName: 'homebase',
     privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs !== false,
+    sovereignFonts: {
+      configuredSource,
+      mountPath,
+      assetDir: fontDir,
+      files: {
+        sourceSansCss: sansCssPath,
+        jetbrainsMonoCss: monoCssPath,
+      },
+      availability: {
+        sourceSansCss: fs.existsSync(sansCssPath),
+        jetbrainsMonoCss: fs.existsSync(monoCssPath),
+      },
+    },
     paths: {
       appDirExists: fs.existsSync(appDir),
       stateDirExists: fs.existsSync(stateDir),
@@ -203,6 +281,10 @@ function getHomeBaseStatus(config) {
   status.systemd = {
     active: (systemctl.stdout || '').trim() || 'unknown',
   };
+  status.sovereignFonts.available = Boolean(
+    status.sovereignFonts.availability.sourceSansCss
+    && status.sovereignFonts.availability.jetbrainsMonoCss
+  );
   status.ok = true;
   return status;
 }
@@ -416,6 +498,21 @@ function createApp(config) {
         if (/^\/apps\/[^/]+$/.test(normalizedPath)) return servePublicPage(res, 'app.html');
         if (/^\/jobs\/\d+$/.test(normalizedPath)) return servePublicPage(res, 'job.html');
       }
+      if (method === 'GET' && pathname === '/sovereign-fonts.css') {
+        res.writeHead(200, {
+          'content-type': 'text/css; charset=utf-8',
+          'cache-control': 'public, max-age=300',
+        });
+        res.end(buildSovereignFontsCss());
+        return;
+      }
+      if (method === 'GET') {
+        const sovereignFontAssetPath = resolveSovereignFontAssetPath(pathname);
+        if (sovereignFontAssetPath) {
+          return serveStaticFile(res, sovereignFontAssetPath);
+        }
+      }
+
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });
       }

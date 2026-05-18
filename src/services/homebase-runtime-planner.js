@@ -38,11 +38,18 @@ function renderEnvFile({
   autoBootstrap,
   autoBootstrapMode,
   autoBootstrapDelayMs,
+  sharedRoot,
+  assetsRoot,
+  sovereignFontMountPath,
+  sovereignFontSansCssUrl,
+  sovereignFontMonoCssUrl,
 }) {
   return [
     `PORT=${port}`,
     `HOME_BASE_STATE_DB=${stateDbPath}`,
     `HOME_BASE_INSTALL_DIR=${baseInstallDir}`,
+    `HOME_BASE_SHARED_ROOT=${sharedRoot}`,
+    `HOME_BASE_ASSETS_ROOT=${assetsRoot}`,
     `HOME_BASE_BACKUP_DIR=${baseBackupDir}`,
     `HOME_BASE_CONFIG_DIR=${baseConfigDir}`,
     `HOME_BASE_GIT_TRANSPORT=${gitTransport}`,
@@ -57,6 +64,9 @@ function renderEnvFile({
     `HOME_BASE_AUTO_BOOTSTRAP=${autoBootstrap ? '1' : '0'}`,
     `HOME_BASE_AUTO_BOOTSTRAP_MODE=${autoBootstrapMode || 'execute'}`,
     `HOME_BASE_AUTO_BOOTSTRAP_DELAY_MS=${autoBootstrapDelayMs || 5000}`,
+    `SOVEREIGN_FONT_MOUNT_PATH=${sovereignFontMountPath || '/_sovereign/fonts/'}`,
+    `SOVEREIGN_FONT_SANS_CSS_URL=${sovereignFontSansCssUrl || 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap'}`,
+    `SOVEREIGN_FONT_MONO_CSS_URL=${sovereignFontMonoCssUrl || 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap'}`,
     '',
   ].join('\n');
 }
@@ -86,6 +96,8 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     port,
     stateDbPath,
     baseInstallDir: config.baseInstallDir || '/opt/sovereign-home/apps',
+    sharedRoot: config.homeBaseSharedRoot || '/opt/sovereign-home',
+    assetsRoot: config.homeBaseAssetsRoot || '/opt/sovereign-home/assets',
     baseBackupDir: config.baseBackupDir || '/var/lib/sovereign-home/backups',
     baseConfigDir: config.baseConfigDir || '/etc/sovereign-home',
     gitTransport: config.gitTransport || 'https',
@@ -100,6 +112,9 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     autoBootstrap,
     autoBootstrapMode,
     autoBootstrapDelayMs,
+    sovereignFontMountPath: config.sovereignFontMountPath || '/_sovereign/fonts/',
+    sovereignFontSansCssUrl: config.sovereignFontGoogleSansCssUrl || 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap',
+    sovereignFontMonoCssUrl: config.sovereignFontGoogleMonoCssUrl || 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap',
   });
 
   const serviceContent = renderServiceUnit({

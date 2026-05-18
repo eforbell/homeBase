@@ -225,7 +225,7 @@
           <article class="hb-card">
             <h2 style="margin-top:0;">Bootstrap / repair host</h2>
             <form class="hb-form-grid" data-action="bootstrap-host">
-              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+              <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
               <button class="hb-btn" type="submit">Run bootstrap</button>
               <p class="hb-muted" style="margin:0;">Use this to recover from failed auto-bootstrap jobs or re-apply host repair steps such as nginx/Tailscale prerequisites.</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
@@ -235,7 +235,7 @@
             <h2 style="margin-top:0;">Install/enable Home Base service</h2>
             <form class="hb-form-grid" data-action="install-self">
               <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(config.port)}"></label>
-              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+              <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
               <button class="hb-btn" type="submit">Install/enable service</button>
               <p class="hb-muted" style="margin:0;">When installed as a systemd service, Home Base can auto-start bootstrap on first service launch.</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
@@ -250,6 +250,8 @@
             <li class="hb-row"><strong>State dir</strong><span class="hb-muted">${window.HB.escapeHtml(status.stateDir || '')}</span><span>${status.paths?.stateDirExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
             <li class="hb-row"><strong>Env file</strong><span class="hb-muted">${window.HB.escapeHtml(status.envFile || '')}</span><span>${status.paths?.envFileExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
             <li class="hb-row"><strong>systemd unit</strong><span class="hb-muted">/etc/systemd/system/homebase.service</span><span>${status.paths?.serviceFileExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
+            <li class="hb-row"><strong>Sovereign fonts</strong><span class="hb-muted">${window.HB.escapeHtml(status.sovereignFonts?.assetDir || 'n/a')} · ${window.HB.escapeHtml(status.sovereignFonts?.mountPath || '/_sovereign/fonts/')}</span><span>${status.sovereignFonts?.available ? '<span class="hb-ok">local ready</span>' : '<span class="hb-warn">missing</span>'}</span></li>
+            <li class="hb-row"><strong>Font source mode</strong><span class="hb-muted">${window.HB.escapeHtml(status.sovereignFonts?.configuredSource || 'auto')}</span><span>${status.sovereignFonts?.configuredSource === 'google' ? '<span class="hb-warn">google forced</span>' : '<span class="hb-ok">auto/local</span>'}</span></li>
           </ul>
         </section>
         <section class="hb-card">
@@ -333,7 +335,7 @@
             <label class="hb-label">SSH key path (for ssh-key transport)
               <input class="hb-input" name="gitSshKeyPath" value="${window.HB.escapeHtml(config.gitSshKeyPath || '')}">
             </label>
-            <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;">
+            <label class="hb-label hb-check-row">
               <input type="checkbox" name="healthAlertsEnabled" ${config.healthAlertsEnabled ? 'checked' : ''}>
               Enable critical health alerts
             </label>
@@ -363,7 +365,7 @@
             <h2 style="margin-top:0;">Update Home Base</h2>
             <form class="hb-form-grid" data-action="update-self">
               <label class="hb-label">Git ref <input class="hb-input" name="ref" value="main"></label>
-              <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+              <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
               <button class="hb-btn" type="submit">Run Home Base update</button>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
@@ -471,7 +473,7 @@
           <h2 style="margin-top:0;">Managed publish plan (${window.HB.escapeHtml(managedServiceId)})</h2>
           ${renderPublishPlanSummary(publishPlan)}
           <form class="hb-form-grid" data-action="tailscale-publish-execute" style="margin-top:0.85rem;">
-            <label class="hb-label" style="display:flex;gap:0.45rem;align-items:center;"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
+            <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
             <button class="hb-btn" type="submit">Apply managed publish plan</button>
             <p class="hb-muted" style="margin:0;">Real execution requires Admin unlock and will refuse endpoint ownership conflicts by policy for ${window.HB.escapeHtml(managedServiceId)}.</p>
             <p class="hb-muted" data-result style="margin:0;"></p>

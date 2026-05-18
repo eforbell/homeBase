@@ -14,10 +14,14 @@ test('bootstrap plan includes Debian host setup essentials', () => {
   assert.equal(plan.kind, 'bootstrap');
   assert.ok(plan.steps.some((step) => step.id === 'install-base-packages'));
   assert.ok(plan.steps.some((step) => step.id === 'install-tailscale'));
+  assert.ok(plan.steps.some((step) => step.id === 'configure-sovereign-font-assets'));
   assert.ok(plan.steps.some((step) => step.id === 'configure-nginx-gateway'));
   assert.match(plan.script, /sudo apt-get install -y git curl ca-certificates ssl-cert nginx postgresql postgresql-client nodejs python3 python3-venv python3-pip/);
   assert.match(plan.script, /if ! command -v npm >\/dev\/null 2>&1; then sudo apt-get install -y npm; fi/);
   assert.match(plan.script, /include \/etc\/nginx\/snippets\/\*\.conf;/);
+  assert.match(plan.script, /location \^~ \/_sovereign\/fonts\//);
+  assert.match(plan.script, /source-sans-3\.css/);
+  assert.match(plan.script, /jetbrains-mono\.css/);
   assert.match(plan.script, /listen 443 ssl default_server;/);
   assert.match(plan.script, /listen \[::\]:443 ssl default_server;/);
   assert.match(plan.script, /include snippets\/snakeoil\.conf;/);

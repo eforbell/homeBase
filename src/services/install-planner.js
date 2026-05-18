@@ -1,6 +1,10 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const { getAppById } = require('../catalog');
+
+const DEFAULT_SOVEREIGN_FONT_SANS_CSS_URL = 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap';
+const DEFAULT_SOVEREIGN_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap';
 
 function trimTrailingSlash(value) {
   return value.endsWith('/') ? value.slice(0, -1) : value;
@@ -15,6 +19,34 @@ function normalizeMountPath(value) {
   next = ensureLeadingSlash(next);
   if (!next.endsWith('/')) next += '/';
   return next;
+}
+
+function dirnameOrFallback(value, fallback) {
+  const dir = path.dirname(String(value || ''));
+  return dir && dir !== '.' ? dir : fallback;
+}
+
+function resolveSovereignFontContext({ config = {}, baseInstallDir, publicBase }) {
+  const sharedRoot = config.homeBaseSharedRoot || dirnameOrFallback(baseInstallDir, '/opt/sovereign-home');
+  const assetsRoot = config.homeBaseAssetsRoot || path.join(sharedRoot, 'assets');
+  const fontDir = path.join(assetsRoot, 'fonts');
+  const sansFile = path.join(fontDir, 'source-sans-3.css');
+  const monoFile = path.join(fontDir, 'jetbrains-mono.css');
+  const localAvailable = fs.existsSync(sansFile) && fs.existsSync(monoFile);
+
+  const mountPath = normalizeMountPath(config.sovereignFontMountPath || '/_sovereign/fonts/');
+  const localBaseUrl = `${trimTrailingSlash(publicBase)}${mountPath}`;
+
+  const googleSansUrl = config.sovereignFontGoogleSansCssUrl || DEFAULT_SOVEREIGN_FONT_SANS_CSS_URL;
+  const googleMonoUrl = config.sovereignFontGoogleMonoCssUrl || DEFAULT_SOVEREIGN_FONT_MONO_CSS_URL;
+
+  return {
+    source: localAvailable ? 'local' : 'google',
+    sansCssUrl: googleSansUrl,
+    monoCssUrl: googleMonoUrl,
+    localSansCssUrl: `${localBaseUrl}source-sans-3.css`,
+    localMonoCssUrl: `${localBaseUrl}jetbrains-mono.css`,
+  };
 }
 
 function appendMountPathSuffix(mountPath, suffix) {
@@ -282,6 +314,11 @@ function resolveEnvTemplate(template, ctx) {
     next = next.replaceAll('{{secret2}}', ctx.secret2);
     next = next.replaceAll('{{secret3}}', ctx.secret3);
     next = next.replaceAll('{{householdTimezone}}', ctx.householdTimezone);
+    next = next.replaceAll('{{sovereignFontSource}}', ctx.sovereignFontSource);
+    next = next.replaceAll('{{sovereignFontSansCssUrl}}', ctx.sovereignFontSansCssUrl);
+    next = next.replaceAll('{{sovereignFontMonoCssUrl}}', ctx.sovereignFontMonoCssUrl);
+    next = next.replaceAll('{{sovereignFontSansCssUrlLocal}}', ctx.sovereignFontSansCssUrlLocal);
+    next = next.replaceAll('{{sovereignFontMonoCssUrlLocal}}', ctx.sovereignFontMonoCssUrlLocal);
     if (ctx.sidecarPorts) {
       for (const [sidecarName, sidecarPort] of Object.entries(ctx.sidecarPorts)) {
         next = next.replaceAll(`{{sidecar.${sidecarName}.port}}`, String(sidecarPort));
@@ -474,6 +511,11 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const externalUrl = `${trimTrailingSlash(publicBase)}${mountPath}`;
   const publicUrl = externalUrl;
   const databaseUrl = existingDbContext?.databaseUrl || `postgresql://${dbUser}:${dbPassword}@127.0.0.1:5432/${dbName}`;
+  const sovereignFonts = resolveSovereignFontContext({
+    config,
+    baseInstallDir: options.baseInstallDir || config.baseInstallDir || '/opt/sovereign-home/apps',
+    publicBase,
+  });
 
   const sidecarPorts = {};
   if (Array.isArray(app.sidecars)) {
@@ -502,6 +544,11 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     secret2,
     secret3,
     householdTimezone,
+    sovereignFontSource: sovereignFonts.source,
+    sovereignFontSansCssUrl: sovereignFonts.sansCssUrl,
+    sovereignFontMonoCssUrl: sovereignFonts.monoCssUrl,
+    sovereignFontSansCssUrlLocal: sovereignFonts.localSansCssUrl,
+    sovereignFontMonoCssUrlLocal: sovereignFonts.localMonoCssUrl,
     dbBackend: existingDbContext?.dbBackend || null,
     sqliteDbPath: existingDbContext?.sqliteDbPath || null,
     skipDbBootstrap: Boolean(existingDbContext),
