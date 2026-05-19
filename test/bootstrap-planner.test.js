@@ -22,6 +22,7 @@ test('bootstrap plan includes Debian host setup essentials', () => {
   assert.match(plan.script, /location \^~ \/_sovereign\/fonts\//);
   assert.match(plan.script, /source-sans-3\.css/);
   assert.match(plan.script, /jetbrains-mono\.css/);
+  assert.match(plan.script, /re\.findall\(r"url\\\(\(https:\/\/fonts\\\.gstatic\\\.com\/\[\^\)\]\+\)\\\)", css\)/);
   assert.match(plan.script, /listen 443 ssl default_server;/);
   assert.match(plan.script, /listen \[::\]:443 ssl default_server;/);
   assert.match(plan.script, /include snippets\/snakeoil\.conf;/);

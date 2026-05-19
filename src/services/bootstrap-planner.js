@@ -118,7 +118,7 @@ manifest = {'updated_at': None, 'files': []}
 try:
     for css_name, css_url in sources:
         css = fetch_text(css_url)
-        urls = re.findall(r"url\\\\((https://fonts\\\\.gstatic\\\\.com/[^)]+)\\\\)", css)
+        urls = re.findall(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)", css)
         rewritten = css
         for remote in sorted(set(urls)):
             data = fetch_bytes(remote)
