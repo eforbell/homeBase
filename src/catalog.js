@@ -168,6 +168,13 @@ const catalog = [
         timerName: 'family-help-reminders.timer',
         onCalendar: '*:0/30',
       },
+      {
+        serviceName: 'family-help-sweep',
+        description: 'Family Help resolved ticket sweep',
+        execStart: 'node scripts/sweep-resolved.js',
+        timerName: 'family-help-sweep.timer',
+        onCalendar: 'daily',
+      },
     ],
     config: {
       env: {
