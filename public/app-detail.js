@@ -55,6 +55,17 @@
   }
 
 
+  function lastJobSummary(lastJob, activeJob) {
+    if (activeJob) {
+      return `<span style="color:var(--yellow)">Job <a href="/jobs/${window.HB.escapeHtml(activeJob.id)}">#${window.HB.escapeHtml(activeJob.id)}</a> ${window.HB.escapeHtml(activeJob.kind)} running...</span>`;
+    }
+    if (!lastJob) return '';
+    const color = lastJob.status === 'completed' ? '--green' : '--red';
+    const label = lastJob.status === 'completed' ? 'succeeded' : 'failed';
+    const ts = lastJob.finishedAt ? ` · ${window.HB.escapeHtml(window.HB.formatTimestamp(lastJob.finishedAt))}` : '';
+    return `<span style="color:var(${color})">Last ${window.HB.escapeHtml(lastJob.kind)} <a href="/jobs/${window.HB.escapeHtml(lastJob.id)}">#${window.HB.escapeHtml(lastJob.id)}</a> ${label}${ts}</span>`;
+  }
+
   function isTerminalJobStatus(status) {
     return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
   }
@@ -316,6 +327,9 @@
         return;
       }
       const install = (statePayload.installations || {})[appId] || null;
+      const allJobs = Array.isArray(statePayload.jobs) ? statePayload.jobs : [];
+      const lastAppJob = allJobs.find((j) => j.target === appId && ['completed', 'failed'].includes(j.status));
+      const activeAppJob = (Array.isArray(statePayload.activeJobs) ? statePayload.activeJobs : []).find((j) => j.target === appId);
       const backups = Array.isArray(backupPayload.backups) ? backupPayload.backups : [];
       const actions = actionsPayload.actions || {};
       const appHealth = (healthPayload.byAppId || {})[appId] || null;
@@ -393,6 +407,7 @@
             <article id="update" class="hb-card">
               <h2 style="margin-top:0;">Update</h2>
               <p class="hb-muted" data-update-status style="margin:0 0 0.6rem;">${window.HB.escapeHtml(updateStatusSummary(updateStatus))}</p>
+              ${lastJobSummary(lastAppJob, activeAppJob) ? `<p style="margin:0 0 0.6rem;">${lastJobSummary(lastAppJob, activeAppJob)}</p>` : ''}
               <form class="hb-form-grid" data-action="update-check" style="margin-bottom:0.75rem;">
                 <div><button class="hb-btn" type="submit">Check now</button></div>
                 <p class="hb-muted" data-result style="margin:0;"></p>

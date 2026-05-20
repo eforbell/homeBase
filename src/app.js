@@ -294,6 +294,22 @@ function buildRestartPlan({ app, install }) {
   const readinessPath = app?.network?.health?.readinessPath || app?.network?.health?.livenessPath || '/api/health';
   const port = install?.port || app?.network?.preferredPort;
   const healthUrl = port ? `http://127.0.0.1:${port}${readinessPath}` : null;
+  const commands = [`sudo systemctl restart ${serviceName}`];
+  if (Array.isArray(app.sidecars)) {
+    for (const sidecar of app.sidecars) {
+      commands.push(`sudo systemctl restart ${sidecar.name}`);
+    }
+  }
+  if (Array.isArray(app.timers)) {
+    for (const timer of app.timers) {
+      commands.push(`sudo systemctl restart ${timer.timerName}`);
+    }
+  }
+  commands.push(
+    healthUrl
+      ? `for attempt in $(seq 1 20); do curl --fail --silent --show-error ${healthUrl} && exit 0; sleep 1; done; echo \"Timed out waiting for ${healthUrl}\" >&2; exit 1`
+      : `echo \"Service restarted; no health URL configured for ${serviceName}\"`,
+  );
   return {
     kind: 'restart',
     generatedAt: new Date().toISOString(),
@@ -306,12 +322,7 @@ function buildRestartPlan({ app, install }) {
       port,
       readinessPath,
     },
-    commands: [
-      `sudo systemctl restart ${serviceName}`,
-      healthUrl
-        ? `for attempt in $(seq 1 20); do curl --fail --silent --show-error ${healthUrl} && exit 0; sleep 1; done; echo \"Timed out waiting for ${healthUrl}\" >&2; exit 1`
-        : `echo \"Service restarted; no health URL configured for ${serviceName}\"`,
-    ],
+    commands,
   };
 }
 
