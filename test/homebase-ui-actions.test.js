@@ -123,6 +123,12 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /This page will refresh when it finishes/);
   assert.match(apps, /scheduleRefresh/);
   assert.match(apps, /visibilitychange/);
+  assert.match(apps, /data-action="update-all"/);
+  assert.match(apps, /Update all \(/);
+  assert.match(apps, /trackedRef/);
+  assert.match(apps, /\/api\/apps\/\$\{encodeURIComponent\(entry\.appId\)\}\/execute/);
+  assert.match(apps, /Run update jobs for/);
+  assert.match(apps, /confirm: 'EXECUTE'/);
 });
 
 test('dashboard surfaces local-only backup posture warning', () => {

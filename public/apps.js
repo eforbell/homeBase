@@ -138,6 +138,94 @@
     return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
   }
 
+  function appNeedsUpdate(updateStatus) {
+    if (!updateStatus) return false;
+    if (updateStatus.status === 'update-available') return true;
+    return updateStatus.canUpdate === true;
+  }
+
+  function resolveUpdateRef(install, updateStatus) {
+    const trackedRef = String(updateStatus?.trackedRef || '').trim();
+    if (trackedRef) return trackedRef;
+    const installRef = String(install?.ref || '').trim();
+    if (installRef) return installRef;
+    return 'main';
+  }
+
+  function buildUpdateAllPlan(installations, updatesByAppId) {
+    const plan = [];
+    (installations || []).forEach((install) => {
+      const updateStatus = updatesByAppId[install.appId] || install.updateStatus || null;
+      if (!appNeedsUpdate(updateStatus)) return;
+      plan.push({
+        appId: install.appId,
+        mountPath: install.mountPath,
+        port: install.port,
+        ref: resolveUpdateRef(install, updateStatus),
+      });
+    });
+    return plan;
+  }
+
+  async function handleUpdateAllSubmit(form) {
+    if (form.dataset.submitting === 'true') return;
+    form.dataset.submitting = 'true';
+    const submitButton = form.querySelector('button[type="submit"]');
+    const resultNode = form.querySelector('[data-result]');
+    const planRaw = form.querySelector('input[name="updatePlan"]')?.value || '[]';
+    let updatePlan = [];
+    try {
+      updatePlan = JSON.parse(planRaw);
+    } catch (_error) {
+      updatePlan = [];
+    }
+    if (submitButton) submitButton.disabled = true;
+    if (!updatePlan.length) {
+      resultNode.textContent = 'No updates needed right now.';
+      form.dataset.submitting = 'false';
+      if (submitButton) submitButton.disabled = false;
+      return;
+    }
+    try {
+      await window.HB.confirmInline(
+        resultNode,
+        `Run update jobs for ${updatePlan.length} app${updatePlan.length === 1 ? '' : 's'} now?`,
+      );
+    } catch (_error) {
+      form.dataset.submitting = 'false';
+      if (submitButton) submitButton.disabled = false;
+      return;
+    }
+    resultNode.textContent = 'Queueing updates...';
+    const queued = [];
+    const failed = [];
+    for (const entry of updatePlan) {
+      const payload = {
+        mountPath: entry.mountPath,
+        dryRun: false,
+        confirm: 'EXECUTE',
+        ref: entry.ref,
+      };
+      if (entry.port) payload.port = Number(entry.port);
+      try {
+        const response = await window.HB.postJson(`/api/apps/${encodeURIComponent(entry.appId)}/execute`, payload);
+        queued.push({ appId: entry.appId, jobId: response.jobId });
+      } catch (error) {
+        failed.push({ appId: entry.appId, error: error.message });
+      }
+    }
+    const queuedSummary = queued.length
+      ? `Queued: ${queued.map((item) => `${window.HB.escapeHtml(item.appId)} (<a href="/jobs/${window.HB.escapeHtml(item.jobId)}">#${window.HB.escapeHtml(item.jobId)}</a>)`).join(', ')}.`
+      : 'Queued: none.';
+    const failedSummary = failed.length
+      ? ` Failed: ${failed.map((item) => `${window.HB.escapeHtml(item.appId)} (${window.HB.escapeHtml(item.error)})`).join('; ')}.`
+      : '';
+    resultNode.innerHTML = `${queuedSummary}${failedSummary}`;
+    form.dataset.submitting = 'false';
+    if (submitButton) submitButton.disabled = false;
+    load();
+  }
+
   async function waitForJobCompletion(jobId, resultNode, { onComplete = null } = {}) {
     for (let attempt = 0; attempt < 120; attempt += 1) {
       try {
@@ -205,6 +293,12 @@
     if (eventsWired) return;
     eventsWired = true;
     root.addEventListener('submit', (event) => {
+      const updateAllForm = event.target.closest('form[data-action="update-all"]');
+      if (updateAllForm) {
+        event.preventDefault();
+        handleUpdateAllSubmit(updateAllForm);
+        return;
+      }
       const form = event.target.closest('form[data-action="install"]');
       if (!form) return;
       event.preventDefault();
@@ -267,6 +361,9 @@
       const installing = catalog.filter((app) => !installedIds.has(app.id) && installingByAppId.has(app.id));
       const available = catalog.filter((app) => !installedIds.has(app.id) && !installingByAppId.has(app.id));
       const shouldOpenAvailable = available.length ? availableWasOpen === true : true;
+      const updateAllPlan = buildUpdateAllPlan(installations, updatesByAppId);
+      const updateAllCount = updateAllPlan.length;
+      const updateAllPlanEscaped = window.HB.escapeHtml(JSON.stringify(updateAllPlan));
 
       root.innerHTML = `
         <div class="hb-stack">
@@ -274,6 +371,14 @@
             <h1 style="margin:0;">Apps</h1>
             <p class="hb-muted" style="margin:0.55rem 0 0;">Open, inspect, back up, and restore your sovereign apps from one place.</p>
             <p class="hb-warn" style="margin:0.55rem 0 0;">${window.HB.localOnlyBackupNote(config)}</p>
+            <form class="hb-form-grid" data-action="update-all" style="margin-top:0.75rem;">
+              <input type="hidden" name="updatePlan" value="${updateAllPlanEscaped}">
+              <div class="hb-row" style="gap:0.55rem;align-items:center;flex-wrap:wrap;">
+                <button class="hb-btn hb-btn-primary" type="submit" ${updateAllCount ? '' : 'disabled'}>Update all (${updateAllCount})</button>
+                <span class="hb-muted" style="font-size:0.85rem;">Uses each app’s tracked update ref from last update checks.</span>
+              </div>
+              <p class="hb-muted" data-result style="margin:0;"></p>
+            </form>
           </section>
           <section class="hb-grid hb-grid-2">
             ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId, catalogById.get(install.appId), updatesByAppId)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
