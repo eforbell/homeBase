@@ -2,3 +2,5 @@
 .omx/
 node_modules/
 .DS_Store
+.omc/
+test-results/
