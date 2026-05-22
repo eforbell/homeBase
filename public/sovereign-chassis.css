@@ -242,6 +242,17 @@ input, select, textarea {
   width: 100%;
   transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
 }
+
+/* Native checkbox/radio controls should not inherit full-width text-field styling */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  flex: 0 0 auto;
+}
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
