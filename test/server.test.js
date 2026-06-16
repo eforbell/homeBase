@@ -31,6 +31,18 @@ function assertUnlockedRealExecuteResult(response, payload) {
   assert.doesNotMatch(payload.error, /Admin setup is required/i);
 }
 
+async function setupAdminCookie(baseUrl, passphrase = 'test-admin-passphrase') {
+  const setupRes = await fetch(`${baseUrl}/api/admin/setup`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ passphrase }),
+  });
+  assert.equal(setupRes.status, 200);
+  const cookie = (setupRes.headers.get('set-cookie') || '').split(';')[0];
+  assert.match(cookie, /hb_admin_session=/);
+  return cookie;
+}
+
 test('HTTP API exposes catalog and can persist a planned install', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-'));
   const server = await startServer({
@@ -214,6 +226,7 @@ test('homebase install-self dry-run creates a runtime job', async () => {
   });
 
   try {
+    const adminCookie = await setupAdminCookie(server.url);
     const res = await fetch(`${server.url}/api/homebase/install-self`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -221,7 +234,7 @@ test('homebase install-self dry-run creates a runtime job', async () => {
     });
     const payload = await res.json();
     assert.equal(payload.ok, true);
-    const jobRes = await fetch(`${server.url}/api/jobs/${payload.jobId}`);
+    const jobRes = await fetch(`${server.url}/api/jobs/${payload.jobId}`, { headers: { cookie: adminCookie } });
     const job = await jobRes.json();
     assert.equal(job.kind, 'homebase-runtime');
   } finally {
@@ -264,7 +277,8 @@ test('startup reconciles stale homebase update jobs that already issued service 
   });
 
   try {
-    const jobRes = await fetch(`${server.url}/api/jobs/${id}`);
+    const adminCookie = await setupAdminCookie(server.url);
+    const jobRes = await fetch(`${server.url}/api/jobs/${id}`, { headers: { cookie: adminCookie } });
     const job = await jobRes.json();
     assert.equal(job.status, 'completed');
     assert.match(job.log, /marking update job completed during startup/i);
@@ -309,7 +323,8 @@ test('startup does not reconcile stale homebase update jobs that never issued re
   });
 
   try {
-    const jobRes = await fetch(`${server.url}/api/jobs/${id}`);
+    const adminCookie = await setupAdminCookie(server.url);
+    const jobRes = await fetch(`${server.url}/api/jobs/${id}`, { headers: { cookie: adminCookie } });
     const job = await jobRes.json();
     assert.equal(job.status, 'running');
     assert.doesNotMatch(job.log, /marking update job completed during startup/i);
@@ -665,6 +680,72 @@ test('admin audit endpoint requires unlock and records destructive attempts', as
   }
 });
 
+test('job history endpoints require admin unlock before exposing logs and plan payloads', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-job-history-auth-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const store = new SqliteStateStore(dbPath);
+    const { id } = store.createJob({
+      kind: 'install',
+      target: 'family-pulse',
+      status: 'completed',
+      dryRun: false,
+      createdAt: new Date().toISOString(),
+      currentStep: null,
+      planJson: JSON.stringify({ env: { OPENAI_API_KEY: 'sk-test-secret' } }),
+    });
+    store.appendJobLog(id, 'PLAID_SECRET=plaid-test-secret\n');
+
+    const setupCookie = await setupAdminCookie(server.url, 'history-passphrase');
+    const lockRes = await fetch(`${server.url}/api/admin/lock`, {
+      method: 'POST',
+      headers: { cookie: setupCookie },
+    });
+    assert.equal(lockRes.status, 200);
+
+    const lockedListRes = await fetch(`${server.url}/api/jobs`);
+    const lockedList = await lockedListRes.text();
+    assert.equal(lockedListRes.status, 401);
+    assert.doesNotMatch(lockedList, /plaid-test-secret|sk-test-secret/i);
+
+    const lockedDetailRes = await fetch(`${server.url}/api/jobs/${id}`);
+    const lockedDetail = await lockedDetailRes.text();
+    assert.equal(lockedDetailRes.status, 401);
+    assert.doesNotMatch(lockedDetail, /plaid-test-secret|sk-test-secret/i);
+
+    const unlockRes = await fetch(`${server.url}/api/admin/unlock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'history-passphrase' }),
+    });
+    const unlockCookie = (unlockRes.headers.get('set-cookie') || '').split(';')[0];
+    assert.match(unlockCookie, /hb_admin_session=/);
+
+    const unlockedDetailRes = await fetch(`${server.url}/api/jobs/${id}`, {
+      headers: { cookie: unlockCookie },
+    });
+    assert.equal(unlockedDetailRes.status, 200);
+    const unlockedDetail = await unlockedDetailRes.json();
+    assert.match(unlockedDetail.log, /plaid-test-secret/);
+    assert.match(unlockedDetail.planJson, /sk-test-secret/);
+  } finally {
+    await server.close();
+  }
+});
+
 test('health alert test endpoint posts to configured webhook target', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-test-'));
   const posted = [];
@@ -975,6 +1056,7 @@ test('bootstrap execute dry-run creates a completed job', async () => {
   });
 
   try {
+    const adminCookie = await setupAdminCookie(server.url);
     const executeRes = await fetch(`${server.url}/api/bootstrap/execute`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -985,7 +1067,7 @@ test('bootstrap execute dry-run creates a completed job', async () => {
 
     let job = null;
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`, { headers: { cookie: adminCookie } });
       job = await jobRes.json();
       if (job.status === 'completed') break;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -1121,6 +1203,7 @@ test('install execute dry-run creates a completed install job', async () => {
   });
 
   try {
+    const adminCookie = await setupAdminCookie(server.url);
     const executeRes = await fetch(`${server.url}/api/apps/family-help/execute`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1131,7 +1214,7 @@ test('install execute dry-run creates a completed install job', async () => {
 
     let job = null;
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`, { headers: { cookie: adminCookie } });
       job = await jobRes.json();
       if (job.status === 'completed') break;
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1217,6 +1300,7 @@ test('uninstall execute dry-run creates a completed uninstall job', async () => 
   });
 
   try {
+    const adminCookie = await setupAdminCookie(server.url);
     await fetch(`${server.url}/api/apps/family-help/install`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1234,7 +1318,7 @@ test('uninstall execute dry-run creates a completed uninstall job', async () => 
 
     let job = null;
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`, { headers: { cookie: adminCookie } });
       job = await jobRes.json();
       if (job.status === 'completed') break;
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1263,6 +1347,7 @@ test('restart execute dry-run creates a completed restart job', async () => {
   });
 
   try {
+    const adminCookie = await setupAdminCookie(server.url);
     await fetch(`${server.url}/api/apps/family-help/install`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1278,7 +1363,7 @@ test('restart execute dry-run creates a completed restart job', async () => {
 
     let job = null;
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`, { headers: { cookie: adminCookie } });
       job = await jobRes.json();
       if (job.status === 'completed') break;
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1465,6 +1550,7 @@ test('restore execute dry-run creates a completed restore job', async () => {
   });
 
   try {
+    const adminCookie = await setupAdminCookie(server.url);
     const executeRes = await fetch(`${server.url}/api/apps/family-help/restore/execute`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1475,7 +1561,7 @@ test('restore execute dry-run creates a completed restore job', async () => {
 
     let job = null;
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+      const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`, { headers: { cookie: adminCookie } });
       job = await jobRes.json();
       if (job.status === 'completed') break;
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1595,6 +1681,7 @@ test('network tailscale publish execute dry-run enqueues tailscale-publish job',
   });
 
   try {
+    const adminCookie = await setupAdminCookie(server.url);
     const executeRes = await fetch(`${server.url}/api/network/tailscale/publish-execute`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1604,7 +1691,7 @@ test('network tailscale publish execute dry-run enqueues tailscale-publish job',
     const execute = await executeRes.json();
     assert.equal(execute.ok, true);
 
-    const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`);
+    const jobRes = await fetch(`${server.url}/api/jobs/${execute.jobId}`, { headers: { cookie: adminCookie } });
     assert.equal(jobRes.status, 200);
     const job = await jobRes.json();
     assert.equal(job.kind, 'tailscale-publish');

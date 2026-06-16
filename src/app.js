@@ -228,6 +228,18 @@ function projectStateForClient(state, config) {
   };
 }
 
+
+async function requireAdminForJobRead(req, stateStore) {
+  const status = await getAdminStatus(req, stateStore);
+  if (!status.configured) {
+    return { ok: false, statusCode: 409, payload: { error: 'Admin setup is required before viewing job history.' } };
+  }
+  if (!status.unlocked) {
+    return { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required to view job history.' } };
+  }
+  return { ok: true };
+}
+
 function getHomeBaseStatus(config) {
   const fs = require('fs');
   const { spawnSync } = require('child_process');
@@ -587,10 +599,14 @@ function createApp(config) {
         }));
       }
       if (method === 'GET' && pathname === '/api/jobs') {
+        const auth = await requireAdminForJobRead(req, stateStore);
+        if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         return sendJson(res, 200, { jobs: state.jobs || [] });
       }
       const jobMatch = pathname.match(/^\/api\/jobs\/(\d+)$/);
       if (method === 'GET' && jobMatch) {
+        const auth = await requireAdminForJobRead(req, stateStore);
+        if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         const job = stateStore.getJob(Number(jobMatch[1]));
         if (!job) return notFound(res);
         return sendJson(res, 200, job);
