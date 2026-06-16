@@ -97,7 +97,7 @@ function renderEnv(envMap) {
     .join('\n')}\n`;
 }
 
-function renderServiceUnit({ description, serviceUser, installRoot, envFile, execStart, extraEnvironment = {} }) {
+function renderServiceUnit({ description, serviceUser, installRoot, envFile, execStart, extraEnvironment = {}, umask = null }) {
   const envLines = Object.entries(extraEnvironment).map(([key, value]) => `Environment=${key}=${value}`);
   return [
     '[Unit]',
@@ -110,6 +110,7 @@ function renderServiceUnit({ description, serviceUser, installRoot, envFile, exe
     `WorkingDirectory=${installRoot}`,
     `EnvironmentFile=${installRoot}/${envFile}`,
     ...envLines,
+    ...(umask ? [`UMask=${umask}`] : []),
     `ExecStart=${execStart}`,
     'Restart=always',
     'RestartSec=5',
@@ -121,7 +122,7 @@ function renderServiceUnit({ description, serviceUser, installRoot, envFile, exe
   ].join('\n');
 }
 
-function renderOneshotUnit({ description, serviceUser, installRoot, envFile, execStart, extraEnvironment = {} }) {
+function renderOneshotUnit({ description, serviceUser, installRoot, envFile, execStart, extraEnvironment = {}, umask = null }) {
   const envLines = Object.entries(extraEnvironment).map(([key, value]) => `Environment=${key}=${value}`);
   return [
     '[Unit]',
@@ -134,19 +135,20 @@ function renderOneshotUnit({ description, serviceUser, installRoot, envFile, exe
     `WorkingDirectory=${installRoot}`,
     `EnvironmentFile=${installRoot}/${envFile}`,
     ...envLines,
+    ...(umask ? [`UMask=${umask}`] : []),
     `ExecStart=${execStart}`,
     '',
   ].join('\n');
 }
 
-function renderTimerUnit({ description, onCalendar, serviceName }) {
+function renderTimerUnit({ description, onCalendar, serviceName, persistent = true }) {
   return [
     '[Unit]',
     `Description=${description}`,
     '',
     '[Timer]',
     `OnCalendar=${onCalendar}`,
-    'Persistent=true',
+    `Persistent=${persistent === false ? 'false' : 'true'}`,
     `Unit=${serviceName}.service`,
     '',
     '[Install]',
@@ -285,8 +287,8 @@ function buildAppBootstrapCommands(app, ctx) {
   return commands;
 }
 
-function renderStartCommand(app, ctx) {
-  const resolved = app.runtime.startCommand
+function renderCommandTemplate(command, ctx) {
+  const resolved = String(command || '')
     .replaceAll('{{port}}', String(ctx.port))
     .replaceAll('{{installRoot}}', ctx.installRoot);
   const spaceIdx = resolved.indexOf(' ');
@@ -296,6 +298,10 @@ function renderStartCommand(app, ctx) {
     return `${ctx.installRoot}/${exe}${rest}`;
   }
   return resolved;
+}
+
+function renderStartCommand(app, ctx) {
+  return renderCommandTemplate(app.runtime.startCommand, ctx);
 }
 
 function resolveEnvTemplate(template, ctx) {
@@ -362,11 +368,17 @@ function parseDatabaseUrl(value) {
   }
 }
 
-function resolveExistingDbContext(existing = {}, defaults = {}) {
-  const next = { ...defaults };
+function getDatabaseUrlEnvKey(app = {}) {
+  return app.database?.urlEnvKey || 'DATABASE_URL';
+}
 
-  if (existing.DATABASE_URL) {
-    const parsed = parseDatabaseUrl(existing.DATABASE_URL);
+function resolveExistingDbContext(existing = {}, defaults = {}, app = {}) {
+  const next = { ...defaults };
+  const databaseUrlEnvKey = getDatabaseUrlEnvKey(app);
+  const existingDatabaseUrl = existing[databaseUrlEnvKey] || existing.DATABASE_URL;
+
+  if (existingDatabaseUrl) {
+    const parsed = parseDatabaseUrl(existingDatabaseUrl);
     if (parsed) {
       if (parsed.dbUser) next.dbUser = parsed.dbUser;
       if (parsed.dbPassword) next.dbPassword = parsed.dbPassword;
@@ -389,9 +401,11 @@ function resolveExistingDbContext(existing = {}, defaults = {}) {
   return next;
 }
 
-function hasExistingDbConfig(existing = {}) {
+function hasExistingDbConfig(existing = {}, app = {}) {
+  const databaseUrlEnvKey = getDatabaseUrlEnvKey(app);
   return Boolean(
-    existing.DATABASE_URL
+    existing[databaseUrlEnvKey]
+      || (databaseUrlEnvKey !== 'DATABASE_URL' && existing.DATABASE_URL)
       || existing.PGUSER
       || existing.PGPASSWORD
       || existing.PGDATABASE
@@ -488,7 +502,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const defaultDbUser = options.dbUser || app.database.databaseUser || defaultDbName;
   const defaultDbPassword = options.dbPassword || crypto.randomBytes(24).toString('base64url');
   const defaultDatabaseUrl = `postgresql://${defaultDbUser}:${defaultDbPassword}@127.0.0.1:5432/${defaultDbName}`;
-  const existingDbContext = existingEnv && hasExistingDbConfig(existingEnv)
+  const existingDbContext = existingEnv && hasExistingDbConfig(existingEnv, app)
     ? resolveExistingDbContext(existingEnv, {
         dbName: defaultDbName,
         dbUser: defaultDbUser,
@@ -496,7 +510,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
         databaseUrl: defaultDatabaseUrl,
         dbBackend: existingEnv.DB_BACKEND || null,
         sqliteDbPath: existingEnv.SQLITE_DB_PATH || null,
-      })
+      }, app)
     : null;
   const dbName = existingDbContext?.dbName || defaultDbName;
   const dbUser = existingDbContext?.dbUser || defaultDbUser;
@@ -576,6 +590,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     envFile: app.service.envFile,
     execStart: renderStartCommand(app, ctx),
     extraEnvironment: { TZ: householdTimezone, ...runtimeEnv },
+    umask: app.service.umask,
   });
 
   if (Array.isArray(app.sidecars)) {
@@ -585,8 +600,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
         serviceUser,
         installRoot,
         envFile: app.service.envFile,
-        execStart: sidecar.execStart,
+        execStart: renderCommandTemplate(sidecar.execStart, ctx),
         extraEnvironment: { TZ: householdTimezone, ...(sidecar.env || {}) },
+        umask: sidecar.umask || app.service.umask,
       });
 
       if (sidecar.nginx) {
@@ -612,13 +628,15 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
         serviceUser,
         installRoot,
         envFile: app.service.envFile,
-        execStart: timer.execStart,
-        extraEnvironment: { TZ: householdTimezone, NODE_ENV: 'production' },
+        execStart: renderCommandTemplate(timer.execStart, ctx),
+        extraEnvironment: { TZ: householdTimezone, ...(app.runtime.kind === 'node' ? { NODE_ENV: app.runtime.nodeEnv || 'production' } : { PYTHONUNBUFFERED: '1' }) },
+        umask: timer.umask || app.service.umask,
       });
       files[timer.timerName] = renderTimerUnit({
         description: `Run ${timer.description.toLowerCase()}`,
         onCalendar: timer.onCalendar,
         serviceName: timer.serviceName,
+        persistent: timer.persistent,
       });
     }
   }

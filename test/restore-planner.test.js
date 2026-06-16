@@ -63,3 +63,20 @@ test('restore plan preserves split PG env credentials for postgres-or-sqlite app
   assert.match(plan.script, /SQLITE_DB_PATH/);
   assert.match(plan.script, /DB_BACKEND/);
 });
+
+test('restore plan uses Helm database URL env key and preserves it across env restore', () => {
+  const { backupRoot, archiveDir } = makeBackupDir('helm');
+  const plan = buildRestorePlan({
+    appId: 'helm',
+    backupDir: archiveDir,
+    state: baseState('helm', '/opt/sovereign-home/apps/helm', 'helm-web', 3011),
+    config: {
+      baseBackupDir: backupRoot,
+      serviceUser: 'sovereign',
+    },
+  });
+
+  assert.match(plan.script, /HELM_DATABASE_URL/);
+  assert.match(plan.script, /pg_restore --clean --if-exists -d "\$HELM_DATABASE_URL"/);
+  assert.match(plan.script, /curl --fail --silent --show-error http:\/\/127\.0\.0\.1:3011\/health/);
+});

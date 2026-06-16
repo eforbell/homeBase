@@ -17,6 +17,7 @@ function renderWaitForHttpCommand({ url, attempts = 20, sleepSeconds = 1 }) {
 
 const PRESERVED_DB_ENV_KEYS = [
   'DATABASE_URL',
+  'HELM_DATABASE_URL',
   'DB_BACKEND',
   'PGHOST',
   'PGPORT',
@@ -77,6 +78,8 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
     renderRestoreEnvCommand({ installRoot, archiveDir }),
   ];
 
+  const databaseUrlEnvKey = app.database?.urlEnvKey || 'DATABASE_URL';
+
   if (app.runtime.kind === 'python' && app.id === 'bitcoin-accounting') {
     commands.push(renderRunAsServiceUserCommand({
       serviceUser,
@@ -89,7 +92,7 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   } else {
     commands.push(renderRunAsServiceUserCommand({
       serviceUser,
-      command: `cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/database.dump ]; then pg_restore --clean --if-exists -d "$DATABASE_URL" ${archiveDir}/database.dump; fi`,
+      command: `cd ${installRoot} && set -a && . ./.env && set +a && if [ -f ${archiveDir}/database.dump ]; then pg_restore --clean --if-exists -d "$${databaseUrlEnvKey}" ${archiveDir}/database.dump; fi`,
     }));
   }
 

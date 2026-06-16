@@ -380,3 +380,105 @@ test('install planner falls back to google sovereign font env values when local 
   assert.match(plan.files['.env'], /SOVEREIGN_FONT_SOURCE=google/);
   assert.match(plan.files['.env'], /SOVEREIGN_FONT_SANS_CSS_URL="?https:\/\/fonts\.googleapis\.com\/css2\?family=Source\+Sans\+3:wght@400;500;600;700&display=swap"?/);
 });
+
+test('helm plan renders HomeBase-preserved subpath, Helm env, timers, and python units', () => {
+  const plan = buildInstallPlan({
+    appId: 'helm',
+    state: { installations: {} },
+    options: { dbPassword: 'helm-pass' },
+    config: { port: 3080, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', defaultHostname: 'homebase', defaultDomain: 'tailnet' },
+  });
+
+  assert.equal(plan.install.port, 3011);
+  assert.equal(plan.install.health.readinessPath, '/health');
+  assert.match(plan.files['.env'], /HELM_ENV=production/);
+  assert.match(plan.files['.env'], /HELM_WEB_BASE_PATH=\/helm/);
+  assert.match(plan.files['.env'], /HELM_DATABASE_URL=postgresql:\/\/helm:helm-pass@127\.0\.0\.1:5432\/helm/);
+  assert.match(plan.files['.env'], /SCHWAB_TOKEN_PATH=\.\/\.secrets\/schwab_tokens\.db/);
+  assert.match(plan.files['.env'], /HELM_AUTH_ENABLED=1/);
+  assert.match(plan.files['helm-web.service'], /UMask=0077/);
+  assert.match(plan.files['helm-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/uvicorn/);
+  assert.match(plan.files['helm-sync.service'], /UMask=0077/);
+  assert.match(plan.files['helm-sync.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm sync/);
+  assert.match(plan.files['helm-monitor.service'], /UMask=0077/);
+  assert.match(plan.files['helm-monitor.service'], /Environment=PYTHONUNBUFFERED=1/);
+  assert.match(plan.files['helm-monitor.timer'], /OnCalendar=Mon\.\.Fri 09\.\.16:00\/30/);
+  assert.match(plan.files['helm-monitor.timer'], /Persistent=false/);
+  assert.match(plan.files['helm-token-refresh.timer'], /OnCalendar=\*-\*-\* 07:30/);
+  assert.match(plan.files['helm.nginx.conf'], /location \/helm\//);
+  assert.match(plan.files['helm.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:3011;/);
+  assert.doesNotMatch(plan.files['helm.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:3011\//);
+  assert.match(plan.script, /install -d -m 0700 \.secrets/);
+  assert.match(plan.script, /migrations\/run_migration\.py/);
+  assert.match(plan.script, /systemctl enable helm-sync\.timer/);
+  assert.match(plan.script, /systemctl restart helm-token-refresh\.timer/);
+});
+
+test('install planner preserves existing Helm database URL and production secrets', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-helm-env-'));
+  const appDir = path.join(tempDir, 'helm');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'HELM_DATABASE_URL=postgresql://existing:existing-pass@127.0.0.1:5432/existing_helm',
+    'SCHWAB_APP_KEY=existing-key',
+    'SCHWAB_APP_SECRET=existing-secret',
+    'SCHWAB_CALLBACK_URL=https://schwab-callback.example.com/oauth/callback',
+    'OPENAI_API_KEY=existing-openai',
+    'BRRR_SECRET=existing-brrr',
+    'HELM_AUTH_PASSPHRASE=existing-passphrase',
+    'HELM_SESSION_SECRET=existing-session',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'helm',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.equal(plan.install.dbName, 'existing_helm');
+  assert.equal(plan.install.dbUser, 'existing');
+  assert.match(plan.files['.env'], /HELM_DATABASE_URL=postgresql:\/\/existing:existing-pass@127\.0\.0\.1:5432\/existing_helm/);
+  assert.match(plan.files['.env'], /SCHWAB_APP_KEY=existing-key/);
+  assert.match(plan.files['.env'], /SCHWAB_APP_SECRET=existing-secret/);
+  assert.match(plan.files['.env'], /OPENAI_API_KEY=existing-openai/);
+  assert.match(plan.files['.env'], /BRRR_SECRET=existing-brrr/);
+  assert.match(plan.files['.env'], /HELM_SESSION_SECRET=existing-session/);
+  assert.doesNotMatch(plan.script, /CREATE ROLE/);
+  assert.doesNotMatch(plan.script, /createdb --owner=/);
+});
+
+test('install planner does not skip Helm database bootstrap when only HELM_TEST_DATABASE_URL exists', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-helm-test-db-only-'));
+  const appDir = path.join(tempDir, 'helm');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'HELM_TEST_DATABASE_URL=postgresql://helm:helm@127.0.0.1:5432/helm_test',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'helm',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /HELM_TEST_DATABASE_URL=postgresql:\/\/helm:helm@127\.0\.0\.1:5432\/helm_test/);
+  assert.match(plan.files['.env'], /HELM_DATABASE_URL=postgresql:\/\/helm:[A-Za-z0-9_-]+@127\.0\.0\.1:5432\/helm/);
+  assert.match(plan.script, /CREATE ROLE helm LOGIN PASSWORD/);
+  assert.match(plan.script, /createdb --owner=helm helm/);
+});

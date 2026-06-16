@@ -32,6 +32,8 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
     }),
   ];
 
+  const databaseUrlEnvKey = app.database?.urlEnvKey || 'DATABASE_URL';
+
   if (app.runtime.kind === 'python' && app.id === 'bitcoin-accounting') {
     commands.push(renderRunAsServiceUserCommand({
       serviceUser,
@@ -44,7 +46,7 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
   } else {
     commands.push(renderRunAsServiceUserCommand({
       serviceUser,
-      command: `cd ${installRoot} && set -a && . ./.env && set +a && pg_dump "$DATABASE_URL" -Fc -f ${archiveDir}/database.dump`,
+      command: `cd ${installRoot} && set -a && . ./.env && set +a && pg_dump "$${databaseUrlEnvKey}" -Fc -f ${archiveDir}/database.dump`,
     }));
   }
 
