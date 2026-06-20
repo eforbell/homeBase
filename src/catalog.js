@@ -563,6 +563,13 @@ const catalog = [
         onCalendar: 'Mon..Fri 08:00',
       },
       {
+        serviceName: 'helm-review',
+        description: 'Helm weekly portfolio review',
+        execStart: '.venv/bin/helm review --trigger weekly --if-due',
+        timerName: 'helm-review.timer',
+        onCalendar: 'Mon 08:15',
+      },
+      {
         serviceName: 'helm-monitor',
         description: 'Helm turbulence monitor',
         execStart: '.venv/bin/helm-monitor',
@@ -579,6 +586,11 @@ const catalog = [
       },
     ],
     config: {
+      preserveExistingKeys: [
+        'ADVISOR_PROVIDER',
+        'ADVISOR_MODEL',
+        'HELM_MODEL_SYNTHESIS_ENABLED',
+      ],
       env: {
         ...SOVEREIGN_FONT_ENV_TEMPLATE,
         HELM_ENV: 'production',
@@ -594,12 +606,12 @@ const catalog = [
         SCHWAB_TOKEN_PATH: './.secrets/schwab_tokens.db',
         ADVISOR_PROVIDER: 'openai',
         ADVISOR_MODEL: 'gpt-4o-mini',
+        HELM_MODEL_SYNTHESIS_ENABLED: '1',
         OPENAI_API_KEY: '',
         BRRR_SECRET: '',
         HELM_PUBLIC_URL: '{{externalUrl}}',
         MONITOR_POSITION_MOVE_PCT: '7',
         MONITOR_PORTFOLIO_DRAWDOWN_PCT: '4',
-        MONITOR_CONCENTRATION_CAP_PCT: '25',
         MONITOR_COOLDOWN_MINUTES: '180',
         HELM_AUTH_ENABLED: '1',
         HELM_AUTH_PASSPHRASE: '{{secret1}}',
