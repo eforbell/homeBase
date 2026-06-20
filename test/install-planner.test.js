@@ -400,6 +400,10 @@ test('helm plan renders HomeBase-preserved subpath, Helm env, timers, and python
   assert.match(plan.files['helm-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/uvicorn/);
   assert.match(plan.files['helm-sync.service'], /UMask=0077/);
   assert.match(plan.files['helm-sync.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm sync/);
+  assert.match(plan.files['helm-review.service'], /UMask=0077/);
+  assert.match(plan.files['helm-review.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm review --trigger weekly --if-due/);
+  assert.match(plan.files['helm-review.timer'], /OnCalendar=Mon 08:15/);
+  assert.match(plan.files['helm-review.timer'], /Persistent=true/);
   assert.match(plan.files['helm-monitor.service'], /UMask=0077/);
   assert.match(plan.files['helm-monitor.service'], /Environment=PYTHONUNBUFFERED=1/);
   assert.match(plan.files['helm-monitor.timer'], /OnCalendar=Mon\.\.Fri 09\.\.16:00\/30/);
@@ -411,6 +415,7 @@ test('helm plan renders HomeBase-preserved subpath, Helm env, timers, and python
   assert.match(plan.script, /install -d -m 0700 \.secrets/);
   assert.match(plan.script, /migrations\/run_migration\.py/);
   assert.match(plan.script, /systemctl enable helm-sync\.timer/);
+  assert.match(plan.script, /systemctl enable helm-review\.timer/);
   assert.match(plan.script, /systemctl restart helm-token-refresh\.timer/);
 });
 

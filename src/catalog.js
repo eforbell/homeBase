@@ -563,6 +563,13 @@ const catalog = [
         onCalendar: 'Mon..Fri 08:00',
       },
       {
+        serviceName: 'helm-review',
+        description: 'Helm weekly portfolio review',
+        execStart: '.venv/bin/helm review --trigger weekly --if-due',
+        timerName: 'helm-review.timer',
+        onCalendar: 'Mon 08:15',
+      },
+      {
         serviceName: 'helm-monitor',
         description: 'Helm turbulence monitor',
         execStart: '.venv/bin/helm-monitor',
