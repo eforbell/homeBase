@@ -396,6 +396,7 @@ test('helm plan renders HomeBase-preserved subpath, Helm env, timers, and python
   assert.match(plan.files['.env'], /HELM_DATABASE_URL=postgresql:\/\/helm:helm-pass@127\.0\.0\.1:5432\/helm/);
   assert.match(plan.files['.env'], /SCHWAB_TOKEN_PATH=\.\/\.secrets\/schwab_tokens\.db/);
   assert.match(plan.files['.env'], /HELM_AUTH_ENABLED=1/);
+  assert.doesNotMatch(plan.files['.env'], /MONITOR_CONCENTRATION_CAP_PCT/);
   assert.match(plan.files['helm-web.service'], /UMask=0077/);
   assert.match(plan.files['helm-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/uvicorn/);
   assert.match(plan.files['helm-sync.service'], /UMask=0077/);
@@ -428,6 +429,9 @@ test('install planner preserves existing Helm database URL and production secret
     'SCHWAB_APP_KEY=existing-key',
     'SCHWAB_APP_SECRET=existing-secret',
     'SCHWAB_CALLBACK_URL=https://schwab-callback.example.com/oauth/callback',
+    'ADVISOR_PROVIDER=openai',
+    'ADVISOR_MODEL=gpt-5.4-mini-2026-03-17',
+    'HELM_MODEL_SYNTHESIS_ENABLED=1',
     'OPENAI_API_KEY=existing-openai',
     'BRRR_SECRET=existing-brrr',
     'HELM_AUTH_PASSPHRASE=existing-passphrase',
@@ -453,6 +457,9 @@ test('install planner preserves existing Helm database URL and production secret
   assert.match(plan.files['.env'], /HELM_DATABASE_URL=postgresql:\/\/existing:existing-pass@127\.0\.0\.1:5432\/existing_helm/);
   assert.match(plan.files['.env'], /SCHWAB_APP_KEY=existing-key/);
   assert.match(plan.files['.env'], /SCHWAB_APP_SECRET=existing-secret/);
+  assert.match(plan.files['.env'], /ADVISOR_PROVIDER=openai/);
+  assert.match(plan.files['.env'], /ADVISOR_MODEL=gpt-5\.4-mini-2026-03-17/);
+  assert.match(plan.files['.env'], /HELM_MODEL_SYNTHESIS_ENABLED=1/);
   assert.match(plan.files['.env'], /OPENAI_API_KEY=existing-openai/);
   assert.match(plan.files['.env'], /BRRR_SECRET=existing-brrr/);
   assert.match(plan.files['.env'], /HELM_SESSION_SECRET=existing-session/);

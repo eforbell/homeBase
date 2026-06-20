@@ -413,8 +413,9 @@ function hasExistingDbConfig(existing = {}, app = {}) {
   );
 }
 
-function shouldPreserveExistingEnvValue(key, templateValue) {
+function shouldPreserveExistingEnvValue(key, templateValue, preserveExistingKeys = []) {
   const template = String(templateValue == null ? '' : templateValue);
+  if (preserveExistingKeys.includes(key)) return true;
   if (template === '') return true;
   if (template.includes('{{secret')) return true;
   if (['DATABASE_URL', 'DB_BACKEND', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'SQLITE_DB_PATH'].includes(key)) return true;
@@ -423,18 +424,18 @@ function shouldPreserveExistingEnvValue(key, templateValue) {
   return false;
 }
 
-function mergeExistingEnvValues({ template, resolved, existing }) {
+function mergeExistingEnvValues({ template, resolved, existing, preserveExistingKeys = [] }) {
   const next = { ...resolved };
   for (const [key, templateValue] of Object.entries(template || {})) {
     const existingValue = existing[key];
     if (!existingValue) continue;
-    if (!shouldPreserveExistingEnvValue(key, templateValue)) continue;
+    if (!shouldPreserveExistingEnvValue(key, templateValue, preserveExistingKeys)) continue;
     next[key] = existingValue;
   }
   for (const [key, existingValue] of Object.entries(existing || {})) {
     if (!existingValue) continue;
     if (key in next) continue;
-    if (!shouldPreserveExistingEnvValue(key, '')) continue;
+    if (!shouldPreserveExistingEnvValue(key, '', preserveExistingKeys)) continue;
     next[key] = existingValue;
   }
   return next;
@@ -578,6 +579,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       template: app.config.env,
       resolved: env,
       existing: existingEnv,
+      preserveExistingKeys: app.config.preserveExistingKeys || [],
     });
   }
   const files = {};
