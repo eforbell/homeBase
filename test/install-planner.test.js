@@ -299,6 +299,36 @@ test('install planner preserves existing split postgres credentials for postgres
   assert.doesNotMatch(plan.script, /createdb --owner=/);
 });
 
+test('install planner preserves operator-enabled chain status flags during bitcoin accounting reinstall', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-chain-status-'));
+  const appDir = path.join(tempDir, 'bitcoinAccounting');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'BITCOIN_CHAIN_STATUS_ENABLED=1',
+    'BITCOIN_RPC_URL=http://127.0.0.1:8332',
+    'BITCOIN_RPC_COOKIE_FILE=/var/lib/bitcoind/.cookie',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'bitcoin-accounting',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /BITCOIN_CHAIN_STATUS_ENABLED=1/);
+  assert.doesNotMatch(plan.files['.env'], /BITCOIN_CHAIN_STATUS_ENABLED=0/);
+  assert.match(plan.files['.env'], /BITCOIN_RPC_URL=http:\/\/127\.0\.0\.1:8332/);
+  assert.match(plan.files['.env'], /BITCOIN_RPC_COOKIE_FILE=\/var\/lib\/bitcoind\/\.cookie/);
+});
+
 test('install planner skips postgres bootstrap for existing sqlite-backed bitcoin accounting installs', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-sqlite-skip-'));
   const appDir = path.join(tempDir, 'bitcoinAccounting');

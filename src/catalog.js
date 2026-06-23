@@ -473,6 +473,9 @@ const catalog = [
       envFile: '.env',
     },
     config: {
+      // Operator-tuned chain-status flags have non-empty catalog defaults, so they
+      // would otherwise be reset on every update; preserve the operator's choice.
+      preserveExistingKeys: ['BITCOIN_CHAIN_STATUS_ENABLED', 'BITCOIN_RPC_TIMEOUT_SECONDS'],
       env: {
         ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DB_BACKEND: 'postgres',
