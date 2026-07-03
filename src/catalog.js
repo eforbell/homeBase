@@ -248,13 +248,19 @@ const catalog = [
       envFile: '.env',
     },
     config: {
+      preserveExistingKeys: [
+        'OPENAI_MODEL',
+        'OPENAI_RECIPE_MODEL',
+        'OPENAI_REASONING_EFFORT',
+      ],
       env: {
         ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
         PORT: '{{port}}',
         OPENAI_API_KEY: '',
-        OPENAI_MODEL: 'gpt-4o-mini',
-        OPENAI_RECIPE_MODEL: 'gpt-4o-mini',
+        OPENAI_MODEL: 'gpt-5.4-nano',
+        OPENAI_RECIPE_MODEL: 'gpt-5.4-nano',
+        OPENAI_REASONING_EFFORT: 'none',
         RECIPE_IMPORT_USER_AGENT: 'Home Base importer/0.1',
       },
     },

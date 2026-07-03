@@ -233,6 +233,40 @@ test('install planner preserves existing secret and oauth env values during rein
   assert.match(plan.files['.env'], /BOOTSTRAP_SECRET=existing-bootstrap-secret/);
 });
 
+test('install planner preserves Family Dinner OpenAI model env during reinstall', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-dinner-openai-'));
+  const appDir = path.join(tempDir, 'familyDinner');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'DATABASE_URL=postgresql://family_dinner:existing-pass@127.0.0.1:5432/family_dinner',
+    'OPENAI_API_KEY=existing-openai-key',
+    'OPENAI_MODEL=gpt-5.4-nano',
+    'OPENAI_RECIPE_MODEL=gpt-5.4-nano',
+    'OPENAI_REASONING_EFFORT=low',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'family-dinner',
+    state: { installations: {} },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /OPENAI_API_KEY=existing-openai-key/);
+  assert.match(plan.files['.env'], /OPENAI_MODEL=gpt-5\.4-nano/);
+  assert.match(plan.files['.env'], /OPENAI_RECIPE_MODEL=gpt-5\.4-nano/);
+  assert.match(plan.files['.env'], /OPENAI_REASONING_EFFORT=low/);
+  assert.doesNotMatch(plan.files['.env'], /OPENAI_MODEL=gpt-4o-mini/);
+  assert.doesNotMatch(plan.files['.env'], /OPENAI_RECIPE_MODEL=gpt-4o-mini/);
+});
+
 test('install planner preserves existing DATABASE_URL identity for legacy postgres installs', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-install-db-url-'));
   const appDir = path.join(tempDir, 'familyHelp');

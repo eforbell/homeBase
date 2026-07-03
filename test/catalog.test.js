@@ -27,3 +27,16 @@ test('family help and family plan expose first-run onboarding contracts', () => 
   assert.equal(familyPlan.onboarding.setupPath, '/setup');
   assert.equal(familyPlan.onboarding.statusPath, '/api/bootstrap');
 });
+
+test('family dinner catalog uses current OpenAI defaults and preserves operator model choices', () => {
+  const familyDinner = catalog.find((entry) => entry.id === 'family-dinner');
+
+  assert.equal(familyDinner.config.env.OPENAI_MODEL, 'gpt-5.4-nano');
+  assert.equal(familyDinner.config.env.OPENAI_RECIPE_MODEL, 'gpt-5.4-nano');
+  assert.equal(familyDinner.config.env.OPENAI_REASONING_EFFORT, 'none');
+  assert.deepEqual(familyDinner.config.preserveExistingKeys, [
+    'OPENAI_MODEL',
+    'OPENAI_RECIPE_MODEL',
+    'OPENAI_REASONING_EFFORT',
+  ]);
+});
