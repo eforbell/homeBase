@@ -579,6 +579,13 @@ const catalog = [
         onCalendar: 'Mon 08:15',
       },
       {
+        serviceName: 'helm-research',
+        description: 'Helm fundamentals research refresh',
+        execStart: '.venv/bin/helm research',
+        timerName: 'helm-research.timer',
+        onCalendar: 'Sat 08:30',
+      },
+      {
         serviceName: 'helm-monitor',
         description: 'Helm turbulence monitor',
         execStart: '.venv/bin/helm-monitor',
