@@ -59,6 +59,29 @@ const manifestSchema = {
         env: { type: 'object' },
       },
     },
+    timers: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['serviceName', 'description', 'execStart', 'timerName'],
+        properties: {
+          serviceName: { type: 'string' },
+          description: { type: 'string' },
+          execStart: { type: 'string' },
+          timerName: { type: 'string' },
+          onCalendar: { type: 'string' },
+          onBootSec: { type: 'string' },
+          onUnitActiveSec: { type: 'string' },
+          randomizedDelaySec: { type: 'string' },
+          persistent: { type: 'boolean' },
+        },
+        anyOf: [
+          { required: ['onCalendar'] },
+          { required: ['onBootSec'] },
+          { required: ['onUnitActiveSec'] },
+        ],
+      },
+    },
   },
 };
 
@@ -123,6 +146,23 @@ function validateManifestEntry(entry) {
   if (expectObject(entry.config, 'config')) {
     if (!expectObject(entry.config.env, 'config.env')) {
       // already recorded
+    }
+  }
+  if (entry.timers != null) {
+    if (!Array.isArray(entry.timers)) {
+      errors.push('timers must be an array');
+    } else {
+      entry.timers.forEach((timer, index) => {
+        const prefix = `timers[${index}]`;
+        if (!expectObject(timer, prefix)) return;
+        expectString(timer.serviceName, `${prefix}.serviceName`);
+        expectString(timer.description, `${prefix}.description`);
+        expectString(timer.execStart, `${prefix}.execStart`);
+        expectString(timer.timerName, `${prefix}.timerName`);
+        if (![timer.onCalendar, timer.onBootSec, timer.onUnitActiveSec].some((value) => typeof value === 'string' && value.trim())) {
+          errors.push(`${prefix} must define onCalendar, onBootSec, or onUnitActiveSec`);
+        }
+      });
     }
   }
 

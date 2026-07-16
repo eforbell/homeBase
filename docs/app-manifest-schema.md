@@ -92,4 +92,8 @@ Home Base needs a normalized contract so each app can be installed, updated, bac
 4. **Filesystem state must be declared.** If an app writes outside PostgreSQL, Home Base needs to know.
 5. **Runtime caveats belong in the manifest.** Example: Family Pulse’s public OAuth callback needs special routing guidance.
 
+Timer schedules may use `onCalendar` for wall-clock schedules or `onBootSec` /
+`onUnitActiveSec` for monotonic schedules. `randomizedDelaySec` maps directly to the
+systemd timer directive. Every timer must define at least one schedule directive.
+
 The machine-readable schema lives at `manifests/sovereign-app-manifest.schema.json`.
