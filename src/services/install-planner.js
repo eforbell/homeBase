@@ -141,13 +141,30 @@ function renderOneshotUnit({ description, serviceUser, installRoot, envFile, exe
   ].join('\n');
 }
 
-function renderTimerUnit({ description, onCalendar, serviceName, persistent = true }) {
+function renderTimerUnit({
+  description,
+  onCalendar,
+  onBootSec,
+  onUnitActiveSec,
+  randomizedDelaySec,
+  serviceName,
+  persistent = true,
+}) {
+  const scheduleLines = [
+    ...(onCalendar ? [`OnCalendar=${onCalendar}`] : []),
+    ...(onBootSec ? [`OnBootSec=${onBootSec}`] : []),
+    ...(onUnitActiveSec ? [`OnUnitActiveSec=${onUnitActiveSec}`] : []),
+  ];
+  if (scheduleLines.length === 0) {
+    throw new Error(`Timer ${serviceName} requires a calendar or monotonic schedule`);
+  }
   return [
     '[Unit]',
     `Description=${description}`,
     '',
     '[Timer]',
-    `OnCalendar=${onCalendar}`,
+    ...scheduleLines,
+    ...(randomizedDelaySec ? [`RandomizedDelaySec=${randomizedDelaySec}`] : []),
     `Persistent=${persistent === false ? 'false' : 'true'}`,
     `Unit=${serviceName}.service`,
     '',
@@ -637,6 +654,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       files[timer.timerName] = renderTimerUnit({
         description: `Run ${timer.description.toLowerCase()}`,
         onCalendar: timer.onCalendar,
+        onBootSec: timer.onBootSec,
+        onUnitActiveSec: timer.onUnitActiveSec,
+        randomizedDelaySec: timer.randomizedDelaySec,
         serviceName: timer.serviceName,
         persistent: timer.persistent,
       });

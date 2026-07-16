@@ -57,3 +57,24 @@ test('uninstall plan can remove backups when keepBackups is disabled', () => {
   assert.match(plan.script, /rm -f \/etc\/nginx\/snippets\/bug-base-mcp\.conf/);
   assert.match(plan.script, /rm -rf \/var\/lib\/sovereign-home\/backups\/bug-base/);
 });
+
+test('home source uninstall removes continuity timer services and timers', () => {
+  const plan = buildUninstallPlan({
+    appId: 'home-source',
+    state: {
+      installations: {
+        'home-source': {
+          appId: 'home-source',
+          installRoot: '/opt/sovereign-home/apps/homeSource',
+          serviceName: 'home-source',
+        },
+      },
+    },
+    config: { baseBackupDir: '/var/lib/sovereign-home/backups' },
+  });
+
+  assert.match(plan.script, /disable --now home-source-continuity-check\.timer/);
+  assert.match(plan.script, /disable --now home-source-continuity-outbox\.timer/);
+  assert.match(plan.script, /rm -f \/etc\/systemd\/system\/home-source-continuity-check\.service/);
+  assert.match(plan.script, /rm -f \/etc\/systemd\/system\/home-source-continuity-outbox\.timer/);
+});

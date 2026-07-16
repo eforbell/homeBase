@@ -71,7 +71,7 @@ test('bug base install planner renders nginx snippet for bug-base-mcp sidecar', 
   assert.match(plan.files['.env'], /MCP_PORT=\d+/);
 });
 
-test('home source install planner provisions import worker service sidecar', () => {
+test('home source install planner provisions import worker and continuity timers', () => {
   const plan = buildInstallPlan({
     appId: 'home-source',
     state: { installations: {} },
@@ -85,6 +85,53 @@ test('home source install planner provisions import worker service sidecar', () 
   assert.match(plan.script, /\/etc\/systemd\/system\/home-source-import-worker\.service/);
   assert.match(plan.script, /systemctl enable home-source-import-worker/);
   assert.match(plan.script, /systemctl restart home-source-import-worker/);
+  assert.match(plan.files['.env'], /APP_URL=https:\/\/homebase\.tailnet\/source\//);
+  assert.match(plan.files['.env'], /MAIL_TRANSPORT=smtp/);
+  assert.match(plan.files['home-source-continuity-check.service'], /Type=oneshot/);
+  assert.match(plan.files['home-source-continuity-check.service'], /ExecStart=node bin\/deadman-check\.js --once/);
+  assert.match(plan.files['home-source-continuity-check.timer'], /OnCalendar=\*-\*-\* 09:00:00/);
+  assert.match(plan.files['home-source-continuity-check.timer'], /RandomizedDelaySec=5m/);
+  assert.match(plan.files['home-source-continuity-outbox.service'], /ExecStart=node bin\/continuity-outbox\.js --once/);
+  assert.match(plan.files['home-source-continuity-outbox.timer'], /OnBootSec=5m/);
+  assert.match(plan.files['home-source-continuity-outbox.timer'], /OnUnitActiveSec=15m/);
+  assert.doesNotMatch(plan.files['home-source-continuity-outbox.timer'], /OnCalendar=undefined/);
+  assert.match(plan.script, /\/etc\/systemd\/system\/home-source-continuity-check\.timer/);
+  assert.match(plan.script, /\/etc\/systemd\/system\/home-source-continuity-outbox\.timer/);
+  assert.match(plan.script, /systemctl enable home-source-continuity-check\.timer/);
+  assert.match(plan.script, /systemctl restart home-source-continuity-outbox\.timer/);
+});
+
+test('home source reinstall preserves operator mail settings', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-home-source-env-'));
+  const appDir = path.join(tempDir, 'homeSource');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, '.env'), [
+    'MAIL_TRANSPORT=disabled',
+    'SMTP_HOST=relay.family.test',
+    'SMTP_PORT=2525',
+    'SMTP_FROM=Home Source <vault@family.test>',
+    'NOTIFICATION_TO=operator@family.test',
+    '',
+  ].join('\n'));
+
+  const plan = buildInstallPlan({
+    appId: 'home-source',
+    state: { installations: { 'home-source': { installRoot: appDir } } },
+    options: {},
+    config: {
+      port: 3080,
+      serviceUser: 'sovereign',
+      baseInstallDir: tempDir,
+      defaultHostname: 'homebase',
+      defaultDomain: 'tailnet',
+    },
+  });
+
+  assert.match(plan.files['.env'], /MAIL_TRANSPORT=disabled/);
+  assert.match(plan.files['.env'], /SMTP_HOST=relay\.family\.test/);
+  assert.match(plan.files['.env'], /SMTP_PORT=2525/);
+  assert.match(plan.files['.env'], /SMTP_FROM="Home Source <vault@family\.test>"/);
+  assert.match(plan.files['.env'], /NOTIFICATION_TO=operator@family\.test/);
 });
 
 test('family pulse plan renders notification timer units', () => {

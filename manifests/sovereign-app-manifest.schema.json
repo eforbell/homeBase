@@ -68,6 +68,29 @@
       "properties": {
         "env": { "type": "object" }
       }
+    },
+    "timers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["serviceName", "description", "execStart", "timerName"],
+        "properties": {
+          "serviceName": { "type": "string" },
+          "description": { "type": "string" },
+          "execStart": { "type": "string" },
+          "timerName": { "type": "string" },
+          "onCalendar": { "type": "string" },
+          "onBootSec": { "type": "string" },
+          "onUnitActiveSec": { "type": "string" },
+          "randomizedDelaySec": { "type": "string" },
+          "persistent": { "type": "boolean" }
+        },
+        "anyOf": [
+          { "required": ["onCalendar"] },
+          { "required": ["onBootSec"] },
+          { "required": ["onUnitActiveSec"] }
+        ]
+      }
     }
   }
 }
