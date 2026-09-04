@@ -512,6 +512,7 @@ test('helm plan renders HomeBase-preserved subpath, Helm env, timers, and python
   assert.match(plan.files['helm-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/uvicorn/);
   assert.match(plan.files['helm-sync.service'], /UMask=0077/);
   assert.match(plan.files['helm-sync.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm sync/);
+  assert.match(plan.files['helm-sync.timer'], /OnCalendar=Mon\.\.Fri 08:00 America\/New_York/);
   assert.match(plan.files['helm-review.service'], /UMask=0077/);
   assert.match(plan.files['helm-review.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm review --trigger weekly --if-due/);
   assert.match(plan.files['helm-review.timer'], /OnCalendar=Mon 08:15/);

@@ -569,7 +569,7 @@ const catalog = [
         description: 'Helm daily account/position sync',
         execStart: '.venv/bin/helm sync',
         timerName: 'helm-sync.timer',
-        onCalendar: 'Mon..Fri 08:00',
+        onCalendar: 'Mon..Fri 08:00 America/New_York',
       },
       {
         serviceName: 'helm-review',
