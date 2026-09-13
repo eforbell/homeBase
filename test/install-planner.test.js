@@ -81,6 +81,10 @@ test('home source install planner provisions import worker and continuity timers
 
   assert.match(plan.files['home-source-import-worker.service'], /Description=Home Source Import Worker/);
   assert.match(plan.files['home-source-import-worker.service'], /ExecStart=node bin\/import-worker\.js/);
+  assert.match(plan.script, /install -d -m 0750 -o sovereign -g sovereign \/var\/lib\/sovereign-home\/home-source\/data/);
+  assert.match(plan.script, /install -d -m 0750 -o sovereign -g sovereign \/var\/lib\/sovereign-home\/home-source\/data\/documents/);
+  assert.match(plan.script, /install -d -m 0750 -o sovereign -g sovereign \/var\/lib\/sovereign-home\/home-source\/data\/thumbnails/);
+  assert.match(plan.script, /install -d -m 0750 -o sovereign -g sovereign \/var\/lib\/sovereign-home\/home-source\/data\/exports/);
   assert.match(plan.script, /sudo apt-get install -y poppler-utils/);
   assert.match(plan.script, /\/etc\/systemd\/system\/home-source-import-worker\.service/);
   assert.match(plan.script, /systemctl enable home-source-import-worker/);

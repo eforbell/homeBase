@@ -222,6 +222,21 @@ function renderRunAsServiceUserCommand({ serviceUser, command }) {
   return `sudo -u ${serviceUser} -H bash -lc ${shellSingleQuote(command)}`;
 }
 
+function buildStorageCommands(app, serviceUser) {
+  const storage = app.storage || {};
+  if (!storage.absoluteRoot) return [];
+
+  const root = String(storage.absoluteRoot).replace(/\/+$/, '');
+  const directories = [
+    root,
+    ...(storage.paths || []).map((storagePath) => path.posix.join(root, storagePath)),
+  ];
+
+  return [...new Set(directories)].map((directory) => (
+    `sudo install -d -m 0750 -o ${serviceUser} -g ${serviceUser} ${directory}`
+  ));
+}
+
 function buildDatabaseCommands(app, ctx) {
   if (!app.database.engine.includes('postgres')) return [];
   if (ctx.skipDbBootstrap) return [];
@@ -588,6 +603,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const repositoryUrl = resolveRepositoryUrl(app, config);
   const gitRef = resolveGitRef(options, app);
   const gitRunPrefix = renderGitRunPrefix({ serviceUser, app, config });
+  const storageCommands = buildStorageCommands(app, serviceUser);
 
   const env = resolveEnvTemplate(app.config.env, ctx);
   let mergedEnv = env;
@@ -674,6 +690,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     makeStep('prepare-layout', 'Prepare install directory', [
       `sudo install -d -o ${serviceUser} -g ${serviceUser} ${config.baseInstallDir || '/opt/sovereign-home/apps'}`,
     ]),
+    ...(storageCommands.length
+      ? [makeStep('prepare-storage', 'Prepare persistent storage directories', storageCommands)]
+      : []),
     makeStep('git-sync', 'Clone or update application source', [
       `if [ ! -d ${installRoot}/.git ]; then ${gitRunPrefix} git clone ${repositoryUrl} ${installRoot}; fi`,
       `${gitRunPrefix} git -C ${installRoot} fetch origin --prune`,
