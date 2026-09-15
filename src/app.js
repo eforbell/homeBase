@@ -249,20 +249,27 @@ function getHomeBaseStatus(config) {
   const envFile = config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env';
   const stateDbPath = config.stateDbPath || `${stateDir}/home-base.sqlite3`;
   const serviceFile = '/etc/systemd/system/homebase.service';
-  const sudoersFile = '/etc/sudoers.d/homebase';
+  const sudoersFile = config.homeBaseSudoersFile || '/etc/sudoers.d/homebase';
   const sharedAssetsRoot = config.homeBaseAssetsRoot || '/opt/sovereign-home/assets';
   const fontDir = path.join(sharedAssetsRoot, 'fonts');
   const sansCssPath = path.join(fontDir, 'source-sans-3.css');
   const monoCssPath = path.join(fontDir, 'jetbrains-mono.css');
   const configuredSource = String(process.env.SOVEREIGN_FONT_SOURCE || 'auto').trim().toLowerCase();
   const mountPath = String(config.sovereignFontMountPath || '/_sovereign/fonts/');
-  let legacyBroadSudoersDetected = false;
-  try {
-    legacyBroadSudoersDetected = fs.existsSync(sudoersFile)
-      && /^[\t ]*homebase[\t ]+.*NOPASSWD:[\t ]*ALL(?:[\t ]|$)/m.test(fs.readFileSync(sudoersFile, 'utf8'));
-  } catch (_error) {
-    legacyBroadSudoersDetected = false;
+  const sudoersFileExists = fs.existsSync(sudoersFile);
+  let sudoersPolicyStatus = sudoersFileExists ? 'unknown' : 'absent';
+  if (sudoersFileExists) {
+    try {
+      const escapedRuntimeUser = runtimeUser.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const legacyBroadPattern = new RegExp(`^[\\t ]*${escapedRuntimeUser}[\\t ]+.*NOPASSWD:[\\t ]*ALL(?:[\\t ]|$)`, 'm');
+      sudoersPolicyStatus = legacyBroadPattern.test(fs.readFileSync(sudoersFile, 'utf8'))
+        ? 'legacy-broad'
+        : 'present';
+    } catch (_error) {
+      sudoersPolicyStatus = 'unknown';
+    }
   }
+  const legacyBroadSudoersDetected = sudoersPolicyStatus === 'legacy-broad';
   const privilegedJobsEnabled = config.homeBaseEnablePrivilegedJobs === true;
   const status = {
     runtimeUser,
@@ -275,6 +282,7 @@ function getHomeBaseStatus(config) {
     executionMode: privilegedJobsEnabled ? 'legacy-sudo' : 'plan-only',
     privilegedJobsEnabled,
     legacyBroadSudoersDetected,
+    sudoersPolicyStatus,
     sovereignFonts: {
       configuredSource,
       mountPath,
@@ -294,7 +302,7 @@ function getHomeBaseStatus(config) {
       stateDbExists: fs.existsSync(stateDbPath),
       envFileExists: fs.existsSync(envFile),
       serviceFileExists: fs.existsSync(serviceFile),
-      sudoersFileExists: fs.existsSync(sudoersFile),
+      sudoersFileExists,
     },
   };
 
@@ -364,6 +372,12 @@ function recordAdminAudit(stateStore, record = {}) {
   } catch (_error) {
     // Never block API flow on audit write failures.
   }
+}
+
+function executionBlockOutcome(auth) {
+  return auth?.payload?.code === 'PRIVILEGED_EXECUTION_DISABLED'
+    ? 'blocked-execution-mode'
+    : 'blocked-auth';
 }
 
 function createApp(config) {
@@ -724,7 +738,7 @@ function createApp(config) {
               action: 'homebase-update-self',
               target: 'homebase',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -769,7 +783,7 @@ function createApp(config) {
               action: 'homebase-install-self',
               target: 'homebase',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -851,7 +865,7 @@ function createApp(config) {
               action: 'bootstrap-execute',
               target: 'local-host',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -948,7 +962,7 @@ function createApp(config) {
               action: 'tailscale-publish-execute',
               target: 'svc:home',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1054,7 +1068,7 @@ function createApp(config) {
               action: 'app-install-execute',
               target: executeInstallMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1141,7 +1155,7 @@ function createApp(config) {
               action: 'app-restart-execute',
               target: restartExecuteMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1252,7 +1266,7 @@ function createApp(config) {
               action: 'app-backup-execute',
               target: backupExecuteMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1350,7 +1364,7 @@ function createApp(config) {
               action: 'app-uninstall-execute',
               target: appId,
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1430,7 +1444,7 @@ function createApp(config) {
               action: 'app-restore-execute',
               target: restoreExecuteMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1497,6 +1511,16 @@ function createApp(config) {
         APP_NOT_INSTALLED: 409,
         INVALID_GIT_REF: 400,
         GIT_SSH_KEY_PATH_REQUIRED: 400,
+        INVALID_RUNTIME_USER: 400,
+        INVALID_RUNTIME_PATH: 400,
+        INVALID_RUNTIME_VALUE: 400,
+        INVALID_RUNTIME_PORT: 400,
+        INVALID_BIND_HOST: 400,
+        INVALID_GIT_TRANSPORT: 400,
+        INVALID_AUTO_BOOTSTRAP_MODE: 400,
+        INVALID_AUTO_BOOTSTRAP_DELAY: 400,
+        UNSAFE_PRIVILEGED_CONFIGURATION: 409,
+        UNSAFE_AUTO_BOOTSTRAP_CONFIGURATION: 409,
       };
       return sendJson(res, statusByCode[error.code] || 500, {
         error: error.message || 'Unexpected error',

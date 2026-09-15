@@ -8,6 +8,7 @@ const { pathToFileURL } = require('url');
 const { execFileSync, spawnSync } = require('child_process');
 
 const installer = path.join(__dirname, '..', 'install.sh');
+const releaseBuilder = path.join(__dirname, '..', 'scripts', 'build-release.sh');
 
 function createReleaseFixture(tempDir, { version = 'v9.9.9' } = {}) {
   const releaseRoot = path.join(tempDir, `homebase-${version.slice(1)}`);
@@ -53,6 +54,15 @@ test('installer help states the plan-only privilege boundary', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /hardened, loopback-only, plan-first/i);
   assert.match(result.stdout, /does not grant Home Base sudo access/i);
+});
+
+test('release builder accepts only installer-compatible stable tags', () => {
+  const result = spawnSync('bash', [releaseBuilder, 'v1.2.3-beta'], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /vX\.Y\.Z/);
 });
 
 test('installer dry-run resolves a non-mutating plan', () => {
@@ -153,7 +163,7 @@ test('installer fails closed on checksum mismatch', () => {
   assert.match(result.stderr, /checksum verification failed/i);
 });
 
-test('installer refuses a legacy broad Home Base sudoers rule', () => {
+test('installer refuses any pre-existing Home Base sudoers policy', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-sudoers-'));
   const fixture = createReleaseFixture(tempDir);
   const env = installerEnv(tempDir, fixture);
@@ -162,5 +172,36 @@ test('installer refuses a legacy broad Home Base sudoers rule', () => {
   const result = runInstaller(['--version', fixture.version, '--no-start'], env);
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /legacy broad sudoers detected/i);
+  assert.match(result.stderr, /existing Home Base sudoers policy detected/i);
+});
+
+test('installer refuses preserved environment settings that enable legacy execution', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-legacy-env-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  const first = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.equal(first.status, 0, first.stderr);
+
+  fs.appendFileSync(env.HOMEBASE_ENV_FILE, 'HOME_BASE_EXECUTION_MODE="legacy-sudo"\n');
+  const second = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.notEqual(second.status, 0);
+  assert.match(second.stderr, /existing environment enables unsafe or unknown execution settings/i);
+});
+
+test('installer accepts explicit quoted fail-closed environment settings', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-safe-env-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  const first = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.equal(first.status, 0, first.stderr);
+
+  fs.writeFileSync(env.HOMEBASE_ENV_FILE, [
+    'HOME_BASE_EXECUTION_MODE="plan-only"',
+    'HOME_BASE_ENABLE_PRIVILEGED_JOBS="false"',
+    'HOME_BASE_AUTO_BOOTSTRAP="off"',
+    '',
+  ].join('\n'));
+  const second = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /preserving existing environment file/i);
 });

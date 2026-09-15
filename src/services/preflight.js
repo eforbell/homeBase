@@ -2,8 +2,12 @@ const { spawnSync } = require('child_process');
 
 const CRITICAL_CHECK_IDS = new Set(['os', 'sudo', 'systemd', 'nginx-config', 'postgres-service']);
 
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
 function runShell(command) {
-  const result = spawnSync('/bin/bash', ['-lc', command], {
+  const result = spawnSync('/bin/bash', ['-c', command], {
     encoding: 'utf8',
     timeout: 5000,
   });
@@ -56,7 +60,7 @@ function runPreflightChecks(config = {}, { runCommand = runShell } = {}) {
       checks.push(buildCheck(
         'git-ssh-key',
         `SSH key readable by ${serviceUser}`,
-        `sudo -n -u ${serviceUser} test -r ${keyPath}`,
+        `sudo -n -u ${shellSingleQuote(serviceUser)} test -r ${shellSingleQuote(keyPath)}`,
         `Place your SSH key at ${keyPath} and run: sudo chown ${serviceUser}:${serviceUser} ${keyPath} && sudo chmod 600 ${keyPath}`,
         runCommand
       ));

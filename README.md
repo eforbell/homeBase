@@ -14,7 +14,7 @@ less install.sh
 sudo bash install.sh --version v0.1.0
 ```
 
-The installer verifies a tagged release checksum, installs a hardened systemd service, preserves state on safe reruns, and refuses legacy `NOPASSWD:ALL` configuration. See [`docs/install.md`](docs/install.md) for prerequisites, release packaging, recovery, and the manual equivalent.
+The installer verifies a tagged release checksum, installs a hardened systemd service, preserves state on safe reruns, and refuses existing Home Base sudoers or privileged-execution configuration. See [`docs/install.md`](docs/install.md) for prerequisites, release packaging, recovery, and the manual equivalent.
 
 ## Current slice
 

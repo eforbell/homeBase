@@ -45,6 +45,41 @@ die() {
   exit 1
 }
 
+validate_preserved_env() {
+  awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function normalize(value, first, last) {
+      value = trim(value)
+      first = substr(value, 1, 1)
+      last = substr(value, length(value), 1)
+      if ((first == "\"" && last == "\"") || (first == "\047" && last == "\047")) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      return tolower(trim(value))
+    }
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      separator = index($0, "=")
+      if (!separator) next
+      key = trim(substr($0, 1, separator - 1))
+      value = normalize(substr($0, separator + 1))
+      if (key == "HOME_BASE_EXECUTION_MODE" && value != "" && value != "plan-only") {
+        print key "=" value
+        exit 1
+      }
+      if ((key == "HOME_BASE_ENABLE_PRIVILEGED_JOBS" || key == "HOME_BASE_AUTO_BOOTSTRAP") \
+          && value != "" && value != "0" && value != "false" && value != "no" && value != "off") {
+        print key "=" value
+        exit 1
+      }
+    }
+  ' "$1"
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version)
@@ -153,8 +188,14 @@ EOF
   exit 0
 fi
 
-if [ -f "$LEGACY_SUDOERS_FILE" ] && grep -Eq "^[[:space:]]*${RUNTIME_USER}[[:space:]]+.*NOPASSWD:[[:space:]]*ALL([[:space:]]|$)" "$LEGACY_SUDOERS_FILE"; then
-  die "legacy broad sudoers detected at ${LEGACY_SUDOERS_FILE}; remove it before installing the hardened service"
+if [ -e "$LEGACY_SUDOERS_FILE" ]; then
+  die "existing Home Base sudoers policy detected at ${LEGACY_SUDOERS_FILE}; inspect and remove it before installing the hardened service"
+fi
+if [ -f "$ENV_FILE" ]; then
+  UNSAFE_ENV_SETTING=''
+  if ! UNSAFE_ENV_SETTING="$(validate_preserved_env "$ENV_FILE")"; then
+    die "existing environment enables unsafe or unknown execution settings (${UNSAFE_ENV_SETTING:-unknown}): $ENV_FILE"
+  fi
 fi
 
 if [ "$TEST_MODE" != '1' ]; then

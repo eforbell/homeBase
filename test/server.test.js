@@ -232,6 +232,35 @@ test('homebase runtime plan endpoint returns service-install scaffolding', async
   }
 });
 
+test('homebase runtime plan endpoint rejects command-bearing options', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-runtime-plan-invalid-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/runtime-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appDir: '/opt/homebase; touch /tmp/pwned' }),
+    });
+    const payload = await res.json();
+    assert.equal(res.status, 400);
+    assert.match(payload.error, /appDir must be an absolute path/i);
+  } finally {
+    await server.close();
+  }
+});
+
 test('homebase install-self dry-run creates a runtime job', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-runtime-job-'));
   const server = await startServer({
@@ -378,8 +407,65 @@ test('homebase status endpoint returns runtime state summary', async () => {
     assert.equal(payload.executionMode, 'plan-only');
     assert.equal(payload.privilegedJobsEnabled, false);
     assert.equal(payload.legacyBroadSudoersDetected, false);
+    assert.equal(payload.sudoersPolicyStatus, 'absent');
     assert.equal(payload.ok, true);
     assert.equal(typeof payload.paths.stateDbExists, 'boolean');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase status reports unknown when a configured sudoers path cannot be read as a file', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-sudoers-status-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+    homeBaseSudoersFile: tempDir,
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/status`);
+    const payload = await res.json();
+    assert.equal(payload.paths.sudoersFileExists, true);
+    assert.equal(payload.legacyBroadSudoersDetected, false);
+    assert.equal(payload.sudoersPolicyStatus, 'unknown');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase status detects broad sudoers for the configured runtime user', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-sudoers-user-'));
+  const sudoersFile = path.join(tempDir, 'homebase-sudoers');
+  fs.writeFileSync(sudoersFile, 'customhb ALL=(ALL) NOPASSWD:ALL\n');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+    homeBaseRuntimeUser: 'customhb',
+    homeBaseSudoersFile: sudoersFile,
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/status`);
+    const payload = await res.json();
+    assert.equal(payload.legacyBroadSudoersDetected, true);
+    assert.equal(payload.sudoersPolicyStatus, 'legacy-broad');
   } finally {
     await server.close();
   }
@@ -531,6 +617,13 @@ test('plan-only mode blocks real host execution after admin unlock', async () =>
     assert.equal(payload.code, 'PRIVILEGED_EXECUTION_DISABLED');
     assert.equal(payload.executionMode, 'plan-only');
     assert.match(payload.error, /operator shell/i);
+
+    const auditRes = await fetch(`${server.url}/api/admin/audit?limit=1`, {
+      headers: { cookie },
+    });
+    assert.equal(auditRes.status, 200);
+    const audit = await auditRes.json();
+    assert.equal(audit.entries[0].outcome, 'blocked-execution-mode');
   } finally {
     await server.close();
   }
@@ -1034,6 +1127,18 @@ test('homebase config endpoint rejects invalid updates', async () => {
       body: JSON.stringify({ gitTransport: 'ssh-key' }),
     });
     assert.equal(missingKey.status, 400);
+
+    const injectedKeyPath = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        gitTransport: 'ssh-key',
+        gitSshKeyPath: '/tmp/key; touch /tmp/homebase-preflight-pwned',
+      }),
+    });
+    assert.equal(injectedKeyPath.status, 400);
+    const injectedKeyPayload = await injectedKeyPath.json();
+    assert.match(injectedKeyPayload.error, /only letters, numbers/i);
 
     const unknownField = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',

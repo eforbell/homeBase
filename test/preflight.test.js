@@ -21,4 +21,5 @@ test('preflight uses non-interactive sudo for read-only privileged probes', () =
   for (const command of sudoCommands) {
     assert.match(command, /sudo -n(?: |$)/);
   }
+  assert.equal(commands.some((command) => command.includes("test -r '/opt/sovereign-home/.ssh/id_homebase'")), true);
 });

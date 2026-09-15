@@ -58,7 +58,7 @@ HOME_BASE_AUTO_BOOTSTRAP=0
 
 The systemd unit sets `NoNewPrivileges`, a strict read-only system filesystem, kernel/control-group protections, a private temporary directory, and a single writable state directory.
 
-The installer refuses to continue if `/etc/sudoers.d/homebase` grants the service user `NOPASSWD:ALL`. It does not remove that file automatically; the operator must inspect and remove or replace the legacy policy.
+The installer refuses to continue if `/etc/sudoers.d/homebase` already exists or if a preserved environment enables legacy privileged execution or auto-bootstrap. It does not remove or rewrite those files automatically; the operator must inspect and remove or replace the legacy configuration.
 
 Home Base remains useful in plan-only mode: it inventories the host, shows the app catalog and health, and produces deterministic bootstrap/install/backup/restore plans. Run approved plans from an operator shell until a narrow privileged executor replaces the legacy model.
 

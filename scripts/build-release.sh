@@ -4,10 +4,8 @@ set -Eeuo pipefail
 VERSION="${1:-}"
 OUTPUT_DIR="${2:-dist}"
 
-case "$VERSION" in
-  v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) echo 'usage: scripts/build-release.sh vX.Y.Z [output-dir]' >&2; exit 2 ;;
-esac
+printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+  || { echo 'usage: scripts/build-release.sh vX.Y.Z [output-dir]' >&2; exit 2; }
 
 [ -z "$(git status --porcelain)" ] \
   || { echo 'refusing to package a dirty working tree' >&2; exit 1; }
