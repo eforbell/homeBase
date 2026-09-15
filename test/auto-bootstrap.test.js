@@ -17,6 +17,19 @@ test('auto-bootstrap decision starts only when enabled and no bootstrap job exis
   assert.equal(decision.delayMs, 25);
 });
 
+test('auto-bootstrap decision skips when privileged jobs are disabled', () => {
+  const decision = getAutoBootstrapDecision({
+    config: {
+      homeBaseAutoBootstrap: true,
+      homeBaseEnablePrivilegedJobs: false,
+    },
+    latestBootstrapJob: null,
+  });
+
+  assert.equal(decision.shouldStart, false);
+  assert.equal(decision.reason, 'privileged-jobs-disabled');
+});
+
 test('auto-bootstrap decision skips if disabled or bootstrap job exists', () => {
   assert.equal(getAutoBootstrapDecision({
     config: { homeBaseAutoBootstrap: false },

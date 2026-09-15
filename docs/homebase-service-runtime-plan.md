@@ -1,5 +1,7 @@
 # Home Base Service-Runtime Implementation Plan
 
+> **Implemented public baseline (2026-09-14):** the installer and runtime planner now install Home Base as a loopback-only, systemd-hardened, plan-only service. They do not create sudoers policy or enable auto-bootstrap. The narrow privileged executor remains a separate release gate.
+
 This plan focuses on the next major slice after the first full Ubuntu VM rehearsal:
 
 **Install Home Base as a first-class service on the target host, then tighten the UX so the same machine can be managed comfortably through Home Base itself.**

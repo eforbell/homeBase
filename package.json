@@ -2,6 +2,7 @@
   "name": "home-base",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Home Base control plane prototype for The Sovereign Home",
   "type": "commonjs",
   "engines": {
@@ -10,6 +11,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "release:build": "bash scripts/build-release.sh"
   }
 }

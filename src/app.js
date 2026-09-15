@@ -256,6 +256,14 @@ function getHomeBaseStatus(config) {
   const monoCssPath = path.join(fontDir, 'jetbrains-mono.css');
   const configuredSource = String(process.env.SOVEREIGN_FONT_SOURCE || 'auto').trim().toLowerCase();
   const mountPath = String(config.sovereignFontMountPath || '/_sovereign/fonts/');
+  let legacyBroadSudoersDetected = false;
+  try {
+    legacyBroadSudoersDetected = fs.existsSync(sudoersFile)
+      && /^[\t ]*homebase[\t ]+.*NOPASSWD:[\t ]*ALL(?:[\t ]|$)/m.test(fs.readFileSync(sudoersFile, 'utf8'));
+  } catch (_error) {
+    legacyBroadSudoersDetected = false;
+  }
+  const privilegedJobsEnabled = config.homeBaseEnablePrivilegedJobs === true;
   const status = {
     runtimeUser,
     appDir,
@@ -263,7 +271,10 @@ function getHomeBaseStatus(config) {
     stateDbPath,
     envFile,
     serviceName: 'homebase',
-    privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs !== false,
+    bindHost: config.bindHost || '127.0.0.1',
+    executionMode: privilegedJobsEnabled ? 'legacy-sudo' : 'plan-only',
+    privilegedJobsEnabled,
+    legacyBroadSudoersDetected,
     sovereignFonts: {
       configuredSource,
       mountPath,
@@ -707,7 +718,7 @@ function createApp(config) {
           return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-update-self',
@@ -752,7 +763,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-install-self',
@@ -834,7 +845,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'bootstrap-execute',
@@ -931,7 +942,7 @@ function createApp(config) {
         }
 
         if (!dryRun) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'tailscale-publish-execute',
@@ -1037,7 +1048,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-install-execute',
@@ -1124,7 +1135,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restart-execute',
@@ -1235,7 +1246,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-backup-execute',
@@ -1333,7 +1344,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-uninstall-execute',
@@ -1413,7 +1424,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restore-execute',
@@ -1495,9 +1506,13 @@ function createApp(config) {
 
   return {
     server,
-    listen() {
-      server.listen(config.port, () => {
-        console.log(`Home Base listening on http://127.0.0.1:${config.port}`);
+    listen(callback) {
+      const bindHost = config.bindHost || '127.0.0.1';
+      server.listen(config.port, bindHost, () => {
+        const address = server.address();
+        const activePort = address && typeof address === 'object' ? address.port : config.port;
+        console.log(`Home Base listening on http://${bindHost}:${activePort}`);
+        if (typeof callback === 'function') callback();
       });
     },
   };

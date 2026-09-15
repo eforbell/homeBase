@@ -219,15 +219,15 @@
         ${renderOverviewCard({
           title: 'Status',
           description: 'Host readiness, Home Base runtime posture, and repair actions.',
-          statusLine: `Runtime user: ${status.runtimeUser} · systemd: ${status.systemd?.active || 'unknown'}`,
+          statusLine: `Runtime user: ${status.runtimeUser} · systemd: ${status.systemd?.active || 'unknown'} · execution: ${status.executionMode || 'plan-only'}`,
         })}
         <section class="hb-grid hb-grid-2">
           <article class="hb-card">
             <h2 style="margin-top:0;">Bootstrap / repair host</h2>
             <form class="hb-form-grid" data-action="bootstrap-host">
-              <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-              <button class="hb-btn" type="submit">Run bootstrap</button>
-              <p class="hb-muted" style="margin:0;">Use this to recover from failed auto-bootstrap jobs or re-apply host repair steps such as nginx/Tailscale prerequisites.</p>
+              <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked ${status.privilegedJobsEnabled ? '' : 'disabled'}> Plan only</label>
+              <button class="hb-btn" type="submit">Generate bootstrap plan</button>
+              <p class="hb-muted" style="margin:0;">The hardened service does not run host mutations. Review the generated plan and execute it from an operator shell.</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
           </article>
@@ -235,9 +235,9 @@
             <h2 style="margin-top:0;">Install/enable Home Base service</h2>
             <form class="hb-form-grid" data-action="install-self">
               <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(config.port)}"></label>
-              <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
-              <button class="hb-btn" type="submit">Install/enable service</button>
-              <p class="hb-muted" style="margin:0;">When installed as a systemd service, Home Base can auto-start bootstrap on first service launch.</p>
+              <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked ${status.privilegedJobsEnabled ? '' : 'disabled'}> Plan only</label>
+              <button class="hb-btn" type="submit">Generate service plan</button>
+              <p class="hb-muted" style="margin:0;">Installed Home Base binds to loopback and starts in plan-only mode with systemd hardening enabled.</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
           </article>
@@ -246,6 +246,7 @@
           <h2 style="margin-top:0;">Runtime details</h2>
           <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
             <li class="hb-row"><strong>Service</strong><span>${window.HB.escapeHtml(status.serviceName || 'homebase')}</span><span class="hb-muted">${window.HB.escapeHtml(status.systemd?.active || 'unknown')}</span></li>
+            <li class="hb-row"><strong>Execution</strong><span class="hb-muted">${window.HB.escapeHtml(status.executionMode || 'plan-only')} · ${window.HB.escapeHtml(status.bindHost || '127.0.0.1')}</span><span>${status.legacyBroadSudoersDetected ? '<span class="hb-err">legacy broad sudoers detected</span>' : '<span class="hb-ok">hardened</span>'}</span></li>
             <li class="hb-row"><strong>App dir</strong><span class="hb-muted">${window.HB.escapeHtml(status.appDir || '')}</span><span>${status.paths?.appDirExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
             <li class="hb-row"><strong>State dir</strong><span class="hb-muted">${window.HB.escapeHtml(status.stateDir || '')}</span><span>${status.paths?.stateDirExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>
             <li class="hb-row"><strong>Env file</strong><span class="hb-muted">${window.HB.escapeHtml(status.envFile || '')}</span><span>${status.paths?.envFileExists ? '<span class="hb-ok">present</span>' : '<span class="hb-warn">missing</span>'}</span></li>

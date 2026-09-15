@@ -17,9 +17,9 @@ The default safe posture is plan-first, local/Tailnet-only, least privilege, rev
 
 ## Privilege boundary
 
-Home Base should run as a dedicated service user. The target architecture is a narrow, auditable allowlisted executor rather than a privileged web process. Current releases may execute audited generated shell plans through `/bin/bash -lc` and may install broad sudoers when privileged jobs are enabled; treat the service account as effectively root in that mode.
+Home Base runs as a dedicated service user. The public installer configures plan-only execution, loopback binding, `NoNewPrivileges=true`, and systemd filesystem/kernel hardening. The installed web service cannot elevate through `sudo`; reviewed host plans are executed separately from an operator shell.
 
-Enabling broad sudoers such as `NOPASSWD:ALL` gives the Home Base service account effective root access. Treat that mode as high risk, local/admin-only, and temporary until replaced by an allowlist of required commands. Never enable it merely for convenience, on a publicly reachable instance, or without host backups and an explicit operator decision.
+The runtime planner and public installer refuse a legacy `homebase ... NOPASSWD:ALL` rule. `HOME_BASE_EXECUTION_MODE=legacy-sudo` remains only as an explicit compatibility switch for existing private installations; Home Base does not create the required sudo policy. A future privileged executor must be narrow, auditable, path-contained, and separately reviewed before it becomes a supported public path.
 
 Job input, repository refs, filesystem paths, app manifests, hostnames, unit names, and proxy paths are untrusted command-generation inputs. Validate against allowlists, avoid shell interpolation, use structured process arguments where possible, and keep execution logs free of secrets.
 

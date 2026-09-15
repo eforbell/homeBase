@@ -138,7 +138,7 @@ async function rotateAdmin(req, res, body, stateStore) {
   return { statusCode: 200, payload: { ok: true } };
 }
 
-async function requireAdminForExecute(req, stateStore) {
+async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true } = {}) {
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const sessionTokenHash = token ? hashToken(token) : null;
   const status = await getAdminStatus(req, stateStore);
@@ -147,6 +147,18 @@ async function requireAdminForExecute(req, stateStore) {
   }
   if (!status.unlocked) {
     return { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' }, sessionTokenHash };
+  }
+  if (!privilegedJobsEnabled) {
+    return {
+      ok: false,
+      statusCode: 409,
+      payload: {
+        error: 'Home Base is running in plan-only mode. Generate and review the plan, then execute it from an operator shell.',
+        code: 'PRIVILEGED_EXECUTION_DISABLED',
+        executionMode: 'plan-only',
+      },
+      sessionTokenHash,
+    };
   }
   return { ok: true, sessionTokenHash };
 }

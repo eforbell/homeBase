@@ -43,6 +43,28 @@ async function setupAdminCookie(baseUrl, passphrase = 'test-admin-passphrase') {
   return cookie;
 }
 
+test('managed listener binds to loopback by default', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-loopback-'));
+  const app = createApp({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  await new Promise((resolve) => app.listen(resolve));
+  try {
+    assert.equal(app.server.address().address, '127.0.0.1');
+  } finally {
+    await new Promise((resolve, reject) => app.server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test('HTTP API exposes catalog and can persist a planned install', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-'));
   const server = await startServer({
@@ -352,6 +374,10 @@ test('homebase status endpoint returns runtime state summary', async () => {
     const res = await fetch(`${server.url}/api/homebase/status`);
     const payload = await res.json();
     assert.equal(payload.runtimeUser, 'homebase');
+    assert.equal(payload.bindHost, '127.0.0.1');
+    assert.equal(payload.executionMode, 'plan-only');
+    assert.equal(payload.privilegedJobsEnabled, false);
+    assert.equal(payload.legacyBroadSudoersDetected, false);
     assert.equal(payload.ok, true);
     assert.equal(typeof payload.paths.stateDbExists, 'boolean');
   } finally {
@@ -476,6 +502,40 @@ test('admin status starts unconfigured and locked', async () => {
   }
 });
 
+test('plan-only mode blocks real host execution after admin unlock', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-plan-only-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+    homeBaseExecutionMode: 'plan-only',
+    homeBaseEnablePrivilegedJobs: false,
+  });
+
+  try {
+    const cookie = await setupAdminCookie(server.url, 'plan-only-passphrase');
+    const res = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const payload = await res.json();
+    assert.equal(res.status, 409);
+    assert.equal(payload.code, 'PRIVILEGED_EXECUTION_DISABLED');
+    assert.equal(payload.executionMode, 'plan-only');
+    assert.match(payload.error, /operator shell/i);
+  } finally {
+    await server.close();
+  }
+});
+
 test('real execute requires admin setup/unlock', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-guard-'));
   const server = await startServer({
@@ -489,6 +549,7 @@ test('real execute requires admin setup/unlock', async () => {
     defaultHostname: 'homebase',
     defaultDomain: 'tailnet',
     gitTransport: 'https',
+    homeBaseEnablePrivilegedJobs: true,
   });
 
   try {
@@ -559,6 +620,7 @@ test('admin passphrase rotation requires unlock and invalidates prior sessions',
     defaultHostname: 'homebase',
     defaultDomain: 'tailnet',
     gitTransport: 'https',
+    homeBaseEnablePrivilegedJobs: true,
   });
 
   try {
@@ -638,6 +700,7 @@ test('admin audit endpoint requires unlock and records destructive attempts', as
     defaultHostname: 'homebase',
     defaultDomain: 'tailnet',
     gitTransport: 'https',
+    homeBaseEnablePrivilegedJobs: true,
   });
 
   try {

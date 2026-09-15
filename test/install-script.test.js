@@ -1,0 +1,166 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const { execFileSync, spawnSync } = require('child_process');
+
+const installer = path.join(__dirname, '..', 'install.sh');
+
+function createReleaseFixture(tempDir, { version = 'v9.9.9' } = {}) {
+  const releaseRoot = path.join(tempDir, `homebase-${version.slice(1)}`);
+  fs.mkdirSync(path.join(releaseRoot, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(releaseRoot, 'package.json'), '{"name":"home-base-fixture"}\n');
+  fs.writeFileSync(path.join(releaseRoot, 'server.js'), 'console.log("fixture");\n');
+  fs.writeFileSync(path.join(releaseRoot, 'src', 'app.js'), 'module.exports = {};\n');
+
+  const archive = path.join(tempDir, `homebase-${version.slice(1)}.tar.gz`);
+  execFileSync('tar', ['-czf', archive, '-C', tempDir, path.basename(releaseRoot)]);
+  const digest = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+  const checksum = `${archive}.sha256`;
+  fs.writeFileSync(checksum, `${digest}  ${path.basename(archive)}\n`);
+  return { archive, checksum, version };
+}
+
+function installerEnv(tempDir, fixture, overrides = {}) {
+  return {
+    ...process.env,
+    HOMEBASE_TEST_MODE: '1',
+    HOMEBASE_OS_ID: 'ubuntu',
+    HOMEBASE_OS_VERSION_ID: '24.04',
+    HOMEBASE_ARCHIVE_URL: pathToFileURL(fixture.archive).href,
+    HOMEBASE_CHECKSUM_URL: pathToFileURL(fixture.checksum).href,
+    HOMEBASE_INSTALL_DIR: path.join(tempDir, 'opt', 'homebase'),
+    HOMEBASE_STATE_DIR: path.join(tempDir, 'var', 'homebase'),
+    HOMEBASE_ENV_FILE: path.join(tempDir, 'etc', 'homebase.env'),
+    HOMEBASE_SYSTEMD_UNIT: path.join(tempDir, 'systemd', 'homebase.service'),
+    HOMEBASE_LEGACY_SUDOERS_FILE: path.join(tempDir, 'sudoers.d', 'homebase'),
+    ...overrides,
+  };
+}
+
+function runInstaller(args, env) {
+  return spawnSync('bash', [installer, ...args], {
+    env,
+    encoding: 'utf8',
+  });
+}
+
+test('installer help states the plan-only privilege boundary', () => {
+  const result = runInstaller(['--help'], process.env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /hardened, loopback-only, plan-first/i);
+  assert.match(result.stdout, /does not grant Home Base sudo access/i);
+});
+
+test('installer dry-run resolves a non-mutating plan', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-dry-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  const result = runInstaller(['--version', fixture.version, '--dry-run'], env);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Execution mode: plan-only/);
+  assert.match(result.stdout, /Privileged jobs: disabled/);
+  assert.equal(fs.existsSync(env.HOMEBASE_INSTALL_DIR), false);
+});
+
+test('installer rejects malformed release tags and unsafe path overrides', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-inputs-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+
+  const badVersion = runInstaller(['--version', 'main', '--dry-run'], env);
+  assert.notEqual(badVersion.status, 0);
+  assert.match(badVersion.stderr, /version must be a tag/i);
+
+  const badPath = runInstaller(['--version', fixture.version, '--dry-run'], {
+    ...env,
+    HOMEBASE_INSTALL_DIR: path.join(tempDir, 'unsafe path'),
+  });
+  assert.notEqual(badPath.status, 0);
+  assert.match(badPath.stderr, /may not contain whitespace/i);
+});
+
+test('installer verifies and installs a release with hardened defaults', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  const result = runInstaller(['--version', fixture.version, '--no-start'], env);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, '.homebase-version'), 'utf8').trim(), fixture.version);
+  assert.equal(fs.existsSync(path.join(env.HOMEBASE_INSTALL_DIR, 'server.js')), true);
+
+  const runtimeEnv = fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8');
+  assert.match(runtimeEnv, /HOME_BASE_BIND_HOST=127\.0\.0\.1/);
+  assert.match(runtimeEnv, /HOME_BASE_EXECUTION_MODE=plan-only/);
+  assert.match(runtimeEnv, /HOME_BASE_ENABLE_PRIVILEGED_JOBS=0/);
+  assert.match(runtimeEnv, /HOME_BASE_AUTO_BOOTSTRAP=0/);
+
+  const service = fs.readFileSync(env.HOMEBASE_SYSTEMD_UNIT, 'utf8');
+  assert.match(service, /NoNewPrivileges=true/);
+  assert.match(service, /ProtectSystem=strict/);
+  assert.match(service, /ReadWritePaths=/);
+  assert.doesNotMatch(service, /sudo|NOPASSWD/);
+});
+
+test('installer keeps the release tag separate from os-release VERSION metadata', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-os-release-'));
+  const fixture = createReleaseFixture(tempDir);
+  const osRelease = path.join(tempDir, 'os-release');
+  fs.writeFileSync(osRelease, [
+    'ID=ubuntu',
+    'VERSION_ID="24.04"',
+    'VERSION="24.04.4 LTS (Noble Numbat)"',
+    '',
+  ].join('\n'));
+  const env = installerEnv(tempDir, fixture, {
+    HOMEBASE_OS_ID: '',
+    HOMEBASE_OS_VERSION_ID: '',
+    HOMEBASE_OS_RELEASE_FILE: osRelease,
+  });
+  const result = runInstaller(['--version', fixture.version, '--no-start'], env);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, '.homebase-version'), 'utf8').trim(), fixture.version);
+  assert.match(result.stdout, new RegExp(`Home Base ${fixture.version.replaceAll('.', '\\.')} installed`));
+});
+
+test('installer rerun preserves existing environment state', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-rerun-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  const first = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.equal(first.status, 0, first.stderr);
+
+  fs.appendFileSync(env.HOMEBASE_ENV_FILE, 'OPERATOR_SETTING=preserved\n');
+  const second = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /preserving code, config, and state/i);
+  assert.match(fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8'), /OPERATOR_SETTING=preserved/);
+});
+
+test('installer fails closed on checksum mismatch', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-checksum-'));
+  const fixture = createReleaseFixture(tempDir);
+  fs.writeFileSync(fixture.checksum, `${'0'.repeat(64)}  bad.tar.gz\n`);
+  const result = runInstaller(['--version', fixture.version, '--no-start'], installerEnv(tempDir, fixture));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /checksum verification failed/i);
+});
+
+test('installer refuses a legacy broad Home Base sudoers rule', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-sudoers-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  fs.mkdirSync(path.dirname(env.HOMEBASE_LEGACY_SUDOERS_FILE), { recursive: true });
+  fs.writeFileSync(env.HOMEBASE_LEGACY_SUDOERS_FILE, 'homebase ALL=(ALL) NOPASSWD:ALL\n');
+  const result = runInstaller(['--version', fixture.version, '--no-start'], env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /legacy broad sudoers detected/i);
+});

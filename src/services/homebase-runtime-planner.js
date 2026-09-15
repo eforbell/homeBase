@@ -1,8 +1,9 @@
-function renderServiceUnit({ appDir, envFile, user, port }) {
+function renderServiceUnit({ appDir, envFile, user, port, stateDir }) {
   return [
     '[Unit]',
     'Description=Home Base Control Plane',
-    'After=network.target',
+    'After=network-online.target',
+    'Wants=network-online.target',
     '',
     '[Service]',
     'Type=simple',
@@ -13,6 +14,16 @@ function renderServiceUnit({ appDir, envFile, user, port }) {
     'Restart=always',
     'RestartSec=5',
     'KillSignal=SIGTERM',
+    'UMask=0077',
+    'NoNewPrivileges=true',
+    'PrivateTmp=true',
+    'ProtectSystem=strict',
+    'ProtectHome=true',
+    'ProtectKernelTunables=true',
+    'ProtectKernelModules=true',
+    'ProtectControlGroups=true',
+    'RestrictSUIDSGID=true',
+    `ReadWritePaths=${stateDir}`,
     '',
     '[Install]',
     'WantedBy=multi-user.target',
@@ -22,6 +33,7 @@ function renderServiceUnit({ appDir, envFile, user, port }) {
 
 function renderEnvFile({
   port,
+  bindHost,
   stateDbPath,
   baseInstallDir,
   baseBackupDir,
@@ -33,6 +45,7 @@ function renderEnvFile({
   repositoryUrl,
   repositorySshUrl,
   enablePrivilegedJobs,
+  executionMode,
   defaultHostname,
   defaultDomain,
   autoBootstrap,
@@ -46,6 +59,7 @@ function renderEnvFile({
 }) {
   return [
     `PORT=${port}`,
+    `HOME_BASE_BIND_HOST=${bindHost}`,
     `HOME_BASE_STATE_DB=${stateDbPath}`,
     `HOME_BASE_INSTALL_DIR=${baseInstallDir}`,
     `HOME_BASE_SHARED_ROOT=${sharedRoot}`,
@@ -60,6 +74,7 @@ function renderEnvFile({
     `HOME_BASE_REPOSITORY_SSH_URL=${repositorySshUrl || 'git@github.com:eforbell/homeBase.git'}`,
     `HOME_BASE_DEFAULT_HOSTNAME=${defaultHostname || 'homebase'}`,
     `HOME_BASE_DEFAULT_DOMAIN=${defaultDomain || 'tailnet'}`,
+    `HOME_BASE_EXECUTION_MODE=${executionMode}`,
     `HOME_BASE_ENABLE_PRIVILEGED_JOBS=${enablePrivilegedJobs ? '1' : '0'}`,
     `HOME_BASE_AUTO_BOOTSTRAP=${autoBootstrap ? '1' : '0'}`,
     `HOME_BASE_AUTO_BOOTSTRAP_MODE=${autoBootstrapMode || 'execute'}`,
@@ -74,7 +89,6 @@ function renderEnvFile({
 function buildHomeBaseRuntimePlan(config = {}, options = {}) {
   const generatedAt = new Date().toISOString();
   const runtimeUser = options.runtimeUser || config.homeBaseRuntimeUser || 'homebase';
-  const serviceUser = config.serviceUser || 'sovereign';
   const appDir = options.appDir || config.homeBaseAppDir || '/opt/sovereign-home/homebase';
   const stateDir = options.stateDir || config.homeBaseStateDir || '/var/lib/sovereign-home/homebase';
   const stateDbPath = options.stateDbPath || config.homeBaseRuntimeStateDbPath || `${stateDir}/home-base.sqlite3`;
@@ -82,18 +96,29 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
   const serviceName = 'homebase';
   const port = options.port || config.port || 3080;
   const startImmediately = options.startImmediately === true;
-  const enablePrivilegedJobs = options.enablePrivilegedJobs !== undefined
+  const requestedPrivilegedJobs = options.enablePrivilegedJobs !== undefined
     ? options.enablePrivilegedJobs === true
-    : config.homeBaseEnablePrivilegedJobs !== false;
-  const autoBootstrap = options.autoBootstrap !== undefined
-    ? options.autoBootstrap === true
-    : enablePrivilegedJobs && config.homeBaseRuntimeAutoBootstrap !== false;
+    : config.homeBaseEnablePrivilegedJobs === true;
+  if (requestedPrivilegedJobs) {
+    const error = new Error('Home Base no longer generates privileged sudoers configuration; install the service in plan-only mode.');
+    error.code = 'UNSAFE_PRIVILEGED_CONFIGURATION';
+    throw error;
+  }
+  if (options.autoBootstrap === true || config.homeBaseAutoBootstrap === true) {
+    const error = new Error('Home Base service auto-bootstrap is unavailable in the hardened plan-only runtime.');
+    error.code = 'UNSAFE_AUTO_BOOTSTRAP_CONFIGURATION';
+    throw error;
+  }
+  const executionMode = 'plan-only';
+  const enablePrivilegedJobs = false;
+  const autoBootstrap = false;
   const autoBootstrapMode = options.autoBootstrapMode || config.homeBaseAutoBootstrapMode || 'execute';
   const autoBootstrapDelayMs = options.autoBootstrapDelayMs || config.homeBaseAutoBootstrapDelayMs || 5000;
   const sudoersFile = `/etc/sudoers.d/${serviceName}`;
 
   const envContent = renderEnvFile({
     port,
+    bindHost: options.bindHost || config.bindHost || '127.0.0.1',
     stateDbPath,
     baseInstallDir: config.baseInstallDir || '/opt/sovereign-home/apps',
     sharedRoot: config.homeBaseSharedRoot || '/opt/sovereign-home',
@@ -109,6 +134,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     defaultHostname: config.defaultHostname || 'homebase',
     defaultDomain: config.defaultDomain || 'tailnet',
     enablePrivilegedJobs,
+    executionMode,
     autoBootstrap,
     autoBootstrapMode,
     autoBootstrapDelayMs,
@@ -122,6 +148,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     envFile,
     user: runtimeUser,
     port,
+    stateDir,
   });
 
   const executionSteps = [
@@ -130,36 +157,33 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       title: 'Prepare Home Base runtime directories and config',
       run: [
     `id -u ${runtimeUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${stateDir} --shell /usr/sbin/nologin ${runtimeUser}`,
-    `getent group ${serviceUser} >/dev/null 2>&1 && sudo usermod -aG ${serviceUser} ${runtimeUser} || true`,
-    `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${appDir}`,
-    `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
+    `sudo install -d -m 0755 -o root -g root ${appDir}`,
+    `sudo install -d -m 0700 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
     `sudo install -d -m 0755 -o root -g root ${envFile.substring(0, envFile.lastIndexOf('/')) || '/etc'}`,
     `tar --exclude .data --exclude node_modules -cf - . | sudo tar -C ${appDir} -xf -`,
-    `sudo chown -R ${runtimeUser}:${runtimeUser} ${appDir} ${stateDir}`,
+    `sudo chown -R root:root ${appDir}`,
+    `sudo chmod -R go-w ${appDir}`,
+    `sudo chown -R ${runtimeUser}:${runtimeUser} ${stateDir}`,
     config.stateDbPath && config.stateDbPath !== stateDbPath
       ? `if [ -f ${config.stateDbPath} ]; then sudo cp ${config.stateDbPath} ${stateDbPath}; sudo chown ${runtimeUser}:${runtimeUser} ${stateDbPath}; fi`
       : null,
     `sudo tee ${envFile} > /dev/null <<'EOF'\n${envContent}EOF`,
+    `sudo chown root:${runtimeUser} ${envFile}`,
+    `sudo chmod 0640 ${envFile}`,
     `sudo tee /etc/systemd/system/${serviceName}.service > /dev/null <<'EOF'\n${serviceContent}EOF`,
-    `sudo -u ${runtimeUser} -H bash -lc 'cd ${appDir} && if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi'`,
+    `sudo chown root:root /etc/systemd/system/${serviceName}.service`,
+    `sudo chmod 0644 /etc/systemd/system/${serviceName}.service`,
     'sudo systemctl daemon-reload',
     `sudo systemctl enable ${serviceName}`,
       ].filter(Boolean),
     },
     {
-      id: 'configure-privileges',
-      title: enablePrivilegedJobs
-        ? 'Allow Home Base service user to run host-management jobs'
-        : 'Skip privileged job sudoers configuration',
-      run: enablePrivilegedJobs
-        ? [
-            `sudo tee ${sudoersFile} > /dev/null <<'EOF'\n${runtimeUser} ALL=(ALL) NOPASSWD:ALL\nEOF`,
-            `sudo chmod 0440 ${sudoersFile}`,
-            `sudo visudo -cf ${sudoersFile}`,
-          ]
-        : [
-            `echo "Privileged jobs disabled. Home Base service will serve UI/status only until executor privileges are configured."`,
-          ],
+      id: 'verify-privilege-boundary',
+      title: 'Verify the installed service has no legacy broad sudoers access',
+      run: [
+        `if sudo test -f ${sudoersFile} && sudo grep -Eq '^[[:space:]]*${runtimeUser}[[:space:]]+.*NOPASSWD:[[:space:]]*ALL([[:space:]]|$)' ${sudoersFile}; then echo "Refusing to continue while legacy broad sudoers exists at ${sudoersFile}. Remove it before installing the hardened service." >&2; exit 1; fi`,
+        'echo "Home Base will run in plan-only mode. Execute reviewed host plans from an operator shell."',
+      ],
     },
     {
       id: 'activate-service',
@@ -189,6 +213,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       port,
       startImmediately,
       enablePrivilegedJobs,
+      executionMode,
       autoBootstrap,
       autoBootstrapMode,
       autoBootstrapDelayMs,
