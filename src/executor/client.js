@@ -15,9 +15,9 @@ function sendRequest(socketPath, request, { timeoutMs = 10000 } = {}) {
     socket.on('end', () => {
       clearTimeout(timeout);
       try {
-        const lines = buffer.trim().split('\n');
-        if (lines.length !== 1 || !lines[0]) throw new Error('Executor response is malformed.');
-        const response = JSON.parse(lines[0]);
+        const lines = buffer.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        const response = lines.at(-1);
+        if (!response || response.type !== 'terminal') throw new Error('Executor response is malformed.');
         if (!response.ok) {
           const error = new Error(response.message || response.code || 'Executor rejected request.');
           error.code = response.code;
@@ -34,8 +34,12 @@ function hello(socketPath, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'hello' }, options);
 }
 
+function executePlan(socketPath, { jobId, plan, secretBindings, actor = { kind: 'homebase-admin-session', auditRef: 'local' } }, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'execute-plan', jobId: String(jobId), actor, issuedAt: new Date().toISOString(), planDigest: digestOperationPlan(plan), plan, secretBindings }, options);
+}
+
 function validatePlan(socketPath, plan, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'validate-plan', planDigest: digestOperationPlan(plan), plan }, options);
 }
 
-module.exports = { sendRequest, hello, validatePlan };
+module.exports = { sendRequest, hello, validatePlan, executePlan };

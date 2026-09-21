@@ -6,14 +6,14 @@ const path = require('path');
 const net = require('net');
 const crypto = require('crypto');
 const { createExecutorServer } = require('../executor/server');
-const { hello, validatePlan } = require('../src/executor/client');
+const { hello, validatePlan, executePlan } = require('../src/executor/client');
 const { buildDinnerInstallPlan } = require('../src/operations/compilers/install');
 const { digestOperationPlan } = require('../src/operations/digest');
 
-async function withExecutor(run) {
+async function withExecutor(run, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-executor-'));
   const socketPath = path.join(root, 'executor.sock');
-  const server = createExecutorServer({ logger: { info() {} } });
+  const server = createExecutorServer({ logger: { info() {} }, ...options });
   await new Promise((resolve) => server.listen(socketPath, resolve));
   try { await run(socketPath); } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
 }
@@ -73,5 +73,26 @@ test('executor accepts exactly one request per connection and replays duplicate 
     assert.deepEqual(second, first);
     const multiple = await rawRequest(socketPath, `${JSON.stringify({ protocolVersion: 1, requestId: crypto.randomUUID(), type: 'hello' })}\n${JSON.stringify({ protocolVersion: 1, requestId: crypto.randomUUID(), type: 'hello' })}\n`);
     assert.equal(multiple.code, 'INVALID_REQUEST');
+  });
+});
+
+
+test('executor serializes typed execute requests and streams only redacted structured events', async () => {
+  await withExecutor(async (socketPath) => {
+    const plan = buildDinnerInstallPlan({ generatedAt: '2026-09-20T14:00:00.000Z' });
+    const result = await executePlan(socketPath, { jobId: 1, plan, secretBindings: { familyDinnerDatabasePassword: 'canary-secret' } });
+    assert.deepEqual(result.completedOperationIds, ['ensure-install-root']);
+  }, {
+    executePlan: async (request, { emit }) => {
+      emit({ eventType: 'operation.started', operationId: request.plan.operations[0].id });
+      return { completedOperationIds: [request.plan.operations[0].id] };
+    },
+  });
+});
+
+test('executor keeps execute-plan disabled without an explicit trusted dispatcher', async () => {
+  await withExecutor(async (socketPath) => {
+    const plan = buildDinnerInstallPlan({ generatedAt: '2026-09-20T14:00:00.000Z' });
+    await assert.rejects(() => executePlan(socketPath, { jobId: 1, plan, secretBindings: { familyDinnerDatabasePassword: 'canary-secret' } }), (error) => error.code === 'POLICY_DENIED');
   });
 });
