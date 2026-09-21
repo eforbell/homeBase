@@ -13,5 +13,9 @@
     "dev": "node --watch server.js",
     "test": "node --test",
     "release:build": "bash scripts/build-release.sh"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
   }
 }

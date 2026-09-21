@@ -2,6 +2,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { getAppById } = require('../catalog');
+const { buildDinnerInstallPlan } = require('../operations/compilers/install');
+const { digestOperationPlan } = require('../operations/digest');
+const { validateOperationPolicy } = require('../operations/policy');
+const { redactPlan } = require('../operations/redact');
+const { renderOperationPlan } = require('../operations/render');
 
 const DEFAULT_SOVEREIGN_FONT_SANS_CSS_URL = 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap';
 const DEFAULT_SOVEREIGN_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap';
@@ -747,6 +752,11 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
 
   const script = `#!/usr/bin/env bash\nset -euo pipefail\n\n# Install ${app.name}\n\n${commands.join('\n')}\n`;
 
+  const operationPlan = app.id === 'family-dinner'
+    ? buildDinnerInstallPlan({ appId: app.id, ref: gitRef })
+    : null;
+  if (operationPlan) validateOperationPolicy(operationPlan);
+
   return {
     kind: 'install',
     generatedAt: new Date().toISOString(),
@@ -768,6 +778,9 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
       health: app.network.health,
     },
     notes: app.updateNotes || [],
+    operationPlan,
+    operationPlanDigest: operationPlan ? digestOperationPlan(operationPlan) : null,
+    operationPreview: operationPlan ? renderOperationPlan(redactPlan(operationPlan)) : null,
     existingInstallation,
     files,
     executionSteps,

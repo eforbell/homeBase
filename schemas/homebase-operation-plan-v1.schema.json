@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://homebase.local/schemas/homebase-operation-plan-v1.schema.json",
+  "title": "Home Base operation plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "target", "catalogRevision", "generatedAt", "policyProfile", "operations"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "enum": ["host-bootstrap", "app-install"] },
+    "target": { "enum": ["local-host", "family-dinner"] },
+    "catalogRevision": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "policyProfile": { "enum": ["host-bootstrap-v1", "family-dinner-v1"] },
+    "operations": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/operation" } }
+  },
+  "$defs": {
+    "common": {
+      "type": "object",
+      "required": ["id", "type", "title", "risk", "timeoutMs", "idempotencyKey", "dependsOn", "preconditions", "secretRefs"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "type": { "type": "string" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "risk": { "enum": ["read", "write", "destructive"] },
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 1800000 },
+        "idempotencyKey": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "dependsOn": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }, "uniqueItems": true },
+        "preconditions": { "type": "array", "items": { "type": "string", "enum": ["supported-os", "directory-layout", "postgres-ready", "nginx-configured", "dinner-checkout"] }, "uniqueItems": true },
+        "secretRefs": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }, "uniqueItems": true }
+      }
+    },
+    "operation": {
+      "oneOf": [
+        { "$ref": "#/$defs/hostAssert" }, { "$ref": "#/$defs/packageEnsure" }, { "$ref": "#/$defs/identityEnsure" },
+        { "$ref": "#/$defs/directoryEnsure" }, { "$ref": "#/$defs/gitSync" }, { "$ref": "#/$defs/postgresRole" },
+        { "$ref": "#/$defs/postgresDatabase" }, { "$ref": "#/$defs/managedFile" }, { "$ref": "#/$defs/npmRun" },
+        { "$ref": "#/$defs/daemonReload" }, { "$ref": "#/$defs/systemdService" }, { "$ref": "#/$defs/nginxReload" }, { "$ref": "#/$defs/httpReady" }
+      ]
+    },
+    "hostAssert": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "properties": { "type": { "const": "host.assert-debian-family" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "packageEnsure": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["packages", "updateCache"], "properties": { "type": { "const": "package.ensure" }, "packages": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }, "updateCache": { "type": "boolean" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "identityEnsure": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["user"], "properties": { "type": { "const": "identity.ensure-user" }, "user": { "const": "sovereign" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "directoryEnsure": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["purpose"], "properties": { "type": { "const": "filesystem.ensure-directory" }, "purpose": { "enum": ["sovereign-root", "app-root", "app-install", "backup-root", "config-root", "nginx-snippets"] }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "gitSync": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["repository", "ref", "destination"], "properties": { "type": { "const": "git.sync" }, "repository": { "type": "string", "format": "uri" }, "ref": { "type": "string" }, "destination": { "const": "familyDinner" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "postgresRole": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["role", "passwordSecretRef"], "properties": { "type": { "const": "postgres.ensure-role" }, "role": { "const": "family_dinner" }, "passwordSecretRef": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "postgresDatabase": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["database", "owner"], "properties": { "type": { "const": "postgres.ensure-database" }, "database": { "const": "family_dinner" }, "owner": { "const": "family_dinner" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "managedFile": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["purpose", "template"], "properties": { "type": { "const": "filesystem.write-managed-file" }, "purpose": { "enum": ["app-env", "systemd-unit", "nginx-snippet", "nginx-gateway"] }, "template": { "enum": ["family-dinner-env-v1", "family-dinner-service-v1", "family-dinner-nginx-v1", "dinner-gateway-v1"] }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "npmRun": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["task"], "properties": { "type": { "const": "runtime.run-npm" }, "task": { "enum": ["install-production", "migrate"] }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "daemonReload": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "properties": { "type": { "const": "systemd.daemon-reload" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "systemdService": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["unit", "action"], "properties": { "type": { "const": "systemd.ensure-service" }, "unit": { "type": "string" }, "action": { "enum": ["enable", "restart", "enable-and-restart"] }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "nginxReload": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "properties": { "type": { "const": "nginx.validate-and-reload" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
+    "httpReady": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["executor", "port", "path"], "properties": { "type": { "const": "http.wait-ready" }, "executor": { "const": "homebase" }, "port": { "const": 3000 }, "path": { "const": "/api/ready" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] }
+  }
+}
