@@ -8,6 +8,8 @@ CHANNEL="preview"
 PORT="${HOMEBASE_PORT:-3080}"
 DRY_RUN=0
 NO_START=0
+REPAIR=0
+REPAIR_EXECUTOR=0
 TEST_MODE="${HOMEBASE_TEST_MODE:-0}"
 
 INSTALL_DIR="${HOMEBASE_INSTALL_DIR:-/opt/sovereign-home/homebase}"
@@ -16,6 +18,10 @@ ENV_FILE="${HOMEBASE_ENV_FILE:-/etc/sovereign-home/homebase.env}"
 UNIT_FILE="${HOMEBASE_SYSTEMD_UNIT:-/etc/systemd/system/homebase.service}"
 RUNTIME_USER="${HOMEBASE_RUNTIME_USER:-homebase}"
 LEGACY_SUDOERS_FILE="${HOMEBASE_LEGACY_SUDOERS_FILE:-/etc/sudoers.d/homebase}"
+EXECUTOR_SOCKET_UNIT="${HOMEBASE_EXECUTOR_SOCKET_UNIT:-/etc/systemd/system/homebase-executor.socket}"
+EXECUTOR_SERVICE_UNIT="${HOMEBASE_EXECUTOR_SERVICE_UNIT:-/etc/systemd/system/homebase-executor.service}"
+EXECUTOR_SOCKET_PATH="${HOMEBASE_EXECUTOR_SOCKET_PATH:-/run/homebase/executor.sock}"
+EXECUTOR_GROUP="${HOMEBASE_EXECUTOR_GROUP:-homebase-exec}"
 
 usage() {
   cat <<'EOF'
@@ -29,7 +35,9 @@ Options:
   --channel preview    Release channel (preview is currently the only channel)
   --port <port>        Loopback HTTP port (default: 3080)
   --dry-run            Print the resolved installation without changing the host
-  --no-start           Install and enable the unit without starting it
+  --no-start           Install and enable units without starting them
+  --repair             Restore managed code and service assets without replacing state or environment
+  --repair-executor    Restore only executor code, group, socket, and service assets
   --help               Show this help
 
 The installer does not grant Home Base sudo access or execute host bootstrap.
@@ -105,6 +113,14 @@ while [ "$#" -gt 0 ]; do
       NO_START=1
       shift
       ;;
+    --repair)
+      REPAIR=1
+      shift
+      ;;
+    --repair-executor)
+      REPAIR_EXECUTOR=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -125,7 +141,7 @@ case "$PORT" in
 esac
 [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die 'port must be between 1 and 65535'
 
-for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_SUDOERS_FILE"; do
+for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_SUDOERS_FILE" "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT" "$EXECUTOR_SOCKET_PATH"; do
   case "$candidate" in
     /*) ;;
     *) die "installation paths must be absolute: $candidate" ;;
@@ -180,6 +196,9 @@ Home Base install plan
   State dir:      ${STATE_DIR}
   Environment:    ${ENV_FILE}
   Unit:           ${UNIT_FILE}
+  Executor socket unit:  ${EXECUTOR_SOCKET_UNIT}
+  Executor service unit: ${EXECUTOR_SERVICE_UNIT}
+  Executor socket: ${EXECUTOR_SOCKET_PATH}
   Bind address:   127.0.0.1:${PORT}
   Execution mode: plan-only
   Privileged jobs: disabled
@@ -265,7 +284,7 @@ SOURCE_DIR="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 [ -n "$SOURCE_DIR" ] || die 'release archive must contain one top-level directory'
 [ "$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 1 ] \
   || die 'release archive must contain exactly one top-level directory'
-[ -f "$SOURCE_DIR/package.json" ] && [ -f "$SOURCE_DIR/server.js" ] && [ -d "$SOURCE_DIR/src" ] \
+[ -f "$SOURCE_DIR/package.json" ] && [ -f "$SOURCE_DIR/server.js" ] && [ -d "$SOURCE_DIR/src" ] && [ -f "$SOURCE_DIR/executor/server.js" ] \
   || die 'release archive is missing required Home Base files'
 
 VERSION_MARKER="${INSTALL_DIR}/.homebase-version"
@@ -276,8 +295,18 @@ if [ -f "$VERSION_MARKER" ]; then
   INSTALLED_VERSION="$(cat "$VERSION_MARKER")"
   [ "$INSTALLED_VERSION" = "$RELEASE_VERSION" ] \
     || die "Home Base ${INSTALLED_VERSION} is already installed; upgrades are not implemented by this installer yet"
-  log "Home Base ${RELEASE_VERSION} is already installed; preserving code, config, and state"
+  if [ "$REPAIR" -eq 1 ]; then
+    log "repairing managed Home Base code while preserving config and state"
+    cp -a "$SOURCE_DIR"/. "$INSTALL_DIR"/
+  elif [ "$REPAIR_EXECUTOR" -eq 1 ]; then
+    log "repairing managed executor code while preserving Home Base code, config, and state"
+    mkdir -p "$INSTALL_DIR/executor"
+    cp -a "$SOURCE_DIR/executor"/. "$INSTALL_DIR/executor"/
+  else
+    log "Home Base ${RELEASE_VERSION} is already installed; preserving code, config, and state"
+  fi
 else
+  [ "$REPAIR_EXECUTOR" -eq 0 ] || die '--repair-executor requires an existing managed Home Base installation'
   if [ "$TEST_MODE" = '1' ]; then
     mkdir -p "$INSTALL_DIR"
     cp -R "$SOURCE_DIR"/. "$INSTALL_DIR"/
@@ -285,23 +314,34 @@ else
     install -d -m 0755 -o root -g root "$(dirname "$INSTALL_DIR")"
     install -d -m 0755 -o root -g root "$INSTALL_DIR"
     cp -a "$SOURCE_DIR"/. "$INSTALL_DIR"/
-    chown -R root:root "$INSTALL_DIR"
-    chmod -R go-w "$INSTALL_DIR"
   fi
   printf '%s\n' "$RELEASE_VERSION" > "$VERSION_MARKER"
 fi
+if [ "$TEST_MODE" != '1' ]; then
+  chown -R root:root "$INSTALL_DIR"
+  chmod -R go-w "$INSTALL_DIR"
+fi
 
 if [ "$TEST_MODE" = '1' ]; then
-  mkdir -p "$STATE_DIR" "$(dirname "$ENV_FILE")" "$(dirname "$UNIT_FILE")"
+  mkdir -p "$(dirname "$EXECUTOR_SOCKET_UNIT")" "$(dirname "$EXECUTOR_SERVICE_UNIT")"
+  if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
+    mkdir -p "$STATE_DIR" "$(dirname "$ENV_FILE")" "$(dirname "$UNIT_FILE")"
+  fi
 else
+  if ! getent group "$EXECUTOR_GROUP" >/dev/null 2>&1; then
+    groupadd --system "$EXECUTOR_GROUP"
+  fi
   if ! id -u "$RUNTIME_USER" >/dev/null 2>&1; then
     useradd --system --create-home --home-dir "$STATE_DIR" --shell /usr/sbin/nologin "$RUNTIME_USER"
   fi
-  install -d -m 0700 -o "$RUNTIME_USER" -g "$RUNTIME_USER" "$STATE_DIR"
-  install -d -m 0755 -o root -g root "$(dirname "$ENV_FILE")"
+  usermod -a -G "$EXECUTOR_GROUP" "$RUNTIME_USER"
+  if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
+    install -d -m 0700 -o "$RUNTIME_USER" -g "$RUNTIME_USER" "$STATE_DIR"
+    install -d -m 0755 -o root -g root "$(dirname "$ENV_FILE")"
+  fi
 fi
 
-if [ ! -f "$ENV_FILE" ]; then
+if [ "$REPAIR_EXECUTOR" -eq 0 ] && [ ! -f "$ENV_FILE" ]; then
   cat > "$ENV_FILE" <<EOF
 PORT=${PORT}
 HOME_BASE_BIND_HOST=127.0.0.1
@@ -320,15 +360,18 @@ HOME_BASE_GIT_TRANSPORT=https
 HOME_BASE_EXECUTION_MODE=plan-only
 HOME_BASE_ENABLE_PRIVILEGED_JOBS=0
 HOME_BASE_AUTO_BOOTSTRAP=0
+HOME_BASE_EXECUTOR_SOCKET=${EXECUTOR_SOCKET_PATH}
+HOME_BASE_EXECUTOR_PROTOCOL_VERSION=1
 EOF
   if [ "$TEST_MODE" != '1' ]; then
     chown root:"$RUNTIME_USER" "$ENV_FILE"
     chmod 0640 "$ENV_FILE"
   fi
-else
+elif [ "$REPAIR_EXECUTOR" -eq 0 ]; then
   log "preserving existing environment file: $ENV_FILE"
 fi
 
+if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
 cat > "$UNIT_FILE" <<EOF
 [Unit]
 Description=Home Base Control Plane
@@ -358,30 +401,79 @@ ReadWritePaths=${STATE_DIR}
 [Install]
 WantedBy=multi-user.target
 EOF
+fi
+
+cat > "$EXECUTOR_SOCKET_UNIT" <<EOF
+[Unit]
+Description=Home Base privileged executor socket
+
+[Socket]
+ListenStream=${EXECUTOR_SOCKET_PATH}
+SocketUser=root
+SocketGroup=${EXECUTOR_GROUP}
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target
+EOF
+
+cat > "$EXECUTOR_SERVICE_UNIT" <<EOF
+[Unit]
+Description=Home Base privileged executor
+Requires=homebase-executor.socket
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=${NODE_BIN} ${INSTALL_DIR}/executor/server.js
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+EOF
 
 if [ "$TEST_MODE" != '1' ]; then
-  chown root:root "$UNIT_FILE"
-  chmod 0644 "$UNIT_FILE"
+  if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
+    chown root:root "$UNIT_FILE"
+    chmod 0644 "$UNIT_FILE"
+  fi
+  chown root:root "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT"
+  chmod 0644 "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT"
   systemctl daemon-reload
-  systemctl enable homebase.service
+  systemctl enable homebase-executor.socket
+  if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
+    systemctl enable homebase.service
+  fi
   if [ "$NO_START" -eq 0 ]; then
-    systemctl restart homebase.service
-    HEALTHY=0
-    for _attempt in $(seq 1 30); do
-      if curl --fail --silent "http://127.0.0.1:${PORT}/api/homebase/health" >/dev/null; then
-        HEALTHY=1
-        break
-      fi
-      sleep 1
-    done
-    systemctl is-active --quiet homebase.service \
-      || die 'homebase.service did not become active; inspect journalctl -u homebase'
-    [ "$HEALTHY" -eq 1 ] \
-      || die "homebase.service is active but its loopback health endpoint did not respond on port ${PORT}"
+    systemctl restart homebase-executor.socket
+    if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
+      systemctl restart homebase.service
+      HEALTHY=0
+      for _attempt in $(seq 1 30); do
+        if curl --fail --silent "http://127.0.0.1:${PORT}/api/homebase/health" >/dev/null; then
+          HEALTHY=1
+          break
+        fi
+        sleep 1
+      done
+      systemctl is-active --quiet homebase.service \
+        || die 'homebase.service did not become active; inspect journalctl -u homebase'
+      [ "$HEALTHY" -eq 1 ] \
+        || die "homebase.service is active but its loopback health endpoint did not respond on port ${PORT}"
+    fi
   fi
 fi
 
-log "Home Base ${RELEASE_VERSION} installed in plan-only mode"
+log "Home Base ${RELEASE_VERSION} installed with a plan-only web service and mutation-disabled executor"
 log "Open locally: http://127.0.0.1:${PORT}/"
 log 'Inspect status: systemctl status homebase'
 log 'Inspect logs:   journalctl -u homebase --no-pager'

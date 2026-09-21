@@ -13,8 +13,10 @@ const releaseBuilder = path.join(__dirname, '..', 'scripts', 'build-release.sh')
 function createReleaseFixture(tempDir, { version = 'v9.9.9' } = {}) {
   const releaseRoot = path.join(tempDir, `homebase-${version.slice(1)}`);
   fs.mkdirSync(path.join(releaseRoot, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(releaseRoot, 'executor'), { recursive: true });
   fs.writeFileSync(path.join(releaseRoot, 'package.json'), '{"name":"home-base-fixture"}\n');
   fs.writeFileSync(path.join(releaseRoot, 'server.js'), 'console.log("fixture");\n');
+  fs.writeFileSync(path.join(releaseRoot, 'executor', 'server.js'), 'console.log("executor fixture");\n');
   fs.writeFileSync(path.join(releaseRoot, 'src', 'app.js'), 'module.exports = {};\n');
 
   const archive = path.join(tempDir, `homebase-${version.slice(1)}.tar.gz`);
@@ -38,6 +40,9 @@ function installerEnv(tempDir, fixture, overrides = {}) {
     HOMEBASE_ENV_FILE: path.join(tempDir, 'etc', 'homebase.env'),
     HOMEBASE_SYSTEMD_UNIT: path.join(tempDir, 'systemd', 'homebase.service'),
     HOMEBASE_LEGACY_SUDOERS_FILE: path.join(tempDir, 'sudoers.d', 'homebase'),
+    HOMEBASE_EXECUTOR_SOCKET_UNIT: path.join(tempDir, 'systemd', 'homebase-executor.socket'),
+    HOMEBASE_EXECUTOR_SERVICE_UNIT: path.join(tempDir, 'systemd', 'homebase-executor.service'),
+    HOMEBASE_EXECUTOR_SOCKET_PATH: path.join(tempDir, 'run', 'executor.sock'),
     ...overrides,
   };
 }
@@ -109,12 +114,20 @@ test('installer verifies and installs a release with hardened defaults', () => {
   assert.match(runtimeEnv, /HOME_BASE_EXECUTION_MODE=plan-only/);
   assert.match(runtimeEnv, /HOME_BASE_ENABLE_PRIVILEGED_JOBS=0/);
   assert.match(runtimeEnv, /HOME_BASE_AUTO_BOOTSTRAP=0/);
+  assert.match(runtimeEnv, /HOME_BASE_EXECUTOR_SOCKET=/);
 
   const service = fs.readFileSync(env.HOMEBASE_SYSTEMD_UNIT, 'utf8');
   assert.match(service, /NoNewPrivileges=true/);
   assert.match(service, /ProtectSystem=strict/);
   assert.match(service, /ReadWritePaths=/);
   assert.doesNotMatch(service, /sudo|NOPASSWD/);
+
+  const executorSocket = fs.readFileSync(env.HOMEBASE_EXECUTOR_SOCKET_UNIT, 'utf8');
+  const executorService = fs.readFileSync(env.HOMEBASE_EXECUTOR_SERVICE_UNIT, 'utf8');
+  assert.match(executorSocket, /SocketGroup=homebase-exec/);
+  assert.match(executorSocket, /SocketMode=0660/);
+  assert.match(executorService, /User=root/);
+  assert.match(executorService, /NoNewPrivileges=true/);
 });
 
 test('installer keeps the release tag separate from os-release VERSION metadata', () => {
@@ -204,4 +217,23 @@ test('installer accepts explicit quoted fail-closed environment settings', () =>
   const second = runInstaller(['--version', fixture.version, '--no-start'], env);
   assert.equal(second.status, 0, second.stderr);
   assert.match(second.stdout, /preserving existing environment file/i);
+});
+
+
+test('installer repair refreshes managed executor assets without replacing state or environment', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-repair-executor-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  assert.equal(runInstaller(['--version', fixture.version, '--no-start'], env).status, 0);
+  fs.appendFileSync(env.HOMEBASE_ENV_FILE, 'OPERATOR_SETTING=preserved\n');
+  fs.writeFileSync(env.HOMEBASE_SYSTEMD_UNIT, 'web unit must survive executor repair\n');
+  fs.rmSync(env.HOMEBASE_EXECUTOR_SOCKET_UNIT);
+  fs.writeFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'executor', 'server.js'), 'damaged\n');
+  const repaired = runInstaller(['--version', fixture.version, '--repair-executor', '--no-start'], env);
+  assert.equal(repaired.status, 0, repaired.stderr);
+  assert.match(repaired.stdout, /repairing managed executor code/i);
+  assert.equal(fs.existsSync(env.HOMEBASE_EXECUTOR_SOCKET_UNIT), true);
+  assert.match(fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'executor', 'server.js'), 'utf8'), /executor fixture/);
+  assert.match(fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8'), /OPERATOR_SETTING=preserved/);
+  assert.equal(fs.readFileSync(env.HOMEBASE_SYSTEMD_UNIT, 'utf8'), 'web unit must survive executor repair\n');
 });
