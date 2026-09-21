@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadConfig } = require('../src/config');
+const { isProtocolCompatible, canExecuteMutations } = require('../src/executor/capabilities');
 
 function withEnv(overrides, run) {
   const previous = {};
@@ -59,4 +60,12 @@ test('unknown execution modes fail closed to plan-only', () => {
     assert.equal(config.homeBaseExecutionMode, 'plan-only');
     assert.equal(config.homeBaseEnablePrivilegedJobs, false);
   });
+});
+
+
+test('executor capability checks distinguish healthy protocol support from mutation authority', () => {
+  const capabilities = { protocolVersions: [1], policyVersion: 'family-dinner-v1', mutationsEnabled: false };
+  assert.equal(isProtocolCompatible(capabilities), true);
+  assert.equal(canExecuteMutations(capabilities), false);
+  assert.equal(isProtocolCompatible({ ...capabilities, protocolVersions: [2] }), false);
 });

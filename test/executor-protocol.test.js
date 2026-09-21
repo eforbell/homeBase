@@ -55,8 +55,10 @@ test('executor rejects malformed, extra-field, unsupported-version, and digest-m
     assert.equal(malformed.code, 'INVALID_REQUEST');
     const extra = await rawRequest(socketPath, `${JSON.stringify({ protocolVersion: 1, requestId: crypto.randomUUID(), type: 'hello', command: 'id' })}\n`);
     assert.equal(extra.code, 'INVALID_REQUEST');
-    const version = await rawRequest(socketPath, `${JSON.stringify({ protocolVersion: 2, requestId: crypto.randomUUID(), type: 'hello' })}\n`);
+    const unsupportedId = crypto.randomUUID();
+    const version = await rawRequest(socketPath, `${JSON.stringify({ protocolVersion: 2, requestId: unsupportedId, type: 'hello' })}\n`);
     assert.equal(version.code, 'UNSUPPORTED_PROTOCOL');
+    assert.equal(version.requestId, unsupportedId);
     const plan = buildDinnerInstallPlan({ generatedAt: '2026-09-20T14:00:00.000Z' });
     const mismatch = await rawRequest(socketPath, `${JSON.stringify({ protocolVersion: 1, requestId: crypto.randomUUID(), type: 'validate-plan', planDigest: 'sha256:'.concat('0'.repeat(64)), plan })}\n`);
     assert.equal(mismatch.code, 'PLAN_DIGEST_MISMATCH');

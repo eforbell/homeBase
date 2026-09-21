@@ -5,8 +5,12 @@ async function getExecutorCapabilities(socketPath, options) {
   return response.capabilities || null;
 }
 
-function isCompatible(capabilities) {
-  return Boolean(capabilities && capabilities.protocolVersions?.includes(1) && capabilities.mutationsEnabled === true);
+function isProtocolCompatible(capabilities) {
+  return Boolean(capabilities && capabilities.protocolVersions?.includes(1) && capabilities.policyVersion === 'family-dinner-v1');
 }
 
-module.exports = { getExecutorCapabilities, isCompatible };
+function canExecuteMutations(capabilities) {
+  return isProtocolCompatible(capabilities) && capabilities.mutationsEnabled === true;
+}
+
+module.exports = { getExecutorCapabilities, isProtocolCompatible, canExecuteMutations };

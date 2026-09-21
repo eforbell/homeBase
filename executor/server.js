@@ -24,7 +24,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000 } = {
       if (error) {
         const code = error.code || 'INVALID_REQUEST';
         writeAudit(logger, `rejected request code=${code}`);
-        writeLine(socket, result({ requestId: null, ok: false, code, message: error.message }));
+        writeLine(socket, result({ requestId: error.requestId || null, ok: false, code, message: error.message }));
         return;
       }
       writeLine(socket, response);

@@ -455,6 +455,32 @@ if [ "$TEST_MODE" != '1' ]; then
   fi
   if [ "$NO_START" -eq 0 ]; then
     systemctl restart homebase-executor.socket
+    systemctl is-active --quiet homebase-executor.socket \
+      || die 'homebase-executor.socket did not become active; inspect journalctl -u homebase-executor.socket'
+    [ "$(stat -c '%U:%G %a' "$EXECUTOR_SOCKET_PATH")" = "root:${EXECUTOR_GROUP} 660" ] \
+      || die "executor socket has unexpected owner or mode: $EXECUTOR_SOCKET_PATH"
+    if ! runuser -u "$RUNTIME_USER" -- "$NODE_BIN" - "$EXECUTOR_SOCKET_PATH" <<'NODE'
+const net = require('net');
+const socketPath = process.argv[2];
+const request = { protocolVersion: 1, requestId: require('crypto').randomUUID(), type: 'hello' };
+const socket = net.createConnection(socketPath);
+let response = '';
+const timer = setTimeout(() => { socket.destroy(); process.exit(1); }, 5000);
+socket.setEncoding('utf8');
+socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
+socket.on('data', (chunk) => { response += chunk; });
+socket.on('error', () => { clearTimeout(timer); process.exit(1); });
+socket.on('end', () => {
+  clearTimeout(timer);
+  try {
+    const payload = JSON.parse(response.trim());
+    process.exit(payload.protocolVersion === 1 && payload.ok === true && payload.result?.capabilities?.mutationsEnabled === false ? 0 : 1);
+  } catch { process.exit(1); }
+});
+NODE
+    then
+      die 'executor hello/capability probe failed; inspect journalctl -u homebase-executor'
+    fi
     if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
       systemctl restart homebase.service
       HEALTHY=0

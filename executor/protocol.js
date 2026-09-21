@@ -34,12 +34,20 @@ function validateRequest(request) {
   return request;
 }
 
+function requestIdFromValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && typeof value.requestId === 'string'
+    && /^[0-9a-f-]{36}$/i.test(value.requestId) ? value.requestId : null;
+}
+
 function parseRequestLine(line) {
   if (!line || !line.trim()) throw new ProtocolError('INVALID_REQUEST', 'Blank request is not allowed.');
   if (Buffer.byteLength(line, 'utf8') > MAX_REQUEST_BYTES) throw new ProtocolError('INVALID_REQUEST', 'Request exceeds the maximum size.');
   let request;
   try { request = JSON.parse(line); } catch { throw new ProtocolError('INVALID_REQUEST', 'Malformed JSON request.'); }
-  return validateRequest(request);
+  try { return validateRequest(request); } catch (error) {
+    error.requestId = requestIdFromValue(request);
+    throw error;
+  }
 }
 
 function result({ requestId, ok, code = null, message = null, result = null }) {
