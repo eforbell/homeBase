@@ -25,3 +25,14 @@ test('identity handler permits only sovereign and never accepts caller groups', 
   assert.deepEqual(calls[0].args, ['--system', '--home-dir', '/opt/sovereign-home', '--shell', '/usr/sbin/nologin', 'sovereign']);
   await assert.rejects(() => handlers['identity.ensure-user'](base('identity.ensure-user', { user: 'root' })), (error) => error.code === 'POLICY_DENIED');
 });
+
+
+test('managed app directories require sovereign and become sovereign-owned', async () => {
+  const calls = [];
+  const fsImpl = { existsSync: () => false, mkdirSync: (...args) => calls.push(['mkdir', ...args]), chownSync: (...args) => calls.push(['chown', ...args]), lstatSync: () => ({ isSymbolicLink: () => false, isDirectory: () => true }) };
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => ({ uid: 1001, gid: 1002 }) });
+  await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-root' }));
+  assert.deepEqual(calls.at(-1), ['chown', '/opt/sovereign-home/apps', 1001, 1002]);
+  const missing = createBaseHandlers({ fsImpl, lookupUser: () => null });
+  await assert.rejects(() => missing['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-root' })), (error) => error.code === 'POLICY_DENIED');
+});

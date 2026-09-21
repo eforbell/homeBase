@@ -19,7 +19,18 @@ function assertContained(directory, fsImpl) {
   if (fsImpl.existsSync(parent) && fsImpl.realpathSync(parent) !== parent) deny('Managed directory parent is a symlink.');
 }
 
-function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = null } = {}) {
+function lookupSystemUser(name, fsImpl = fs) {
+  try {
+    const row = fsImpl.readFileSync('/etc/passwd', 'utf8').split('\n').find((line) => line.startsWith(`${name}:`));
+    if (!row) return null;
+    const fields = row.split(':');
+    const uid = Number.parseInt(fields[2], 10);
+    const gid = Number.parseInt(fields[3], 10);
+    return Number.isInteger(uid) && Number.isInteger(gid) ? { uid, gid } : null;
+  } catch { return null; }
+}
+
+function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl) } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   return {
     'host.assert-debian-family': async () => {
@@ -36,7 +47,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     },
     'identity.ensure-user': async (operation) => {
       if (operation.user !== 'sovereign') deny('Only the sovereign identity may be created.');
-      const user = lookupUser ? lookupUser('sovereign') : null;
+      const user = lookupUser('sovereign');
       if (user) return 'sovereign identity already exists';
       await run({ binary: '/usr/sbin/useradd', args: ['--system', '--home-dir', '/opt/sovereign-home', '--shell', '/usr/sbin/nologin', 'sovereign'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' } });
       return 'created sovereign identity';
@@ -45,11 +56,15 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const directory = DIRECTORY_PATHS[operation.purpose];
       if (!directory) deny('Unknown managed directory purpose.');
       assertContained(directory, fsImpl);
-      fsImpl.mkdirSync(directory, { recursive: true, mode: operation.purpose === 'config-root' ? 0o750 : 0o755 });
+      const rootOwned = new Set(['config-root', 'nginx-snippets']).has(operation.purpose);
+      const sovereign = rootOwned ? null : lookupUser('sovereign');
+      if (!rootOwned && !sovereign) deny('The sovereign identity must exist before creating app-owned directories.');
+      fsImpl.mkdirSync(directory, { recursive: true, mode: rootOwned ? 0o750 : 0o755 });
+      if (!rootOwned && typeof fsImpl.chownSync === 'function') fsImpl.chownSync(directory, sovereign.uid, sovereign.gid);
       const stat = fsImpl.lstatSync(directory);
       if (stat.isSymbolicLink() || !stat.isDirectory()) deny('Managed directory is not a real directory.');
       return `ensured ${operation.purpose}`;
     },
   };
 }
-module.exports = { DIRECTORY_PATHS, DINNER_PACKAGES, createBaseHandlers };
+module.exports = { DIRECTORY_PATHS, DINNER_PACKAGES, lookupSystemUser, createBaseHandlers };

@@ -15,6 +15,7 @@ function createReleaseFixture(tempDir, { version = 'v9.9.9' } = {}) {
   fs.mkdirSync(path.join(releaseRoot, 'src'), { recursive: true });
   fs.mkdirSync(path.join(releaseRoot, 'executor'), { recursive: true });
   fs.writeFileSync(path.join(releaseRoot, 'package.json'), '{"name":"home-base-fixture"}\n');
+  fs.writeFileSync(path.join(releaseRoot, 'package-lock.json'), '{"name":"home-base-fixture","lockfileVersion":3,"packages":{}}\n');
   fs.writeFileSync(path.join(releaseRoot, 'server.js'), 'console.log("fixture");\n');
   fs.writeFileSync(path.join(releaseRoot, 'executor', 'server.js'), 'console.log("executor fixture");\n');
   fs.writeFileSync(path.join(releaseRoot, 'src', 'app.js'), 'module.exports = {};\n');

@@ -221,10 +221,10 @@ if [ "$TEST_MODE" != '1' ]; then
   export DEBIAN_FRONTEND=noninteractive
   log 'installing runtime prerequisites'
   apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl tar python3 nodejs
+  apt-get install -y --no-install-recommends ca-certificates curl tar python3 nodejs npm
 fi
 
-for command in curl tar python3 node; do
+for command in curl tar python3 node npm; do
   command -v "$command" >/dev/null 2>&1 || die "required command unavailable: $command"
 done
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
@@ -284,7 +284,7 @@ SOURCE_DIR="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 [ -n "$SOURCE_DIR" ] || die 'release archive must contain one top-level directory'
 [ "$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 1 ] \
   || die 'release archive must contain exactly one top-level directory'
-[ -f "$SOURCE_DIR/package.json" ] && [ -f "$SOURCE_DIR/server.js" ] && [ -d "$SOURCE_DIR/src" ] && [ -f "$SOURCE_DIR/executor/server.js" ] \
+[ -f "$SOURCE_DIR/package.json" ] && [ -f "$SOURCE_DIR/package-lock.json" ] && [ -f "$SOURCE_DIR/server.js" ] && [ -d "$SOURCE_DIR/src" ] && [ -f "$SOURCE_DIR/executor/server.js" ] \
   || die 'release archive is missing required Home Base files'
 
 VERSION_MARKER="${INSTALL_DIR}/.homebase-version"
@@ -318,6 +318,7 @@ else
   printf '%s\n' "$RELEASE_VERSION" > "$VERSION_MARKER"
 fi
 if [ "$TEST_MODE" != '1' ]; then
+  (cd "$INSTALL_DIR" && npm ci --omit=dev --ignore-scripts)
   chown -R root:root "$INSTALL_DIR"
   chmod -R go-w "$INSTALL_DIR"
 fi

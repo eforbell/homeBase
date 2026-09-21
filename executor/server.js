@@ -37,6 +37,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
       if (firstNewline < 0) return;
       const line = buffer.slice(0, firstNewline).replace(/\r$/, '');
       if (buffer.slice(firstNewline + 1).trim()) return finish(new ProtocolError('INVALID_REQUEST', 'Only one request is allowed per connection.'));
+      let ownsMutation = false;
       try {
         const request = parseRequestLine(line);
         if (completed.has(request.requestId)) return finish(null, completed.get(request.requestId));
@@ -44,9 +45,11 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
           if (activeMutation) throw new ProtocolError('EXECUTOR_BUSY', 'Another mutation plan is active.');
           if (!executePlan) throw new ProtocolError('POLICY_DENIED', 'Executor mutations are not enabled.');
           activeMutation = true;
+          ownsMutation = true;
           let sequence = 0;
           const execution = await executePlan(request, { emit: (event) => emit(request, { ...event, sequence: ++sequence }) });
           activeMutation = false;
+          ownsMutation = false;
           const response = result({ requestId: request.requestId, ok: true, result: execution });
           completed.set(request.requestId, response);
           return finish(null, response);
@@ -57,7 +60,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
         completed.set(request.requestId, response);
         writeAudit(logger, `accepted request type=${request.type} requestId=${request.requestId}`);
         finish(null, response);
-      } catch (error) { activeMutation = false; finish(error); }
+      } catch (error) { if (ownsMutation) activeMutation = false; finish(error); }
     });
     socket.on('error', () => { settled = true; });
   });
