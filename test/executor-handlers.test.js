@@ -36,3 +36,25 @@ test('managed app directories require sovereign and become sovereign-owned', asy
   const missing = createBaseHandlers({ fsImpl, lookupUser: () => null });
   await assert.rejects(() => missing['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-root' })), (error) => error.code === 'POLICY_DENIED');
 });
+
+test('git handler only synchronizes Family Dinner with sovereign and fixed argv', async () => {
+  const calls = [];
+  const handlers = createBaseHandlers({ fsImpl: { existsSync: () => false }, lookupUser: () => ({ uid: 1001, gid: 1002 }), run: async (input) => { calls.push(input); return { stdout: '' }; } });
+  await handlers['git.sync'](base('git.sync', { repository: 'https://github.com/eforbell/familyDinner.git', ref: 'main', destination: 'familyDinner' }));
+  assert.deepEqual(calls.map((call) => [call.binary, call.args]), [
+    ['/usr/bin/git', ['clone', '--origin', 'origin', '--branch', 'main', '--single-branch', 'https://github.com/eforbell/familyDinner.git', '/opt/sovereign-home/apps/familyDinner']],
+    ['/usr/bin/git', ['-C', '/opt/sovereign-home/apps/familyDinner', 'status', '--porcelain']],
+    ['/usr/bin/git', ['-C', '/opt/sovereign-home/apps/familyDinner', 'pull', '--ff-only', 'origin', 'main']],
+  ]);
+  assert.equal(calls[0].uid, 1001);
+  await assert.rejects(() => handlers['git.sync'](base('git.sync', { repository: 'https://evil.example/app.git', ref: 'main', destination: 'familyDinner' })), (error) => error.code === 'POLICY_DENIED');
+});
+
+test('npm handler maps closed task names to sovereign argv', async () => {
+  const calls = [];
+  const handlers = createBaseHandlers({ lookupUser: () => ({ uid: 1001, gid: 1002 }), run: async (input) => { calls.push(input); return { stdout: 'done' }; } });
+  assert.equal(await handlers['runtime.run-npm'](base('runtime.run-npm', { task: 'migrate' })), 'done');
+  assert.deepEqual(calls[0].args, ['run', 'db:migrate']);
+  assert.equal(calls[0].uid, 1001);
+  await assert.rejects(() => handlers['runtime.run-npm'](base('runtime.run-npm', { task: 'install-production;id' })), (error) => error.code === 'POLICY_DENIED');
+});

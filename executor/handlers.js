@@ -52,6 +52,37 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       await run({ binary: '/usr/sbin/useradd', args: ['--system', '--home-dir', '/opt/sovereign-home', '--shell', '/usr/sbin/nologin', 'sovereign'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' } });
       return 'created sovereign identity';
     },
+    'git.sync': async (operation) => {
+      const sovereign = lookupUser('sovereign');
+      if (!sovereign) deny('The sovereign identity must exist before Git synchronization.');
+      if (operation.repository !== 'https://github.com/eforbell/familyDinner.git' || operation.destination !== 'familyDinner' || !/^(main|[a-f0-9]{40})$/.test(operation.ref)) deny('Git operation does not match Family Dinner policy.');
+      const destination = DIRECTORY_PATHS['app-install'];
+      const env = { PATH: '/usr/bin:/bin', HOME: '/opt/sovereign-home', LANG: 'C' };
+      if (!fsImpl.existsSync(destination)) {
+        const args = operation.ref === 'main'
+          ? ['clone', '--origin', 'origin', '--branch', 'main', '--single-branch', operation.repository, destination]
+          : ['clone', '--origin', 'origin', operation.repository, destination];
+        await run({ binary: '/usr/bin/git', args, uid: sovereign.uid, gid: sovereign.gid, timeoutMs: operation.timeoutMs, env });
+      }
+      const status = await run({ binary: '/usr/bin/git', args: ['-C', destination, 'status', '--porcelain'], uid: sovereign.uid, gid: sovereign.gid, timeoutMs: operation.timeoutMs, env });
+      if (String(status.stdout || '').trim()) deny('Family Dinner checkout is dirty; refusing to overwrite operator changes.');
+      if (operation.ref === 'main') {
+        await run({ binary: '/usr/bin/git', args: ['-C', destination, 'pull', '--ff-only', 'origin', 'main'], uid: sovereign.uid, gid: sovereign.gid, timeoutMs: operation.timeoutMs, env });
+      } else {
+        await run({ binary: '/usr/bin/git', args: ['-C', destination, 'fetch', '--depth', '1', 'origin', operation.ref], uid: sovereign.uid, gid: sovereign.gid, timeoutMs: operation.timeoutMs, env });
+        await run({ binary: '/usr/bin/git', args: ['-C', destination, 'checkout', '--detach', 'FETCH_HEAD'], uid: sovereign.uid, gid: sovereign.gid, timeoutMs: operation.timeoutMs, env });
+      }
+      return 'synchronized Family Dinner repository';
+    },
+    'runtime.run-npm': async (operation) => {
+      const sovereign = lookupUser('sovereign');
+      if (!sovereign) deny('The sovereign identity must exist before running Family Dinner.');
+      const argsByTask = { 'install-production': ['ci', '--omit=dev'], migrate: ['run', 'db:migrate'] };
+      const args = argsByTask[operation.task];
+      if (!args) deny('Unsupported npm task.');
+      const result = await run({ binary: '/usr/bin/npm', args, uid: sovereign.uid, gid: sovereign.gid, cwd: DIRECTORY_PATHS['app-install'], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/opt/sovereign-home', NODE_ENV: 'production', LANG: 'C' } });
+      return result.stdout || `completed npm ${operation.task}`;
+    },
     'filesystem.ensure-directory': async (operation) => {
       const directory = DIRECTORY_PATHS[operation.purpose];
       if (!directory) deny('Unknown managed directory purpose.');
