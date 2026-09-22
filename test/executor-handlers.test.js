@@ -83,3 +83,14 @@ test('PostgreSQL handlers use postgres uid and never place Dinner passwords in a
   assert.doesNotMatch(JSON.stringify(calls[0].env), /canary/);
   assert.match(calls[0].stdin, /canary pass/);
 });
+
+test('managed Dinner files have fixed destinations and never accept caller content', () => {
+  const { renderManagedFile } = require('../executor/handlers');
+  const env = renderManagedFile(base('filesystem.write-managed-file', { template: 'family-dinner-env-v1' }), { familyDinnerDatabasePassword: 'canary' });
+  assert.equal(env.path, '/opt/sovereign-home/apps/familyDinner/.env');
+  assert.equal(env.mode, 0o640);
+  assert.match(env.content, /canary/);
+  const unit = renderManagedFile(base('filesystem.write-managed-file', { template: 'family-dinner-service-v1' }));
+  assert.match(unit.content, /User=sovereign/);
+  assert.throws(() => renderManagedFile(base('filesystem.write-managed-file', { template: '../../etc/shadow' })), (error) => error.code === 'POLICY_DENIED');
+});

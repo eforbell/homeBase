@@ -131,6 +131,39 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (stat.isSymbolicLink() || !stat.isDirectory()) deny('Managed directory is not a real directory.');
       return `ensured ${operation.purpose}`;
     },
+    'filesystem.write-managed-file': async (operation, { secretBindings = {} } = {}) => {
+      const rendered = renderManagedFile(operation, secretBindings);
+      if (rendered.owner === 'sovereign' && !lookupUser('sovereign')) deny('The sovereign identity must exist before writing app configuration.');
+      const temp = `${rendered.path}.tmp-${process.pid}`;
+      fsImpl.writeFileSync(temp, rendered.content, { mode: rendered.mode, flag: 'w' });
+      fsImpl.chmodSync(temp, rendered.mode);
+      if (rendered.owner === 'sovereign') { const user = lookupUser('sovereign'); fsImpl.chownSync(temp, user.uid, user.gid); }
+      fsImpl.renameSync(temp, rendered.path);
+      return `wrote ${operation.template}`;
+    },
   };
 }
 module.exports = { DIRECTORY_PATHS, DINNER_PACKAGES, lookupSystemUser, createBaseHandlers };
+
+function renderManagedFile(operation, secretBindings = {}) {
+  const password = secretBindings.familyDinnerDatabasePassword;
+  const templates = {
+    'family-dinner-env-v1': {
+      path: '/opt/sovereign-home/apps/familyDinner/.env', mode: 0o640, owner: 'sovereign',
+      content: `DATABASE_URL=postgresql://family_dinner:${password}@127.0.0.1:5432/family_dinner\nPORT=3000\nNODE_ENV=production\n`,
+    },
+    'family-dinner-service-v1': {
+      path: '/etc/systemd/system/family-dinner.service', mode: 0o644, owner: 'root',
+      content: '[Unit]\nDescription=Family Dinner\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=sovereign\nWorkingDirectory=/opt/sovereign-home/apps/familyDinner\nEnvironmentFile=/opt/sovereign-home/apps/familyDinner/.env\nExecStart=/usr/bin/node server.js\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n',
+    },
+    'family-dinner-nginx-v1': {
+      path: '/etc/nginx/snippets/family-dinner.conf', mode: 0o644, owner: 'root',
+      content: 'location /dinner/ {\n    proxy_pass http://127.0.0.1:3000/;\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-Proto $scheme;\n}\n',
+    },
+  };
+  const rendered = templates[operation.template];
+  if (!rendered) deny('Managed file template is not allowed.');
+  return rendered;
+}
+
+module.exports.renderManagedFile = renderManagedFile;
