@@ -1099,6 +1099,10 @@ function createApp(config) {
         }
 
         const appId = executeInstallMatch[1];
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
+          if (appId !== 'family-dinner') return sendJson(res, 409, { error: 'Typed execution is currently supported only for Family Dinner.', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+          return sendJson(res, 409, { error: 'Family Dinner executor job integration is not ready yet; legacy execution is blocked.', code: 'EXECUTOR_INTEGRATION_REQUIRED' });
+        }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {
           dryRun: body.dryRun !== false,

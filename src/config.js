@@ -11,9 +11,8 @@ function boolFromEnv(value, fallback) {
 }
 
 function executionModeFromEnv(value) {
-  return String(value || '').trim().toLowerCase() === 'legacy-sudo'
-    ? 'legacy-sudo'
-    : 'plan-only';
+  const mode = String(value || '').trim().toLowerCase();
+  return ['legacy-sudo', 'executor'].includes(mode) ? mode : 'plan-only';
 }
 
 function loadConfig() {
@@ -24,7 +23,7 @@ function loadConfig() {
   const sharedRoot = process.env.HOME_BASE_SHARED_ROOT || path.dirname(baseInstallDir);
   const assetsRoot = process.env.HOME_BASE_ASSETS_ROOT || path.join(sharedRoot, 'assets');
   const homeBaseExecutionMode = executionModeFromEnv(process.env.HOME_BASE_EXECUTION_MODE);
-  const homeBaseEnablePrivilegedJobs = homeBaseExecutionMode === 'legacy-sudo'
+  const homeBaseEnablePrivilegedJobs = ['legacy-sudo', 'executor'].includes(homeBaseExecutionMode)
     && boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, false);
 
   return {
@@ -54,6 +53,7 @@ function loadConfig() {
     homeBaseEnvFile: process.env.HOME_BASE_ENV_FILE || '/etc/sovereign-home/homebase.env',
     homeBaseExecutionMode,
     homeBaseEnablePrivilegedJobs,
+    homeBaseExecutorSocket: process.env.HOME_BASE_EXECUTOR_SOCKET || '/run/homebase/executor.sock',
     homeBaseAutoBootstrap: homeBaseEnablePrivilegedJobs
       && boolFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP, false),
     homeBaseAutoBootstrapMode: process.env.HOME_BASE_AUTO_BOOTSTRAP_MODE || 'execute',

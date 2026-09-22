@@ -69,3 +69,12 @@ test('executor capability checks distinguish healthy protocol support from mutat
   assert.equal(canExecuteMutations(capabilities), false);
   assert.equal(isProtocolCompatible({ ...capabilities, protocolVersions: [2] }), false);
 });
+
+test('executor mode is explicit and exposes only the protected socket path', () => {
+  withEnv({ HOME_BASE_EXECUTION_MODE: 'executor', HOME_BASE_ENABLE_PRIVILEGED_JOBS: '1', HOME_BASE_EXECUTOR_SOCKET: '/run/homebase/executor.sock' }, () => {
+    const config = loadConfig();
+    assert.equal(config.homeBaseExecutionMode, 'executor');
+    assert.equal(config.homeBaseEnablePrivilegedJobs, true);
+    assert.equal(config.homeBaseExecutorSocket, '/run/homebase/executor.sock');
+  });
+});
