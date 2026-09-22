@@ -70,6 +70,24 @@ class JobRunner {
     });
   }
 
+  startTypedBootstrapJob(operationPlan) {
+    const { id } = this.stateStore.createJob({ kind: 'bootstrap', target: 'local-host', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: operationPlan.operations[0]?.id || null, planJson: JSON.stringify({ operationPlan }) });
+    this.runTypedBootstrapJob(id, operationPlan).catch((error) => {
+      this.stateStore.appendJobLog(id, `\n[executor-error] ${error.message}\n`);
+      this.stateStore.updateJob(id, { status: 'failed', finishedAt: new Date().toISOString(), errorText: error.message });
+    });
+    return id;
+  }
+
+  async runTypedBootstrapJob(jobId, operationPlan) {
+    this.stateStore.updateJob(jobId, { status: 'running', startedAt: new Date().toISOString() });
+    const result = await executePlan(this.executorSocket, { jobId, plan: operationPlan, secretBindings: {} }, { timeoutMs: 30 * 60 * 1000, onEvent: (event) => {
+      if (event.operationId) this.stateStore.updateJob(jobId, { currentStep: event.operationId });
+      this.stateStore.appendJobLog(jobId, `[executor] ${event.eventType}${event.operationId ? ` ${event.operationId}` : ''}\n`);
+    } });
+    this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(result) });
+  }
+
   startTypedDinnerInstallJob(plan, { secretBindings, onComplete = null } = {}) {
     const operationPlan = plan.operationPlan;
     if (!operationPlan || operationPlan.target !== 'family-dinner') throw new Error('Typed executor requires a Family Dinner operation plan.');

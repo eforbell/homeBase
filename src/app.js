@@ -7,6 +7,7 @@ const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
+const { buildDinnerBootstrapPlan } = require('./operations/compilers/bootstrap');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { buildRestorePlan } = require('./services/restore-planner');
@@ -872,6 +873,15 @@ function createApp(config) {
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
+        }
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
+          try {
+            const capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket);
+            if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+          } catch { return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' }); }
+          const operationPlan = buildDinnerBootstrapPlan();
+          const jobId = jobRunner.startTypedBootstrapJob(operationPlan);
+          return sendJson(res, 202, { ok: true, jobId, dryRun: false });
         }
         if (body.dryRun === false) {
           const preflight = getPreflight(effectiveConfig, { force: true });
