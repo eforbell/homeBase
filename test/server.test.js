@@ -1976,3 +1976,15 @@ test('network tailscale verify endpoint reports stale config when hostname/domai
     await server.close();
   }
 });
+
+test('executor-mode Dinner execution fails at the socket boundary without legacy sudo fallback', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-executor-route-'));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: path.join(tempDir, 'missing.sock') });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/family-dinner/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(payload.code, 'EXECUTOR_UNAVAILABLE');
+  } finally { await server.close(); }
+});
