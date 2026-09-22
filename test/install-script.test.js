@@ -78,7 +78,7 @@ test('installer dry-run resolves a non-mutating plan', () => {
   const result = runInstaller(['--version', fixture.version, '--dry-run'], env);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Execution mode: plan-only/);
+  assert.match(result.stdout, /Execution mode: executor/);
   assert.match(result.stdout, /Privileged jobs: disabled/);
   assert.equal(fs.existsSync(env.HOMEBASE_INSTALL_DIR), false);
 });
@@ -112,7 +112,7 @@ test('installer verifies and installs a release with hardened defaults', () => {
 
   const runtimeEnv = fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8');
   assert.match(runtimeEnv, /HOME_BASE_BIND_HOST=127\.0\.0\.1/);
-  assert.match(runtimeEnv, /HOME_BASE_EXECUTION_MODE=plan-only/);
+  assert.match(runtimeEnv, /HOME_BASE_EXECUTION_MODE=executor/);
   assert.match(runtimeEnv, /HOME_BASE_ENABLE_PRIVILEGED_JOBS=0/);
   assert.match(runtimeEnv, /HOME_BASE_AUTO_BOOTSTRAP=0/);
   assert.match(runtimeEnv, /HOME_BASE_EXECUTOR_SOCKET=/);

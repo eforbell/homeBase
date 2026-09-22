@@ -75,7 +75,7 @@ validate_preserved_env() {
       if (!separator) next
       key = trim(substr($0, 1, separator - 1))
       value = normalize(substr($0, separator + 1))
-      if (key == "HOME_BASE_EXECUTION_MODE" && value != "" && value != "plan-only") {
+      if (key == "HOME_BASE_EXECUTION_MODE" && value != "" && value != "plan-only" && value != "executor") {
         print key "=" value
         exit 1
       }
@@ -200,7 +200,7 @@ Home Base install plan
   Executor service unit: ${EXECUTOR_SERVICE_UNIT}
   Executor socket: ${EXECUTOR_SOCKET_PATH}
   Bind address:   127.0.0.1:${PORT}
-  Execution mode: plan-only
+  Execution mode: executor
   Privileged jobs: disabled
   Auto-bootstrap: disabled
 EOF
@@ -358,7 +358,7 @@ HOME_BASE_ASSETS_ROOT=/opt/sovereign-home/assets
 HOME_BASE_BACKUP_DIR=/var/lib/sovereign-home/backups
 HOME_BASE_CONFIG_DIR=/etc/sovereign-home
 HOME_BASE_GIT_TRANSPORT=https
-HOME_BASE_EXECUTION_MODE=plan-only
+HOME_BASE_EXECUTION_MODE=executor
 HOME_BASE_ENABLE_PRIVILEGED_JOBS=0
 HOME_BASE_AUTO_BOOTSTRAP=0
 HOME_BASE_EXECUTOR_SOCKET=${EXECUTOR_SOCKET_PATH}
@@ -500,7 +500,7 @@ NODE
   fi
 fi
 
-log "Home Base ${RELEASE_VERSION} installed with a plan-only web service and mutation-disabled executor"
+log "Home Base ${RELEASE_VERSION} installed with an unprivileged executor-mode web service and typed executor"
 log "Open locally: http://127.0.0.1:${PORT}/"
 log 'Inspect status: systemctl status homebase'
 log 'Inspect logs:   journalctl -u homebase --no-pager'
