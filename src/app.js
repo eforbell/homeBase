@@ -1076,7 +1076,7 @@ function createApp(config) {
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
-        if (body.dryRun === false) {
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode !== 'executor') {
           const app = getAppById(executeInstallMatch[1]);
           const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
           if (app?.runtime?.kind === 'node') required.push('node');
