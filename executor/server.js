@@ -4,6 +4,7 @@ const { executorCapabilities } = require('./context');
 const { digestOperationPlan } = require('../src/operations/digest');
 const { writeAudit } = require('./audit');
 const { executePlan: defaultExecutePlan } = require('./execute');
+const { createBaseHandlers } = require('./handlers');
 
 function encodeLine(payload) {
   const line = JSON.stringify(payload);
@@ -11,7 +12,7 @@ function encodeLine(payload) {
   return `${line}\n`;
 }
 
-function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null } = {}) {
+function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null, mutationsEnabled = false } = {}) {
   const completed = new Map();
   let activeMutation = false;
   return net.createServer((socket) => {
@@ -55,7 +56,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
           return finish(null, response);
         }
         const response = request.type === 'hello'
-          ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities(), activePlan: activeMutation } })
+          ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled }), activePlan: activeMutation } })
           : result({ requestId: request.requestId, ok: true, result: { valid: true, planDigest: digestOperationPlan(request.plan), mutationsEnabled: false } });
         completed.set(request.requestId, response);
         writeAudit(logger, `accepted request type=${request.type} requestId=${request.requestId}`);
@@ -65,6 +66,13 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
     socket.on('error', () => { settled = true; });
   });
 }
-function listenSystemd({ logger = console } = {}) { const server = createExecutorServer({ logger }); if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.'); server.listen({ fd: 3 }); return server; }
+function listenSystemd({ logger = console } = {}) {
+  const handlers = createBaseHandlers();
+  const executePlan = (request, { emit }) => defaultExecutePlan(request, { handlers, emit });
+  const server = createExecutorServer({ logger, executePlan, mutationsEnabled: true });
+  if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
+  server.listen({ fd: 3 });
+  return server;
+}
 if (require.main === module) listenSystemd();
 module.exports = { createExecutorServer, listenSystemd };

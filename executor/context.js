@@ -6,14 +6,14 @@ const SUPPORTED_OPERATION_TYPES = Object.freeze([
   'runtime.run-npm', 'systemd.daemon-reload', 'systemd.ensure-service', 'nginx.validate-and-reload', 'http.wait-ready',
 ]);
 
-function executorCapabilities() {
+function executorCapabilities({ mutationsEnabled = false } = {}) {
   return {
     executorVersion: '0.1.0',
     protocolVersions: [PROTOCOL_VERSION],
     policyVersion: 'family-dinner-v1',
     supportedOperationTypes: SUPPORTED_OPERATION_TYPES,
     maximumRequestBytes: MAX_REQUEST_BYTES,
-    mutationsEnabled: false,
+    mutationsEnabled,
   };
 }
 

@@ -96,3 +96,11 @@ test('executor keeps execute-plan disabled without an explicit trusted dispatche
     await assert.rejects(() => executePlan(socketPath, { jobId: 1, plan, secretBindings: { familyDinnerDatabasePassword: 'canary-secret' } }), (error) => error.code === 'POLICY_DENIED');
   });
 });
+
+
+test('explicitly enabled executor reports mutation capability while default remains safe', async () => {
+  await withExecutor(async (socketPath) => {
+    const response = await hello(socketPath);
+    assert.equal(response.capabilities.mutationsEnabled, true);
+  }, { mutationsEnabled: true, executePlan: async () => ({ completedOperationIds: [] }) });
+});
