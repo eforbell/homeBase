@@ -94,3 +94,11 @@ test('managed Dinner files have fixed destinations and never accept caller conte
   assert.match(unit.content, /User=sovereign/);
   assert.throws(() => renderManagedFile(base('filesystem.write-managed-file', { template: '../../etc/shadow' })), (error) => error.code === 'POLICY_DENIED');
 });
+
+test('managed-file handler rejects a symlinked parent before creating its temporary file', async () => {
+  const calls = [];
+  const fsImpl = { existsSync: () => true, realpathSync: () => '/etc', lstatSync: () => ({ isSymbolicLink: () => false }), writeFileSync: (...args) => calls.push(args), chmodSync() {}, chownSync() {}, renameSync() {} };
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => ({ uid: 1, gid: 1 }) });
+  await assert.rejects(() => handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'family-dinner-service-v1' })), (error) => error.code === 'POLICY_DENIED');
+  assert.equal(calls.length, 0);
+});

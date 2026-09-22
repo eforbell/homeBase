@@ -133,6 +133,9 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     },
     'filesystem.write-managed-file': async (operation, { secretBindings = {} } = {}) => {
       const rendered = renderManagedFile(operation, secretBindings);
+      const parent = path.dirname(rendered.path);
+      if (!fsImpl.existsSync(parent) || fsImpl.realpathSync(parent) !== parent) deny('Managed file parent is missing or a symlink.');
+      if (fsImpl.existsSync(rendered.path) && fsImpl.lstatSync(rendered.path).isSymbolicLink()) deny('Managed file destination is a symlink.');
       if (rendered.owner === 'sovereign' && !lookupUser('sovereign')) deny('The sovereign identity must exist before writing app configuration.');
       const temp = `${rendered.path}.tmp-${process.pid}`;
       fsImpl.writeFileSync(temp, rendered.content, { mode: rendered.mode, flag: 'wx' });

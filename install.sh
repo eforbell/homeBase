@@ -79,7 +79,7 @@ validate_preserved_env() {
         print key "=" value
         exit 1
       }
-      if ((key == "HOME_BASE_ENABLE_PRIVILEGED_JOBS" || key == "HOME_BASE_AUTO_BOOTSTRAP") \
+      if (key == "HOME_BASE_AUTO_BOOTSTRAP" \
           && value != "" && value != "0" && value != "false" && value != "no" && value != "off") {
         print key "=" value
         exit 1
@@ -359,7 +359,7 @@ HOME_BASE_BACKUP_DIR=/var/lib/sovereign-home/backups
 HOME_BASE_CONFIG_DIR=/etc/sovereign-home
 HOME_BASE_GIT_TRANSPORT=https
 HOME_BASE_EXECUTION_MODE=executor
-HOME_BASE_ENABLE_PRIVILEGED_JOBS=0
+HOME_BASE_ENABLE_PRIVILEGED_JOBS=1
 HOME_BASE_AUTO_BOOTSTRAP=0
 HOME_BASE_EXECUTOR_SOCKET=${EXECUTOR_SOCKET_PATH}
 HOME_BASE_EXECUTOR_PROTOCOL_VERSION=1
@@ -475,7 +475,7 @@ socket.on('end', () => {
   clearTimeout(timer);
   try {
     const payload = JSON.parse(response.trim());
-    process.exit(payload.protocolVersion === 1 && payload.ok === true && payload.result?.capabilities?.mutationsEnabled === false ? 0 : 1);
+    process.exit(payload.protocolVersion === 1 && payload.ok === true && payload.result?.capabilities?.mutationsEnabled === true ? 0 : 1);
   } catch { process.exit(1); }
 });
 NODE

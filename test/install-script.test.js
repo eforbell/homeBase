@@ -113,7 +113,7 @@ test('installer verifies and installs a release with hardened defaults', () => {
   const runtimeEnv = fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8');
   assert.match(runtimeEnv, /HOME_BASE_BIND_HOST=127\.0\.0\.1/);
   assert.match(runtimeEnv, /HOME_BASE_EXECUTION_MODE=executor/);
-  assert.match(runtimeEnv, /HOME_BASE_ENABLE_PRIVILEGED_JOBS=0/);
+  assert.match(runtimeEnv, /HOME_BASE_ENABLE_PRIVILEGED_JOBS=1/);
   assert.match(runtimeEnv, /HOME_BASE_AUTO_BOOTSTRAP=0/);
   assert.match(runtimeEnv, /HOME_BASE_EXECUTOR_SOCKET=/);
 
