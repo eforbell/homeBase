@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { PROTOCOL_VERSION } = require('../../executor/protocol');
 const { digestOperationPlan } = require('../operations/digest');
 
-function sendRequest(socketPath, request, { timeoutMs = 10000 } = {}) {
+function sendRequest(socketPath, request, { timeoutMs = 10000, onEvent = null } = {}) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let buffer = '';
@@ -16,6 +16,7 @@ function sendRequest(socketPath, request, { timeoutMs = 10000 } = {}) {
       clearTimeout(timeout);
       try {
         const lines = buffer.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        for (const event of lines.slice(0, -1)) if (typeof onEvent === 'function') onEvent(event);
         const response = lines.at(-1);
         if (!response || response.type !== 'terminal') throw new Error('Executor response is malformed.');
         if (!response.ok) {

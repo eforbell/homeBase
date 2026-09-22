@@ -1,8 +1,11 @@
 const { spawn } = require('child_process');
+const { executePlan } = require('../executor/client');
+const { redactPlan } = require('../operations/redact');
 
 class JobRunner {
-  constructor(stateStore) {
+  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock' } = {}) {
     this.stateStore = stateStore;
+    this.executorSocket = executorSocket;
   }
 
   reconcileStaleUpdateJobs() {
@@ -50,6 +53,28 @@ class JobRunner {
         if (typeof onComplete === 'function') onComplete();
       },
     });
+  }
+
+  startTypedDinnerInstallJob(plan, { secretBindings, onComplete = null } = {}) {
+    const operationPlan = plan.operationPlan;
+    if (!operationPlan || operationPlan.target !== 'family-dinner') throw new Error('Typed executor requires a Family Dinner operation plan.');
+    const { id } = this.stateStore.createJob({ kind: 'install', target: 'family-dinner', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: operationPlan.operations[0]?.id || null, planJson: JSON.stringify({ ...plan, operationPlan: redactPlan(operationPlan, secretBindings) }) });
+    this.runTypedDinnerInstallJob(id, plan, secretBindings, onComplete).catch((error) => {
+      this.stateStore.appendJobLog(id, `\n[executor-error] ${error.message}\n`);
+      this.stateStore.updateJob(id, { status: 'failed', finishedAt: new Date().toISOString(), errorText: error.message });
+    });
+    return id;
+  }
+
+  async runTypedDinnerInstallJob(jobId, plan, secretBindings, onComplete) {
+    this.stateStore.updateJob(jobId, { status: 'running', startedAt: new Date().toISOString() });
+    const result = await executePlan(this.executorSocket, { jobId, plan: plan.operationPlan, secretBindings }, { timeoutMs: 30 * 60 * 1000, onEvent: (event) => {
+      if (event.operationId) this.stateStore.updateJob(jobId, { currentStep: event.operationId });
+      this.stateStore.appendJobLog(jobId, `[executor] ${event.eventType}${event.operationId ? ` ${event.operationId}` : ''}\n`);
+    } });
+    this.stateStore.upsertInstallation({ ...plan.stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
+    if (typeof onComplete === 'function') onComplete();
+    this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(result) });
   }
 
   startBackupJob(plan, { dryRun = true } = {}) {

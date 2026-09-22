@@ -383,7 +383,7 @@ function executionBlockOutcome(auth) {
 function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   stateStore.init();
-  const jobRunner = new JobRunner(stateStore);
+  const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
   try {
     jobRunner.reconcileStaleUpdateJobs();
   } catch (error) {
@@ -1101,7 +1101,10 @@ function createApp(config) {
         const appId = executeInstallMatch[1];
         if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
           if (appId !== 'family-dinner') return sendJson(res, 409, { error: 'Typed execution is currently supported only for Family Dinner.', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
-          return sendJson(res, 409, { error: 'Family Dinner executor job integration is not ready yet; legacy execution is blocked.', code: 'EXECUTOR_INTEGRATION_REQUIRED' });
+          const plan = buildInstallPlan({ appId, state, options: { ...body, dbPassword: '' }, config: effectiveConfig });
+          const secretBindings = { familyDinnerDatabasePassword: String(body.dbPassword || require('crypto').randomBytes(24).toString('base64url')) };
+          const jobId = jobRunner.startTypedDinnerInstallJob(plan, { secretBindings });
+          return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
         }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {
