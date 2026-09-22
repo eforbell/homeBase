@@ -58,3 +58,16 @@ test('npm handler maps closed task names to sovereign argv', async () => {
   assert.equal(calls[0].uid, 1001);
   await assert.rejects(() => handlers['runtime.run-npm'](base('runtime.run-npm', { task: 'install-production;id' })), (error) => error.code === 'POLICY_DENIED');
 });
+
+test('systemd and nginx handlers expose only fixed units and shell-free argv', async () => {
+  const calls = [];
+  const handlers = createBaseHandlers({ run: async (input) => { calls.push(input); return {}; } });
+  await handlers['systemd.ensure-service'](base('systemd.ensure-service', { unit: 'family-dinner.service', action: 'enable-and-restart' }));
+  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload', {}));
+  assert.deepEqual(calls.map((call) => [call.binary, call.args]), [
+    ['/usr/bin/systemctl', ['enable', '--now', 'family-dinner.service']],
+    ['/usr/sbin/nginx', ['-t']],
+    ['/usr/bin/systemctl', ['reload', 'nginx.service']],
+  ]);
+  await assert.rejects(() => handlers['systemd.ensure-service'](base('systemd.ensure-service', { unit: 'family-dinner.service;reboot', action: 'restart' })), (error) => error.code === 'POLICY_DENIED');
+});

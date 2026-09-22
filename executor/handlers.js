@@ -83,6 +83,25 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const result = await run({ binary: '/usr/bin/npm', args, uid: sovereign.uid, gid: sovereign.gid, cwd: DIRECTORY_PATHS['app-install'], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/opt/sovereign-home', NODE_ENV: 'production', LANG: 'C' } });
       return result.stdout || `completed npm ${operation.task}`;
     },
+    'systemd.daemon-reload': async (operation) => {
+      await run({ binary: '/usr/bin/systemctl', args: ['daemon-reload'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' } });
+      return 'reloaded systemd unit definitions';
+    },
+    'systemd.ensure-service': async (operation) => {
+      const allowed = new Set(['postgresql.service', 'nginx.service', 'family-dinner.service']);
+      if (!allowed.has(operation.unit) || !['enable', 'restart', 'enable-and-restart'].includes(operation.action)) deny('Systemd unit or action is not allowed.');
+      const args = operation.action === 'enable' ? ['enable', operation.unit]
+        : operation.action === 'restart' ? ['restart', operation.unit]
+          : ['enable', '--now', operation.unit];
+      await run({ binary: '/usr/bin/systemctl', args, ...rootIdentity, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' } });
+      return `${operation.action} ${operation.unit}`;
+    },
+    'nginx.validate-and-reload': async (operation) => {
+      const env = { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' };
+      await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env });
+      await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env });
+      return 'validated and reloaded nginx';
+    },
     'filesystem.ensure-directory': async (operation) => {
       const directory = DIRECTORY_PATHS[operation.purpose];
       if (!directory) deny('Unknown managed directory purpose.');
