@@ -6,16 +6,18 @@ const ALLOWED_BINARIES = new Set([
 ]);
 const ALLOWED_ENV_KEYS = new Set(['HOME', 'LANG', 'LC_ALL', 'NODE_ENV', 'PATH']);
 
-function runApproved({ binary, args = [], uid, gid, cwd, env = {}, timeoutMs, outputLimit = 64 * 1024, secrets = [], spawnImpl = spawn }) {
+function runApproved({ binary, args = [], uid, gid, cwd, env = {}, stdin = null, timeoutMs, outputLimit = 64 * 1024, secrets = [], spawnImpl = spawn }) {
   if (!ALLOWED_BINARIES.has(binary)) throw new Error('Executor attempted an unapproved binary.');
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) throw new Error('Executor arguments must be a string argv array.');
   if (!Number.isInteger(uid) || !Number.isInteger(gid)) throw new Error('Executor child identity is required.');
   if (args.some((arg) => arg.includes('\0'))) throw new Error('Executor arguments may not contain NUL bytes.');
   if (Object.keys(env).some((key) => !ALLOWED_ENV_KEYS.has(key))) throw new Error('Executor environment contains an unapproved key.');
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error('Executor timeout is required.');
+  if (stdin != null && typeof stdin !== 'string') throw new Error('Executor stdin must be a string when provided.');
 
   return new Promise((resolve, reject) => {
     const child = spawnImpl(binary, args, { shell: false, uid, gid, cwd, env: { ...env } });
+    if (stdin != null && child.stdin) child.stdin.end(stdin);
     let stdout = '';
     let stderr = '';
     let timedOut = false;

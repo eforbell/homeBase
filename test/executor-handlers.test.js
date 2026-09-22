@@ -71,3 +71,15 @@ test('systemd and nginx handlers expose only fixed units and shell-free argv', a
   ]);
   await assert.rejects(() => handlers['systemd.ensure-service'](base('systemd.ensure-service', { unit: 'family-dinner.service;reboot', action: 'restart' })), (error) => error.code === 'POLICY_DENIED');
 });
+
+test('PostgreSQL handlers use postgres uid and never place Dinner passwords in argv or env', async () => {
+  const calls = [];
+  const handlers = createBaseHandlers({ lookupUser: (name) => name === 'postgres' ? { uid: 999, gid: 999 } : null, run: async (input) => { calls.push(input); return {}; } });
+  await handlers['postgres.ensure-role'](base('postgres.ensure-role', { role: 'family_dinner', passwordSecretRef: 'familyDinnerDatabasePassword' }), { secretBindings: { familyDinnerDatabasePassword: 'canary pass' } });
+  await handlers['postgres.ensure-database'](base('postgres.ensure-database', { database: 'family_dinner', owner: 'family_dinner' }));
+  assert.equal(calls[0].binary, '/usr/bin/psql');
+  assert.equal(calls[0].uid, 999);
+  assert.doesNotMatch(JSON.stringify(calls[0].args), /canary/);
+  assert.doesNotMatch(JSON.stringify(calls[0].env), /canary/);
+  assert.match(calls[0].stdin, /canary pass/);
+});

@@ -83,6 +83,22 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const result = await run({ binary: '/usr/bin/npm', args, uid: sovereign.uid, gid: sovereign.gid, cwd: DIRECTORY_PATHS['app-install'], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/opt/sovereign-home', NODE_ENV: 'production', LANG: 'C' } });
       return result.stdout || `completed npm ${operation.task}`;
     },
+    'postgres.ensure-role': async (operation, { secretBindings = {} } = {}) => {
+      const postgres = lookupUser('postgres');
+      if (!postgres || operation.role !== 'family_dinner' || operation.passwordSecretRef !== 'familyDinnerDatabasePassword') deny('PostgreSQL role operation does not match Family Dinner policy.');
+      const password = secretBindings.familyDinnerDatabasePassword;
+      if (typeof password !== 'string' || !password) throw new ProtocolError('SECRET_BINDING_MISSING', 'Family Dinner database password is missing.');
+      const stdin = `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'family_dinner') THEN CREATE ROLE family_dinner LOGIN; END IF; END $$;\n\password family_dinner\n${password}\n${password}\n`;
+      await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin, timeoutMs: operation.timeoutMs, secrets: [password], env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+      return 'ensured Family Dinner database role';
+    },
+    'postgres.ensure-database': async (operation) => {
+      const postgres = lookupUser('postgres');
+      if (!postgres || operation.database !== 'family_dinner' || operation.owner !== 'family_dinner') deny('PostgreSQL database operation does not match Family Dinner policy.');
+      const sql = `SELECT 'CREATE DATABASE family_dinner OWNER family_dinner' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'family_dinner')\gexec\nALTER DATABASE family_dinner OWNER TO family_dinner;\n`;
+      await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin: sql, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+      return 'ensured Family Dinner database';
+    },
     'systemd.daemon-reload': async (operation) => {
       await run({ binary: '/usr/bin/systemctl', args: ['daemon-reload'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' } });
       return 'reloaded systemd unit definitions';
