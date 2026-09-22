@@ -2,6 +2,21 @@ const { spawn } = require('child_process');
 const { executePlan } = require('../executor/client');
 const { redactPlan } = require('../operations/redact');
 
+async function waitForDinnerReadiness({ fetchImpl = global.fetch, attempts = 30, delayMs = 1000 } = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetchImpl('http://127.0.0.1:3000/api/ready');
+      if (response.ok) return;
+      lastError = new Error(`readiness returned HTTP ${response.status}`);
+    } catch (error) { lastError = error; }
+    if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  const error = new Error(`Family Dinner readiness failed: ${lastError?.message || 'unknown error'}`);
+  error.code = 'READINESS_FAILED';
+  throw error;
+}
+
 class JobRunner {
   constructor(stateStore, { executorSocket = '/run/homebase/executor.sock' } = {}) {
     this.stateStore = stateStore;
@@ -72,6 +87,8 @@ class JobRunner {
       if (event.operationId) this.stateStore.updateJob(jobId, { currentStep: event.operationId });
       this.stateStore.appendJobLog(jobId, `[executor] ${event.eventType}${event.operationId ? ` ${event.operationId}` : ''}\n`);
     } });
+    this.stateStore.appendJobLog(jobId, '[executor] waiting for Family Dinner readiness\n');
+    await waitForDinnerReadiness();
     this.stateStore.upsertInstallation({ ...plan.stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
     if (typeof onComplete === 'function') onComplete();
     this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(result) });
@@ -301,4 +318,5 @@ class JobRunner {
 
 module.exports = {
   JobRunner,
+  waitForDinnerReadiness,
 };
