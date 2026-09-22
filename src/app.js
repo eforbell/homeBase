@@ -28,6 +28,7 @@ const { HealthMonitor } = require('./services/health-monitor');
 const { HealthAlertNotifier } = require('./services/notifications');
 const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
+const { getExecutorCapabilities, canExecuteMutations } = require('./executor/capabilities');
 const {
   getAdminStatus,
   setupAdmin,
@@ -1101,6 +1102,11 @@ function createApp(config) {
         const appId = executeInstallMatch[1];
         if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
           if (appId !== 'family-dinner') return sendJson(res, 409, { error: 'Typed execution is currently supported only for Family Dinner.', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+          let capabilities;
+          try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch (error) {
+            return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
+          }
+          if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
           const plan = buildInstallPlan({ appId, state, options: { ...body, dbPassword: '' }, config: effectiveConfig });
           const secretBindings = { familyDinnerDatabasePassword: String(body.dbPassword || require('crypto').randomBytes(24).toString('base64url')) };
           const jobId = jobRunner.startTypedDinnerInstallJob(plan, { secretBindings });
