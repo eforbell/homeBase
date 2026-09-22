@@ -135,7 +135,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const rendered = renderManagedFile(operation, secretBindings);
       if (rendered.owner === 'sovereign' && !lookupUser('sovereign')) deny('The sovereign identity must exist before writing app configuration.');
       const temp = `${rendered.path}.tmp-${process.pid}`;
-      fsImpl.writeFileSync(temp, rendered.content, { mode: rendered.mode, flag: 'w' });
+      fsImpl.writeFileSync(temp, rendered.content, { mode: rendered.mode, flag: 'wx' });
       fsImpl.chmodSync(temp, rendered.mode);
       if (rendered.owner === 'sovereign') { const user = lookupUser('sovereign'); fsImpl.chownSync(temp, user.uid, user.gid); }
       fsImpl.renameSync(temp, rendered.path);
