@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const { runAction } = require('../executor/client');
+const { getAppById } = require('../catalog');
 const { redactText } = require('../operations/redact');
 const { digestOperationPlan } = require('../operations/digest');
 
@@ -12,17 +13,23 @@ function appendExecutorEventLog(stateStore, jobId, event, secretBindings = {}) {
   stateStore.appendJobLog(jobId, `[executor] diagnostic output${operation}${truncated}:\n${output.trim()}\n`);
 }
 
-async function waitForDinnerReadiness({ fetchImpl = global.fetch, attempts = 30, delayMs = 1000 } = {}) {
+// Readiness is probed only on loopback, at the catalog's port and readiness path.
+async function waitForAppReadiness({ app, fetchImpl = global.fetch, attempts = 30, delayMs = 1000 } = {}) {
+  const port = app?.network?.preferredPort;
+  const readinessPath = app?.network?.health?.readinessPath;
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || !/^\/[A-Za-z0-9/_-]*$/.test(readinessPath || '')) {
+    throw Object.assign(new Error(`${app?.name || 'App'} has no usable readiness endpoint.`), { code: 'READINESS_FAILED' });
+  }
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetchImpl('http://127.0.0.1:3000/api/ready');
+      const response = await fetchImpl(`http://127.0.0.1:${port}${readinessPath}`);
       if (response.ok) return;
       lastError = new Error(`readiness returned HTTP ${response.status}`);
     } catch (error) { lastError = error; }
     if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  const error = new Error(`Family Dinner readiness failed: ${lastError?.message || 'unknown error'}`);
+  const error = new Error(`${app.name} readiness failed: ${lastError?.message || 'unknown error'}`);
   error.code = 'READINESS_FAILED';
   throw error;
 }
@@ -127,15 +134,16 @@ class JobRunner {
   }
 
   startTypedInstallJob({ appId, ref, transport, site, stateRecord, onComplete = null }) {
-    if (appId !== 'family-dinner') throw new Error('Typed executor installs are currently supported only for Family Dinner.');
+    const app = getAppById(appId);
+    if (!app) throw new Error(`Unknown catalog app: ${appId}`);
     return this.startTypedActionJob({
       kind: 'install',
       target: appId,
       action: { action: 'install', appId, ref, transport, site },
       afterExecution: async (jobId) => {
         // Installed only after the app answers readiness, never merely because systemd started it.
-        this.stateStore.appendJobLog(jobId, '[executor] waiting for Family Dinner readiness\n');
-        await waitForDinnerReadiness();
+        this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
+        await waitForAppReadiness({ app });
         this.stateStore.upsertInstallation({ ...stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
         if (typeof onComplete === 'function') onComplete();
       },
@@ -366,6 +374,6 @@ class JobRunner {
 
 module.exports = {
   JobRunner,
-  waitForDinnerReadiness,
+  waitForAppReadiness,
   appendExecutorEventLog,
 };

@@ -38,6 +38,30 @@ Run through these on every change. Each one has already been violated once and c
 - [ ] **Fail closed and say why.** Unknown field → `INVALID_REQUEST`. Not allowed → `POLICY_DENIED` with operator guidance. Never fall back to legacy shell execution (`rejectLegacyExecution`).
 - [ ] **Don't re-harden the executor unit.** `NoNewPrivileges`, `RestrictSUIDSGID`, `ProtectHome` and a strict `UMask` break apt/dpkg and buy nothing for a process that starts units (see `SECURITY.md`).
 
+## Shape support matrix
+
+`src/operations/app-layout.js` decides what the executor can compile. It refuses anything else with a specific reason, never half-compiling an app. Keep this table in sync with it.
+
+| Shape | Supported | Notes |
+|---|---|---|
+| Node runtime, `npm ci --omit=dev` | yes | |
+| Commands `node <script.js> [--flags]`, `npm run <script>` | yes | parsed to fixed argv; anything else is refused |
+| Postgres database | yes | simple identifiers, not `postgres`/`template*`/`pg_*`, and unique across the catalog |
+| apt `systemPackages` | yes | allowed per app on top of the bootstrap baseline |
+| Storage at exactly `/var/lib/sovereign-home/<app id>/<name>` (`storage.absoluteRoot`) | yes | root-owned `<app id>` parent, sovereign `0750` leaf and sub-paths |
+| Unit names | yes | main service, sidecars, and timers must be the app id or start with `<app id>-`, and be unique |
+| Sidecars without nginx | yes | extra `.service` with catalog `Environment=` values (simple tokens only) |
+| Timers (`onCalendar`, `onBootSec`, `onUnitActiveSec`, `randomizedDelaySec`) | yes | oneshot service + timer |
+| Upload limit (`network.clientMaxBodySize`, e.g. `55M`) | yes | rendered as `client_max_body_size` |
+| Storage inside the install root (`storage.paths` without `absoluteRoot`) | **no** | family-help, home-ops |
+| Sidecars published through nginx | **no** | bug-base |
+| Env referencing sidecar ports (`{{sidecar.<name>.port}}`) | **no** | family-pulse, bug-base: ports must be reserved in the catalog before the executor allocates them |
+| Python runtime / venv | **no** | helm, bitcoin-accounting |
+| Custom nginx proxying (`preserveMountPath`, `upstreamPath`, extra headers) | **no** | the Python apps |
+| SQLite databases | **won't do** | bitcoin-accounting is Postgres-only under Home Base (decision 2026-09-24); drop its SQLite path when Python lands |
+
+An app is installable only when it compiles **and** appears in `INSTALLABLE_APPS` (`executor/actions.js`) after passing this runbook. Today that's family-dinner and home-source.
+
 ## 2. Survey the app
 
 Fill this in before writing code. Record the answers in the PR description.
@@ -54,7 +78,7 @@ Fill this in before writing code. Record the answers in the PR description.
 | Sidecars (ports, nginx) and timers (schedules) | `catalog.sidecars/timers` | More units, snippets, and ports |
 | Env placeholders used | `templatePlaceholders(app.config.env)` | Every one must resolve in strict mode (see 4) |
 | `preserveExistingKeys` | `catalog.config` | Part of the reinstall contract |
-| nginx needs (body size, extra headers, preserved mount path) | `catalog.network.notes`, sidecar `nginx` | Snippet template parameters |
+| nginx needs (body size, extra headers, preserved mount path) | `catalog.network.notes`, sidecar `nginx` | Snippet template parameters. **A requirement that only appears in `notes` is not implemented anywhere.** Turn it into a structured field (as with `clientMaxBodySize`) and render it in both the executor and legacy snippets |
 
 Evidence: a completed survey table.
 
@@ -148,9 +172,17 @@ For each new or changed handler:
 - Refresh hosts with `install.sh --repair` (not `--repair-executor`, because the executor loads `src/`).
 - Protocol changes bump `PROTOCOL_VERSION` together with the installer probe and `isProtocolCompatible`.
 
+## Lessons from homeSource (the first multi-shape app)
+
+- **Test real behavior, not just readiness.** homeSource passed readiness while every upload over 1 MB was rejected by nginx (413). The limit existed only as a catalog note. Exercise the app's main job (upload, send, import) through the gateway.
+- **Reinstall is its own test.** The first reinstall surfaced a port guard that treated the app's own port as a conflict. Always run a second install with operator edits.
+- **Executor installs pin the catalog port.** Only a *different* app holding the port is a conflict (`PORT_CONFLICT`). The legacy planner instead counts the app's own port as taken on reinstall and picks the next one.
+- **Check every entry point loads `.env`**: server, sidecars, timer scripts, migrations. homeSource's five did.
+
 ## Known gaps
 
-- Readiness waiting (`waitForDinnerReadiness`) is Dinner-specific; generalize per app from the catalog.
 - Lifecycle actions (restart, update, backup, restore, uninstall) are not executor actions yet.
 - Tailscale installation is not a typed operation.
-- Ports are the catalog's preferred ports; the legacy planner's collision-avoiding allocation is not mirrored yet.
+- Ports are the catalog's preferred ports (by design); a conflicting app must be moved before an executor install.
+- The shapes marked **no** in the support matrix.
+- Removing bitcoin-accounting's SQLite option from the catalog (Postgres-only decision), done alongside Python support.

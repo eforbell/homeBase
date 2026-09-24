@@ -1,15 +1,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { waitForDinnerReadiness } = require('../src/services/job-runner');
+const { waitForAppReadiness } = require('../src/services/job-runner');
+const { getAppById } = require('../src/catalog');
 
-test('Dinner readiness accepts only the fixed loopback endpoint', async () => {
+test('readiness probes only loopback at the catalog port and path', async () => {
   const calls = [];
-  await waitForDinnerReadiness({ attempts: 1, fetchImpl: async (url) => { calls.push(url); return { ok: true, status: 200 }; } });
-  assert.deepEqual(calls, ['http://127.0.0.1:3000/api/ready']);
+  const fetchImpl = async (url) => { calls.push(url); return { ok: true, status: 200 }; };
+  await waitForAppReadiness({ app: getAppById('family-dinner'), attempts: 1, fetchImpl });
+  await waitForAppReadiness({ app: getAppById('home-source'), attempts: 1, fetchImpl });
+  assert.deepEqual(calls, ['http://127.0.0.1:3000/api/ready', 'http://127.0.0.1:3008/api/ready']);
+  await assert.rejects(() => waitForAppReadiness({ app: { name: 'x', network: { preferredPort: 80, health: { readinessPath: '@evil.example/' } } }, attempts: 1, fetchImpl }), (error) => error.code === 'READINESS_FAILED');
 });
 
-test('Dinner readiness fails closed after bounded unsuccessful responses', async () => {
-  await assert.rejects(() => waitForDinnerReadiness({ attempts: 1, fetchImpl: async () => ({ ok: false, status: 503 }) }), (error) => error.code === 'READINESS_FAILED');
+test('readiness fails closed after bounded unsuccessful responses', async () => {
+  await assert.rejects(() => waitForAppReadiness({ app: getAppById('family-dinner'), attempts: 1, fetchImpl: async () => ({ ok: false, status: 503 }) }), (error) => error.code === 'READINESS_FAILED');
 });
 
 test('typed job source never delegates to the legacy shell runner and never sends plans or secrets', () => {

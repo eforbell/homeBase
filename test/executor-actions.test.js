@@ -15,7 +15,7 @@ test('actions normalize to a closed shape with no room for extra fields', () => 
 
 test('the executor compiles and policy-checks its own plans', () => {
   const { plan, planDigest } = compileAction({ action: 'install', appId: 'family-dinner', ref: 'main', transport: 'https', site: SITE }, { generatedAt: '2026-09-24T00:00:00.000Z' });
-  assert.equal(plan.policyProfile, 'family-dinner-v1');
+  assert.equal(plan.policyProfile, 'app-install-v1');
   assert.equal(planDigest, digestOperationPlan(plan));
   assert.equal(compileAction({ action: 'bootstrap' }).plan.kind, 'host-bootstrap');
   assert.throws(() => compileAction({ action: 'install', appId: 'helm', ref: 'main', transport: 'https', site: SITE }), (error) => error.code === 'POLICY_DENIED');
@@ -25,20 +25,20 @@ test('secrets are generated inside the executor, fresh per run, and only for kno
   const { plan } = compileAction({ action: 'install', appId: 'family-dinner', ref: 'main', transport: 'https', site: SITE });
   const first = generateSecretBindings(plan);
   const second = generateSecretBindings(plan);
-  assert.deepEqual(Object.keys(first), ['familyDinnerDatabasePassword']);
-  assert.match(first.familyDinnerDatabasePassword, /^[A-Za-z0-9_-]{32}$/);
-  assert.notEqual(first.familyDinnerDatabasePassword, second.familyDinnerDatabasePassword);
-  assert.doesNotMatch(JSON.stringify(plan), new RegExp(first.familyDinnerDatabasePassword));
+  assert.deepEqual(Object.keys(first), ['databasePassword']);
+  assert.match(first.databasePassword, /^[A-Za-z0-9_-]{32}$/);
+  assert.notEqual(first.databasePassword, second.databasePassword);
+  assert.doesNotMatch(JSON.stringify(plan), new RegExp(first.databasePassword));
   assert.deepEqual(generateSecretBindings(compileAction({ action: 'bootstrap' }).plan), {});
   assert.throws(() => generateSecretBindings({ operations: [{ secretRefs: ['somethingElse'] }] }), (error) => error.code === 'POLICY_DENIED');
 });
 
 test('reinstalls reuse the existing database password instead of rotating it', () => {
   const { plan } = compileAction({ action: 'install', appId: 'family-dinner', ref: 'main', transport: 'https', site: SITE });
-  const kept = generateSecretBindings(plan, { existing: { familyDinnerDatabasePassword: 'Existing-pass_123' } });
-  assert.equal(kept.familyDinnerDatabasePassword, 'Existing-pass_123');
-  const fresh = generateSecretBindings(plan, { existing: { familyDinnerDatabasePassword: null } });
-  assert.match(fresh.familyDinnerDatabasePassword, /^[A-Za-z0-9_-]{32}$/);
+  const kept = generateSecretBindings(plan, { existing: { databasePassword: 'Existing-pass_123' } });
+  assert.equal(kept.databasePassword, 'Existing-pass_123');
+  const fresh = generateSecretBindings(plan, { existing: { databasePassword: null } });
+  assert.match(fresh.databasePassword, /^[A-Za-z0-9_-]{32}$/);
 });
 
 test('inherited object keys are not actions', () => {

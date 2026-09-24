@@ -1206,8 +1206,13 @@ function createApp(config) {
           }
           if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
           if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot install ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+          // Executor units, snippets, and env use the catalog's preferred port. Only a *different* app holding
+          // it is a conflict; a reinstall keeps the port it already has.
+          const catalogPort = getAppById(appId).network.preferredPort;
+          const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && entry.port === catalogPort);
+          if (conflict) return sendJson(res, 409, { error: `Port ${catalogPort} is already assigned to ${conflict.appId}; executor installs use catalog ports.`, code: 'PORT_CONFLICT' });
           // Used only for Home Base's own installation record (port, mount path); the executor builds the real plan.
-          const plan = buildInstallPlan({ appId, state, options: { ...body, dbPassword: '' }, config: effectiveConfig });
+          const plan = buildInstallPlan({ appId, state, options: { ...body, dbPassword: '', port: catalogPort }, config: effectiveConfig });
           if (!/^(main|[a-f0-9]{40})$/.test(plan.app.ref)) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
           const transport = effectiveConfig.gitTransport === 'ssh' || effectiveConfig.gitTransport === 'ssh-key' ? 'ssh' : 'https';
           if (transport === 'ssh' && capabilities.gitDeployKey !== 'present') {

@@ -674,6 +674,7 @@ const catalog = [
         livenessPath: '/api/health',
         readinessPath: '/api/ready',
       },
+      clientMaxBodySize: '55M',
       notes: [
         'Set client_max_body_size 55M in the nginx location block to allow large document uploads.',
         'First-run household setup is handled in the browser when family_members is empty.',
@@ -802,6 +803,7 @@ const catalog = [
         livenessPath: '/api/health',
         readinessPath: '/api/health',
       },
+      clientMaxBodySize: '12M',
       notes: [
         'MCP sidecar runs on a separate port; expose it behind a protected nginx lane if needed.',
         'Set client_max_body_size 12M in the nginx location block to allow screenshot uploads.',
@@ -881,6 +883,7 @@ const catalog = [
         livenessPath: '/api/health',
         readinessPath: '/api/ready',
       },
+      clientMaxBodySize: '20M',
       notes: [
         'First-run household setup is handled in the browser when family_members is empty.',
         'Set client_max_body_size 20M in the nginx location block for photo uploads.',

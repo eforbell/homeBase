@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const { redactText } = require('../src/operations/redact');
 
 const ALLOWED_BINARIES = new Set([
-  '/usr/bin/apt-get', '/usr/sbin/useradd', '/usr/bin/git', '/usr/bin/npm', '/usr/bin/psql', '/usr/bin/systemctl', '/usr/sbin/nginx', '/usr/bin/id',
+  '/usr/bin/apt-get', '/usr/sbin/useradd', '/usr/bin/git', '/usr/bin/npm', '/usr/bin/node', '/usr/bin/psql', '/usr/bin/systemctl', '/usr/sbin/nginx', '/usr/bin/id',
 ]);
 // Values for these keys are always composed by handlers from fixed strings, never from plan fields.
 const ALLOWED_ENV_KEYS = new Set([

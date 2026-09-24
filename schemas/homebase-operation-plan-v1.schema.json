@@ -4,53 +4,680 @@
   "title": "Home Base operation plan v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "kind", "target", "catalogRevision", "generatedAt", "policyProfile", "operations"],
+  "required": [
+    "schemaVersion",
+    "kind",
+    "target",
+    "catalogRevision",
+    "generatedAt",
+    "policyProfile",
+    "operations"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "kind": { "enum": ["host-bootstrap", "app-install"] },
-    "target": { "enum": ["local-host", "family-dinner"] },
-    "catalogRevision": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "generatedAt": { "type": "string", "format": "date-time" },
-    "policyProfile": { "enum": ["host-bootstrap-v1", "family-dinner-v1"] },
-    "operations": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/operation" } }
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "host-bootstrap",
+        "app-install"
+      ]
+    },
+    "target": {
+      "type": "string",
+      "pattern": "^(local-host|[a-z][a-z0-9-]{0,62})$"
+    },
+    "catalogRevision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policyProfile": {
+      "enum": [
+        "host-bootstrap-v1",
+        "app-install-v1"
+      ]
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/operation"
+      }
+    }
   },
   "$defs": {
     "common": {
       "type": "object",
-      "required": ["id", "type", "title", "risk", "timeoutMs", "idempotencyKey", "dependsOn", "preconditions", "secretRefs"],
+      "required": [
+        "id",
+        "type",
+        "title",
+        "risk",
+        "timeoutMs",
+        "idempotencyKey",
+        "dependsOn",
+        "preconditions",
+        "secretRefs"
+      ],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
-        "type": { "type": "string" },
-        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "risk": { "enum": ["read", "write", "destructive"] },
-        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 1800000 },
-        "idempotencyKey": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "dependsOn": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }, "uniqueItems": true },
-        "preconditions": { "type": "array", "items": { "type": "string", "enum": ["supported-os", "directory-layout", "postgres-ready", "nginx-configured", "dinner-checkout"] }, "uniqueItems": true },
-        "secretRefs": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }, "uniqueItems": true }
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "risk": {
+          "enum": [
+            "read",
+            "write",
+            "destructive"
+          ]
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1800000
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "uniqueItems": true
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "supported-os",
+              "directory-layout",
+              "postgres-ready",
+              "nginx-configured",
+              "app-checkout"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "secretRefs": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "databasePassword"
+            ]
+          },
+          "uniqueItems": true
+        }
       }
     },
     "operation": {
       "oneOf": [
-        { "$ref": "#/$defs/hostAssert" }, { "$ref": "#/$defs/packageEnsure" }, { "$ref": "#/$defs/identityEnsure" },
-        { "$ref": "#/$defs/directoryEnsure" }, { "$ref": "#/$defs/gitSync" }, { "$ref": "#/$defs/postgresRole" },
-        { "$ref": "#/$defs/postgresDatabase" }, { "$ref": "#/$defs/managedFile" }, { "$ref": "#/$defs/npmRun" },
-        { "$ref": "#/$defs/daemonReload" }, { "$ref": "#/$defs/systemdService" }, { "$ref": "#/$defs/nginxGateway" }, { "$ref": "#/$defs/nginxReload" }, { "$ref": "#/$defs/httpReady" }
+        {
+          "$ref": "#/$defs/hostAssert"
+        },
+        {
+          "$ref": "#/$defs/packageEnsure"
+        },
+        {
+          "$ref": "#/$defs/identityEnsure"
+        },
+        {
+          "$ref": "#/$defs/directoryEnsure"
+        },
+        {
+          "$ref": "#/$defs/gitSync"
+        },
+        {
+          "$ref": "#/$defs/postgresRole"
+        },
+        {
+          "$ref": "#/$defs/postgresDatabase"
+        },
+        {
+          "$ref": "#/$defs/managedFile"
+        },
+        {
+          "$ref": "#/$defs/npmRun"
+        },
+        {
+          "$ref": "#/$defs/daemonReload"
+        },
+        {
+          "$ref": "#/$defs/systemdService"
+        },
+        {
+          "$ref": "#/$defs/nginxGateway"
+        },
+        {
+          "$ref": "#/$defs/nginxReload"
+        },
+        {
+          "$ref": "#/$defs/httpReady"
+        }
       ]
     },
-    "hostAssert": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "properties": { "type": { "const": "host.assert-debian-family" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "packageEnsure": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["packages", "updateCache"], "properties": { "type": { "const": "package.ensure" }, "packages": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }, "updateCache": { "type": "boolean" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "identityEnsure": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["user"], "properties": { "type": { "const": "identity.ensure-user" }, "user": { "const": "sovereign" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "directoryEnsure": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["purpose"], "properties": { "type": { "const": "filesystem.ensure-directory" }, "purpose": { "enum": ["sovereign-root", "app-root", "app-install", "backup-root", "config-root", "nginx-snippets", "nginx-apps", "sovereign-home"] }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "gitSync": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["repository", "ref", "destination"], "properties": { "type": { "const": "git.sync" }, "repository": { "enum": ["https://github.com/eforbell/familyDinner.git", "ssh://git@github.com/eforbell/familyDinner.git"] }, "ref": { "type": "string" }, "destination": { "const": "familyDinner" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "postgresRole": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["role", "passwordSecretRef"], "properties": { "type": { "const": "postgres.ensure-role" }, "role": { "const": "family_dinner" }, "passwordSecretRef": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "postgresDatabase": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["database", "owner"], "properties": { "type": { "const": "postgres.ensure-database" }, "database": { "const": "family_dinner" }, "owner": { "const": "family_dinner" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "managedFile": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["purpose", "template"], "properties": { "type": { "const": "filesystem.write-managed-file" }, "purpose": { "enum": ["app-env", "systemd-unit", "nginx-snippet", "nginx-gateway"] }, "template": { "enum": ["family-dinner-env-v1", "family-dinner-service-v1", "family-dinner-nginx-v1", "dinner-gateway-v1"] }, "site": { "type": "object", "additionalProperties": false, "required": ["hostname", "domain", "householdTimezone"], "properties": { "hostname": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$" }, "domain": { "type": "string", "pattern": "^[A-Za-z0-9.-]{1,253}$" }, "householdTimezone": { "type": "string", "maxLength": 64, "pattern": "^[A-Za-z_]+/[A-Za-z_/-]+$" } } }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "npmRun": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["task"], "properties": { "type": { "const": "runtime.run-npm" }, "task": { "enum": ["install-production", "migrate"] }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "daemonReload": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "properties": { "type": { "const": "systemd.daemon-reload" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "systemdService": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["unit", "action"], "properties": { "type": { "const": "systemd.ensure-service" }, "unit": { "type": "string" }, "action": { "enum": ["enable", "restart", "enable-and-restart"] }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "nginxGateway": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "properties": { "type": { "const": "nginx.ensure-gateway" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "nginxReload": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "properties": { "type": { "const": "nginx.validate-and-reload" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] },
-    "httpReady": { "allOf": [{ "$ref": "#/$defs/common" }, { "type": "object", "additionalProperties": false, "required": ["executor", "port", "path"], "properties": { "type": { "const": "http.wait-ready" }, "executor": { "const": "homebase" }, "port": { "const": 3000 }, "path": { "const": "/api/ready" }, "id": true, "title": true, "risk": true, "timeoutMs": true, "idempotencyKey": true, "dependsOn": true, "preconditions": true, "secretRefs": true } }] }
+    "hostAssert": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "host.assert-debian-family"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "packageEnsure": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "package.ensure"
+            },
+            "packages": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9+.-]{0,62}$"
+              }
+            },
+            "updateCache": {
+              "type": "boolean"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "packages",
+            "updateCache"
+          ]
+        }
+      ]
+    },
+    "identityEnsure": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "user"
+          ],
+          "properties": {
+            "type": {
+              "const": "identity.ensure-user"
+            },
+            "user": {
+              "const": "sovereign"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "directoryEnsure": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "filesystem.ensure-directory"
+            },
+            "purpose": {
+              "enum": [
+                "sovereign-root",
+                "app-root",
+                "app-install",
+                "sovereign-home",
+                "backup-root",
+                "config-root",
+                "nginx-snippets",
+                "nginx-apps",
+                "app-storage-root",
+                "app-storage"
+              ]
+            },
+            "subpath": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "purpose"
+          ]
+        }
+      ]
+    },
+    "gitSync": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "git.sync"
+            },
+            "repository": {
+              "type": "string",
+              "maxLength": 256,
+              "pattern": "^(https://github\\.com/|ssh://git@github\\.com/)[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\.git$"
+            },
+            "ref": {
+              "type": "string",
+              "pattern": "^(main|[a-f0-9]{40})$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "repository",
+            "ref"
+          ]
+        }
+      ]
+    },
+    "postgresRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "postgres.ensure-role"
+            },
+            "role": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "passwordSecretRef": {
+              "const": "databasePassword"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "role",
+            "passwordSecretRef"
+          ]
+        }
+      ]
+    },
+    "postgresDatabase": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "postgres.ensure-database"
+            },
+            "database": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "owner": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "database",
+            "owner"
+          ]
+        }
+      ]
+    },
+    "managedFile": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "filesystem.write-managed-file"
+            },
+            "purpose": {
+              "enum": [
+                "app-env",
+                "systemd-unit",
+                "nginx-snippet"
+              ]
+            },
+            "template": {
+              "enum": [
+                "app-env-v1",
+                "app-service-v1",
+                "app-sidecar-service-v1",
+                "app-timer-service-v1",
+                "app-timer-v1",
+                "app-nginx-v1"
+              ]
+            },
+            "unit": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,62}\\.(service|timer)$"
+            },
+            "site": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "hostname",
+                "domain",
+                "householdTimezone"
+              ],
+              "properties": {
+                "hostname": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+                },
+                "domain": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9.-]{1,253}$"
+                },
+                "householdTimezone": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z_]+/[A-Za-z_/-]+$"
+                }
+              }
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "purpose",
+            "template"
+          ]
+        }
+      ]
+    },
+    "npmRun": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "runtime.run-app-task"
+            },
+            "task": {
+              "enum": [
+                "install-dependencies",
+                "migrate"
+              ]
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "task"
+          ]
+        }
+      ]
+    },
+    "daemonReload": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "systemd.daemon-reload"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "systemdService": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "systemd.ensure-service"
+            },
+            "unit": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,62}\\.(service|timer)$"
+            },
+            "action": {
+              "enum": [
+                "enable",
+                "restart",
+                "enable-and-restart"
+              ]
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "unit",
+            "action"
+          ]
+        }
+      ]
+    },
+    "nginxGateway": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "nginx.ensure-gateway"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "nginxReload": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "nginx.validate-and-reload"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "httpReady": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "http.wait-ready"
+            },
+            "executor": {
+              "const": "homebase"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 65535
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9/_-]*$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "executor",
+            "port",
+            "path"
+          ]
+        }
+      ]
+    }
   }
 }

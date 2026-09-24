@@ -177,6 +177,7 @@ function renderNginxSnippet({
   extraProxyHeaders = [],
   preserveMountPath = false,
   upstreamPath = '/',
+  clientMaxBodySize = null,
 }) {
   const basePath = trimTrailingSlash(mountPath === '/' ? '' : mountPath);
   const normalizedUpstreamPath = normalizeMountPath(upstreamPath || '/');
@@ -186,6 +187,7 @@ function renderNginxSnippet({
   }
   lines.push(
     `location ${mountPath} {`,
+    ...(clientMaxBodySize ? [`    client_max_body_size ${clientMaxBodySize};`] : []),
     `    proxy_pass http://127.0.0.1:${port}${preserveMountPath ? '' : normalizedUpstreamPath};`,
     '    proxy_set_header Host $host;',
     '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
@@ -543,6 +545,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     port,
     appId: app.id,
     preserveMountPath: app.network.preserveMountPath === true,
+    clientMaxBodySize: /^[1-9][0-9]{0,3}[mM]$/.test(String(app.network.clientMaxBodySize || '')) ? app.network.clientMaxBodySize : null,
   });
 
   const executionSteps = [

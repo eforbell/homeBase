@@ -1,5 +1,7 @@
 const { ProtocolError } = require('./protocol');
 const { redactText } = require('../src/operations/redact');
+const { getAppById } = require('../src/catalog');
+const { appLayout } = require('../src/operations/app-layout');
 
 const MAX_FAILURE_OUTPUT_CHARS = 8 * 1024;
 
@@ -25,6 +27,8 @@ function getFailureOutput(error, secrets) {
 // receives unvalidated JSON and it never exposes the secret binding object in events.
 async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
   const completed = new Set();
+  // App operations resolve every path, unit, and name from the target's catalog layout.
+  const layout = request.plan.kind === 'app-install' ? appLayout(getAppById(request.plan.target)) : null;
   for (const operation of request.plan.operations) {
     if (operation.dependsOn.some((id) => !completed.has(id))) {
       throw new ProtocolError('INVALID_PLAN', `Operation dependencies are incomplete for ${operation.id}.`);
@@ -34,7 +38,7 @@ async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
     if (typeof handler !== 'function') throw new ProtocolError('POLICY_DENIED', `No executor handler is available for ${operation.type}.`);
     emit({ eventType: 'operation.started', operationId: operation.id, title: operation.title });
     try {
-      const output = await handler(operation, { secretBindings: request.secretBindings });
+      const output = await handler(operation, { secretBindings: request.secretBindings, layout });
       if (output) emit({ eventType: 'operation.output', operationId: operation.id, output: redactText(output, Object.values(request.secretBindings)) });
       completed.add(operation.id);
       emit({ eventType: 'operation.completed', operationId: operation.id });

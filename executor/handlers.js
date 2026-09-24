@@ -3,14 +3,16 @@ const crypto = require('crypto');
 const path = require('path');
 const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
-const { getAppById } = require('../src/catalog');
-const { gitTransportForRepository } = require('../src/operations/policy');
+const { catalog } = require('../src/catalog');
+const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
+const { MIRROR_ROOT } = require('../src/operations/app-layout');
 const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
+// Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
+// the plan target's catalog layout; see directoryFor().
 const DIRECTORY_PATHS = Object.freeze({
   'sovereign-root': '/opt/sovereign-home',
   'app-root': '/opt/sovereign-home/apps',
-  'app-install': '/opt/sovereign-home/apps/familyDinner',
   'backup-root': '/var/lib/sovereign-home/backups',
   'config-root': '/etc/sovereign-home',
   'nginx-snippets': '/etc/nginx/snippets',
@@ -20,19 +22,18 @@ const DIRECTORY_PATHS = Object.freeze({
 // /opt/sovereign-home also holds the root executor's own code (/opt/sovereign-home/homebase). The owner
 // of a directory can rename its entries, so it must stay root-owned; only apps/ belongs to sovereign.
 const ROOT_OWNED_DIRECTORIES = new Set(['sovereign-root', 'config-root', 'nginx-snippets', 'nginx-apps']);
-const PRIVATE_DIRECTORIES = new Set(['sovereign-home']);
+const DIRECTORY_MODES = Object.freeze({ 'sovereign-home': 0o700, 'app-storage-root': 0o750, 'app-storage': 0o750 });
 // HOME for git/npm children: sovereign-writable (npm cache) without owning any root-controlled path.
 const SOVEREIGN_HOME = DIRECTORY_PATHS['sovereign-home'];
-const DINNER_PACKAGES = new Set(['git', 'ca-certificates', 'openssh-client', 'ssl-cert', 'nginx', 'postgresql', 'postgresql-client', 'nodejs', 'npm']);
 
 // Operator-provisioned by `install.sh --git-ssh-key`; root-owned and only ever read by root's ssh.
 const GIT_DEPLOY_KEY_PATH = '/etc/sovereign-home/git/deploy_key';
 const GIT_KNOWN_HOSTS_PATH = '/etc/sovereign-home/git/known_hosts';
-const DINNER_MIRROR = '/var/lib/sovereign-home/git-mirrors/familyDinner.git';
 // System-scope git config for sovereign's git: the only scope git's upload-pack honours for safe.directory,
-// which sovereign needs to read the deliberately root-owned mirror. Root-owned, world-readable.
+// which sovereign needs to read the deliberately root-owned mirrors. Root-owned, world-readable, and
+// derived from the catalog so every app's mirror is listed.
 const SOVEREIGN_GITCONFIG_PATH = '/etc/sovereign-home/sovereign.gitconfig';
-const SOVEREIGN_GITCONFIG = `[safe]\n\tdirectory = ${DINNER_MIRROR}\n`;
+const SOVEREIGN_GITCONFIG = `[safe]\n${catalog.filter((app) => /^[A-Za-z][A-Za-z0-9]*$/.test(app.repoKey || '')).map((app) => `\tdirectory = ${MIRROR_ROOT}/${app.repoKey}.git\n`).join('')}`;
 // Pinned from https://api.github.com/meta; verified against GitHub's published SHA256 fingerprints.
 const GITHUB_KNOWN_HOSTS = [
   'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl',
@@ -121,10 +122,15 @@ function writeFileAtomic(fsImpl, destination, content, mode) {
 }
 
 function assertDatabasePassword(password) {
-  if (typeof password !== 'string' || !password) throw new ProtocolError('SECRET_BINDING_MISSING', 'Family Dinner database password is missing.');
+  if (typeof password !== 'string' || !password) throw new ProtocolError('SECRET_BINDING_MISSING', 'The database password is missing.');
   // Printable, whitespace-free ASCII keeps the password safe for psql's line-oriented stdin and .env lines.
-  if (!/^[\x21-\x7e]{8,256}$/.test(password)) deny('Family Dinner database password must be 8-256 printable non-space ASCII characters.');
+  if (!/^[\x21-\x7e]{8,256}$/.test(password)) deny('The database password must be 8-256 printable non-space ASCII characters.');
   return password;
+}
+
+function requireLayout(layout) {
+  if (!layout) deny('This operation needs an app-install plan target.');
+  return layout;
 }
 
 const FONT_ASSETS_DIR = '/opt/sovereign-home/assets/fonts';
@@ -133,22 +139,25 @@ const GOOGLE_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBr
 
 // Render context equivalent to the legacy planner's for the same inputs (see test/env-parity.test.js).
 // Secrets are fresh candidates only: the shared reinstall contract keeps any existing secret values.
-function buildEnvContext({ app, site, databaseUrl, fsImpl = fs, randomHex = () => crypto.randomBytes(32).toString('hex') }) {
+function buildEnvContext({ layout, site, databaseUrl, fsImpl = fs, randomHex = () => crypto.randomBytes(32).toString('hex') }) {
+  const { app } = layout;
   const publicBase = `https://${site.hostname}.${site.domain}`;
-  const mountPath = app.network.preferredMountPath;
   const localFonts = fsImpl.existsSync(`${FONT_ASSETS_DIR}/source-sans-3.css`) && fsImpl.existsSync(`${FONT_ASSETS_DIR}/jetbrains-mono.css`);
+  // Legacy allocates sidecar ports sequentially after the app port.
+  const sidecarPorts = Object.fromEntries((app.sidecars || []).map((sidecar, index) => [sidecar.name, layout.port + index + 1]));
   return {
-    port: app.network.preferredPort,
-    mountPath,
-    externalUrl: `${publicBase}${mountPath}`,
-    publicUrl: `${publicBase}${mountPath}`,
+    port: layout.port,
+    mountPath: layout.mountPath,
+    externalUrl: `${publicBase}${layout.mountPath}`,
+    publicUrl: `${publicBase}${layout.mountPath}`,
     databaseUrl,
-    dbUser: app.database?.databaseUser,
-    dbName: app.database?.databaseName,
+    dbUser: layout.database?.user,
+    dbName: layout.database?.name,
     secret1: randomHex(),
     secret2: randomHex(),
     secret3: randomHex(),
     householdTimezone: site.householdTimezone,
+    sidecarPorts,
     sovereignFontSource: localFonts ? 'local' : 'google',
     sovereignFontSansCssUrl: GOOGLE_FONT_SANS_CSS_URL,
     sovereignFontMonoCssUrl: GOOGLE_FONT_MONO_CSS_URL,
@@ -159,11 +168,13 @@ function buildEnvContext({ app, site, databaseUrl, fsImpl = fs, randomHex = () =
 
 // The shared reinstall contract (src/operations/env.js), rendered strictly. Executor-written units set
 // no Environment=, so the runtime environment (NODE_ENV) is authoritative in .env.
-function renderDinnerEnv({ password, site, existingContent = '', fsImpl = fs }) {
-  const app = getAppById('family-dinner');
+function renderAppEnvFile({ layout, password = null, site, existingContent = '', fsImpl = fs }) {
+  const { app } = layout;
   const existing = existingContent ? parseDotEnv(existingContent) : null;
-  const canonicalUrl = `postgresql://${app.database.databaseUser}:${encodeURIComponent(password)}@127.0.0.1:5432/${app.database.databaseName}`;
-  const ctx = buildEnvContext({ app, site, databaseUrl: canonicalUrl, fsImpl });
+  const databaseUrl = layout.database
+    ? `postgresql://${layout.database.user}:${encodeURIComponent(assertDatabasePassword(password))}@127.0.0.1:5432/${layout.database.name}`
+    : undefined;
+  const ctx = buildEnvContext({ layout, site, databaseUrl, fsImpl });
   let env;
   try {
     ({ env } = renderAppEnv({ app, ctx, existing, strict: true }));
@@ -178,45 +189,124 @@ function renderDinnerEnv({ password, site, existingContent = '', fsImpl = fs }) 
 // reinstall contract, so the role password has to come from it; otherwise updates would rotate
 // credentials under a running service. Read as sovereign (the .env sits in a sovereign-owned
 // directory). Returns null when there is no existing wiring; refuses wiring that points elsewhere.
-function readExistingDinnerPassword({ fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
+function readExistingDatabasePassword({ layout, fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
+  if (!layout?.database) return null;
   const sovereign = lookupUser('sovereign');
   if (!sovereign) return null;
-  const envPath = '/opt/sovereign-home/apps/familyDinner/.env';
   const content = asUser(sovereign, () => {
-    const stat = lstatOrNull(fsImpl, envPath);
-    return stat && stat.isFile() ? fsImpl.readFileSync(envPath, 'utf8') : null;
+    const stat = lstatOrNull(fsImpl, layout.envPath);
+    return stat && stat.isFile() ? fsImpl.readFileSync(layout.envPath, 'utf8') : null;
   });
   if (!content) return null;
-  const app = getAppById('family-dinner');
   const existing = parseDotEnv(content);
-  if (!hasExistingDbConfig(existing, app)) return null;
-  const db = resolveExistingDbContext(existing, {}, app);
-  if (db.dbUser !== app.database.databaseUser || db.dbName !== app.database.databaseName) {
-    deny(`The existing Family Dinner DATABASE_URL targets ${db.dbUser || '?'}@${db.dbName || '?'}; the executor manages ${app.database.databaseUser}@${app.database.databaseName}. Fix the .env or move the data before reinstalling.`);
+  if (!hasExistingDbConfig(existing, layout.app)) return null;
+  const db = resolveExistingDbContext(existing, {}, layout.app);
+  if (db.dbUser !== layout.database.user || db.dbName !== layout.database.name) {
+    deny(`The existing ${layout.app.name} DATABASE_URL targets ${db.dbUser || '?'}@${db.dbName || '?'}; the executor manages ${layout.database.user}@${layout.database.name}. Fix the .env or move the data before reinstalling.`);
   }
   return assertDatabasePassword(db.dbPassword);
 }
 
-function renderManagedFile(operation, secretBindings = {}) {
-  const templates = {
-    'family-dinner-env-v1': {
-      path: '/opt/sovereign-home/apps/familyDinner/.env', mode: 0o640, owner: 'sovereign',
-      render: ({ existingContent, fsImpl }) => renderDinnerEnv({ password: assertDatabasePassword(secretBindings.familyDinnerDatabasePassword), site: operation.site, existingContent, fsImpl }),
-    },
-    // No EnvironmentFile=: systemd would read the sovereign-owned .env as root before dropping to
-    // User=, letting a planted symlink expose root-only files. Dinner loads .env itself via dotenv.
-    'family-dinner-service-v1': {
-      path: '/etc/systemd/system/family-dinner.service', mode: 0o644, owner: 'root',
-      content: '[Unit]\nDescription=Family Dinner\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=sovereign\nWorkingDirectory=/opt/sovereign-home/apps/familyDinner\nExecStart=/usr/bin/node server.js\nRestart=on-failure\nUMask=0077\nNoNewPrivileges=yes\n\n[Install]\nWantedBy=multi-user.target\n',
-    },
-    'family-dinner-nginx-v1': {
-      path: '/etc/nginx/sovereign-home.d/family-dinner.conf', mode: 0o644, owner: 'root',
-      content: '# family-dinner\nlocation = /dinner {\n    return 301 /dinner/;\n}\nlocation /dinner/ {\n    proxy_pass http://127.0.0.1:3000/;\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_set_header X-Forwarded-Prefix /dinner;\n}\n',
-    },
-  };
-  const template = templates[operation.template];
-  if (!template) deny('Managed file template is not allowed.');
-  return template;
+// systemd expands %-specifiers and treats newlines as syntax; catalog text is reduced to safe text.
+function unitText(value) {
+  // Backslashes are dropped too: a trailing one would join the next unit line.
+  return String(value).replace(/[^\x20-\x7e]|\\/g, '').replaceAll('%', '%%').slice(0, 120);
+}
+
+// No EnvironmentFile=: systemd would read the sovereign-owned .env as root before dropping to User=,
+// letting a planted symlink expose root-only files. Apps load .env themselves (see the runbook).
+function renderServiceUnit({ layout, description, argv, environment = [], oneshot = false }) {
+  return [
+    '[Unit]',
+    `Description=${unitText(description)}`,
+    `After=network.target${layout.database ? ' postgresql.service' : ''}`,
+    '',
+    '[Service]',
+    `Type=${oneshot ? 'oneshot' : 'simple'}`,
+    'User=sovereign',
+    `WorkingDirectory=${layout.checkout}`,
+    ...environment.map(([key, value]) => `Environment=${key}=${value}`),
+    `ExecStart=${argv.join(' ')}`,
+    ...(oneshot ? [] : ['Restart=on-failure', 'RestartSec=5']),
+    'UMask=0077',
+    'NoNewPrivileges=yes',
+    ...(oneshot ? [] : ['', '[Install]', 'WantedBy=multi-user.target']),
+    '',
+  ].join('\n');
+}
+
+function renderTimerUnit({ timer }) {
+  const { onCalendar, onBootSec, onUnitActiveSec, randomizedDelaySec } = timer.schedule;
+  return [
+    '[Unit]',
+    `Description=${unitText(timer.description)}`,
+    '',
+    '[Timer]',
+    ...(onCalendar ? [`OnCalendar=${onCalendar}`] : []),
+    ...(onBootSec ? [`OnBootSec=${onBootSec}`] : []),
+    ...(onUnitActiveSec ? [`OnUnitActiveSec=${onUnitActiveSec}`] : []),
+    ...(randomizedDelaySec ? [`RandomizedDelaySec=${randomizedDelaySec}`] : []),
+    `Persistent=${timer.persistent ? 'true' : 'false'}`,
+    `Unit=${timer.serviceUnit}`,
+    '',
+    '[Install]',
+    'WantedBy=timers.target',
+    '',
+  ].join('\n');
+}
+
+function renderNginxSnippet({ layout }) {
+  const base = layout.mountPath.replace(/\/$/, '');
+  return [
+    `# ${layout.app.id}`,
+    `location = ${base} {`,
+    `    return 301 ${layout.mountPath};`,
+    '}',
+    `location ${layout.mountPath} {`,
+    ...(layout.clientMaxBodySize ? [`    client_max_body_size ${layout.clientMaxBodySize};`] : []),
+    `    proxy_pass http://127.0.0.1:${layout.port}/;`,
+    '    proxy_set_header Host $host;',
+    '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+    '    proxy_set_header X-Forwarded-Proto $scheme;',
+    `    proxy_set_header X-Forwarded-Prefix ${base};`,
+    '}',
+    '',
+  ].join('\n');
+}
+
+function renderManagedFile(operation, { secretBindings = {}, layout } = {}) {
+  requireLayout(layout);
+  const unitPath = (unit) => `/etc/systemd/system/${unit}`;
+  switch (operation.template) {
+    case 'app-env-v1':
+      return {
+        path: layout.envPath, mode: 0o640, owner: 'sovereign',
+        render: ({ existingContent, fsImpl }) => renderAppEnvFile({ layout, password: layout.database ? secretBindings.databasePassword : null, site: operation.site, existingContent, fsImpl }),
+      };
+    case 'app-service-v1':
+      if (operation.unit !== layout.service.unit) break;
+      return { path: unitPath(operation.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: layout.service.description, argv: layout.service.argv }) };
+    case 'app-sidecar-service-v1': {
+      const sidecar = layout.sidecars.find((entry) => entry.unit === operation.unit);
+      if (!sidecar) break;
+      return { path: unitPath(sidecar.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: sidecar.description, argv: sidecar.argv, environment: sidecar.environment }) };
+    }
+    case 'app-timer-service-v1': {
+      const timer = layout.timers.find((entry) => entry.serviceUnit === operation.unit);
+      if (!timer) break;
+      return { path: unitPath(timer.serviceUnit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: timer.description, argv: timer.argv, oneshot: true }) };
+    }
+    case 'app-timer-v1': {
+      const timer = layout.timers.find((entry) => entry.timerUnit === operation.unit);
+      if (!timer) break;
+      return { path: unitPath(timer.timerUnit), mode: 0o644, owner: 'root', content: renderTimerUnit({ timer }) };
+    }
+    case 'app-nginx-v1':
+      return { path: layout.nginxSnippet, mode: 0o644, owner: 'root', content: renderNginxSnippet({ layout }) };
+    default:
+      break;
+  }
+  return deny('Managed file template is not allowed for this app.');
 }
 
 function deployKeyStatus(fsImpl = fs) {
@@ -244,6 +334,19 @@ function rootGitEnvironment(transport, fsImpl) {
   return env;
 }
 
+function directoryFor(operation, layout) {
+  if (Object.hasOwn(DIRECTORY_PATHS, operation.purpose)) return DIRECTORY_PATHS[operation.purpose];
+  if (operation.purpose === 'app-install') return requireLayout(layout).checkout;
+  if (operation.purpose === 'app-storage-root' || operation.purpose === 'app-storage') {
+    const storage = requireLayout(layout).storage;
+    if (!storage) deny('This app declares no storage.');
+    if (operation.purpose === 'app-storage-root') return storage.root;
+    if (!storage.subpaths.includes(operation.subpath)) deny('Storage subpath is not declared by this app.');
+    return `${storage.root}/${operation.subpath}`;
+  }
+  return deny('Unknown managed directory purpose.');
+}
+
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   return {
@@ -253,8 +356,9 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (!/^ID=(ubuntu|debian)$/m.test(content)) deny('Executor requires Ubuntu or Debian.');
       return 'supported Debian-family host';
     },
-    'package.ensure': async (operation) => {
-      if (!operation.packages.every((pkg) => DINNER_PACKAGES.has(pkg))) deny('Package is not in the compiled policy allowlist.');
+    'package.ensure': async (operation, { layout } = {}) => {
+      const allowed = new Set([...BOOTSTRAP_PACKAGES, ...(layout?.packages || [])]);
+      if (!operation.packages.every((pkg) => allowed.has(pkg))) deny('Package is not in the compiled policy allowlist.');
       if (operation.updateCache) await run({ binary: '/usr/bin/apt-get', args: ['update'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: APT_ENV });
       await run({ binary: '/usr/bin/apt-get', args: ['install', '--yes', '--no-install-recommends', ...APT_DPKG_OPTIONS, ...operation.packages], ...rootIdentity, timeoutMs: operation.timeoutMs, env: APT_ENV });
       return `ensured ${operation.packages.length} approved packages`;
@@ -266,23 +370,25 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       await run({ binary: '/usr/sbin/useradd', args: ['--system', '--home-dir', SOVEREIGN_HOME, '--shell', '/usr/sbin/nologin', 'sovereign'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       return 'created sovereign identity';
     },
-    'git.sync': async (operation) => {
+    'git.sync': async (operation, { layout } = {}) => {
+      requireLayout(layout);
       const sovereign = lookupUser('sovereign');
       if (!sovereign) deny('The sovereign identity must exist before Git synchronization.');
-      const transport = gitTransportForRepository(operation.repository);
-      if (!transport || operation.destination !== 'familyDinner' || !/^(main|[a-f0-9]{40})$/.test(operation.ref)) deny('Git operation does not match Family Dinner policy.');
-      const destination = DIRECTORY_PATHS['app-install'];
+      const transport = gitTransportForRepository(layout, operation.repository);
+      if (!transport || !/^(main|[a-f0-9]{40})$/.test(operation.ref)) deny('Git operation does not match this app.');
+      const { checkout: destination, mirror } = layout;
+      const label = layout.app.name;
 
       // 1. Root refreshes the mirror from the network (credentials, if any, stay with root).
       const rootEnv = rootGitEnvironment(transport, fsImpl);
       const rootGit = (args) => run({ binary: '/usr/bin/git', args: [...ROOT_GIT_CONFIG, ...args], ...rootIdentity, timeoutMs: operation.timeoutMs, env: rootEnv });
-      const mirrorParent = path.dirname(DINNER_MIRROR);
+      const mirrorParent = path.dirname(mirror);
       if (!fsImpl.existsSync(mirrorParent)) fsImpl.mkdirSync(mirrorParent, { recursive: true, mode: 0o755 });
-      if (!lstatOrNull(fsImpl, DINNER_MIRROR)) {
-        await rootGit(['clone', '--mirror', operation.repository, DINNER_MIRROR]);
+      if (!lstatOrNull(fsImpl, mirror)) {
+        await rootGit(['clone', '--mirror', operation.repository, mirror]);
       } else {
-        await rootGit(['-C', DINNER_MIRROR, 'remote', 'set-url', 'origin', operation.repository]);
-        await rootGit(['-C', DINNER_MIRROR, 'fetch', '--prune', 'origin']);
+        await rootGit(['-C', mirror, 'remote', 'set-url', 'origin', operation.repository]);
+        await rootGit(['-C', mirror, 'fetch', '--prune', 'origin']);
       }
 
       // 2. Sovereign updates the checkout from the local mirror only; it never touches the network or a key.
@@ -293,62 +399,73 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (currentConfig !== SOVEREIGN_GITCONFIG) writeFileAtomic(fsImpl, SOVEREIGN_GITCONFIG_PATH, SOVEREIGN_GITCONFIG, 0o644);
       env.GIT_CONFIG_SYSTEM = SOVEREIGN_GITCONFIG_PATH;
       const git = (args) => run({ binary: '/usr/bin/git', args, uid: sovereign.uid, gid: sovereign.gid, timeoutMs: operation.timeoutMs, env });
-      const checkout = lstatOrNull(fsImpl, path.join(destination, '.git'));
-      if (!checkout) {
+      const existingCheckout = lstatOrNull(fsImpl, path.join(destination, '.git'));
+      if (!existingCheckout) {
         // ensure-install-root creates the destination first; git clones into an existing directory only when it is empty.
-        if (fsImpl.existsSync(destination) && fsImpl.readdirSync(destination).length) deny('Family Dinner install directory is not empty and is not a Git checkout.');
-        await git(['clone', '--origin', 'origin', '--no-checkout', DINNER_MIRROR, destination]);
+        if (fsImpl.existsSync(destination) && fsImpl.readdirSync(destination).length) deny(`${label} install directory is not empty and is not a Git checkout.`);
+        await git(['clone', '--origin', 'origin', '--no-checkout', mirror, destination]);
       } else {
-        if (!checkout.isDirectory()) deny('Family Dinner checkout metadata is not a directory.');
+        if (!existingCheckout.isDirectory()) deny(`${label} checkout metadata is not a directory.`);
         const status = await git(['-C', destination, 'status', '--porcelain']);
-        if (String(status.stdout || '').trim()) deny('Family Dinner checkout is dirty; refusing to overwrite operator changes.');
-        await git(['-C', destination, 'remote', 'set-url', 'origin', DINNER_MIRROR]);
+        if (String(status.stdout || '').trim()) deny(`${label} checkout is dirty; refusing to overwrite operator changes.`);
+        await git(['-C', destination, 'remote', 'set-url', 'origin', mirror]);
         await git(['-C', destination, 'fetch', 'origin']);
       }
       if (operation.ref === 'main') {
         // First install has no local branch yet; later runs fast-forward and refuse divergent history.
-        if (!checkout) await git(['-C', destination, 'checkout', '-B', 'main', 'origin/main']);
+        if (!existingCheckout) await git(['-C', destination, 'checkout', '-B', 'main', 'origin/main']);
         else await git(['-C', destination, 'merge', '--ff-only', 'origin/main']);
       } else {
         await git(['-C', destination, 'checkout', '--detach', operation.ref]);
       }
-      return `synchronized Family Dinner repository over ${transport}`;
+      return `synchronized ${label} repository over ${transport}`;
     },
-    'runtime.run-npm': async (operation) => {
+    'runtime.run-app-task': async (operation, { layout } = {}) => {
+      requireLayout(layout);
       const sovereign = lookupUser('sovereign');
-      if (!sovereign) deny('The sovereign identity must exist before running Family Dinner.');
-      const argsByTask = { 'install-production': ['ci', '--omit=dev'], migrate: ['run', 'db:migrate'] };
-      const args = argsByTask[operation.task];
-      if (!args) deny('Unsupported npm task.');
-      const result = await run({ binary: '/usr/bin/npm', args, uid: sovereign.uid, gid: sovereign.gid, cwd: DIRECTORY_PATHS['app-install'], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, NODE_ENV: 'production', LANG: 'C' } });
+      if (!sovereign) deny('The sovereign identity must exist before running app tasks.');
+      // Both argv shapes are fixed by the catalog layout; the plan only names the task.
+      const argv = operation.task === 'install-dependencies' ? ['/usr/bin/npm', 'ci', '--omit=dev']
+        : operation.task === 'migrate' ? layout.migrationArgv : null;
+      if (!argv) deny('Unsupported app task.');
+      const [binary, ...args] = argv;
+      // libuv chdirs before dropping to sovereign, and sovereign owns the parent directory: refuse a
+      // checkout that is not a real sovereign-owned directory right before spawning.
+      const checkoutStat = lstatOrNull(fsImpl, layout.checkout);
+      if (!checkoutStat || checkoutStat.isSymbolicLink() || !checkoutStat.isDirectory() || checkoutStat.uid !== sovereign.uid) deny(`${layout.app.name} checkout is not a sovereign-owned directory.`);
+      const result = await run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, NODE_ENV: layout.app.runtime.nodeEnv || 'production', LANG: 'C' } });
       // Keep success output well under the protocol's 64 KiB event line limit.
       const output = String(result.stdout || '').trim();
-      return output ? output.slice(-8 * 1024) : `completed npm ${operation.task}`;
+      return output ? output.slice(-8 * 1024) : `completed ${operation.task}`;
     },
-    'postgres.ensure-role': async (operation, { secretBindings = {} } = {}) => {
+    'postgres.ensure-role': async (operation, { secretBindings = {}, layout } = {}) => {
+      requireLayout(layout);
       const postgres = lookupUser('postgres');
-      if (!postgres || operation.role !== 'family_dinner' || operation.passwordSecretRef !== 'familyDinnerDatabasePassword') deny('PostgreSQL role operation does not match Family Dinner policy.');
-      const password = assertDatabasePassword(secretBindings.familyDinnerDatabasePassword);
+      if (!postgres || !layout.database || operation.role !== layout.database.user || operation.passwordSecretRef !== 'databasePassword') deny('PostgreSQL role operation does not match this app.');
+      const password = assertDatabasePassword(secretBindings.databasePassword);
+      const role = layout.database.user; // validated simple identifier (app-layout.js)
       // Sent on stdin only. assertDatabasePassword admits no whitespace or control characters, and
       // doubling quotes is sufficient under standard_conforming_strings (the default since PostgreSQL 9.1).
       const literal = `'${password.replaceAll("'", "''")}'`;
-      const stdin = `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'family_dinner') THEN CREATE ROLE family_dinner LOGIN; END IF; END $$;\nSET standard_conforming_strings = on;\nALTER ROLE family_dinner WITH LOGIN PASSWORD ${literal};\n`;
+      const stdin = `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN CREATE ROLE "${role}" LOGIN; END IF; END $$;\nSET standard_conforming_strings = on;\nALTER ROLE "${role}" WITH LOGIN PASSWORD ${literal};\n`;
       await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin, timeoutMs: operation.timeoutMs, secrets: [password, password.replaceAll("'", "''")], env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
-      return 'ensured Family Dinner database role';
+      return `ensured database role ${role}`;
     },
-    'postgres.ensure-database': async (operation) => {
+    'postgres.ensure-database': async (operation, { layout } = {}) => {
+      requireLayout(layout);
       const postgres = lookupUser('postgres');
-      if (!postgres || operation.database !== 'family_dinner' || operation.owner !== 'family_dinner') deny('PostgreSQL database operation does not match Family Dinner policy.');
-      const sql = `SELECT 'CREATE DATABASE family_dinner OWNER family_dinner' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'family_dinner')\\gexec\nALTER DATABASE family_dinner OWNER TO family_dinner;\n`;
+      if (!postgres || !layout.database || operation.database !== layout.database.name || operation.owner !== layout.database.user) deny('PostgreSQL database operation does not match this app.');
+      const { name, user } = layout.database; // validated simple identifiers (app-layout.js)
+      const sql = `SELECT 'CREATE DATABASE "${name}" OWNER "${user}"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${name}')\\gexec\nALTER DATABASE "${name}" OWNER TO "${user}";\n`;
       await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin: sql, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
-      return 'ensured Family Dinner database';
+      return `ensured database ${name}`;
     },
     'systemd.daemon-reload': async (operation) => {
       await run({ binary: '/usr/bin/systemctl', args: ['daemon-reload'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       return 'reloaded systemd unit definitions';
     },
-    'systemd.ensure-service': async (operation) => {
-      const allowed = new Set(['postgresql.service', 'nginx.service', 'family-dinner.service']);
+    'systemd.ensure-service': async (operation, { layout } = {}) => {
+      const allowed = new Set(['postgresql.service', 'nginx.service', ...(layout?.unitNames || [])]);
       if (!allowed.has(operation.unit) || !['enable', 'restart', 'enable-and-restart'].includes(operation.action)) deny('Systemd unit or action is not allowed.');
       const args = operation.action === 'enable' ? ['enable', operation.unit]
         : operation.action === 'restart' ? ['restart', operation.unit]
@@ -373,9 +490,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       return 'validated and reloaded nginx';
     },
-    'filesystem.ensure-directory': async (operation) => {
-      const directory = DIRECTORY_PATHS[operation.purpose];
-      if (!directory) deny('Unknown managed directory purpose.');
+    'filesystem.ensure-directory': async (operation, { layout } = {}) => {
+      const directory = directoryFor(operation, layout);
       const parent = path.dirname(directory);
       // Missing ancestors (e.g. /var/lib/sovereign-home) are created root-owned; they are never sovereign-controlled.
       if (!fsImpl.existsSync(parent)) fsImpl.mkdirSync(parent, { recursive: true, mode: 0o755 });
@@ -386,7 +502,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       // Inspect before mutating: a sovereign-planted symlink here would otherwise turn chown into a root escalation.
       const existing = lstatOrNull(fsImpl, directory);
       if (existing && (existing.isSymbolicLink() || !existing.isDirectory())) deny('Managed directory is not a real directory.');
-      const mode = PRIVATE_DIRECTORIES.has(operation.purpose) ? 0o700 : 0o755;
+      const mode = DIRECTORY_MODES[operation.purpose] || 0o755;
       if (!existing) fsImpl.mkdirSync(directory, { mode });
       // The owner of a sovereign-writable parent can swap this entry for a symlink at any moment, so
       // ownership and mode are applied through a no-follow directory descriptor, never by path.
@@ -400,8 +516,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       } finally { fsImpl.closeSync(fd); }
       return `ensured ${operation.purpose}`;
     },
-    'filesystem.write-managed-file': async (operation, { secretBindings = {} } = {}) => {
-      const template = renderManagedFile(operation, secretBindings);
+    'filesystem.write-managed-file': async (operation, { secretBindings = {}, layout } = {}) => {
+      const template = renderManagedFile(operation, { secretBindings, layout });
       if (template.owner === 'root') {
         writeFileAtomic(fsImpl, template.path, template.content, template.mode);
         return `wrote ${operation.template}`;
@@ -421,11 +537,9 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
 
 module.exports = {
   DIRECTORY_PATHS,
-  DINNER_PACKAGES,
   SOVEREIGN_HOME,
   GIT_DEPLOY_KEY_PATH,
   GIT_KNOWN_HOSTS_PATH,
-  DINNER_MIRROR,
   SOVEREIGN_GITCONFIG_PATH,
   GITHUB_KNOWN_HOSTS,
   NGINX_GATEWAY_CONTENT,
@@ -433,8 +547,8 @@ module.exports = {
   deployKeyStatus,
   createBaseHandlers,
   renderManagedFile,
-  readExistingDinnerPassword,
-  renderDinnerEnv,
+  readExistingDatabasePassword,
+  renderAppEnvFile,
   buildEnvContext,
   runAsUser,
   rootGitEnvironment,

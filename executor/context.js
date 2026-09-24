@@ -11,7 +11,7 @@ function executorCapabilities({ mutationsEnabled = false, gitDeployKey = 'missin
   return {
     executorVersion: '0.1.0',
     protocolVersions: [PROTOCOL_VERSION],
-    policyVersion: 'family-dinner-v1',
+    policyVersion: 'app-install-v1',
     actions: Object.keys(ACTIONS),
     installableApps: INSTALLABLE_APPS,
     supportedOperationTypes: SUPPORTED_OPERATION_TYPES,

@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { ProtocolError } = require('./protocol-error');
 const { buildDinnerBootstrapPlan } = require('../src/operations/compilers/bootstrap');
-const { buildDinnerInstallPlan } = require('../src/operations/compilers/install');
+const { buildAppInstallPlan } = require('../src/operations/compilers/install');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const { digestOperationPlan } = require('../src/operations/digest');
 const { getAppById } = require('../src/catalog');
@@ -14,7 +14,8 @@ const ACTIONS = Object.freeze({
   install: { fields: ['appId', 'ref', 'transport', 'site'] },
 });
 // Apps whose install the executor can compile today. Grows as catalog shapes are supported.
-const INSTALLABLE_APPS = Object.freeze(['family-dinner']);
+// Each entry has passed the runbook (docs/executor-app-runbook.md), including a container run.
+const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source']);
 const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }
@@ -41,7 +42,7 @@ function compileAction(action, { generatedAt = new Date().toISOString() } = {}) 
     plan = buildDinnerBootstrapPlan({ generatedAt });
   } else if (action.action === 'install') {
     if (!INSTALLABLE_APPS.includes(action.appId)) deny(`The executor cannot install ${action.appId} yet.`);
-    plan = buildDinnerInstallPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
+    plan = buildAppInstallPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
   } else {
     deny('Unsupported action.');
   }
@@ -52,7 +53,7 @@ function compileAction(action, { generatedAt = new Date().toISOString() } = {}) 
 
 // Secrets are generated inside the executor, so they never exist in the web process.
 const SECRET_GENERATORS = Object.freeze({
-  familyDinnerDatabasePassword: () => crypto.randomBytes(24).toString('base64url'),
+  databasePassword: () => crypto.randomBytes(24).toString('base64url'),
 });
 
 // Existing values (read by the executor from the app's managed config) win, so reinstalls and

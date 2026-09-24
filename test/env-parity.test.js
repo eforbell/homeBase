@@ -43,7 +43,10 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const { renderDinnerEnv } = require('../executor/handlers');
+  const { renderAppEnvFile } = require('../executor/handlers');
+  const { appLayout } = require('../src/operations/app-layout');
+  const { getAppById } = require('../src/catalog');
+  const layout = appLayout(getAppById('family-dinner'));
   const { createFakeFs } = require('./fixtures/fake-fs');
   const { withDeterministicRandom } = require('./fixtures/env/scenarios');
   const site = { hostname: 'newhost', domain: 'tailnet', householdTimezone: 'America/Chicago' };
@@ -53,7 +56,7 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   const config = { port: 3080, serviceUser: 'sovereign', baseInstallDir: base, homeBaseSharedRoot: base, homeBaseAssetsRoot: path.join(base, 'assets'), defaultHostname: site.hostname, defaultDomain: site.domain, householdTimezone: site.householdTimezone };
   const legacyFresh = env.parseDotEnv(withDeterministicRandom(() => buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: {}, config })).files['.env']);
   const password = env.parseDatabaseUrl(legacyFresh.DATABASE_URL).dbPassword;
-  const executorFresh = env.parseDotEnv(renderDinnerEnv({ password, site, fsImpl: noFonts }));
+  const executorFresh = env.parseDotEnv(renderAppEnvFile({ layout, password, site, fsImpl: noFonts }));
   assert.deepEqual(executorFresh, { ...legacyFresh, NODE_ENV: 'production' });
 
   // Reinstall: operator edits, an operator-added key, stale derived values, same-role DB wiring.
@@ -61,7 +64,7 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   fs.mkdirSync(path.join(base, 'familyDinner'), { recursive: true });
   fs.writeFileSync(path.join(base, 'familyDinner', '.env'), env.renderEnv(existing));
   const legacyReinstall = env.parseDotEnv(withDeterministicRandom(() => buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: {}, config })).files['.env']);
-  const executorReinstall = env.parseDotEnv(renderDinnerEnv({ password, site, existingContent: env.renderEnv(existing), fsImpl: noFonts }));
+  const executorReinstall = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv(existing), fsImpl: noFonts }));
   assert.deepEqual(executorReinstall, { ...legacyReinstall, NODE_ENV: 'production' });
   assert.equal(executorReinstall.OPENAI_API_KEY, 'sk-operator');
   assert.equal(executorReinstall.RECIPE_IMPORT_USER_AGENT, 'Home Base importer/0.1', 'non-listed defaults are re-derived');
@@ -71,10 +74,13 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
 });
 
 test('the executor reuses any valid existing database wiring and refuses wiring for another role', () => {
-  const { readExistingDinnerPassword } = require('../executor/handlers');
+  const { readExistingDatabasePassword } = require('../executor/handlers');
+  const { appLayout } = require('../src/operations/app-layout');
+  const { getAppById } = require('../src/catalog');
   const { createFakeFs } = require('./fixtures/fake-fs');
+  const layout = appLayout(getAppById('family-dinner'));
   const envPath = '/opt/sovereign-home/apps/familyDinner/.env';
-  const read = (content) => readExistingDinnerPassword({ fsImpl: createFakeFs({ [envPath]: content }), lookupUser: () => ({ uid: 1, gid: 1 }), asUser: (user, fn) => fn() });
+  const read = (content) => readExistingDatabasePassword({ layout, fsImpl: createFakeFs({ [envPath]: content }), lookupUser: () => ({ uid: 1, gid: 1 }), asUser: (user, fn) => fn() });
   assert.equal(read('DATABASE_URL="postgresql://family_dinner:p%40ss-word1@localhost:5432/family_dinner"\n'), 'p@ss-word1', 'quoted, non-canonical host is fine');
   assert.equal(read('PGUSER=family_dinner\nPGPASSWORD=Pg-pass-123\nPGDATABASE=family_dinner\n'), 'Pg-pass-123');
   assert.equal(read('OPENAI_API_KEY=x\n'), null);

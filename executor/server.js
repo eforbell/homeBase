@@ -3,7 +3,9 @@ const { MAX_REQUEST_BYTES, MAX_LINE_BYTES, ProtocolError, parseRequestLine, resu
 const { executorCapabilities } = require('./context');
 const { writeAudit } = require('./audit');
 const { executePlan: defaultExecutePlan } = require('./execute');
-const { createBaseHandlers, deployKeyStatus, readExistingDinnerPassword } = require('./handlers');
+const { createBaseHandlers, deployKeyStatus, readExistingDatabasePassword } = require('./handlers');
+const { appLayout } = require('../src/operations/app-layout');
+const { getAppById } = require('../src/catalog');
 const { PROTOCOL_VERSION } = require('./protocol');
 const { createHostStatusCollector } = require('./host-status');
 const { createAppUpdateStatusChecker } = require('./app-status');
@@ -108,7 +110,8 @@ function listenSystemd({ logger = console } = {}) {
     const { plan, planDigest } = compileAction(spec);
     // The accepted plan is streamed first so Home Base records exactly what ran (it holds no secrets).
     emit({ eventType: 'plan.accepted', planDigest, plan });
-    const existing = spec.appId === 'family-dinner' ? { familyDinnerDatabasePassword: readExistingDinnerPassword() } : {};
+    const layout = plan.kind === 'app-install' ? appLayout(getAppById(plan.target)) : null;
+    const existing = layout?.database ? { databasePassword: readExistingDatabasePassword({ layout }) } : {};
     const execution = await defaultExecutePlan({ plan, secretBindings: generateSecretBindings(plan, { existing }) }, { handlers, emit });
     return { planDigest, ...execution };
   };

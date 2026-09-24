@@ -2083,3 +2083,33 @@ test('legacy sudo/shell execute routes are explicitly refused in executor mode',
     }
   } finally { await server.close(); }
 });
+
+test('executor-mode reinstall keeps the catalog port; only a different app on that port is a conflict', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-port-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const started = [];
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async (spec) => { started.push(spec.appId); return { completedOperationIds: [] }; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const record = (appId, port) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  store.upsertInstallation(record('home-source', 3008));
+  store.upsertInstallation(record('family-plan', 3000));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const execute = (appId) => fetch(`${server.url}/api/apps/${appId}/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const reinstall = await execute('home-source');
+    assert.equal(reinstall.status, 202, JSON.stringify(await reinstall.clone().json()));
+    const conflict = await execute('family-dinner');
+    const payload = await conflict.json();
+    assert.equal(conflict.status, 409);
+    assert.equal(payload.code, 'PORT_CONFLICT');
+    assert.match(payload.error, /family-plan/);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
