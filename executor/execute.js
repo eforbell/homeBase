@@ -1,6 +1,26 @@
 const { ProtocolError } = require('./protocol');
 const { redactText } = require('../src/operations/redact');
 
+const MAX_FAILURE_OUTPUT_CHARS = 8 * 1024;
+
+function getFailureOutput(error, secrets) {
+  const captured = error?.output;
+  if (!captured || typeof captured !== 'object') return null;
+  const text = [captured.stderr, captured.stdout]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .join('\n')
+    .trim();
+  if (!text) return null;
+  const redacted = redactText(text, secrets);
+  if (redacted.length <= MAX_FAILURE_OUTPUT_CHARS) {
+    return { output: redacted, truncated: captured.truncated === true };
+  }
+  return {
+    output: `[truncated; showing final ${MAX_FAILURE_OUTPUT_CHARS} characters]\n${redacted.slice(-MAX_FAILURE_OUTPUT_CHARS)}`,
+    truncated: true,
+  };
+}
+
 // This dispatcher is intentionally injected by the privileged runtime.  It never
 // receives unvalidated JSON and it never exposes the secret binding object in events.
 async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
@@ -19,11 +39,17 @@ async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
       completed.add(operation.id);
       emit({ eventType: 'operation.completed', operationId: operation.id });
     } catch (error) {
-      emit({ eventType: 'operation.failed', operationId: operation.id, code: error.code || 'OPERATION_FAILED' });
+      const failure = getFailureOutput(error, Object.values(request.secretBindings || {}));
+      emit({
+        eventType: 'operation.failed',
+        operationId: operation.id,
+        code: error.code || 'OPERATION_FAILED',
+        ...(failure || {}),
+      });
       throw error;
     }
   }
   return { completedOperationIds: [...completed] };
 }
 
-module.exports = { executePlan };
+module.exports = { executePlan, getFailureOutput, MAX_FAILURE_OUTPUT_CHARS };

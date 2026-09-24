@@ -1,6 +1,15 @@
 const { spawn } = require('child_process');
 const { executePlan } = require('../executor/client');
-const { redactPlan } = require('../operations/redact');
+const { redactPlan, redactText } = require('../operations/redact');
+
+function appendExecutorEventLog(stateStore, jobId, event, secretBindings = {}) {
+  const operation = event.operationId ? ` ${event.operationId}` : '';
+  stateStore.appendJobLog(jobId, `[executor] ${event.eventType}${operation}\n`);
+  if (typeof event.output !== 'string' || !event.output.trim()) return;
+  const output = redactText(event.output, Object.values(secretBindings));
+  const truncated = event.truncated === true ? ' (truncated)' : '';
+  stateStore.appendJobLog(jobId, `[executor] diagnostic output${operation}${truncated}:\n${output.trim()}\n`);
+}
 
 async function waitForDinnerReadiness({ fetchImpl = global.fetch, attempts = 30, delayMs = 1000 } = {}) {
   let lastError = null;
@@ -83,7 +92,7 @@ class JobRunner {
     this.stateStore.updateJob(jobId, { status: 'running', startedAt: new Date().toISOString() });
     const result = await executePlan(this.executorSocket, { jobId, plan: operationPlan, secretBindings: {} }, { timeoutMs: 30 * 60 * 1000, onEvent: (event) => {
       if (event.operationId) this.stateStore.updateJob(jobId, { currentStep: event.operationId });
-      this.stateStore.appendJobLog(jobId, `[executor] ${event.eventType}${event.operationId ? ` ${event.operationId}` : ''}\n`);
+      appendExecutorEventLog(this.stateStore, jobId, event);
     } });
     this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(result) });
   }
@@ -103,7 +112,7 @@ class JobRunner {
     this.stateStore.updateJob(jobId, { status: 'running', startedAt: new Date().toISOString() });
     const result = await executePlan(this.executorSocket, { jobId, plan: plan.operationPlan, secretBindings }, { timeoutMs: 30 * 60 * 1000, onEvent: (event) => {
       if (event.operationId) this.stateStore.updateJob(jobId, { currentStep: event.operationId });
-      this.stateStore.appendJobLog(jobId, `[executor] ${event.eventType}${event.operationId ? ` ${event.operationId}` : ''}\n`);
+      appendExecutorEventLog(this.stateStore, jobId, event, secretBindings);
     } });
     this.stateStore.appendJobLog(jobId, '[executor] waiting for Family Dinner readiness\n');
     await waitForDinnerReadiness();
@@ -337,4 +346,5 @@ class JobRunner {
 module.exports = {
   JobRunner,
   waitForDinnerReadiness,
+  appendExecutorEventLog,
 };
