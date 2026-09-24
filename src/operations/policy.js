@@ -13,7 +13,22 @@ const INSTALL_DIRECTORIES = new Set(['sovereign-root', 'app-root', 'sovereign-ho
 const PROFILE_TYPES = {
   'host-bootstrap-v1': new Set(['host.assert-debian-family', 'package.ensure', 'identity.ensure-user', 'filesystem.ensure-directory', 'systemd.ensure-service', 'nginx.ensure-gateway', 'nginx.validate-and-reload']),
   'app-install-v1': new Set(['package.ensure', 'filesystem.ensure-directory', 'git.sync', 'postgres.ensure-role', 'postgres.ensure-database', 'filesystem.write-managed-file', 'runtime.run-app-task', 'systemd.daemon-reload', 'systemd.ensure-service', 'nginx.ensure-gateway', 'nginx.validate-and-reload', 'http.wait-ready']),
+  'app-restart-v1': new Set(['systemd.ensure-service', 'http.wait-ready']),
+  'app-backup-v1': new Set(['backup.create']),
+  'app-restore-v1': new Set(['backup.create', 'systemd.ensure-service', 'backup.restore', 'http.wait-ready']),
+  'app-uninstall-v1': new Set(['backup.create', 'systemd.ensure-service', 'filesystem.remove-app-artifacts', 'systemd.daemon-reload', 'nginx.validate-and-reload', 'postgres.drop-database', 'filesystem.remove-checkout', 'backup.remove-all']),
 };
+const PROFILE_KIND = {
+  'host-bootstrap-v1': 'host-bootstrap',
+  'app-install-v1': 'app-install',
+  'app-restart-v1': 'app-restart',
+  'app-backup-v1': 'app-backup',
+  'app-restore-v1': 'app-restore',
+  'app-uninstall-v1': 'app-uninstall',
+};
+// Destructive operations exist only in the profiles an operator explicitly confirms.
+const DESTRUCTIVE_PROFILES = new Set(['app-restore-v1', 'app-uninstall-v1']);
+const DESTRUCTIVE_TYPES = new Set(['backup.restore', 'backup.remove-all', 'filesystem.remove-app-artifacts', 'filesystem.remove-checkout', 'postgres.drop-database']);
 const TEMPLATE_PURPOSE = {
   'app-env-v1': 'app-env',
   'app-service-v1': 'systemd-unit',
@@ -54,6 +69,7 @@ function checkInstallOperation(operation, layout) {
       if (!layout.database || operation.role !== layout.database.user || !operation.secretRefs.includes(operation.passwordSecretRef)) deny('Database role does not match this app.');
       break;
     case 'postgres.ensure-database':
+    case 'postgres.drop-database':
       if (!layout.database || operation.database !== layout.database.name || operation.owner !== layout.database.user) deny('Database does not match this app.');
       break;
     case 'filesystem.write-managed-file': {
@@ -91,15 +107,14 @@ function validateOperationPolicy(plan) {
   const profileTypes = PROFILE_TYPES[plan.policyProfile];
   if (!profileTypes) deny(`Unknown policy profile: ${plan.policyProfile}`);
   const bootstrap = plan.policyProfile === 'host-bootstrap-v1';
-  if (bootstrap !== (plan.kind === 'host-bootstrap' && plan.target === 'local-host')) deny('Plan kind and target do not match the bootstrap profile.');
-  let layout = null;
-  if (!bootstrap) {
-    if (plan.kind !== 'app-install') deny('Plan kind does not match the app-install profile.');
-    layout = appLayout(getAppById(plan.target));
-  }
+  if (plan.kind !== PROFILE_KIND[plan.policyProfile]) deny('Plan kind does not match its policy profile.');
+  if (bootstrap !== (plan.target === 'local-host')) deny('Plan target does not match its policy profile.');
+  const layout = bootstrap ? null : appLayout(getAppById(plan.target));
   for (const operation of plan.operations) {
     if (!profileTypes.has(operation.type)) deny(`Operation ${operation.type} is not allowed by ${plan.policyProfile}.`);
-    if (operation.risk === 'destructive') deny('Destructive operations are not allowed in v1.');
+    const destructive = DESTRUCTIVE_TYPES.has(operation.type) || ['stop', 'disable-now'].includes(operation.action);
+    if (destructive !== (operation.risk === 'destructive')) deny(`Operation ${operation.id} must declare risk "destructive" exactly when it is destructive.`);
+    if (destructive && !DESTRUCTIVE_PROFILES.has(plan.policyProfile)) deny(`Destructive operations are not allowed by ${plan.policyProfile}.`);
     if (bootstrap) checkBootstrapOperation(operation);
     else checkInstallOperation(operation, layout);
   }

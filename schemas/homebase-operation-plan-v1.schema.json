@@ -20,7 +20,11 @@
     "kind": {
       "enum": [
         "host-bootstrap",
-        "app-install"
+        "app-install",
+        "app-restart",
+        "app-backup",
+        "app-restore",
+        "app-uninstall"
       ]
     },
     "target": {
@@ -39,7 +43,11 @@
     "policyProfile": {
       "enum": [
         "host-bootstrap-v1",
-        "app-install-v1"
+        "app-install-v1",
+        "app-restart-v1",
+        "app-backup-v1",
+        "app-restore-v1",
+        "app-uninstall-v1"
       ]
     },
     "operations": {
@@ -170,6 +178,24 @@
         },
         {
           "$ref": "#/$defs/httpReady"
+        },
+        {
+          "$ref": "#/$defs/backupCreate"
+        },
+        {
+          "$ref": "#/$defs/backupRestore"
+        },
+        {
+          "$ref": "#/$defs/backupRemoveAll"
+        },
+        {
+          "$ref": "#/$defs/removeArtifacts"
+        },
+        {
+          "$ref": "#/$defs/removeCheckout"
+        },
+        {
+          "$ref": "#/$defs/postgresDrop"
         }
       ]
     },
@@ -571,7 +597,9 @@
               "enum": [
                 "enable",
                 "restart",
-                "enable-and-restart"
+                "enable-and-restart",
+                "stop",
+                "disable-now"
               ]
             },
             "id": true,
@@ -675,6 +703,176 @@
             "executor",
             "port",
             "path"
+          ]
+        }
+      ]
+    },
+    "backupCreate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "backup.create"
+            },
+            "archiveName": {
+              "type": "string",
+              "pattern": "^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "archiveName"
+          ]
+        }
+      ]
+    },
+    "backupRestore": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "backup.restore"
+            },
+            "archiveName": {
+              "type": "string",
+              "pattern": "^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "archiveName"
+          ]
+        }
+      ]
+    },
+    "backupRemoveAll": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "backup.remove-all"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "removeArtifacts": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "filesystem.remove-app-artifacts"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "removeCheckout": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "filesystem.remove-checkout"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "postgresDrop": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "postgres.drop-database"
+            },
+            "database": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "owner": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "database",
+            "owner"
           ]
         }
       ]

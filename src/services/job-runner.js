@@ -102,8 +102,10 @@ class JobRunner {
 
   async runTypedActionJob(jobId, action, afterExecution) {
     this.stateStore.updateJob(jobId, { status: 'running', startedAt: new Date().toISOString() });
+    let acceptedPlan = null;
     const onEvent = (event) => {
       if (event.eventType === 'plan.accepted') {
+        acceptedPlan = event.plan;
         // Stored verbatim (it carries secret ref names, never values) so it re-digests to what ran.
         const verified = digestOperationPlan(event.plan) === event.planDigest;
         this.stateStore.updateJob(jobId, { planJson: JSON.stringify({ action, planDigest: event.planDigest, digestVerified: verified, operationPlan: event.plan }) });
@@ -125,7 +127,7 @@ class JobRunner {
         await new Promise((resolve) => setTimeout(resolve, this.busyRetry.delayMs));
       }
     }
-    if (typeof afterExecution === 'function') await afterExecution(jobId, result);
+    if (typeof afterExecution === 'function') await afterExecution(jobId, result, acceptedPlan);
     this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(result) });
   }
 
@@ -147,6 +149,64 @@ class JobRunner {
         this.stateStore.upsertInstallation({ ...stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
         if (typeof onComplete === 'function') onComplete();
       },
+    });
+  }
+
+  startTypedRestartJob({ appId }) {
+    const app = getAppById(appId);
+    return this.startTypedActionJob({
+      kind: 'restart', target: appId, action: { action: 'restart', appId },
+      afterExecution: async (jobId) => {
+        this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
+        await waitForAppReadiness({ app });
+      },
+    });
+  }
+
+  startTypedBackupJob({ appId }) {
+    return this.startTypedActionJob({
+      kind: 'backup', target: appId, action: { action: 'backup', appId },
+      afterExecution: async (jobId, result, acceptedPlan) => this.recordTypedBackup(appId, jobId, acceptedPlan),
+    });
+  }
+
+  startTypedRestoreJob({ appId, backupId }) {
+    const app = getAppById(appId);
+    return this.startTypedActionJob({
+      kind: 'restore', target: appId, action: { action: 'restore', appId, backupId },
+      afterExecution: async (jobId, result, acceptedPlan) => {
+        this.recordTypedBackup(appId, jobId, acceptedPlan);
+        this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
+        await waitForAppReadiness({ app });
+      },
+    });
+  }
+
+  startTypedUninstallJob({ appId, keepBackups }) {
+    return this.startTypedActionJob({
+      kind: 'uninstall', target: appId, action: { action: 'uninstall', appId, keepBackups },
+      afterExecution: async (jobId, result, acceptedPlan) => {
+        this.recordTypedBackup(appId, jobId, acceptedPlan);
+        this.stateStore.deleteInstallation(appId);
+        // Same bookkeeping as the legacy uninstall; archives on disk follow keepBackups.
+        this.stateStore.deleteBackups(appId);
+      },
+    });
+  }
+
+  // The executor names every archive inside the accepted plan, so the record matches what ran.
+  recordTypedBackup(appId, jobId, acceptedPlan) {
+    const operation = acceptedPlan?.operations?.find((entry) => entry.type === 'backup.create');
+    if (!operation) return;
+    this.stateStore.recordBackup({
+      appId,
+      archiveDir: `/var/lib/sovereign-home/backups/${appId}/${operation.archiveName}`,
+      generatedAt: acceptedPlan.generatedAt,
+      dryRun: false,
+      status: 'completed',
+      includedFiles: [],
+      jobId,
+      createdAt: new Date().toISOString(),
     });
   }
 

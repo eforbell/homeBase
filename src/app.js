@@ -207,6 +207,19 @@ function rejectLegacyExecution(res) {
   });
 }
 
+// Starts an executor lifecycle job after the same capability checks installs use.
+async function startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction, auth, start }) {
+  let capabilities;
+  try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch {
+    return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
+  }
+  if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+  if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor does not manage ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+  const jobId = start();
+  recordAdminAudit(stateStore, { action: auditAction, target: appId, dryRun: false, outcome: 'queued', jobId, sessionTokenHash: auth?.sessionTokenHash });
+  return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
+}
+
 function missingCheckIds(preflight, ids) {
   return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok === true));
 }
@@ -1324,7 +1337,9 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restart-execute', auth, start: () => jobRunner.startTypedRestartJob({ appId }) });
+          }
           const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
@@ -1418,7 +1433,10 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            const appId = backupExecuteMatch[1];
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-backup-execute', auth, start: () => jobRunner.startTypedBackupJob({ appId }) });
+          }
           const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
@@ -1521,7 +1539,9 @@ function createApp(config) {
           if (app.database?.engine && app.database.engine.includes('postgres')) {
             required.push('psql', 'postgres-service');
           }
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-uninstall-execute', auth, start: () => jobRunner.startTypedUninstallJob({ appId, keepBackups: body.keepBackups !== false }) });
+          }
           const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, required);
           if (missing.length) {
@@ -1598,7 +1618,14 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            const appId = restoreExecuteMatch[1];
+            // Resolve the requested archive against the on-disk inventory; only its name crosses the socket.
+            const { backups } = listBackupsFromDisk({ appId, config: effectiveConfig });
+            const selected = body.backupDir ? backups.find((item) => item.archiveDir === body.backupDir || item.name === body.backupDir) : backups[0];
+            if (!selected || !/^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$/.test(selected.name)) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restore-execute', auth, start: () => jobRunner.startTypedRestoreJob({ appId, backupId: selected.name }) });
+          }
           const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {

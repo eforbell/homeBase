@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getAppById } = require('../catalog');
 const { listBackupsFromDisk } = require('./backup-inventory');
+const { storageBaseDir } = require('./backup-planner');
 
 function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
@@ -96,11 +97,12 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
     }));
   }
 
+  const storageBase = storageBaseDir(app, installRoot);
   for (const relativePath of app.storage?.paths || []) {
     const tarName = `${relativePath.replaceAll('/', '_')}.tgz`;
     commands.push(renderRunAsServiceUserCommand({
       serviceUser,
-      command: `if [ -f ${archiveDir}/${tarName} ]; then rm -rf ${installRoot}/${relativePath} && tar -C ${installRoot} -xzf ${archiveDir}/${tarName}; fi`,
+      command: `if [ -f ${archiveDir}/${tarName} ]; then rm -rf ${storageBase}/${relativePath} && tar -C ${storageBase} -xzf ${archiveDir}/${tarName}; fi`,
     }));
   }
 

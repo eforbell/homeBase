@@ -10,6 +10,7 @@ const { PROTOCOL_VERSION } = require('./protocol');
 const { createHostStatusCollector } = require('./host-status');
 const { createAppUpdateStatusChecker } = require('./app-status');
 const { compileAction, generateSecretBindings } = require('./actions');
+const { createLifecycleHandlers } = require('./lifecycle-handlers');
 
 function encodeLine(payload) {
   const line = JSON.stringify(payload);
@@ -105,11 +106,12 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
   });
 }
 function listenSystemd({ logger = console } = {}) {
-  const handlers = createBaseHandlers();
+  const handlers = { ...createBaseHandlers(), ...createLifecycleHandlers() };
   const runAction = async (spec, { emit }) => {
     const { plan, planDigest } = compileAction(spec);
     // The accepted plan is streamed first so Home Base records exactly what ran (it holds no secrets).
     emit({ eventType: 'plan.accepted', planDigest, plan });
+    // Only installs bind secrets; lifecycle handlers read live wiring themselves when they need it.
     const layout = plan.kind === 'app-install' ? appLayout(getAppById(plan.target)) : null;
     const existing = layout?.database ? { databasePassword: readExistingDatabasePassword({ layout }) } : {};
     const execution = await defaultExecutePlan({ plan, secretBindings: generateSecretBindings(plan, { existing }) }, { handlers, emit });

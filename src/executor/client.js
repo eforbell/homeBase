@@ -58,8 +58,19 @@ function appUpdateStatus(socketPath, { appId, transport, ref }, options) {
 }
 
 // The executor compiles the plan; Home Base only names the action.
-function actionFields({ action, appId, ref, transport, site }) {
-  return action === 'bootstrap' ? { action } : { action, appId, ref, transport, site };
+// Only the fields each action accepts are sent; the executor rejects anything else.
+const ACTION_FIELD_NAMES = {
+  bootstrap: [],
+  install: ['appId', 'ref', 'transport', 'site'],
+  restart: ['appId'],
+  backup: ['appId'],
+  restore: ['appId', 'backupId'],
+  uninstall: ['appId', 'keepBackups'],
+};
+
+function actionFields(fields) {
+  const names = ACTION_FIELD_NAMES[fields.action] || [];
+  return { action: fields.action, ...Object.fromEntries(names.map((name) => [name, fields[name]])) };
 }
 
 function runAction(socketPath, { jobId, actor = { kind: 'homebase-admin-session', auditRef: 'local' }, ...fields }, options) {

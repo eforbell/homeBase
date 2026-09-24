@@ -2052,36 +2052,55 @@ test('executor-mode Dinner over SSH is refused up front when the executor has no
   }
 });
 
-test('legacy sudo/shell execute routes are explicitly refused in executor mode', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-legacy-'));
+test('executor mode routes lifecycle actions to the executor and still refuses unconverted legacy routes', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-lifecycle-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const received = [];
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
   const backupRoot = path.join(tempDir, 'backups');
-  const archiveDir = path.join(backupRoot, 'family-help', '20260403T000000Z');
-  fs.mkdirSync(archiveDir, { recursive: true });
-  fs.writeFileSync(path.join(archiveDir, 'backup-generated-at.txt'), '2026-04-03T00:00:00.000Z\n');
-  fs.writeFileSync(path.join(archiveDir, '.env.backup'), 'DATABASE_URL=postgresql://x:y@localhost/db\n');
-  fs.writeFileSync(path.join(archiveDir, 'database.dump'), 'placeholder');
+  fs.mkdirSync(path.join(backupRoot, 'home-source', '20260924T101010Z'), { recursive: true });
+  fs.writeFileSync(path.join(backupRoot, 'home-source', '20260924T101010Z', 'backup-generated-at.txt'), '2026-09-24T10:10:10.000Z\n');
   const dbPath = path.join(tempDir, 'state.sqlite3');
   const store = new SqliteStateStore(dbPath);
   store.init();
-  store.upsertInstallation({ appId: 'family-help', name: 'Family Help', purpose: 'help desk', port: 3002, mountPath: '/help/', externalUrl: 'https://homebase.tailnet/help/', installRoot: '/tmp/does-not-matter', serviceName: 'family-help', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
-  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: backupRoot, baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: path.join(tempDir, 'missing.sock') });
+  const record = (appId, port) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  store.upsertInstallation(record('home-source', 3008));
+  store.upsertInstallation(record('family-help', 3002));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: backupRoot, baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
   try {
     const cookie = await setupAdminCookie(server.url);
-    const routes = [
-      '/api/homebase/install-self',
-      '/api/network/tailscale/publish-execute',
-      '/api/apps/family-help/restart/execute',
-      '/api/apps/family-help/backup/execute',
-      '/api/apps/family-help/uninstall/execute',
-      '/api/apps/family-help/restore/execute',
-    ];
-    for (const route of routes) {
-      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE', backupDir: archiveDir, confirmAppId: 'family-help' }) });
-      const payload = await response.json();
-      assert.equal(response.status, 409, `${route}: ${JSON.stringify(payload)}`);
-      assert.equal(payload.code, 'TYPED_EXECUTION_NOT_SUPPORTED', `${route}: ${JSON.stringify(payload)}`);
+    const post = async (route, extra = {}) => {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE', ...extra }) });
+      return { status: response.status, body: await response.json() };
+    };
+    for (const route of ['/api/homebase/install-self', '/api/network/tailscale/publish-execute']) {
+      const response = await post(route);
+      assert.equal(response.status, 409, route);
+      assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', route);
     }
-  } finally { await server.close(); }
+    for (const action of ['restart', 'backup', 'uninstall']) {
+      const response = await post(`/api/apps/family-help/${action}/execute`);
+      assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', `family-help ${action}: ${JSON.stringify(response.body)}`);
+    }
+    for (const [action, extra] of [['restart'], ['backup'], ['restore', { backupDir: '20260924T101010Z' }], ['uninstall', { keepBackups: false }]]) {
+      const response = await post(`/api/apps/home-source/${action}/execute`, extra);
+      assert.equal(response.status, 202, `${action}: ${JSON.stringify(response.body)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(received, [
+      { action: 'restart', appId: 'home-source' },
+      { action: 'backup', appId: 'home-source' },
+      { action: 'restore', appId: 'home-source', backupId: '20260924T101010Z' },
+      { action: 'uninstall', appId: 'home-source', keepBackups: false },
+    ]);
+    const missing = await post('/api/apps/home-source/restore/execute', { backupDir: '/etc/shadow' });
+    assert.equal(missing.body.code, 'BACKUP_NOT_FOUND');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
 });
 
 test('executor-mode reinstall keeps the catalog port; only a different app on that port is a conflict', async () => {

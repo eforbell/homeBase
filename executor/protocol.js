@@ -17,7 +17,7 @@ function requireExactKeys(value, allowed) {
 const BASE_KEYS = ['protocolVersion', 'requestId', 'type'];
 
 function validateRequest(request) {
-  requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actor', 'issuedAt', 'appId', 'transport', 'ref', 'action', 'site']));
+  requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actor', 'issuedAt', 'appId', 'transport', 'ref', 'action', 'site', 'backupId', 'keepBackups']));
   if (request.protocolVersion !== PROTOCOL_VERSION) throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported executor protocol version.');
   if (typeof request.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.requestId)) throw new ProtocolError('INVALID_REQUEST', 'requestId must be a UUID.');
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');

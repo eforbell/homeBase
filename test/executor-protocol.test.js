@@ -43,7 +43,7 @@ test('executor hello reports protocol v2 actions and stays mutation-disabled by 
     assert.equal(PROTOCOL_VERSION, 2);
     assert.deepEqual(response.capabilities.protocolVersions, [2]);
     assert.equal(response.capabilities.mutationsEnabled, false);
-    assert.deepEqual(response.capabilities.actions, ['bootstrap', 'install']);
+    assert.deepEqual(response.capabilities.actions, ['bootstrap', 'install', 'restart', 'backup', 'restore', 'uninstall']);
     assert.deepEqual(response.capabilities.installableApps, ['family-dinner', 'home-source']);
   });
 });

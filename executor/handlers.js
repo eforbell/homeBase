@@ -466,10 +466,15 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     },
     'systemd.ensure-service': async (operation, { layout } = {}) => {
       const allowed = new Set(['postgresql.service', 'nginx.service', ...(layout?.unitNames || [])]);
-      if (!allowed.has(operation.unit) || !['enable', 'restart', 'enable-and-restart'].includes(operation.action)) deny('Systemd unit or action is not allowed.');
-      const args = operation.action === 'enable' ? ['enable', operation.unit]
-        : operation.action === 'restart' ? ['restart', operation.unit]
-          : ['enable', '--now', operation.unit];
+      if (!allowed.has(operation.unit) || !['enable', 'restart', 'enable-and-restart', 'stop', 'disable-now'].includes(operation.action)) deny('Systemd unit or action is not allowed.');
+      if (operation.action === 'disable-now' && !lstatOrNull(fsImpl, `/etc/systemd/system/${operation.unit}`)) return `${operation.unit} is not installed`;
+      const args = {
+        enable: ['enable', operation.unit],
+        restart: ['restart', operation.unit],
+        'enable-and-restart': ['enable', '--now', operation.unit],
+        stop: ['stop', operation.unit],
+        'disable-now': ['disable', '--now', operation.unit],
+      }[operation.action];
       await run({ binary: '/usr/bin/systemctl', args, ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       // `enable --now` does not restart an already-running unit; the plan's contract is a fresh start.
       if (operation.action === 'enable-and-restart') await run({ binary: '/usr/bin/systemctl', args: ['restart', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
@@ -553,4 +558,8 @@ module.exports = {
   runAsUser,
   rootGitEnvironment,
   ROOT_GIT_CONFIG,
+  lstatOrNull,
+  writeFileAtomic,
+  requireLayout,
+  deny,
 };

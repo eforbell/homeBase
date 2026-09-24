@@ -2,12 +2,15 @@ const { spawn } = require('child_process');
 const { redactText } = require('../src/operations/redact');
 
 const ALLOWED_BINARIES = new Set([
-  '/usr/bin/apt-get', '/usr/sbin/useradd', '/usr/bin/git', '/usr/bin/npm', '/usr/bin/node', '/usr/bin/psql', '/usr/bin/systemctl', '/usr/sbin/nginx', '/usr/bin/id',
+  '/usr/bin/apt-get', '/usr/sbin/useradd', '/usr/bin/git', '/usr/bin/npm', '/usr/bin/node', '/usr/bin/pg_dump', '/usr/bin/pg_restore', '/usr/bin/tar', '/usr/bin/psql', '/usr/bin/systemctl', '/usr/sbin/nginx', '/usr/bin/id',
 ]);
 // Values for these keys are always composed by handlers from fixed strings, never from plan fields.
 const ALLOWED_ENV_KEYS = new Set([
   'HOME', 'LANG', 'LC_ALL', 'NODE_ENV', 'PATH',
   'DEBIAN_FRONTEND', 'NEEDRESTART_MODE', 'GIT_SSH_COMMAND', 'GIT_TERMINAL_PROMPT', 'GIT_CONFIG_SYSTEM',
+  // libpq connection settings for pg_dump/pg_restore, which run as sovereign (which can already read
+  // the app's .env); PGPASSWORD is redacted from output via the spawn's secrets list.
+  'PGHOST', 'PGPORT', 'PGUSER', 'PGDATABASE', 'PGPASSWORD',
 ]);
 
 function runApproved({ binary, args = [], uid, gid, cwd, env = {}, stdin = null, timeoutMs, outputLimit = 64 * 1024, secrets = [], spawnImpl = spawn }) {

@@ -16,7 +16,7 @@ test('executor failure events include bounded, redacted process diagnostics', as
 
   await assert.rejects(() => executePlan({
     secretBindings: { familyDinnerDatabasePassword: secret },
-    plan: { operations: [{ id: 'install-packages', type: 'package.ensure', dependsOn: [], executor: 'executor' }] },
+    plan: { kind: 'host-bootstrap', target: 'local-host', operations: [{ id: 'install-packages', type: 'package.ensure', dependsOn: [], executor: 'executor' }] },
   }, {
     handlers: { 'package.ensure': async () => { throw error; } },
     emit: (event) => events.push(event),

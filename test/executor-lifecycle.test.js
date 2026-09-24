@@ -1,0 +1,153 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { createLifecycleHandlers } = require('../executor/lifecycle-handlers');
+const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan, archiveNameFor } = require('../src/operations/compilers/lifecycle');
+const { validateOperationPolicy } = require('../src/operations/policy');
+const { appLayout } = require('../src/operations/app-layout');
+const { getAppById } = require('../src/catalog');
+const { createFakeFs } = require('./fixtures/fake-fs');
+
+const SOURCE = appLayout(getAppById('home-source'));
+const SOVEREIGN = { uid: 1001, gid: 1002 };
+const ENV = '/opt/sovereign-home/apps/homeSource/.env';
+const ARCHIVE = '/var/lib/sovereign-home/backups/home-source/20260924T101010Z';
+
+function op(type, fields = {}) {
+  return { id: 'op', type, title: 't', risk: 'write', timeoutMs: 1000, dependsOn: [], preconditions: [], secretRefs: [], ...fields };
+}
+
+function harness(files = {}) {
+  const fsImpl = createFakeFs({
+    '/var/lib/sovereign-home/backups': { kind: 'dir', uid: 1001 },
+    [ENV]: { kind: 'file', content: 'DATABASE_URL=postgresql://homesource:Live-pass-123@127.0.0.1:5432/homesource\nSMTP_HOST=live.example\n', uid: 1001 },
+    '/var/lib/sovereign-home/home-source/data/documents': { kind: 'dir', uid: 1001 },
+    ...files,
+  });
+  const calls = [];
+  const identities = [];
+  let current = 'root';
+  const asUser = (user, fn) => { identities.push(user.uid); const previous = current; current = 'sovereign'; try { return fn(); } finally { current = previous; } };
+  const handlers = createLifecycleHandlers({
+    fsImpl, asUser, now: () => new Date('2026-09-24T10:10:10.000Z'),
+    lookupUser: (name) => (name === 'postgres' ? { uid: 999, gid: 999 } : SOVEREIGN),
+    run: async (input) => {
+      calls.push({ ...input, as: current });
+      // Simulate tools creating their output files.
+      const outputIndex = input.args.indexOf('-f');
+      if (outputIndex >= 0) fsImpl.writeFileSync(input.args[outputIndex + 1], 'dump');
+      const tarIndex = input.args.indexOf('-czf');
+      if (tarIndex >= 0) fsImpl.writeFileSync(input.args[tarIndex + 1], 'tgz');
+      return { stdout: '' };
+    },
+  });
+  return { fsImpl, calls, identities, handlers };
+}
+
+test('backup runs entirely as sovereign, keeps secrets 0600, and never passes credentials in argv', async () => {
+  const { fsImpl, calls, handlers } = harness();
+  const output = await handlers['backup.create'](op('backup.create', { archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  assert.match(output, /\.env\.backup, database\.dump, documents\.tgz/);
+  const dump = calls.find((call) => call.binary === '/usr/bin/pg_dump');
+  assert.equal(dump.uid, 1001);
+  assert.deepEqual(dump.args, ['--no-password', '-Fc', '-f', `${ARCHIVE}/database.dump`]);
+  assert.doesNotMatch(JSON.stringify(dump.args), /Live-pass/);
+  assert.equal(dump.env.PGPASSWORD, 'Live-pass-123');
+  assert.deepEqual(dump.secrets, ['Live-pass-123']);
+  const tar = calls.find((call) => call.binary === '/usr/bin/tar');
+  assert.deepEqual([tar.uid, tar.args], [1001, ['-C', '/var/lib/sovereign-home/home-source/data', '-czf', `${ARCHIVE}/documents.tgz`, 'documents']]);
+  assert.equal(fsImpl.entries.get(`${ARCHIVE}/.env.backup`).mode, 0o600);
+  assert.equal(fsImpl.entries.get(`${ARCHIVE}/database.dump`).mode, 0o600);
+  assert.equal(fsImpl.entries.get(`${ARCHIVE}`).mode, 0o755, 'listable by the Home Base inventory');
+  assert.equal(fsImpl.readFileSync(`${ARCHIVE}/backup-generated-at.txt`), '2026-09-24T10:10:10.000Z\n');
+  await assert.rejects(() => handlers['backup.create'](op('backup.create', { archiveName: '20260924T101010Z' }), { layout: SOURCE }), (error) => error.code === 'EEXIST', 'archives are never overwritten');
+});
+
+test('restore brings back env, database (as the app role), and storage while keeping live database wiring', async () => {
+  const { fsImpl, calls, handlers } = harness({
+    [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: 'DATABASE_URL=postgresql://homesource:Old-pass-999@127.0.0.1:5432/homesource\nSMTP_HOST=from-backup.example\nEXTRA=1\n', uid: 1001 },
+    [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 },
+    [`${ARCHIVE}/documents.tgz`]: { kind: 'file', content: 'tgz', uid: 1001 },
+  });
+  await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  const env = fsImpl.readFileSync(ENV);
+  assert.match(env, /^SMTP_HOST=from-backup\.example$/m);
+  assert.match(env, /^EXTRA=1$/m);
+  assert.match(env, /Live-pass-123/, 'live database wiring is preserved');
+  assert.doesNotMatch(env, /Old-pass/);
+  const restore = calls.find((call) => call.binary === '/usr/bin/pg_restore');
+  assert.deepEqual([restore.uid, restore.env.PGUSER], [1001, 'homesource'], 'runs as sovereign with the app role, never postgres');
+  assert.deepEqual(restore.args, ['--no-password', '--clean', '--if-exists', '-d', 'homesource', `${ARCHIVE}/database.dump`]);
+  const extract = calls.find((call) => call.binary === '/usr/bin/tar');
+  assert.deepEqual([extract.uid, extract.args], [1001, ['-C', '/var/lib/sovereign-home/home-source/data', '--no-same-owner', '-xzf', `${ARCHIVE}/documents.tgz`]]);
+  await assert.rejects(() => handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20200101T000000Z' }), { layout: SOURCE }), /does not exist/);
+});
+
+test('uninstall removes only root-owned layout artifacts as root and app files as sovereign', async () => {
+  const { fsImpl, calls, identities, handlers } = harness({
+    '/etc/systemd/system/home-source.service': 'unit',
+    '/etc/systemd/system/home-source-continuity-check.timer': 'unit',
+    '/etc/nginx/sovereign-home.d/home-source.conf': 'snippet',
+    '/etc/systemd/system/sshd.service': 'not ours',
+    '/var/lib/sovereign-home/git-mirrors/homeSource.git': { kind: 'dir', uid: 0 },
+    '/opt/sovereign-home/apps/homeSource/server.js': 'code',
+  });
+  await handlers['filesystem.remove-app-artifacts'](op('filesystem.remove-app-artifacts', { risk: 'destructive' }), { layout: SOURCE });
+  assert.equal(fsImpl.existsSync('/etc/systemd/system/home-source.service'), false);
+  assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-home.d/home-source.conf'), false);
+  assert.equal(fsImpl.existsSync('/var/lib/sovereign-home/git-mirrors/homeSource.git'), false);
+  assert.equal(fsImpl.existsSync('/etc/systemd/system/sshd.service'), true);
+  const before = identities.length;
+  await handlers['filesystem.remove-checkout'](op('filesystem.remove-checkout', { risk: 'destructive' }), { layout: SOURCE });
+  assert.equal(identities.length, before + 1, 'checkout removal runs as sovereign');
+  assert.equal(fsImpl.existsSync('/opt/sovereign-home/apps/homeSource'), false);
+  assert.equal(fsImpl.existsSync('/var/lib/sovereign-home/home-source/data/documents'), true, 'external storage is kept');
+  await handlers['postgres.drop-database'](op('postgres.drop-database', { risk: 'destructive', database: 'homesource', owner: 'homesource' }), { layout: SOURCE });
+  const drop = calls.at(-1);
+  assert.equal(drop.uid, 999);
+  assert.equal(drop.stdin, 'DROP DATABASE IF EXISTS "homesource" WITH (FORCE);\nDROP ROLE IF EXISTS "homesource";\n');
+  await assert.rejects(() => handlers['postgres.drop-database'](op('postgres.drop-database', { risk: 'destructive', database: 'family_dinner', owner: 'family_dinner' }), { layout: SOURCE }), (error) => error.code === 'POLICY_DENIED');
+
+  const planted = harness({ '/var/lib/sovereign-home/git-mirrors/homeSource.git': { kind: 'link', target: '/etc' } });
+  await assert.rejects(() => planted.handlers['filesystem.remove-app-artifacts'](op('filesystem.remove-app-artifacts', { risk: 'destructive' }), { layout: SOURCE }), /not the root-owned git mirror/);
+});
+
+test('lifecycle plans validate, and destructive operations exist only where an operator confirms them', () => {
+  const at = '2026-09-24T10:10:10.123Z';
+  assert.equal(archiveNameFor(at), '20260924T101010123Z');
+  assert.equal(archiveNameFor('2026-09-24T10:10:10.000Z'), '20260924T101010Z', 'matches the legacy planner naming');
+  for (const plan of [
+    buildAppRestartPlan({ appId: 'home-source', generatedAt: at }),
+    buildAppBackupPlan({ appId: 'home-source', generatedAt: at }),
+    buildAppRestorePlan({ appId: 'home-source', backupId: '20260101T000000Z', generatedAt: at }),
+    buildAppUninstallPlan({ appId: 'home-source', keepBackups: true, generatedAt: at }),
+    buildAppUninstallPlan({ appId: 'family-dinner', keepBackups: false, generatedAt: at }),
+  ]) assert.equal(validateOperationPolicy(plan), plan);
+
+  const restore = buildAppRestorePlan({ appId: 'home-source', backupId: '20260101T000000Z', generatedAt: at });
+  assert.equal(restore.operations[0].type, 'backup.create', 'a safety backup comes first');
+  const backup = buildAppBackupPlan({ appId: 'home-source', generatedAt: at });
+  const smuggled = { ...backup, operations: [...backup.operations, { ...restore.operations.find((entry) => entry.type === 'backup.restore'), dependsOn: [backup.operations[0].id] }] };
+  assert.throws(() => validateOperationPolicy(smuggled), (error) => error.code === 'POLICY_DENIED');
+  const understated = JSON.parse(JSON.stringify(restore));
+  understated.operations.find((entry) => entry.type === 'backup.restore').risk = 'write';
+  assert.throws(() => validateOperationPolicy(understated), /must declare risk "destructive"/);
+  const relabelled = { ...buildAppUninstallPlan({ appId: 'home-source', generatedAt: at }), kind: 'app-restart' };
+  assert.throws(() => validateOperationPolicy(relabelled), /kind does not match/);
+});
+
+test('executePlan hands every app plan kind its catalog layout, and bootstrap none', async () => {
+  const { executePlan } = require('../executor/execute');
+  const { buildDinnerBootstrapPlan } = require('../src/operations/compilers/bootstrap');
+  const seen = [];
+  const record = async (operation, context) => { seen.push([operation.type, context.layout?.app.id ?? null]); };
+  const handlers = new Proxy({}, { get: () => record });
+  for (const plan of [
+    buildAppBackupPlan({ appId: 'home-source' }),
+    buildAppRestartPlan({ appId: 'family-dinner' }),
+    buildAppUninstallPlan({ appId: 'home-source' }),
+  ]) await executePlan({ plan, secretBindings: {} }, { handlers });
+  await executePlan({ plan: buildDinnerBootstrapPlan(), secretBindings: {} }, { handlers });
+  assert.deepEqual(seen.find(([type]) => type === 'backup.create'), ['backup.create', 'home-source']);
+  assert.ok(seen.filter(([type]) => type === 'systemd.ensure-service').some(([, app]) => app === 'family-dinner'));
+  assert.ok(seen.filter(([type]) => type === 'host.assert-debian-family').every(([, app]) => app === null));
+});

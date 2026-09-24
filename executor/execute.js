@@ -28,7 +28,7 @@ function getFailureOutput(error, secrets) {
 async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
   const completed = new Set();
   // App operations resolve every path, unit, and name from the target's catalog layout.
-  const layout = request.plan.kind === 'app-install' ? appLayout(getAppById(request.plan.target)) : null;
+  const layout = request.plan.kind === 'host-bootstrap' ? null : appLayout(getAppById(request.plan.target));
   for (const operation of request.plan.operations) {
     if (operation.dependsOn.some((id) => !completed.has(id))) {
       throw new ProtocolError('INVALID_PLAN', `Operation dependencies are incomplete for ${operation.id}.`);
