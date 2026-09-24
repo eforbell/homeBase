@@ -3,7 +3,7 @@ const { getAppById } = require('../src/catalog');
 const { PROTOCOL_VERSION } = require('./protocol-version');
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
-const REQUEST_TYPES = new Set(['hello', 'host-status', 'app-update-status', 'plan-action', 'run-action']);
+const REQUEST_TYPES = new Set(['hello', 'host-status', 'app-update-status', 'action-status', 'plan-action', 'run-action']);
 
 const { ProtocolError } = require('./protocol-error');
 const { normalizeAction, ACTION_FIELDS } = require('./actions');
@@ -22,6 +22,11 @@ function validateRequest(request) {
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');
   if (request.type === 'hello' || request.type === 'host-status') {
     requireExactKeys(request, new Set(BASE_KEYS));
+    return request;
+  }
+  if (request.type === 'action-status') {
+    requireExactKeys(request, new Set([...BASE_KEYS, 'jobId']));
+    if (typeof request.jobId !== 'string' || !/^[1-9][0-9]*$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
     return request;
   }
   if (request.type === 'app-update-status') {

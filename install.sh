@@ -42,7 +42,8 @@ Options:
   --dry-run            Print the resolved installation without changing the host
   --no-start           Install and enable units without starting them
   --repair             Restore managed code and service assets without replacing state or environment
-  --repair-executor    Restore only executor code, group, socket, and service assets
+  --repair-executor    Restore the executor's code (executor/, src/, schemas/, dependencies),
+                       group, socket, and units without touching config or state
   --git-ssh-key <path> Install an unencrypted SSH deploy key for private app repositories
                        (stored root-only at /etc/sovereign-home/git/deploy_key) and
                        switch Home Base to SSH git transport
@@ -356,9 +357,14 @@ if [ -f "$VERSION_MARKER" ]; then
     log "repairing managed Home Base code while preserving config and state"
     cp -a "$SOURCE_DIR"/. "$INSTALL_DIR"/
   elif [ "$REPAIR_EXECUTOR" -eq 1 ]; then
-    log "repairing managed executor code while preserving Home Base code, config, and state"
-    mkdir -p "$INSTALL_DIR/executor"
-    cp -a "$SOURCE_DIR/executor"/. "$INSTALL_DIR/executor"/
+    # The executor loads shared, trusted modules from src/ and schemas/; refreshing executor/ alone
+    # would run new executor code against old policy and compilers.
+    log "repairing executor code and the shared modules it loads while preserving config and state"
+    for component in executor src schemas; do
+      mkdir -p "$INSTALL_DIR/$component"
+      cp -a "$SOURCE_DIR/$component"/. "$INSTALL_DIR/$component"/
+    done
+    cp -a "$SOURCE_DIR/package.json" "$SOURCE_DIR/package-lock.json" "$INSTALL_DIR"/
   else
     log "Home Base ${RELEASE_VERSION} is already installed; preserving code, config, and state"
   fi
@@ -436,6 +442,15 @@ set_env_value() {
     printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
   fi
 }
+
+if [ "$REPAIR" -eq 1 ] && [ -f "$ENV_FILE" ]; then
+  # These keys define the executor-mode boundary; repair restores them if they drifted.
+  set_env_value HOME_BASE_EXECUTION_MODE executor
+  set_env_value HOME_BASE_ENABLE_PRIVILEGED_JOBS 1
+  set_env_value HOME_BASE_EXECUTOR_SOCKET "$EXECUTOR_SOCKET_PATH"
+  set_env_value HOME_BASE_BIND_HOST 127.0.0.1
+  log "restored executor-mode settings in $ENV_FILE (other settings preserved)"
+fi
 
 if [ -n "$GIT_SSH_KEY_SOURCE" ]; then
   [ -f "$ENV_FILE" ] || die "--git-ssh-key requires an existing environment file: $ENV_FILE"
@@ -532,6 +547,8 @@ if [ "$TEST_MODE" != '1' ]; then
     systemctl enable homebase.service
   fi
   if [ "$NO_START" -eq 0 ]; then
+    # Stop the running executor so the next connection starts it from the refreshed code and unit.
+    systemctl stop homebase-executor.service 2>/dev/null || true
     systemctl restart homebase-executor.socket
     systemctl is-active --quiet homebase-executor.socket \
       || die 'homebase-executor.socket did not become active; inspect journalctl -u homebase-executor.socket'
@@ -558,6 +575,10 @@ socket.on('end', () => {
 NODE
     then
       die 'executor hello/capability probe failed; inspect journalctl -u homebase-executor'
+    fi
+    if [ "$REPAIR_EXECUTOR" -eq 1 ] && [ -z "$GIT_SSH_KEY_SOURCE" ]; then
+      # Keep web and executor on the same shared code; an unhealthy web service is not a blocker here.
+      systemctl try-restart homebase.service || log 'homebase.service did not restart; inspect journalctl -u homebase'
     fi
     if [ "$REPAIR_EXECUTOR" -eq 0 ] || [ -n "$GIT_SSH_KEY_SOURCE" ]; then
       systemctl restart homebase.service

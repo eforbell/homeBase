@@ -130,7 +130,8 @@ test('lifecycle plans validate, and destructive operations exist only where an o
   ]) assert.equal(validateOperationPolicy(plan), plan);
 
   const restore = buildAppRestorePlan({ appId: 'home-source', backupId: '20260101T000000Z', generatedAt: at });
-  assert.equal(restore.operations[0].type, 'backup.create', 'a safety backup comes first');
+  assert.deepEqual(restore.operations.slice(0, 2).map((entry) => entry.type), ['backup.verify', 'backup.create'], 'verify the source, then take a safety backup, before stopping anything');
+  assert.ok(restore.operations.findIndex((entry) => entry.type === 'backup.verify') < restore.operations.findIndex((entry) => entry.action === 'stop'));
   const backup = buildAppBackupPlan({ appId: 'home-source', generatedAt: at });
   const smuggled = { ...backup, operations: [...backup.operations, { ...restore.operations.find((entry) => entry.type === 'backup.restore'), dependsOn: [backup.operations[0].id] }] };
   assert.throws(() => validateOperationPolicy(smuggled), (error) => error.code === 'POLICY_DENIED');
@@ -156,4 +157,58 @@ test('executePlan hands every app plan kind its catalog layout, and bootstrap no
   assert.deepEqual(seen.find(([type]) => type === 'backup.create'), ['backup.create', 'home-source']);
   assert.ok(seen.filter(([type]) => type === 'systemd.ensure-service').some(([, app]) => app === 'family-dinner'));
   assert.ok(seen.filter(([type]) => type === 'host.assert-debian-family').every(([, app]) => app === null));
+});
+
+test('restore sources are verified before anything stops, and incomplete or corrupt archives are refused', async () => {
+  const incomplete = harness({ [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: 'X=1\n', uid: 1001 } });
+  await assert.rejects(() => incomplete.handlers['backup.verify'](op('backup.verify', { risk: 'read', archiveName: '20260924T101010Z' }), { layout: SOURCE }), /no database dump/);
+  await assert.rejects(() => incomplete.handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE }), /no database dump/);
+  assert.equal(incomplete.calls.length, 0, 'nothing ran against an incomplete archive');
+
+  const complete = harness({
+    [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 },
+    [`${ARCHIVE}/documents.tgz`]: { kind: 'file', content: 'tgz', uid: 1001 },
+  });
+  const output = await complete.handlers['backup.verify'](op('backup.verify', { risk: 'read', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  assert.deepEqual(complete.calls.map((call) => [call.binary, call.args[0], call.uid]), [['/usr/bin/pg_restore', '--list', 1001], ['/usr/bin/tar', '-tzf', 1001]]);
+  assert.match(output, /kept as-is: thumbnails, exports/);
+
+  const corrupt = harness({ [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'garbage', uid: 1001 } });
+  const failing = createLifecycleHandlers({ fsImpl: corrupt.fsImpl, asUser: (user, fn) => fn(), lookupUser: () => SOVEREIGN, run: async () => { throw Object.assign(new Error('pg_restore: error: input file does not appear to be a valid archive'), { code: 'OPERATION_FAILED' }); } });
+  await assert.rejects(() => failing['backup.verify'](op('backup.verify', { risk: 'read', archiveName: '20260924T101010Z' }), { layout: SOURCE }), /valid archive/);
+});
+
+test('a safety backup is recorded as soon as it exists, even if the restore then fails; uninstall keeps records it keeps', async () => {
+  const { JobRunner } = require('../src/services/job-runner');
+  const recorded = [];
+  const deleted = [];
+  const jobs = {};
+  const store = {
+    createJob: (job) => { const id = Object.keys(jobs).length + 1; jobs[id] = { ...job, log: '' }; return { id }; },
+    updateJob: (id, fields) => Object.assign(jobs[id], fields),
+    appendJobLog: (id, text) => { jobs[id].log += text; },
+    recordBackup: (record) => recorded.push(record.archiveDir),
+    deleteInstallation: (appId) => deleted.push(`installation:${appId}`),
+    deleteBackups: (appId) => deleted.push(`backups:${appId}`),
+  };
+  const restorePlan = buildAppRestorePlan({ appId: 'home-source', backupId: '20260101T000000Z', generatedAt: '2026-09-24T10:10:10.000Z' });
+  const runner = new JobRunner(store, {
+    busyRetry: { attempts: 1, delayMs: 1 },
+    runExecutorAction: async (socket, fields, { onEvent }) => {
+      onEvent({ eventType: 'plan.accepted', planDigest: 'sha256:x', plan: restorePlan });
+      onEvent({ eventType: 'operation.completed', operationId: 'verify-backup' });
+      onEvent({ eventType: 'operation.completed', operationId: 'safety-backup' });
+      throw Object.assign(new Error('restore failed midway'), { code: 'OPERATION_FAILED' });
+    },
+  });
+  const id = runner.startTypedRestoreJob({ appId: 'home-source', backupId: '20260101T000000Z' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(jobs[id].status, 'failed');
+  assert.deepEqual(recorded, ['/var/lib/sovereign-home/backups/home-source/20260924T101010Z']);
+
+  const uninstallPlan = buildAppUninstallPlan({ appId: 'home-source', keepBackups: true });
+  const uninstaller = new JobRunner(store, { runExecutorAction: async (socket, fields, { onEvent }) => { onEvent({ eventType: 'plan.accepted', plan: uninstallPlan }); return {}; } });
+  uninstaller.startTypedUninstallJob({ appId: 'home-source', keepBackups: true });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(deleted, ['installation:home-source'], 'backup records survive an uninstall that keeps backups');
 });

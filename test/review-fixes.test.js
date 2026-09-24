@@ -68,7 +68,7 @@ test('a plan.accepted event replaces the fixed client deadline with the plan-siz
 });
 
 test('executor install records use catalog values no matter what the request or config says', () => {
-  const { buildExecutorInstallRecord } = require('../src/services/install-planner');
+  const { buildExecutorInstallRecord } = require('../src/services/executor-install');
   const { stateRecord, ref } = buildExecutorInstallRecord({ appId: 'home-source', ref: 'main', state: { installations: { other: { port: 3008 } } }, config: { port: 3080, baseInstallDir: '/srv/elsewhere', defaultHostname: 'homebase', defaultDomain: 'tailnet' } });
   assert.equal(ref, 'main');
   assert.equal(stateRecord.installRoot, '/opt/sovereign-home/apps/homeSource');

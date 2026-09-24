@@ -6,7 +6,8 @@ const { getCatalog, getAppById } = require('./catalog');
 const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
-const { buildInstallPlan, buildExecutorInstallRecord } = require('./services/install-planner');
+const { buildInstallPlan } = require('./services/install-planner');
+const { buildExecutorInstallAction } = require('./services/executor-install');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { BACKUP_ROOT } = require('./operations/paths');
@@ -30,7 +31,7 @@ const { HealthAlertNotifier } = require('./services/notifications');
 const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
 const { getExecutorCapabilities, canExecuteMutations } = require('./executor/capabilities');
-const { hostStatus: requestExecutorHostStatus } = require('./executor/client');
+const { hostStatus: requestExecutorHostStatus, planAction: requestExecutorPlan } = require('./executor/client');
 const {
   getAdminStatus,
   setupAdmin,
@@ -438,6 +439,8 @@ function createApp(config) {
   const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
   try {
     jobRunner.reconcileStaleUpdateJobs();
+    // Typed jobs that were in flight when Home Base stopped: the executor's journal has the outcome.
+    if (config.homeBaseExecutionMode === 'executor') jobRunner.reconcileTypedJobs();
   } catch (error) {
     console.warn(`[homebase] stale update reconciliation failed: ${error.message}`);
   }
@@ -1176,6 +1179,16 @@ function createApp(config) {
       const installPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/install-plan$/);
       if (method === 'POST' && installPlanMatch) {
         const body = await parseBody(req);
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          const action = buildExecutorInstallAction({ appId: installPlanMatch[1], ref: body.ref, config: effectiveConfig });
+          if (!action) return notFound(res);
+          if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+          try {
+            return sendJson(res, 200, { kind: 'executor-plan', action, ...(await requestExecutorPlan(effectiveConfig.homeBaseExecutorSocket, action)) });
+          } catch (error) {
+            return sendJson(res, error.code === 'ENOENT' ? 503 : 409, { error: error.message, code: error.code || 'EXECUTOR_UNAVAILABLE' });
+          }
+        }
         const plan = buildInstallPlan({ appId: installPlanMatch[1], state, options: body, config: effectiveConfig });
         return sendJson(res, 200, plan);
       }
@@ -1184,6 +1197,10 @@ function createApp(config) {
       if (method === 'POST' && installMatch) {
         const body = await parseBody(req);
         const appId = installMatch[1];
+        // Saving a "planned" record from the legacy plan has no executor meaning; preview with a dry-run.
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          return sendJson(res, 409, { error: 'In executor mode, preview an install with a dry-run (POST /api/apps/:id/execute with dryRun: true).', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+        }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const app = getAppById(appId);
         stateStore.upsertInstallation({
@@ -1262,10 +1279,9 @@ function createApp(config) {
           // Used only for Home Base's own installation record; the executor builds the real plan from the
           // catalog. Only the ref comes from the request so the record matches what the executor installs
           // (catalog mount path and port, standard install root), never caller-edited values.
-          const record = buildExecutorInstallRecord({ appId, state, ref: body.ref, config: effectiveConfig });
-          const plan = { app: { ref: record.ref }, stateRecord: record.stateRecord };
-          if (!/^(main|[a-f0-9]{40})$/.test(plan.app.ref)) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
-          const transport = effectiveConfig.gitTransport === 'ssh' || effectiveConfig.gitTransport === 'ssh-key' ? 'ssh' : 'https';
+          const action = buildExecutorInstallAction({ appId, ref: body.ref, config: effectiveConfig });
+          if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+          const { transport } = action;
           if (transport === 'ssh' && capabilities.gitDeployKey !== 'present') {
             return sendJson(res, 409, {
               error: capabilities.gitDeployKey === 'insecure'
@@ -1277,21 +1293,23 @@ function createApp(config) {
           // Database credentials are generated inside the executor; a caller-supplied dbPassword is ignored here.
           const jobId = jobRunner.startTypedInstallJob({
             appId,
-            ref: plan.app.ref,
+            ref: action.ref,
             transport,
             // Non-secret site values the executor renders into the app env (hostname-derived URLs, timezone).
-            site: {
-              hostname: effectiveConfig.defaultHostname || 'homebase',
-              domain: effectiveConfig.defaultDomain || 'tailnet',
-              householdTimezone: effectiveConfig.householdTimezone || 'America/New_York',
-            },
-            stateRecord: plan.stateRecord,
+            site: action.site,
             onComplete: () => {
               const installed = (stateStore.loadState().installations || {})[appId];
               if (installed) void appUpdateMonitor.refreshInstalledApps([installed], { force: true, gitConfig: updateGitConfig(effectiveConfig) });
             },
           });
           return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
+        }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          // Preview only: the executor compiles the plan it would run. No legacy plan, .env, or record.
+          const action = buildExecutorInstallAction({ appId, ref: body.ref, config: effectiveConfig });
+          if (!action) return notFound(res);
+          if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'install', action, jobRunner });
         }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {

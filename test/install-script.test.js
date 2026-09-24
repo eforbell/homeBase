@@ -19,6 +19,8 @@ function createReleaseFixture(tempDir, { version = 'v9.9.9' } = {}) {
   fs.writeFileSync(path.join(releaseRoot, 'server.js'), 'console.log("fixture");\n');
   fs.writeFileSync(path.join(releaseRoot, 'executor', 'server.js'), 'console.log("executor fixture");\n');
   fs.writeFileSync(path.join(releaseRoot, 'src', 'app.js'), 'module.exports = {};\n');
+  fs.mkdirSync(path.join(releaseRoot, 'schemas'), { recursive: true });
+  fs.writeFileSync(path.join(releaseRoot, 'schemas', 'plan.schema.json'), '{}\n');
 
   const archive = path.join(tempDir, `homebase-${version.slice(1)}.tar.gz`);
   execFileSync('tar', ['-czf', archive, '-C', tempDir, path.basename(releaseRoot)]);
@@ -303,9 +305,45 @@ test('installer repair refreshes managed executor assets without replacing state
   fs.writeFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'executor', 'server.js'), 'damaged\n');
   const repaired = runInstaller(['--version', fixture.version, '--repair-executor', '--no-start'], env);
   assert.equal(repaired.status, 0, repaired.stderr);
-  assert.match(repaired.stdout, /repairing managed executor code/i);
+  assert.match(repaired.stdout, /repairing executor code and the shared modules it loads/i);
   assert.equal(fs.existsSync(env.HOMEBASE_EXECUTOR_SOCKET_UNIT), true);
   assert.match(fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'executor', 'server.js'), 'utf8'), /executor fixture/);
   assert.match(fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8'), /OPERATOR_SETTING=preserved/);
   assert.equal(fs.readFileSync(env.HOMEBASE_SYSTEMD_UNIT, 'utf8'), 'web unit must survive executor repair\n');
+});
+
+test('repair restores drifted executor-mode settings and repair-executor refreshes the shared code the executor loads', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-repair-'));
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  assert.equal(runInstaller(['--version', fixture.version, '--no-start'], env).status, 0);
+
+  const envFile = env.HOMEBASE_ENV_FILE;
+  fs.writeFileSync(envFile, fs.readFileSync(envFile, 'utf8')
+    .replace('HOME_BASE_ENABLE_PRIVILEGED_JOBS=1', 'HOME_BASE_ENABLE_PRIVILEGED_JOBS=0')
+    .replace('HOME_BASE_BIND_HOST=127.0.0.1', 'HOME_BASE_BIND_HOST=0.0.0.0')
+    .replace(/HOME_BASE_EXECUTOR_SOCKET=.*/, 'HOME_BASE_EXECUTOR_SOCKET=/tmp/elsewhere.sock')
+    .concat('OPERATOR_SETTING=keep-me\n'));
+  const repaired = runInstaller(['--version', fixture.version, '--no-start', '--repair'], env);
+  assert.equal(repaired.status, 0, repaired.stderr);
+  const after = fs.readFileSync(envFile, 'utf8');
+  assert.match(after, /^HOME_BASE_ENABLE_PRIVILEGED_JOBS=1$/m);
+  assert.match(after, /^HOME_BASE_BIND_HOST=127\.0\.0\.1$/m);
+  assert.match(after, new RegExp(`^HOME_BASE_EXECUTOR_SOCKET=${env.HOMEBASE_EXECUTOR_SOCKET_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+  assert.match(after, /^HOME_BASE_EXECUTION_MODE=executor$/m);
+  assert.match(after, /^OPERATOR_SETTING=keep-me$/m, 'unrelated settings are preserved');
+  assert.equal(after.match(/^HOME_BASE_BIND_HOST=/gm).length, 1);
+
+  for (const [dir, file] of [['executor', 'server.js'], ['src', 'app.js'], ['schemas', 'plan.schema.json']]) {
+    fs.writeFileSync(path.join(fixture.releaseRoot, dir, file), `// refreshed ${dir}\n`);
+  }
+  const rebuilt = createReleaseFixture(tempDir);
+  void rebuilt;
+  fs.writeFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'src', 'app.js'), '// stale src\n');
+  fs.writeFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'schemas', 'plan.schema.json'), '// stale schema\n');
+  const executorRepair = runInstaller(['--version', fixture.version, '--no-start', '--repair-executor'], env);
+  assert.equal(executorRepair.status, 0, executorRepair.stderr);
+  assert.doesNotMatch(fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'src', 'app.js'), 'utf8'), /stale/);
+  assert.doesNotMatch(fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, 'schemas', 'plan.schema.json'), 'utf8'), /stale/);
+  assert.equal(fs.readFileSync(envFile, 'utf8'), after, 'repair-executor leaves the environment file alone');
 });

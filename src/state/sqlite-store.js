@@ -29,6 +29,10 @@ class SqliteStateStore {
     return runSqliteOp(this.dbPath, 'append_job_log', { jobId, text });
   }
 
+  listUnfinishedJobs() {
+    return runSqliteOp(this.dbPath, 'list_unfinished_jobs', {});
+  }
+
   updateJob(jobId, fields) {
     return runSqliteOp(this.dbPath, 'update_job', { jobId, fields });
   }

@@ -2226,3 +2226,48 @@ test('executor-mode restore resolves the selected archive by name without readin
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('executor-mode install previews and records carry no generated credentials, .env contents, or shell commands', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-preview-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async () => ({ completedOperationIds: [] }) });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'b'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  const leaks = /DATABASE_URL|postgresql:\/\/|PASSWORD=|sudo |bash -lc|tee \/etc|systemctl /;
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (route, body) => {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, text: await response.text() };
+    };
+    const dryRun = await post('/api/apps/home-source/execute', { dryRun: true });
+    assert.equal(dryRun.status, 202, dryRun.text);
+    const { jobId } = JSON.parse(dryRun.text);
+    let job;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      job = await (await fetch(`${server.url}/api/jobs/${jobId}`, { headers: { cookie } })).json();
+      if (job.status !== 'queued' && job.status !== 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(job.status, 'completed', job.errorText);
+    const plan = JSON.parse(job.planJson);
+    assert.equal(plan.preview, true);
+    assert.equal(plan.operationPlan.policyProfile, 'app-install-v1');
+    assert.doesNotMatch(JSON.stringify(job), leaks, 'the dry-run job stores the executor plan only');
+
+    const installPlan = await post('/api/apps/home-source/install-plan', {});
+    assert.equal(installPlan.status, 200, installPlan.text);
+    assert.equal(JSON.parse(installPlan.text).kind, 'executor-plan');
+    assert.doesNotMatch(installPlan.text, leaks);
+
+    const legacySave = await post('/api/apps/home-source/install', {});
+    assert.equal(legacySave.status, 409);
+    const state = await (await fetch(`${server.url}/api/state`)).json();
+    assert.equal((state.installations || {})['home-source'], undefined, 'a preview never creates an installation record');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});

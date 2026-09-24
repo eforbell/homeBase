@@ -67,6 +67,8 @@ function buildAppRestorePlan({ appId, backupId, generatedAt = new Date().toISOSt
   const safetyName = archiveNameFor(generatedAt);
   if (safetyName === backupId) throw Object.assign(new Error('Restore source and safety backup names collide; retry.'), { code: 'POLICY_DENIED' });
   const { operations, add } = sequence();
+  // Read-only check of the source archive before anything is stopped or changed.
+  add({ id: 'verify-backup', type: 'backup.verify', title: `Verify backup ${backupId} is complete and readable`, risk: 'read', timeoutMs: 300000, archiveName: backupId });
   add(backupOperation(layout, safetyName, 'safety-backup', `Back up ${layout.app.name} before restoring`));
   stopUnits(layout, add, 'stop');
   add({ id: 'restore-backup', type: 'backup.restore', title: `Restore ${layout.app.name} from ${backupId}`, risk: 'destructive', timeoutMs: 900000, archiveName: backupId });

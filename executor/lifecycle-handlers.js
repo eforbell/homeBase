@@ -71,6 +71,33 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       return `created backup ${operation.archiveName} (${included.join(', ') || 'no files'})`;
     },
 
+    // Proves a restore source is usable before a restore plan stops anything: the archive exists, a
+    // database-backed app has its dump, and every archive present passes an integrity read.
+    'backup.verify': async (operation, { layout } = {}) => {
+      requireLayout(layout);
+      const sovereign = sovereignOrDeny();
+      const archiveDir = archiveDirFor(layout, operation.archiveName);
+      const present = asUser(sovereign, () => ({
+        archive: isRealDir(archiveDir),
+        dump: isRealFile(`${archiveDir}/database.dump`),
+        storage: (layout.storage?.subpaths || []).filter((subpath) => isRealFile(`${archiveDir}/${subpath}.tgz`)),
+      }));
+      if (!present.archive) deny(`Backup ${operation.archiveName} does not exist for ${layout.app.name}.`);
+      if (layout.database && !present.dump) deny(`Backup ${operation.archiveName} has no database dump; refusing to restore ${layout.app.name} from an incomplete backup.`);
+      const checked = [];
+      if (layout.database) {
+        await asSovereign(sovereign, { binary: '/usr/bin/pg_restore', args: ['--list', `${archiveDir}/database.dump`], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
+        checked.push('database.dump');
+      }
+      for (const subpath of present.storage) {
+        await asSovereign(sovereign, { binary: '/usr/bin/tar', args: ['-tzf', `${archiveDir}/${subpath}.tgz`], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
+        checked.push(`${subpath}.tgz`);
+      }
+      const missingStorage = (layout.storage?.subpaths || []).filter((subpath) => !present.storage.includes(subpath));
+      const note = missingStorage.length ? `; not in this backup, so kept as-is: ${missingStorage.join(', ')}` : '';
+      return `verified ${operation.archiveName} (${checked.join(', ') || 'no archives'})${note}`;
+    },
+
     'backup.restore': async (operation, { layout } = {}) => {
       requireLayout(layout);
       const sovereign = sovereignOrDeny();
@@ -82,6 +109,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
         storage: (layout.storage?.subpaths || []).filter((subpath) => isRealFile(`${archiveDir}/${subpath}.tgz`)),
       }));
       if (!present.archive) deny(`Backup ${operation.archiveName} does not exist for ${layout.app.name}.`);
+      // Never report success for a database-backed app without restoring its database.
+      if (layout.database && !present.dump) deny(`Backup ${operation.archiveName} has no database dump; refusing a partial restore of ${layout.app.name}.`);
       const restored = [];
       if (present.env) {
         asUser(sovereign, () => {

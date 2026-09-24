@@ -3,10 +3,10 @@
 > **Superseded in part (2026-09-24).** References to `validate-plan`/`execute-plan` and caller-submitted plans describe protocol v1. Protocol v2 accepts only named actions (`plan-action`, `run-action`, `host-status`, `app-update-status`, `hello`). The verification procedure now lives in `docs/executor-app-runbook.md` section 8.
 
 
-**Plan:** `docs/root-executor-implementation-plan.md`  
-**Required base:** PR #16 / `feature/safe-public-installer`  
-**Primary platform:** Ubuntu Server 24.04 LTS VM with systemd  
-**Secondary platform:** Debian 12 VM before public-availability claim  
+**Plan:** `docs/root-executor-implementation-plan.md`
+**Required base:** PR #16 / `feature/safe-public-installer`
+**Primary platform:** Ubuntu Server 24.04 LTS VM with systemd
+**Secondary platform:** Debian 12 VM before public-availability claim
 
 ## 1. Verification strategy
 

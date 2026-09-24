@@ -1,16 +1,14 @@
 const net = require('net');
-const { MAX_REQUEST_BYTES, MAX_LINE_BYTES, ProtocolError, parseRequestLine, result } = require('./protocol');
+const { MAX_REQUEST_BYTES, MAX_LINE_BYTES, ProtocolError, PROTOCOL_VERSION, parseRequestLine, result } = require('./protocol');
 const { executorCapabilities } = require('./context');
 const { writeAudit } = require('./audit');
-const { executePlan: defaultExecutePlan } = require('./execute');
-const { createBaseHandlers, deployKeyStatus, readExistingDatabasePassword } = require('./handlers');
-const { appLayout } = require('../src/operations/app-layout');
-const { getAppById } = require('../src/catalog');
-const { PROTOCOL_VERSION } = require('./protocol');
+const { createBaseHandlers, deployKeyStatus } = require('./handlers');
 const { createHostStatusCollector } = require('./host-status');
 const { createAppUpdateStatusChecker } = require('./app-status');
-const { compileAction, generateSecretBindings } = require('./actions');
+const { compileAction } = require('./actions');
 const { createLifecycleHandlers } = require('./lifecycle-handlers');
+const { createJournal } = require('./journal');
+const { createRunAction } = require('./run-action');
 
 function encodeLine(payload) {
   const line = JSON.stringify(payload);
@@ -18,7 +16,7 @@ function encodeLine(payload) {
   return `${line}\n`;
 }
 
-function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runAction = null, planAction = (spec) => compileAction(spec), mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, checkAppUpdateStatus = null } = {}) {
+function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runAction = null, planAction = (spec) => compileAction(spec), mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, checkAppUpdateStatus = null, actionStatus = null } = {}) {
   // Replay protection for run-action only (a retried request must not run a plan twice). Read-only
   // requests are cheap to answer again and are not cached; the map is bounded either way.
   const completed = new Map();
@@ -79,7 +77,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
           ownsMutation = true;
           writeAudit(logger, `accepted run-action action=${request.actionSpec.action} app=${request.actionSpec.appId || '-'} jobId=${request.jobId} requestId=${request.requestId}`);
           let sequence = 0;
-          const execution = await runAction(request.actionSpec, { emit: (event) => emit(request, { ...event, sequence: ++sequence }) });
+          const execution = await runAction(request.actionSpec, { emit: (event) => emit(request, { ...event, sequence: ++sequence }), jobId: request.jobId, requestId: request.requestId });
           activeMutation = false;
           ownsMutation = false;
           const response = result({ requestId: request.requestId, ok: true, result: execution });
@@ -97,6 +95,10 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
           ownsMutation = false;
           return finish(null, result({ requestId: request.requestId, ok: true, result: status }));
         }
+        if (request.type === 'action-status') {
+          if (!actionStatus) throw new ProtocolError('POLICY_DENIED', 'Action status is not enabled.');
+          return finish(null, result({ requestId: request.requestId, ok: true, result: actionStatus(request.jobId) }));
+        }
         if (request.type === 'host-status') {
           if (!collectHostStatus) throw new ProtocolError('POLICY_DENIED', 'Host status is not enabled.');
           return finish(null, result({ requestId: request.requestId, ok: true, result: await collectHostStatus() }));
@@ -113,17 +115,10 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
 }
 function listenSystemd({ logger = console } = {}) {
   const handlers = { ...createBaseHandlers(), ...createLifecycleHandlers() };
-  const runAction = async (spec, { emit }) => {
-    const { plan, planDigest } = compileAction(spec);
-    // The accepted plan is streamed first so Home Base records exactly what ran (it holds no secrets).
-    emit({ eventType: 'plan.accepted', planDigest, plan });
-    // Only installs bind secrets; lifecycle handlers read live wiring themselves when they need it.
-    const layout = plan.kind === 'app-install' ? appLayout(getAppById(plan.target)) : null;
-    const existing = layout?.database ? { databasePassword: readExistingDatabasePassword({ layout }) } : {};
-    const execution = await defaultExecutePlan({ plan, secretBindings: generateSecretBindings(plan, { existing }) }, { handlers, emit });
-    return { planDigest, ...execution };
-  };
-  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker() });
+  const journal = createJournal();
+  journal.markInterrupted();
+  const runAction = createRunAction({ handlers, journal });
+  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker(), actionStatus: (jobId) => journal.status(jobId) });
   if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
   server.listen({ fd: 3 });
   return server;

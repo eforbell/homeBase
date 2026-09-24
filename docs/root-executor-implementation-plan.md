@@ -3,12 +3,12 @@
 > **Superseded in part (2026-09-24).** This was the implementation plan for protocol v1, where Home Base submitted typed plans and secret bindings (`execute-plan`/`validate-plan`) and a `family-dinner-v1` profile hard-coded Family Dinner. The shipped design is protocol v2. Callers name actions (bootstrap, install, restart, backup, restore, uninstall), and the executor compiles every plan from the catalog (`src/operations/app-layout.js`), generates its own secrets, and supports SSH deploy keys and confirmed destructive operations. Sections 7-9 and the "no SSH" / "no destructive operations" / "executor-local secrets later" statements describe v1. For current behavior see `docs/executor-app-runbook.md`, `SECURITY.md`, and `executor/protocol.js`.
 
 
-**Status:** implementation-ready plan  
-**Prepared for:** Terra implementation agent  
-**Repository:** `/Users/forbell/workspace/homeApps/homeBase`  
-**Required base:** PR #16, branch `feature/safe-public-installer`, reviewed head `2a2fcddc448ee43445ac6137adb40fbc17ea5204`  
-**Companion verification spec:** `docs/root-executor-test-spec.md`  
-**Implementation target branch:** `feature/root-executor-protocol`, created from the current PR #16 head  
+**Status:** implementation-ready plan
+**Prepared for:** Terra implementation agent
+**Repository:** `/Users/forbell/workspace/homeApps/homeBase`
+**Required base:** PR #16, branch `feature/safe-public-installer`, reviewed head `2a2fcddc448ee43445ac6137adb40fbc17ea5204`
+**Companion verification spec:** `docs/root-executor-test-spec.md`
+**Implementation target branch:** `feature/root-executor-protocol`, created from the current PR #16 head
 
 ## 1. Outcome
 
@@ -684,17 +684,17 @@ Recommended integration order:
 
 Keep commits small and Lore-compliant.
 
-1. **Define privilege as typed, reviewable data**  
+1. **Define privilege as typed, reviewable data**
    Schema, validation, policy, redaction, Dinner compiler, tests.
-2. **Establish a repairable executor trust boundary**  
+2. **Establish a repairable executor trust boundary**
    Socket/server/client hello, systemd units, installer fresh/repair, tests.
-3. **Constrain root mutations to explicit handlers**  
+3. **Constrain root mutations to explicit handlers**
    Base handlers, spawn wrapper, audit, adversarial tests.
-4. **Provision the minimum host baseline for Dinner**  
+4. **Provision the minimum host baseline for Dinner**
    Package/identity/layout/core services, idempotency tests.
-5. **Prove Home Base can install Family Dinner safely**  
+5. **Prove Home Base can install Family Dinner safely**
    Git/Postgres/npm/unit/nginx/readiness, state events, UI/API integration.
-6. **Make failures diagnosable and recoverable**  
+6. **Make failures diagnosable and recoverable**
    Reconciliation, repair docs, kill/retry tests, security docs.
 
 Each commit message must explain why and include `Confidence`, `Scope-risk`, `Tested`, and `Not-tested` trailers where relevant, per repository guidance.
@@ -750,32 +750,32 @@ All are release gates unless marked follow-up.
 
 ### Failure 1: `runtime.run-npm` becomes an accidental root shell escape
 
-**Cause:** generic executable/argv/cwd or environment fields are accepted, or npm runs as root.  
-**Early warning:** tests construct a non-Dinner cwd, caller-selected binary, or observe uid 0.  
+**Cause:** generic executable/argv/cwd or environment fields are accepted, or npm runs as root.
+**Early warning:** tests construct a non-Dinner cwd, caller-selected binary, or observe uid 0.
 **Mitigation:** task enum maps internally to fixed argv; exact realpath; fixed uid/gid; minimal env; no shell; root-uid assertion test in every runtime handler.
 
 ### Failure 2: socket permissions make the executor locally available to unintended users
 
-**Cause:** socket mode/group drift, broad group membership, or installer repair omission.  
-**Early warning:** `stat` is not `root:homebase-exec 0660` or another user can complete `hello`.  
+**Cause:** socket mode/group drift, broad group membership, or installer repair omission.
+**Early warning:** `stat` is not `root:homebase-exec 0660` or another user can complete `hello`.
 **Mitigation:** dedicated group, installer verification/repair, unit tests and VM negative connection test, startup refusal when socket metadata is unexpected.
 
 ### Failure 3: a partial Dinner install is reported as successful
 
-**Cause:** systemd restart succeeds but migration/readiness fails, or Home Base crashes before state update.  
-**Early warning:** job status is `installed` while `/api/ready` fails or terminal executor event is missing.  
+**Cause:** systemd restart succeeds but migration/readiness fails, or Home Base crashes before state update.
+**Early warning:** job status is `installed` while `/api/ready` fails or terminal executor event is missing.
 **Mitigation:** terminal-plan event plus unprivileged readiness is the only success transition; operation event table; reconciliation on startup; kill/restart tests.
 
 ### Failure 4: typed plan preview and actual root behavior drift
 
-**Cause:** UI renders legacy shell steps while executor runs different operations, or handler adds implicit behavior.  
-**Early warning:** golden-plan snapshot differs from handler audit events.  
+**Cause:** UI renders legacy shell steps while executor runs different operations, or handler adds implicit behavior.
+**Early warning:** golden-plan snapshot differs from handler audit events.
 **Mitigation:** typed plan is the single source; renderer consumes it; executor emits an event per operation; parity assertion matches accepted digest and completed operation IDs.
 
 ### Failure 5: a secret leaks through persistence or output
 
-**Cause:** full request/plan logging, child argv/environment, error serialization, or flat job log projection.  
-**Early warning:** canary secret found by recursive search of SQLite, API capture, or journal.  
+**Cause:** full request/plan logging, child argv/environment, error serialization, or flat job log projection.
+**Early warning:** canary secret found by recursive search of SQLite, API capture, or journal.
 **Mitigation:** redacted stored plan, ephemeral secret bindings, stdin/protected files, centralized redactor, canary leakage test across all storage/output surfaces.
 
 ## 15. ADR

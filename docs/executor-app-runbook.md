@@ -179,9 +179,17 @@ For each new or changed handler:
 - **Executor installs pin the catalog port.** Only a *different* app holding the port is a conflict (`PORT_CONFLICT`). The legacy planner instead counts the app's own port as taken on reinstall and picks the next one.
 - **Check every entry point loads `.env`**: server, sidecars, timer scripts, migrations. homeSource's five did.
 
+## Lifecycle actions and recovery
+
+- **Actions:** install (update = install again), restart, backup, restore, uninstall. Every one compiles from the catalog layout (`src/operations/compilers/lifecycle.js`), and dry-runs preview the executor's plan (`plan-action`).
+- **Destructive operations** (`backup.restore`, `postgres.drop-database`, `filesystem.remove-*`, stopping units) must declare `risk: "destructive"` and are allowed only in the restore and uninstall profiles.
+- **Restore order:** `backup.verify` (archive exists, database-backed apps have a dump, `pg_restore --list` and `tar -tzf` integrity reads), then a safety backup, then stop, restore, start, and readiness. Nothing stops until the source is proven usable. A dump-less archive is refused, never partially restored.
+- **Backup records** are written the moment each `backup.create` step completes, so a safety backup stays in the inventory even if the rest of the action fails. Uninstall keeps records when it keeps backups.
+- **Reconciliation:** the executor journals every accepted action (`/var/lib/homebase-executor/jobs/<jobId>.json`, root-only, last 200). If Home Base loses the connection after acceptance, or restarts mid-job, it asks `action-status` for the real outcome and settles the job through the same code path as a live job. An executor restart marks in-flight entries `interrupted`, and the job fails with re-run guidance (steps are idempotent).
+- **Operator recovery** when a job looks wrong: `sudo cat /var/lib/homebase-executor/jobs/<jobId>.json` shows the accepted plan, completed steps, and error. `journalctl -u homebase-executor` has the step output. Re-running the same action is safe.
+
 ## Known gaps
 
-- Lifecycle actions (restart, update, backup, restore, uninstall) are not executor actions yet.
 - Tailscale installation is not a typed operation.
 - Ports are the catalog's preferred ports (by design); a conflicting app must be moved before an executor install.
 - The shapes marked **no** in the support matrix.

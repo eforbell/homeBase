@@ -27,7 +27,7 @@ test('typed job source never delegates to the legacy shell runner and never send
   assert.match(typedSection, /this\.runExecutorAction\(/);
 });
 
-test('typed jobs record the executor-accepted plan and complete only after post-execution checks', async () => {
+test('typed jobs record the executor-accepted plan and complete through the shared settle step', async () => {
   const { JobRunner } = require('../src/services/job-runner');
   const jobs = {};
   const store = {
@@ -45,20 +45,15 @@ test('typed jobs record the executor-accepted plan and complete only after post-
       return { planDigest: 'sha256:abc', completedOperationIds: ['op'] };
     },
   });
-  const order = [];
-  const id = runner.startTypedActionJob({
-    kind: 'install',
-    target: 'family-dinner',
-    action: { action: 'install', appId: 'family-dinner', ref: 'main', transport: 'https' },
-    afterExecution: async () => { order.push(`after:${jobs[1].status}`); },
-  });
+  let completedCallbacks = 0;
+  const id = runner.startTypedActionJob({ kind: 'bootstrap', target: 'local-host', action: { action: 'bootstrap' }, onComplete: () => { completedCallbacks += 1; } });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(sent, [{ jobId: id, action: 'install', appId: 'family-dinner', ref: 'main', transport: 'https' }]);
+  assert.deepEqual(sent, [{ jobId: id, action: 'bootstrap' }]);
   const stored = JSON.parse(jobs[id].planJson);
   assert.equal(stored.planDigest, 'sha256:abc');
   assert.equal(stored.digestVerified, false, 'a digest that does not match the recorded plan is flagged');
   assert.equal(stored.operationPlan.operations[0].id, 'op');
-  assert.deepEqual(order, ['after:running'], 'post-execution checks run before the job completes');
+  assert.equal(completedCallbacks, 1);
   assert.equal(jobs[id].status, 'completed');
 
   const failing = new JobRunner(store, { busyRetry: { attempts: 1, delayMs: 1 }, runExecutorAction: async () => { throw Object.assign(new Error('Another mutation plan is active.'), { code: 'EXECUTOR_BUSY' }); } });

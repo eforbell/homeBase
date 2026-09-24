@@ -431,6 +431,29 @@ elif op == "list_running_jobs_by_kind":
     ]
     emit(jobs)
 
+elif op == "list_unfinished_jobs":
+    jobs = [
+        {
+            "id": row["id"],
+            "kind": row["kind"],
+            "target": row["target"],
+            "status": row["status"],
+            "dryRun": bool(row["dry_run"]),
+            "createdAt": row["created_at"],
+            "startedAt": row["started_at"],
+            "finishedAt": row["finished_at"],
+            "currentStep": row["current_step"],
+            "planJson": row["plan_json"],
+            "log": row["log_text"],
+            "resultJson": row["result_json"],
+            "error": row["error_text"],
+        }
+        for row in conn.execute(
+            "SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY id ASC", (),
+        )
+    ]
+    emit(jobs)
+
 elif op == "record_backup":
     record = payload["record"]
     conn.execute(

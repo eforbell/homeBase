@@ -45,11 +45,19 @@ npm start
 
 Open `http://localhost:3080` by default.
 
-### Founder/private-repo mode
+### Private repositories
 
-For public-community installs, Home Base now defaults to HTTPS GitHub clone URLs.
+Home Base defaults to HTTPS GitHub clone URLs.
 
-If you want founder/private-repo SSH-key auth instead, run Home Base with:
+**Installer-built hosts (executor mode):** give the executor one read-only deploy key. It is stored root-only and never readable by app code:
+
+```bash
+sudo bash install.sh --source-dir <checkout> --repair --git-ssh-key /path/to/deploy_key
+```
+
+The executor fetches as root into a root-owned mirror with pinned GitHub host keys; apps clone from that local mirror. See `SECURITY.md`.
+
+**Legacy sudo-mode hosts only:** run Home Base with:
 
 ```bash
 export HOME_BASE_GIT_TRANSPORT=ssh-key
@@ -58,7 +66,7 @@ export HOME_BASE_GIT_SSH_KNOWN_HOSTS_PATH=/opt/sovereign-home/.ssh/known_hosts
 PORT=3080 npm start
 ```
 
-The SSH key path must be readable by the managed service user because app clone/fetch commands run as that user.
+In legacy mode the SSH key path must be readable by the managed service user, because app clone/fetch commands run as that user. Do not use this layout on executor-mode hosts.
 
 ## Test
 

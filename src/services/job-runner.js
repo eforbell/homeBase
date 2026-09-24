@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
-const { runAction, planAction } = require('../executor/client');
+const { runAction, planAction, actionStatus } = require('../executor/client');
+const { buildExecutorInstallRecord } = require('./executor-install');
 const { getAppById } = require('../catalog');
 const { BACKUP_ROOT } = require('../operations/paths');
 const { redactText } = require('../operations/redact');
@@ -35,12 +36,24 @@ async function waitForAppReadiness({ app, fetchImpl = global.fetch, attempts = 3
   throw error;
 }
 
+// Connection-level failures, as opposed to a terminal error the executor reported with a code.
+function isTransportError(error) {
+  return !error.code || ['ECONNRESET', 'EPIPE', 'ECONNREFUSED', 'ENOENT'].includes(error.code);
+}
+
+function parsePlanJson(planJson) {
+  try { return JSON.parse(planJson || 'null'); } catch { return null; }
+}
+
 class JobRunner {
-  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, planExecutorAction = planAction, busyRetry = { attempts: 6, delayMs: 10_000 } } = {}) {
+  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, planExecutorAction = planAction, executorActionStatus = actionStatus, busyRetry = { attempts: 6, delayMs: 10_000 }, reconcile = { intervalMs: 15_000, maxWaitMs: 3 * 60 * 60 * 1000 }, readinessOptions = {} } = {}) {
     this.stateStore = stateStore;
     this.executorSocket = executorSocket;
     this.runExecutorAction = runExecutorAction;
     this.planExecutorAction = planExecutorAction;
+    this.executorActionStatus = executorActionStatus;
+    this.reconcile = reconcile;
+    this.readinessOptions = readinessOptions;
     this.busyRetry = busyRetry;
   }
 
@@ -97,16 +110,18 @@ class JobRunner {
 
   // Typed jobs name an action; the executor compiles the plan, generates any secrets, and streams
   // the accepted plan back so the job records exactly what ran. No plan or secret leaves Home Base.
-  startTypedActionJob({ kind, target, action, afterExecution = null }) {
+  startTypedActionJob({ kind, target, action, onComplete = null }) {
     const { id } = this.stateStore.createJob({ kind, target, status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: JSON.stringify({ action }) });
-    this.runTypedActionJob(id, action, afterExecution).catch((error) => {
-      this.stateStore.appendJobLog(id, `\n[executor-error] ${error.message}\n`);
-      this.stateStore.updateJob(id, { status: 'failed', finishedAt: new Date().toISOString(), errorText: error.message });
-    });
+    this.runTypedActionJob(id, action, onComplete).catch((error) => this.failTypedJob(id, error.message));
     return id;
   }
 
-  async runTypedActionJob(jobId, action, afterExecution) {
+  failTypedJob(jobId, message) {
+    this.stateStore.appendJobLog(jobId, `\n[executor-error] ${message}\n`);
+    this.stateStore.updateJob(jobId, { status: 'failed', finishedAt: new Date().toISOString(), errorText: message });
+  }
+
+  async runTypedActionJob(jobId, action, onComplete = null) {
     this.stateStore.updateJob(jobId, { status: 'running', startedAt: new Date().toISOString() });
     let acceptedPlan = null;
     const onEvent = (event) => {
@@ -119,6 +134,9 @@ class JobRunner {
         return;
       }
       if (event.operationId) this.stateStore.updateJob(jobId, { currentStep: event.operationId });
+      // Record each backup as soon as it exists on disk, so a later failure (e.g. during a restore)
+      // can never leave a safety backup missing from the recovery inventory.
+      if (event.eventType === 'operation.completed') this.recordCompletedBackups(jobId, action, acceptedPlan, [event.operationId]);
       appendExecutorEventLog(this.stateStore, jobId, event);
     };
     // The executor bounds every step; wait for the whole accepted plan (plus margin) rather than a
@@ -126,20 +144,89 @@ class JobRunner {
     const planDeadline = (event) => (event.eventType === 'plan.accepted' && Array.isArray(event.plan?.operations)
       ? event.plan.operations.reduce((total, operation) => total + (operation.timeoutMs || 0), 0) + 5 * 60 * 1000
       : null);
-    let result;
     for (let attempt = 1; ; attempt += 1) {
       try {
-        result = await this.runExecutorAction(this.executorSocket, { jobId, ...action }, { timeoutMs: 30 * 60 * 1000, onEvent, deadlineFromEvent: planDeadline });
-        break;
+        const result = await this.runExecutorAction(this.executorSocket, { jobId, ...action }, { timeoutMs: 30 * 60 * 1000, onEvent, deadlineFromEvent: planDeadline });
+        await this.settleTypedJob(jobId, action, { status: 'completed', plan: acceptedPlan, result }, { onComplete });
+        return;
       } catch (error) {
+        // Accepted, then the connection was lost (timeout, reset, restart): the executor keeps going,
+        // so ask it for the real outcome instead of guessing.
+        if (acceptedPlan && isTransportError(error)) {
+          this.stateStore.appendJobLog(jobId, `[executor] lost contact after the plan was accepted (${error.message}); asking the executor for the outcome\n`);
+          const outcome = await this.awaitExecutorOutcome(jobId);
+          await this.settleTypedJob(jobId, action, outcome, { onComplete });
+          return;
+        }
         // A background update check briefly holds the executor; nothing ran yet, so waiting is safe.
         if (error.code !== 'EXECUTOR_BUSY' || attempt >= this.busyRetry.attempts) throw error;
         this.stateStore.appendJobLog(jobId, `[executor] busy; retrying (${attempt}/${this.busyRetry.attempts - 1})\n`);
         await new Promise((resolve) => setTimeout(resolve, this.busyRetry.delayMs));
       }
     }
-    if (typeof afterExecution === 'function') await afterExecution(jobId, result, acceptedPlan);
-    this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(result) });
+  }
+
+  // Polls the executor's journal until the job leaves "running". Transient socket failures (the
+  // executor restarting) are retried within the budget; the budget covers the longest plan.
+  async awaitExecutorOutcome(jobId, { intervalMs = this.reconcile.intervalMs, maxWaitMs = this.reconcile.maxWaitMs } = {}) {
+    const deadline = Date.now() + maxWaitMs;
+    let lastError = null;
+    while (Date.now() < deadline) {
+      try {
+        const entry = await this.executorActionStatus(this.executorSocket, jobId, { timeoutMs: 10_000 });
+        if (entry.status !== 'running') return entry;
+      } catch (error) { lastError = error; }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return { status: 'unreachable', error: lastError?.message || 'The executor still reports the job as running.' };
+  }
+
+  // The single place a typed job's outcome is applied, for live jobs and reconciled ones alike.
+  async settleTypedJob(jobId, action, outcome, { onComplete = null } = {}) {
+    const plan = outcome.plan || null;
+    if (plan && Array.isArray(outcome.completedOperationIds)) this.recordCompletedBackups(jobId, action, plan, outcome.completedOperationIds);
+    if (outcome.status !== 'completed') {
+      const reason = {
+        failed: `The executor reported failure${outcome.failedOperationId ? ` at ${outcome.failedOperationId}` : ''}: ${outcome.error || 'unknown error'}`,
+        interrupted: `The executor restarted during this plan (completed: ${(outcome.completedOperationIds || []).join(', ') || 'none'}). Steps are idempotent; re-run the action.`,
+        unknown: 'The executor has no record of this job; it never started. Re-run the action.',
+        unreachable: `Could not learn the outcome from the executor: ${outcome.error}. Check journalctl -u homebase-executor, then re-run if needed.`,
+      }[outcome.status] || `Unexpected executor status: ${outcome.status}`;
+      this.failTypedJob(jobId, reason);
+      return;
+    }
+    const app = action.appId ? getAppById(action.appId) : null;
+    if (['install', 'restart', 'restore'].includes(action.action)) {
+      // Installed/restored only after the app answers readiness, never merely because systemd started it.
+      this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
+      await waitForAppReadiness({ app, ...this.readinessOptions });
+    }
+    if (action.action === 'install') {
+      const { stateRecord } = buildExecutorInstallRecord({ appId: action.appId, ref: action.ref, config: { defaultHostname: action.site.hostname, defaultDomain: action.site.domain, householdTimezone: action.site.householdTimezone } });
+      this.stateStore.upsertInstallation({ ...stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
+    }
+    if (action.action === 'uninstall') {
+      this.stateStore.deleteInstallation(action.appId);
+      // Backup records follow the archives on disk: kept unless the backups were removed too.
+      if (!action.keepBackups) this.stateStore.deleteBackups(action.appId);
+    }
+    if (typeof onComplete === 'function') onComplete();
+    this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(outcome.result || { reconciled: true, completedOperationIds: outcome.completedOperationIds }) });
+  }
+
+  // Called at startup: any typed job still queued or running lost its connection when Home Base
+  // stopped. The executor's journal says what actually happened.
+  reconcileTypedJobs() {
+    const unfinished = typeof this.stateStore.listUnfinishedJobs === 'function' ? this.stateStore.listUnfinishedJobs() : [];
+    const typed = unfinished.filter((job) => !job.dryRun && parsePlanJson(job.planJson)?.action);
+    for (const job of typed) {
+      const { action } = parsePlanJson(job.planJson);
+      this.stateStore.appendJobLog(job.id, '[executor] Home Base restarted while this job was in flight; reconciling with the executor\n');
+      this.awaitExecutorOutcome(job.id)
+        .then((outcome) => this.settleTypedJob(job.id, action, outcome))
+        .catch((error) => this.failTypedJob(job.id, `Reconciliation failed: ${error.message}`));
+    }
+    return typed.map((job) => job.id);
   }
 
   // A dry-run in executor mode: the executor compiles (but does not run) the plan, and the job records it.
@@ -163,69 +250,39 @@ class JobRunner {
     return this.startTypedActionJob({ kind: 'bootstrap', target: 'local-host', action: { action: 'bootstrap' } });
   }
 
-  startTypedInstallJob({ appId, ref, transport, site, stateRecord, onComplete = null }) {
-    const app = getAppById(appId);
-    if (!app) throw new Error(`Unknown catalog app: ${appId}`);
-    return this.startTypedActionJob({
-      kind: 'install',
-      target: appId,
-      action: { action: 'install', appId, ref, transport, site },
-      afterExecution: async (jobId) => {
-        // Installed only after the app answers readiness, never merely because systemd started it.
-        this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
-        await waitForAppReadiness({ app });
-        this.stateStore.upsertInstallation({ ...stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
-        if (typeof onComplete === 'function') onComplete();
-      },
-    });
+  startTypedInstallJob({ appId, ref, transport, site, onComplete = null }) {
+    if (!getAppById(appId)) throw new Error(`Unknown catalog app: ${appId}`);
+    return this.startTypedActionJob({ kind: 'install', target: appId, action: { action: 'install', appId, ref, transport, site }, onComplete });
   }
 
   startTypedRestartJob({ appId }) {
-    const app = getAppById(appId);
-    return this.startTypedActionJob({
-      kind: 'restart', target: appId, action: { action: 'restart', appId },
-      afterExecution: async (jobId) => {
-        this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
-        await waitForAppReadiness({ app });
-      },
-    });
+    return this.startTypedActionJob({ kind: 'restart', target: appId, action: { action: 'restart', appId } });
   }
 
   startTypedBackupJob({ appId }) {
-    return this.startTypedActionJob({
-      kind: 'backup', target: appId, action: { action: 'backup', appId },
-      afterExecution: async (jobId, result, acceptedPlan) => this.recordTypedBackup(appId, jobId, acceptedPlan),
-    });
+    return this.startTypedActionJob({ kind: 'backup', target: appId, action: { action: 'backup', appId } });
   }
 
   startTypedRestoreJob({ appId, backupId }) {
-    const app = getAppById(appId);
-    return this.startTypedActionJob({
-      kind: 'restore', target: appId, action: { action: 'restore', appId, backupId },
-      afterExecution: async (jobId, result, acceptedPlan) => {
-        this.recordTypedBackup(appId, jobId, acceptedPlan);
-        this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
-        await waitForAppReadiness({ app });
-      },
-    });
+    return this.startTypedActionJob({ kind: 'restore', target: appId, action: { action: 'restore', appId, backupId } });
   }
 
   startTypedUninstallJob({ appId, keepBackups }) {
-    return this.startTypedActionJob({
-      kind: 'uninstall', target: appId, action: { action: 'uninstall', appId, keepBackups },
-      afterExecution: async (jobId, result, acceptedPlan) => {
-        this.recordTypedBackup(appId, jobId, acceptedPlan);
-        this.stateStore.deleteInstallation(appId);
-        // Same bookkeeping as the legacy uninstall; archives on disk follow keepBackups.
-        this.stateStore.deleteBackups(appId);
-      },
-    });
+    return this.startTypedActionJob({ kind: 'uninstall', target: appId, action: { action: 'uninstall', appId, keepBackups } });
+  }
+
+  // Records every backup.create among the given completed operations, once each.
+  recordCompletedBackups(jobId, action, plan, completedIds) {
+    const operations = (plan?.operations || []).filter((operation) => operation.type === 'backup.create' && completedIds.includes(operation.id));
+    for (const operation of operations) {
+      const archiveDir = `${BACKUP_ROOT}/${action.appId}/${operation.archiveName}`;
+      const known = typeof this.stateStore.listBackups === 'function' && this.stateStore.listBackups(action.appId).some((record) => record.archiveDir === archiveDir);
+      if (!known) this.recordTypedBackup(action.appId, jobId, plan, operation);
+    }
   }
 
   // The executor names every archive inside the accepted plan, so the record matches what ran.
-  recordTypedBackup(appId, jobId, acceptedPlan) {
-    const operation = acceptedPlan?.operations?.find((entry) => entry.type === 'backup.create');
-    if (!operation) return;
+  recordTypedBackup(appId, jobId, acceptedPlan, operation) {
     this.stateStore.recordBackup({
       appId,
       archiveDir: `${BACKUP_ROOT}/${appId}/${operation.archiveName}`,

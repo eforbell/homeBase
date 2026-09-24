@@ -15,7 +15,7 @@ const PROFILE_TYPES = {
   'app-install-v1': new Set(['package.ensure', 'filesystem.ensure-directory', 'git.sync', 'postgres.ensure-role', 'postgres.ensure-database', 'filesystem.write-managed-file', 'runtime.run-app-task', 'systemd.daemon-reload', 'systemd.ensure-service', 'nginx.ensure-gateway', 'nginx.validate-and-reload', 'http.wait-ready']),
   'app-restart-v1': new Set(['systemd.ensure-service', 'http.wait-ready']),
   'app-backup-v1': new Set(['backup.create']),
-  'app-restore-v1': new Set(['backup.create', 'systemd.ensure-service', 'backup.restore', 'http.wait-ready']),
+  'app-restore-v1': new Set(['backup.verify', 'backup.create', 'systemd.ensure-service', 'backup.restore', 'http.wait-ready']),
   'app-uninstall-v1': new Set(['backup.create', 'systemd.ensure-service', 'filesystem.remove-app-artifacts', 'systemd.daemon-reload', 'nginx.validate-and-reload', 'postgres.drop-database', 'filesystem.remove-checkout', 'backup.remove-all']),
 };
 const PROFILE_KIND = {

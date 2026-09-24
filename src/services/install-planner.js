@@ -651,22 +651,8 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   };
 }
 
-// Home Base's own record for an executor install. The executor installs at catalog values (standard
-// install root, catalog mount path and port), so only the ref may come from the request.
-function buildExecutorInstallRecord({ appId, state = {}, ref, config = {} }) {
-  const app = getAppById(appId);
-  const plan = buildInstallPlan({
-    appId,
-    state,
-    options: { ref, port: app.network.preferredPort },
-    config: { ...config, baseInstallDir: '/opt/sovereign-home/apps' },
-  });
-  return { stateRecord: plan.stateRecord, ref: plan.app.ref };
-}
-
 module.exports = {
   allocatePort,
-  buildExecutorInstallRecord,
   buildInstallPlan,
   normalizeMountPath,
   renderEnv,
