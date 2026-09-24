@@ -24,7 +24,7 @@ test('approved spawn uses a fixed absolute binary, argv array, identity, and she
   const stub = fakeSpawn({ stdout: 'ok' });
   const result = await runApproved({ binary: '/usr/bin/git', args: ['status'], uid: 1001, gid: 1001, cwd: '/opt/sovereign-home/apps/familyDinner', env: { PATH: '/usr/bin' }, timeoutMs: 1000, spawnImpl: stub });
   assert.equal(result.stdout, 'ok');
-  assert.deepEqual(stub.record, { binary: '/usr/bin/git', args: ['status'], options: { shell: false, uid: 1001, gid: 1001, cwd: '/opt/sovereign-home/apps/familyDinner', env: { PATH: '/usr/bin' } } });
+  assert.deepEqual(stub.record, { binary: '/usr/bin/git', args: ['status'], options: { shell: false, uid: 1001, gid: 1001, cwd: '/opt/sovereign-home/apps/familyDinner', env: { PATH: '/usr/bin' }, stdio: ['ignore', 'pipe', 'pipe'] } });
 });
 
 test('approved spawn rejects arbitrary binaries and redacts bounded child output', async () => {
@@ -32,4 +32,13 @@ test('approved spawn rejects arbitrary binaries and redacts bounded child output
   const stub = fakeSpawn({ stdout: 'token=s3cret' });
   const result = await runApproved({ binary: '/usr/bin/id', uid: 1, gid: 1, timeoutMs: 1000, secrets: ['s3cret'], spawnImpl: stub });
   assert.equal(result.stdout, 'token=[REDACTED]');
+});
+
+test('approved spawn pipes stdin only when provided and keeps the output tail', async () => {
+  const stub = fakeSpawn({ stderr: `${'x'.repeat(100)}E: final apt error` });
+  const result = await runApproved({ binary: '/usr/bin/id', uid: 1, gid: 1, timeoutMs: 1000, outputLimit: 32, spawnImpl: stub });
+  assert.deepEqual(stub.record.options.stdio, ['ignore', 'pipe', 'pipe']);
+  assert.equal(result.truncated, true);
+  assert.match(result.stderr, /E: final apt error$/);
+  assert.throws(() => runApproved({ binary: '/usr/bin/id', uid: 1, gid: 1, timeoutMs: 1000, env: { LD_PRELOAD: '/tmp/x.so' } }), /unapproved key/);
 });

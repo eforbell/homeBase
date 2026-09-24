@@ -11,6 +11,7 @@ NO_START=0
 REPAIR=0
 REPAIR_EXECUTOR=0
 SOURCE_DIR=''
+GIT_SSH_KEY_SOURCE=''
 TEST_MODE="${HOMEBASE_TEST_MODE:-0}"
 
 INSTALL_DIR="${HOMEBASE_INSTALL_DIR:-/opt/sovereign-home/homebase}"
@@ -23,6 +24,8 @@ EXECUTOR_SOCKET_UNIT="${HOMEBASE_EXECUTOR_SOCKET_UNIT:-/etc/systemd/system/homeb
 EXECUTOR_SERVICE_UNIT="${HOMEBASE_EXECUTOR_SERVICE_UNIT:-/etc/systemd/system/homebase-executor.service}"
 EXECUTOR_SOCKET_PATH="${HOMEBASE_EXECUTOR_SOCKET_PATH:-/run/homebase/executor.sock}"
 EXECUTOR_GROUP="${HOMEBASE_EXECUTOR_GROUP:-homebase-exec}"
+GIT_DEPLOY_KEY_DIR="${HOMEBASE_GIT_DEPLOY_KEY_DIR:-/etc/sovereign-home/git}"
+GIT_DEPLOY_KEY_PATH="${GIT_DEPLOY_KEY_DIR}/deploy_key"
 
 usage() {
   cat <<'EOF'
@@ -40,6 +43,9 @@ Options:
   --no-start           Install and enable units without starting them
   --repair             Restore managed code and service assets without replacing state or environment
   --repair-executor    Restore only executor code, group, socket, and service assets
+  --git-ssh-key <path> Install an unencrypted SSH deploy key for private app repositories
+                       (stored root-only at /etc/sovereign-home/git/deploy_key) and
+                       switch Home Base to SSH git transport
   --help               Show this help
 
 The installer does not grant Home Base sudo access or execute host bootstrap.
@@ -128,6 +134,11 @@ while [ "$#" -gt 0 ]; do
       REPAIR_EXECUTOR=1
       shift
       ;;
+    --git-ssh-key)
+      [ "$#" -ge 2 ] || die '--git-ssh-key requires a path'
+      GIT_SSH_KEY_SOURCE="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -168,6 +179,21 @@ for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_S
     *' '*|*$'\t'*) die "installation paths may not contain whitespace: $candidate" ;;
   esac
 done
+
+if [ -n "$GIT_SSH_KEY_SOURCE" ]; then
+  case "$GIT_SSH_KEY_SOURCE" in
+    /*) ;;
+    *) die '--git-ssh-key must be an absolute path' ;;
+  esac
+  [ -f "$GIT_SSH_KEY_SOURCE" ] && [ ! -L "$GIT_SSH_KEY_SOURCE" ] && [ -r "$GIT_SSH_KEY_SOURCE" ] \
+    || die "--git-ssh-key must be a readable regular file: $GIT_SSH_KEY_SOURCE"
+  grep -q 'PRIVATE KEY-----' "$GIT_SSH_KEY_SOURCE" || die '--git-ssh-key does not look like an SSH private key'
+  if command -v ssh-keygen >/dev/null 2>&1; then
+    # The executor runs git non-interactively, so a passphrase-protected key can never be used.
+    ssh-keygen -y -P '' -f "$GIT_SSH_KEY_SOURCE" >/dev/null 2>&1 \
+      || die '--git-ssh-key must be an unencrypted key (use a dedicated read-only deploy key)'
+  fi
+fi
 
 if [ "$TEST_MODE" != '1' ]; then
   [ "$(id -u)" -eq 0 ] || die 'run this installer through sudo or as root'
@@ -403,6 +429,30 @@ elif [ "$REPAIR_EXECUTOR" -eq 0 ]; then
   log "preserving existing environment file: $ENV_FILE"
 fi
 
+set_env_value() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+if [ -n "$GIT_SSH_KEY_SOURCE" ]; then
+  [ -f "$ENV_FILE" ] || die "--git-ssh-key requires an existing environment file: $ENV_FILE"
+  if [ "$TEST_MODE" = '1' ]; then
+    mkdir -p "$GIT_DEPLOY_KEY_DIR"
+    cp "$GIT_SSH_KEY_SOURCE" "$GIT_DEPLOY_KEY_PATH"
+    chmod 0600 "$GIT_DEPLOY_KEY_PATH"
+  else
+    install -d -m 0700 -o root -g root "$GIT_DEPLOY_KEY_DIR"
+    install -m 0600 -o root -g root "$GIT_SSH_KEY_SOURCE" "$GIT_DEPLOY_KEY_PATH"
+  fi
+  set_env_value HOME_BASE_GIT_TRANSPORT ssh-key
+  set_env_value HOME_BASE_GIT_SSH_KEY_PATH "$GIT_DEPLOY_KEY_PATH"
+  log "installed git deploy key at ${GIT_DEPLOY_KEY_PATH} (root-only); Home Base will clone app repositories over SSH"
+fi
+
 if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
 cat > "$UNIT_FILE" <<EOF
 [Unit]
@@ -461,13 +511,11 @@ Type=simple
 ExecStart=${NODE_BIN} ${INSTALL_DIR}/executor/server.js
 User=root
 Group=root
-UMask=0077
+UMask=0022
 PrivateTmp=true
-ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 EOF
@@ -512,7 +560,7 @@ NODE
     then
       die 'executor hello/capability probe failed; inspect journalctl -u homebase-executor'
     fi
-    if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
+    if [ "$REPAIR_EXECUTOR" -eq 0 ] || [ -n "$GIT_SSH_KEY_SOURCE" ]; then
       systemctl restart homebase.service
       HEALTHY=0
       for _attempt in $(seq 1 30); do

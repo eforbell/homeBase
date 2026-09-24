@@ -2029,3 +2029,25 @@ test('executor-mode Dinner execution fails at the socket boundary without legacy
     assert.equal(payload.code, 'EXECUTOR_UNAVAILABLE');
   } finally { await server.close(); }
 });
+
+test('executor-mode Dinner over SSH is refused up front when the executor has no deploy key', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-ssh-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  let executed = false;
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, probeDeployKey: () => 'missing', executePlan: async () => { executed = true; return {}; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath, gitTransport: 'ssh-key', gitSshKeyPath: '/etc/sovereign-home/git/deploy_key' });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/family-dinner/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 409);
+    assert.equal(payload.code, 'GIT_DEPLOY_KEY_REQUIRED');
+    assert.match(payload.error, /install\.sh --repair --git-ssh-key/);
+    assert.equal(executed, false);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});

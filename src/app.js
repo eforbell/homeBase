@@ -1144,6 +1144,15 @@ function createApp(config) {
           }
           if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
           const plan = buildInstallPlan({ appId, state, options: { ...body, dbPassword: '' }, config: effectiveConfig });
+          const usesSshTransport = plan.operationPlan?.operations.some((operation) => operation.type === 'git.sync' && operation.repository.startsWith('ssh://'));
+          if (usesSshTransport && capabilities.gitDeployKey !== 'present') {
+            return sendJson(res, 409, {
+              error: capabilities.gitDeployKey === 'insecure'
+                ? 'The executor deploy key must be a root-owned regular file with mode 0600. Re-run: sudo bash install.sh --repair --git-ssh-key <path>'
+                : 'SSH git transport needs a deploy key. On the host run: sudo bash install.sh --repair --git-ssh-key <path-to-private-key>',
+              code: 'GIT_DEPLOY_KEY_REQUIRED',
+            });
+          }
           const secretBindings = { familyDinnerDatabasePassword: String(body.dbPassword || require('crypto').randomBytes(24).toString('base64url')) };
           const jobId = jobRunner.startTypedDinnerInstallJob(plan, { secretBindings });
           return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });

@@ -10,14 +10,29 @@ function sendRequest(socketPath, request, { timeoutMs = 10000, onEvent = null } 
     const timeout = setTimeout(() => { socket.destroy(); reject(new Error('Executor request timed out.')); }, timeoutMs);
     socket.setEncoding('utf8');
     socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
-    socket.on('data', (chunk) => { buffer += chunk; });
+    let response = null;
+    // Deliver events as they arrive so job logs show live progress during long plans.
+    const consume = (line) => {
+      if (!line.trim()) return;
+      const message = JSON.parse(line);
+      if (message.type === 'terminal') response = message;
+      else if (typeof onEvent === 'function') onEvent(message);
+    };
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      let newline;
+      try {
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          consume(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+        }
+      } catch (error) { clearTimeout(timeout); socket.destroy(); reject(error); }
+    });
     socket.on('error', (error) => { clearTimeout(timeout); reject(error); });
     socket.on('end', () => {
       clearTimeout(timeout);
       try {
-        const lines = buffer.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-        for (const event of lines.slice(0, -1)) if (typeof onEvent === 'function') onEvent(event);
-        const response = lines.at(-1);
+        consume(buffer);
         if (!response || response.type !== 'terminal') throw new Error('Executor response is malformed.');
         if (!response.ok) {
           const error = new Error(response.message || response.code || 'Executor rejected request.');

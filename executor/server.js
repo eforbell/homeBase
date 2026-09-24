@@ -4,7 +4,7 @@ const { executorCapabilities } = require('./context');
 const { digestOperationPlan } = require('../src/operations/digest');
 const { writeAudit } = require('./audit');
 const { executePlan: defaultExecutePlan } = require('./execute');
-const { createBaseHandlers } = require('./handlers');
+const { createBaseHandlers, deployKeyStatus } = require('./handlers');
 
 function encodeLine(payload) {
   const line = JSON.stringify(payload);
@@ -12,18 +12,23 @@ function encodeLine(payload) {
   return `${line}\n`;
 }
 
-function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null, mutationsEnabled = false } = {}) {
+function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null, mutationsEnabled = false, probeDeployKey = () => 'missing' } = {}) {
   const completed = new Map();
   let activeMutation = false;
   return net.createServer((socket) => {
     let buffer = '';
     let settled = false;
+    let accepted = false;
     socket.setEncoding('utf8');
-    socket.setTimeout(requestTimeoutMs, () => finish(new ProtocolError('INVALID_REQUEST', 'Request timed out before acceptance.')));
+    // A fixed (not idle) deadline, so a peer cannot trickle bytes to hold the connection open.
+    const acceptDeadline = setTimeout(() => finish(new ProtocolError('INVALID_REQUEST', 'Request timed out before acceptance.')), requestTimeoutMs);
     const emit = (request, event) => socket.write(encodeLine({ protocolVersion: 1, requestId: request.requestId, jobId: request.jobId, sequence: event.sequence, timestamp: new Date().toISOString(), ...event }));
     function finish(error, response) {
       if (settled) return;
       settled = true;
+      clearTimeout(acceptDeadline);
+      // Reclaim the descriptor if the peer never closes its side after the terminal line.
+      socket.setTimeout(requestTimeoutMs, () => socket.destroy());
       if (error) {
         const code = error.code || 'INVALID_REQUEST';
         writeAudit(logger, `rejected request code=${code}`);
@@ -31,7 +36,8 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
       } else socket.end(encodeLine(response));
     }
     socket.on('data', async (chunk) => {
-      if (settled) return;
+      // After acceptance, extra bytes cannot restart processing while a plan runs.
+      if (settled || accepted) return;
       buffer += chunk;
       if (Buffer.byteLength(buffer, 'utf8') > MAX_REQUEST_BYTES) return finish(new ProtocolError('INVALID_REQUEST', 'Request exceeds the maximum size.'));
       const firstNewline = buffer.indexOf('\n');
@@ -41,6 +47,10 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
       let ownsMutation = false;
       try {
         const request = parseRequestLine(line);
+        // The deadline only guards the pre-acceptance read; accepted plans run for as long as their
+        // per-operation timeouts allow, often with long silent stretches (apt, npm ci).
+        accepted = true;
+        clearTimeout(acceptDeadline);
         if (completed.has(request.requestId)) return finish(null, completed.get(request.requestId));
         if (request.type === 'execute-plan') {
           if (activeMutation) throw new ProtocolError('EXECUTOR_BUSY', 'Another mutation plan is active.');
@@ -56,20 +66,20 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
           return finish(null, response);
         }
         const response = request.type === 'hello'
-          ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled }), activePlan: activeMutation } })
+          ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled, gitDeployKey: probeDeployKey() }), activePlan: activeMutation } })
           : result({ requestId: request.requestId, ok: true, result: { valid: true, planDigest: digestOperationPlan(request.plan), mutationsEnabled: false } });
         completed.set(request.requestId, response);
         writeAudit(logger, `accepted request type=${request.type} requestId=${request.requestId}`);
         finish(null, response);
       } catch (error) { if (ownsMutation) activeMutation = false; finish(error); }
     });
-    socket.on('error', () => { settled = true; });
+    socket.on('error', () => { settled = true; clearTimeout(acceptDeadline); socket.destroy(); });
   });
 }
 function listenSystemd({ logger = console } = {}) {
   const handlers = createBaseHandlers();
   const executePlan = (request, { emit }) => defaultExecutePlan(request, { handlers, emit });
-  const server = createExecutorServer({ logger, executePlan, mutationsEnabled: true });
+  const server = createExecutorServer({ logger, executePlan, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus() });
   if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
   server.listen({ fd: 3 });
   return server;

@@ -20,6 +20,31 @@ getent group homebase-exec
 
 Expected: web service runs as `homebase`, retains `NoNewPrivileges=yes`; socket is `root:homebase-exec 660`; no sudoers file exists. Confirm `homebase` is the only non-root socket-group member.
 
+### Refreshing an already-installed VM
+
+Same-version reruns preserve code. After pulling new commits into the local checkout, refresh everything, including the executor unit, with:
+
+```bash
+sudo bash install.sh --source-dir /path/to/homeBase --repair
+systemctl show homebase-executor.service -p NoNewPrivileges -p UMask
+```
+
+Expected: `NoNewPrivileges=no`, `UMask=0022`. Do not use `--repair-executor` for this. It copies only `executor/`, but the executor loads schema and policy from `src/`.
+
+### Private repositories (SSH deploy key)
+
+Until the app repositories are public, add a read-only GitHub deploy key (an unencrypted ed25519 key, one per repository or one machine-user key) and hand it to the installer:
+
+```bash
+ssh-keygen -t ed25519 -N '' -C homebase-deploy -f ~/homebase_deploy
+# add ~/homebase_deploy.pub as a read-only deploy key on eforbell/familyDinner
+sudo bash install.sh --source-dir /path/to/homeBase --repair --git-ssh-key ~/homebase_deploy
+sudo stat -c '%U:%G %a' /etc/sovereign-home/git/deploy_key   # root:root 600
+rm ~/homebase_deploy                                            # the installed copy is authoritative
+```
+
+Expected: `hello` reports `gitDeployKey: 'present'`, and the Dinner plan's `sync-repository` operation targets `ssh://git@github.com/eforbell/familyDinner.git`. If the key is missing, the install request fails immediately with `GIT_DEPLOY_KEY_REQUIRED` rather than partway through the plan. If the UI has a saved git-transport override, set it to `ssh-key` there as well.
+
 ## Executor protocol check
 
 ```bash
@@ -30,6 +55,19 @@ NODE
 ```
 
 Expected: protocol version 1 and `mutationsEnabled: true`.
+
+## Host bootstrap
+
+Run the typed host bootstrap from the UI before installing Dinner. Then:
+
+```bash
+systemctl is-active nginx postgresql
+readlink /etc/nginx/sites-enabled/sovereign-home      # /etc/nginx/sites-available/sovereign-home
+test ! -e /etc/nginx/sites-enabled/default && echo default-site-retired
+sudo nginx -t
+```
+
+Run bootstrap a second time; it must succeed again (idempotent).
 
 ## Dinner install test
 
@@ -45,6 +83,17 @@ sudo -u postgres psql -d postgres -c '\du family_dinner'
 ```
 
 Expected: readiness succeeds before installation status becomes `installed`; Git status is clean; all application npm/migration processes run as `sovereign`, not root.
+
+Then check routing and reinstall behavior:
+
+```bash
+curl -k --fail https://127.0.0.1/dinner/api/ready            # served through the managed gateway
+sudo -u sovereign sh -c 'echo OPENAI_API_KEY=sk-vm-canary >> /opt/sovereign-home/apps/familyDinner/.env'
+# re-run the Family Dinner install from the UI
+sudo grep -c '^OPENAI_API_KEY=sk-vm-canary$' /opt/sovereign-home/apps/familyDinner/.env   # 1: operator value kept
+```
+
+A reinstall must restart `family-dinner.service` (check `systemctl show family-dinner -p ActiveEnterTimestamp`) and must not duplicate `.env` keys.
 
 ## Mandatory secret audit
 

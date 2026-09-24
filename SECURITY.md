@@ -17,9 +17,15 @@ The default safe posture is plan-first, local/Tailnet-only, least privilege, rev
 
 ## Privilege boundary
 
-Home Base runs as a dedicated service user. The public installer configures plan-only execution, loopback binding, `NoNewPrivileges=true`, and systemd filesystem/kernel hardening. The installed web service cannot elevate through `sudo`; reviewed host plans are executed separately from an operator shell.
+Home Base runs as a dedicated service user. The public installer configures loopback binding, `NoNewPrivileges=true`, `ProtectSystem=strict`, and systemd kernel hardening for the web service. The web service cannot elevate through `sudo`.
 
-The runtime planner and public installer refuse a legacy `homebase ... NOPASSWD:ALL` rule. `HOME_BASE_EXECUTION_MODE=legacy-sudo` remains only as an explicit compatibility switch for existing private installations; Home Base does not create the required sudo policy. A future privileged executor must be narrow, auditable, path-contained, and separately reviewed before it becomes a supported public path.
+Privileged work goes through `homebase-executor`, a root service reachable only through `/run/homebase/executor.sock` (`root:homebase-exec 0660`; `homebase` is the only group member). The executor accepts typed, schema- and policy-validated operation plans, never shell text, and runs npm, git, migrations, and app code as `sovereign`, never root. See `docs/root-executor-implementation-plan.md`.
+
+The security boundary is that request contract, not the executor's systemd sandbox. The executor is root and must write and start systemd units, which run outside any sandbox applied to the executor itself, so `NoNewPrivileges`, `RestrictSUIDSGID`, `ProtectHome`, and a restrictive `UMask` would add no containment. They would only break apt/dpkg privilege drops, setuid package files, and maintainer scripts. The executor unit therefore keeps only directives that are harmless to package management (`PrivateTmp`, `ProtectKernelModules`, `ProtectKernelTunables`, `ProtectControlGroups`, `RestrictRealtime`, `LockPersonality`) and runs with `UMask=0022`. Do not reintroduce the removed directives without a VM run of host bootstrap and an app install.
+
+Root handlers treat anything `sovereign` can write as hostile. Ownership and mode changes go through an `O_NOFOLLOW` directory descriptor (`fchown`/`fchmod`), never by path, so an entry swapped for a symlink mid-operation cannot redirect them. Files inside app-owned directories are read and written only after temporarily assuming the `sovereign` identity. App units never use `EnvironmentFile=` pointing into app-owned directories, because systemd reads that file as root; apps load their own `.env` after dropping to `User=`.
+
+The runtime planner and public installer refuse a legacy `homebase ... NOPASSWD:ALL` rule. `HOME_BASE_EXECUTION_MODE=legacy-sudo` remains only as an explicit compatibility switch for existing private installations; Home Base does not create the required sudo policy.
 
 Job input, repository refs, filesystem paths, app manifests, hostnames, unit names, and proxy paths are untrusted command-generation inputs. Validate against allowlists, avoid shell interpolation, use structured process arguments where possible, and keep execution logs free of secrets.
 
@@ -27,7 +33,7 @@ Job input, repository refs, filesystem paths, app manifests, hostnames, unit nam
 
 - Generate high-entropy credentials; never silently overwrite an existing secret during re-planning or reinstall.
 - Render secret-bearing artifacts with restrictive permissions and redact values from API responses, previews, diffs, and logs.
-- Founder/private-repo SSH keys must be dedicated where practical, readable only by the managed service account that needs them, and protected by a strict known-hosts file.
+- Private-repo SSH access uses one dedicated, **read-only**, unencrypted deploy key installed with `install.sh --git-ssh-key <path>`. It is stored root-only (`/etc/sovereign-home/git/deploy_key`, `0600`) and only root's `ssh` ever reads it. The executor fetches as root into a root-owned bare mirror (`/var/lib/sovereign-home/git-mirrors/`) with hooks and fsmonitor disabled. `sovereign` then clones or fast-forwards the app checkout from that local mirror and never sees a credential. GitHub host keys are pinned (`StrictHostKeyChecking=yes`) and tested against GitHub's published fingerprints.
 - Do not disable SSH host-key checking or copy private keys into application checkouts.
 - Rotate credentials when an artifact, log, preview, backup, issue, or commit exposes them. Rotation comes before history cleanup.
 

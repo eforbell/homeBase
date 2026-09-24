@@ -24,10 +24,30 @@ test('Dinner bootstrap and install plans validate against the checked-in schema 
   assert.equal(validateOperationPolicy(bootstrap), bootstrap);
   assert.equal(validateOperationPolicy(dinner), dinner);
   assert.deepEqual(dinner.operations.map((operation) => operation.id), [
-    'ensure-install-root', 'sync-repository', 'ensure-db-role', 'ensure-database', 'write-environment',
-    'write-service', 'write-nginx', 'install-runtime', 'run-migrations', 'reload-systemd', 'start-service',
-    'reload-nginx', 'wait-ready',
+    'ensure-sovereign-root', 'ensure-app-root', 'ensure-sovereign-home', 'ensure-install-root', 'sync-repository', 'ensure-db-role', 'ensure-database', 'write-environment',
+    'write-service', 'ensure-nginx-apps', 'write-nginx', 'install-runtime', 'run-migrations', 'reload-systemd',
+    'start-service', 'ensure-gateway', 'reload-nginx', 'wait-ready',
   ]);
+  const bootstrapIds = bootstrap.operations.map((operation) => operation.id);
+  assert.ok(bootstrapIds.indexOf('ensure-nginx-apps') < bootstrapIds.indexOf('install-gateway'));
+  assert.ok(bootstrapIds.indexOf('install-gateway') < bootstrapIds.indexOf('validate-nginx'));
+});
+
+test('Dinner git transport follows configuration and SSH uses the catalog repository in URI form', () => {
+  const { getAppById } = require('../src/catalog');
+  const { DINNER_SSH_REPOSITORY } = require('../src/operations/policy');
+  const sshUrl = getAppById('family-dinner').repository.sshUrl;
+  assert.equal(DINNER_SSH_REPOSITORY, `ssh://${sshUrl.replace(':', '/')}`);
+  const repositoryFor = (gitTransport) => buildDinnerInstallPlan({ gitTransport, generatedAt: '2026-09-20T14:00:00.000Z' })
+    .operations.find((operation) => operation.type === 'git.sync').repository;
+  assert.equal(repositoryFor('https'), 'https://github.com/eforbell/familyDinner.git');
+  assert.equal(repositoryFor('ssh-key'), DINNER_SSH_REPOSITORY);
+  assert.equal(repositoryFor('ssh'), DINNER_SSH_REPOSITORY);
+  const sshPlan = buildDinnerInstallPlan({ gitTransport: 'ssh-key', generatedAt: '2026-09-20T14:00:00.000Z' });
+  assert.equal(validateOperationPolicy(sshPlan), sshPlan);
+  const forged = buildDinnerInstallPlan({ gitTransport: 'ssh-key', generatedAt: '2026-09-20T14:00:00.000Z' });
+  forged.operations.find((operation) => operation.type === 'git.sync').repository = 'ssh://git@github.com/attacker/familyDinner.git';
+  assert.throws(() => validateOperationPolicy(forged), (error) => error.code === 'INVALID_PLAN');
 });
 
 test('operation schema fails closed for unknown fields, raw shell primitives, and invalid dependency order', () => {

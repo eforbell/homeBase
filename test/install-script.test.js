@@ -138,7 +138,45 @@ test('installer verifies and installs a release with hardened defaults', () => {
   assert.match(executorSocket, /SocketGroup=homebase-exec/);
   assert.match(executorSocket, /SocketMode=0660/);
   assert.match(executorService, /User=root/);
+  // The root executor drives apt/dpkg, so it must not block their documented privilege transitions,
+  // setuid file installs, or impose a restrictive umask on maintainer scripts.
   assert.doesNotMatch(executorService, /NoNewPrivileges=/);
+  assert.doesNotMatch(executorService, /RestrictSUIDSGID=/);
+  assert.doesNotMatch(executorService, /ProtectHome=/);
+  assert.match(executorService, /UMask=0022/);
+  const checkedIn = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'homebase-executor.service'), 'utf8');
+  const directives = (unit) => unit.split('\n').filter((line) => /^[A-Z]\w+=/.test(line) && !/^ExecStart=/.test(line));
+  assert.deepEqual(directives(executorService), directives(checkedIn));
+});
+
+test('installer provisions a root-only git deploy key and switches Home Base to SSH transport', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-key-'));
+  const fixture = createReleaseFixture(tempDir);
+  const keyDir = path.join(tempDir, 'etc', 'git');
+  const env = installerEnv(tempDir, fixture, { HOMEBASE_GIT_DEPLOY_KEY_DIR: keyDir });
+  const keySource = path.join(tempDir, 'id_ed25519');
+  execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'homebase-test', '-f', keySource]);
+
+  const result = runInstaller(['--version', fixture.version, '--no-start', '--git-ssh-key', keySource], env);
+  assert.equal(result.status, 0, result.stderr);
+  const installedKey = path.join(keyDir, 'deploy_key');
+  assert.equal(fs.readFileSync(installedKey, 'utf8'), fs.readFileSync(keySource, 'utf8'));
+  assert.equal(fs.statSync(installedKey).mode & 0o777, 0o600);
+  const runtimeEnv = fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8');
+  assert.match(runtimeEnv, /^HOME_BASE_GIT_TRANSPORT=ssh-key$/m);
+  assert.equal(runtimeEnv.match(/^HOME_BASE_GIT_TRANSPORT=/gm).length, 1);
+  assert.match(runtimeEnv, new RegExp(`^HOME_BASE_GIT_SSH_KEY_PATH=${installedKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+  assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE KEY/);
+
+  const encrypted = path.join(tempDir, 'encrypted_key');
+  execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', 'passphrase', '-f', encrypted]);
+  const rejected = runInstaller(['--version', fixture.version, '--no-start', '--git-ssh-key', encrypted], env);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /unencrypted/);
+
+  const relative = runInstaller(['--version', fixture.version, '--no-start', '--git-ssh-key', 'id_ed25519'], env);
+  assert.notEqual(relative.status, 0);
+  assert.match(relative.stderr, /absolute path/);
 });
 
 test('installer packages a clean local checkout without contacting GitHub releases', () => {

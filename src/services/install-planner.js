@@ -753,7 +753,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const script = `#!/usr/bin/env bash\nset -euo pipefail\n\n# Install ${app.name}\n\n${commands.join('\n')}\n`;
 
   const operationPlan = app.id === 'family-dinner'
-    ? buildDinnerInstallPlan({ appId: app.id, ref: gitRef })
+    ? buildDinnerInstallPlan({ appId: app.id, ref: gitRef, gitTransport: config.gitTransport })
     : null;
   if (operationPlan) validateOperationPolicy(operationPlan);
 

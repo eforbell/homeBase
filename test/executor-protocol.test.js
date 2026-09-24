@@ -81,7 +81,7 @@ test('executor serializes typed execute requests and streams only redacted struc
   await withExecutor(async (socketPath) => {
     const plan = buildDinnerInstallPlan({ generatedAt: '2026-09-20T14:00:00.000Z' });
     const result = await executePlan(socketPath, { jobId: 1, plan, secretBindings: { familyDinnerDatabasePassword: 'canary-secret' } });
-    assert.deepEqual(result.completedOperationIds, ['ensure-install-root']);
+    assert.deepEqual(result.completedOperationIds, [plan.operations[0].id]);
   }, {
     executePlan: async (request, { emit }) => {
       emit({ eventType: 'operation.started', operationId: request.plan.operations[0].id });
@@ -102,5 +102,34 @@ test('explicitly enabled executor reports mutation capability while default rema
   await withExecutor(async (socketPath) => {
     const response = await hello(socketPath);
     assert.equal(response.capabilities.mutationsEnabled, true);
-  }, { mutationsEnabled: true, executePlan: async () => ({ completedOperationIds: [] }) });
+    assert.equal(response.capabilities.gitDeployKey, 'present');
+    assert.ok(response.capabilities.supportedOperationTypes.includes('nginx.ensure-gateway'));
+  }, { mutationsEnabled: true, probeDeployKey: () => 'present', executePlan: async () => ({ completedOperationIds: [] }) });
+});
+
+test('accepted plans outlive the pre-acceptance idle deadline and stream events before completion', async () => {
+  let releasePlan;
+  const eventsBeforeCompletion = [];
+  let completedAt = null;
+  await withExecutor(async (socketPath) => {
+    const plan = buildDinnerInstallPlan({ generatedAt: '2026-09-20T14:00:00.000Z' });
+    const result = await executePlan(socketPath, { jobId: 1, plan, secretBindings: { familyDinnerDatabasePassword: 'canary-secret' } }, {
+      timeoutMs: 5000,
+      onEvent: (event) => {
+        if (completedAt === null) eventsBeforeCompletion.push(event.eventType);
+        // Stay silent well past the 50ms pre-acceptance deadline, like a long apt-get install.
+        setTimeout(() => releasePlan(), 200);
+      },
+    });
+    completedAt = Date.now();
+    assert.deepEqual(result.completedOperationIds, [plan.operations[0].id]);
+  }, {
+    requestTimeoutMs: 50,
+    executePlan: async (request, { emit }) => {
+      emit({ eventType: 'operation.started', operationId: request.plan.operations[0].id });
+      await new Promise((resolve) => { releasePlan = resolve; });
+      return { completedOperationIds: [request.plan.operations[0].id] };
+    },
+  });
+  assert.deepEqual(eventsBeforeCompletion, ['operation.started']);
 });
