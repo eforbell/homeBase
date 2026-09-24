@@ -128,8 +128,23 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
   return { value: candidate };
 }
 
+// Site values flow into app .env files through the root executor; they must be single-line tokens.
+function isValidSite(site) {
+  if (!site || typeof site !== 'object' || Array.isArray(site)) return false;
+  const keys = Object.keys(site).sort().join(',');
+  if (keys !== 'domain,hostname,householdTimezone') return false;
+  const { hostname, domain, householdTimezone } = site;
+  return typeof hostname === 'string' && HOSTNAME_PATTERN.test(hostname)
+    && typeof domain === 'string' && DOMAIN_PATTERN.test(domain) && !domain.includes('..') && !domain.startsWith('.') && !domain.endsWith('.')
+    && typeof householdTimezone === 'string' && TIMEZONE_PATTERN.test(householdTimezone) && householdTimezone.length <= 64;
+}
+
 module.exports = {
   ALLOWED_GIT_TRANSPORTS,
+  HOSTNAME_PATTERN,
+  DOMAIN_PATTERN,
+  TIMEZONE_PATTERN,
+  isValidSite,
   mergeHomeBaseConfig,
   toClientHomeBaseConfig,
   validateAbsolutePath,

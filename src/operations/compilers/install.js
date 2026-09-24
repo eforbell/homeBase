@@ -7,7 +7,9 @@ function repositoryForTransport(gitTransport) {
   return gitTransport === 'ssh' || gitTransport === 'ssh-key' ? DINNER_SSH_REPOSITORY : DINNER_REPOSITORY;
 }
 
-function buildDinnerInstallPlan({ appId = 'family-dinner', ref = 'main', gitTransport = 'https', generatedAt, catalogRevision } = {}) {
+const DEFAULT_SITE = Object.freeze({ hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' });
+
+function buildDinnerInstallPlan({ appId = 'family-dinner', ref = 'main', gitTransport = 'https', site = DEFAULT_SITE, generatedAt, catalogRevision } = {}) {
   const app = getAppById(appId);
   if (!app || app.id !== 'family-dinner' || app.repository.url !== DINNER_REPOSITORY) {
     const error = new Error('Typed execution is currently supported only for Family Dinner.');
@@ -29,7 +31,7 @@ function buildDinnerInstallPlan({ appId = 'family-dinner', ref = 'main', gitTran
     operation({ id: 'sync-repository', type: 'git.sync', title: 'Synchronize Family Dinner repository', timeoutMs: 300000, dependsOn: ['ensure-install-root'], preconditions: ['directory-layout'], repository: repositoryForTransport(gitTransport), ref, destination: 'familyDinner' }),
     operation({ id: 'ensure-db-role', type: 'postgres.ensure-role', title: 'Ensure Family Dinner database role', dependsOn: ['sync-repository'], preconditions: ['postgres-ready'], secretRefs: [databasePasswordRef], role: app.database.databaseUser, passwordSecretRef: databasePasswordRef }),
     operation({ id: 'ensure-database', type: 'postgres.ensure-database', title: 'Ensure Family Dinner database', dependsOn: ['ensure-db-role'], database: app.database.databaseName, owner: app.database.databaseUser }),
-    operation({ id: 'write-environment', type: 'filesystem.write-managed-file', title: 'Write Family Dinner environment', dependsOn: ['ensure-database'], secretRefs: [databasePasswordRef], purpose: 'app-env', template: 'family-dinner-env-v1' }),
+    operation({ id: 'write-environment', type: 'filesystem.write-managed-file', title: 'Write Family Dinner environment', dependsOn: ['ensure-database'], secretRefs: [databasePasswordRef], purpose: 'app-env', template: 'family-dinner-env-v1', site: { hostname: site.hostname, domain: site.domain, householdTimezone: site.householdTimezone } }),
     operation({ id: 'write-service', type: 'filesystem.write-managed-file', title: 'Write Family Dinner service unit', dependsOn: ['write-environment'], purpose: 'systemd-unit', template: 'family-dinner-service-v1' }),
     operation({ id: 'ensure-nginx-apps', type: 'filesystem.ensure-directory', title: 'Ensure managed nginx app directory', dependsOn: ['write-service'], purpose: 'nginx-apps' }),
     operation({ id: 'write-nginx', type: 'filesystem.write-managed-file', title: 'Write Family Dinner nginx snippet', dependsOn: ['ensure-nginx-apps'], purpose: 'nginx-snippet', template: 'family-dinner-nginx-v1' }),

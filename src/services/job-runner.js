@@ -126,12 +126,12 @@ class JobRunner {
     return this.startTypedActionJob({ kind: 'bootstrap', target: 'local-host', action: { action: 'bootstrap' } });
   }
 
-  startTypedInstallJob({ appId, ref, transport, stateRecord, onComplete = null }) {
+  startTypedInstallJob({ appId, ref, transport, site, stateRecord, onComplete = null }) {
     if (appId !== 'family-dinner') throw new Error('Typed executor installs are currently supported only for Family Dinner.');
     return this.startTypedActionJob({
       kind: 'install',
       target: appId,
-      action: { action: 'install', appId, ref, transport },
+      action: { action: 'install', appId, ref, transport, site },
       afterExecution: async (jobId) => {
         // Installed only after the app answers readiness, never merely because systemd started it.
         this.stateStore.appendJobLog(jobId, '[executor] waiting for Family Dinner readiness\n');

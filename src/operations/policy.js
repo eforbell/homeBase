@@ -1,4 +1,5 @@
 const { OperationPlanError, validateOperationSchema } = require('./validate');
+const { isValidSite } = require('../homebase-config');
 
 const DINNER_REPOSITORY = 'https://github.com/eforbell/familyDinner.git';
 // URI form of the catalog's scp-style sshUrl (git@github.com:eforbell/familyDinner.git); JSON Schema requires a URI.
@@ -32,6 +33,12 @@ function validateOperationPolicy(plan) {
     if (operation.type === 'package.ensure' && operation.packages.some((pkg) => !ALLOWED_PACKAGES.has(pkg))) deny('Package is not in the compiled policy allowlist.');
     if (operation.type === 'filesystem.ensure-directory' && !ALLOWED_DIRECTORIES.has(operation.purpose)) deny('Directory purpose is not allowed.');
     if (operation.type === 'git.sync' && (!gitTransportForRepository(operation.repository) || !(/^(main|[a-f0-9]{40})$/.test(operation.ref)) || operation.destination !== 'familyDinner')) deny('Git operation does not match Family Dinner policy.');
+    if (operation.type === 'filesystem.write-managed-file') {
+      // Only env templates consume site values; they must be present there and nowhere else.
+      const needsSite = operation.purpose === 'app-env';
+      if (needsSite !== ('site' in operation)) deny('Managed file site values are required for app env files only.');
+      if (needsSite && !isValidSite(operation.site)) deny('Managed file site values are invalid.');
+    }
     if (operation.type === 'postgres.ensure-role' && (!operation.secretRefs.includes(operation.passwordSecretRef) || operation.passwordSecretRef !== 'familyDinnerDatabasePassword')) deny('PostgreSQL password binding is invalid.');
     if (operation.type === 'systemd.ensure-service') {
       const units = plan.policyProfile === 'host-bootstrap-v1' ? new Set(['postgresql.service', 'nginx.service']) : new Set(['family-dinner.service']);

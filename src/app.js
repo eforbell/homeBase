@@ -1223,6 +1223,12 @@ function createApp(config) {
             appId,
             ref: plan.app.ref,
             transport,
+            // Non-secret site values the executor renders into the app env (hostname-derived URLs, timezone).
+            site: {
+              hostname: effectiveConfig.defaultHostname || 'homebase',
+              domain: effectiveConfig.defaultDomain || 'tailnet',
+              householdTimezone: effectiveConfig.householdTimezone || 'America/New_York',
+            },
             stateRecord: plan.stateRecord,
             onComplete: () => {
               const installed = (stateStore.loadState().installations || {})[appId];

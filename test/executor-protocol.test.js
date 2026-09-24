@@ -10,7 +10,8 @@ const { PROTOCOL_VERSION } = require('../executor/protocol');
 const { hello, hostStatus, appUpdateStatus, runAction, planAction, sendRequest } = require('../src/executor/client');
 const { digestOperationPlan } = require('../src/operations/digest');
 
-const DINNER_INSTALL = { action: 'install', appId: 'family-dinner', ref: 'main', transport: 'https' };
+const SITE = { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' };
+const DINNER_INSTALL = { action: 'install', appId: 'family-dinner', ref: 'main', transport: 'https', site: SITE };
 
 async function withExecutor(run, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-executor-'));
@@ -83,12 +84,15 @@ test('callers can no longer submit plans, operations, or secrets', async () => {
 test('action fields are validated against the catalog and per-action shape', async () => {
   await withExecutor(async (socketPath) => {
     const bad = [
-      { action: 'uninstall', appId: 'family-dinner', ref: 'main', transport: 'https' },
+      { ...DINNER_INSTALL, action: 'uninstall' },
+      { ...DINNER_INSTALL, site: { ...SITE, hostname: 'bad\nhost' } },
+      { ...DINNER_INSTALL, site: { ...SITE, extra: 'x' } },
+      { ...DINNER_INSTALL, site: undefined },
       { action: 'bootstrap', appId: 'family-dinner' },
       { ...DINNER_INSTALL, appId: '../../etc' },
       { ...DINNER_INSTALL, ref: '--upload-pack=/bin/sh' },
       { ...DINNER_INSTALL, transport: 'file' },
-      { action: 'install', appId: 'family-dinner', ref: 'main' },
+      { action: 'install', appId: 'family-dinner', ref: 'main', site: SITE },
     ];
     for (const fields of bad) {
       const response = await rawRequest(socketPath, line({ type: 'plan-action', ...fields }));

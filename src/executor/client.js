@@ -58,8 +58,8 @@ function appUpdateStatus(socketPath, { appId, transport, ref }, options) {
 }
 
 // The executor compiles the plan; Home Base only names the action.
-function actionFields({ action, appId, ref, transport }) {
-  return action === 'bootstrap' ? { action } : { action, appId, ref, transport };
+function actionFields({ action, appId, ref, transport, site }) {
+  return action === 'bootstrap' ? { action } : { action, appId, ref, transport, site };
 }
 
 function runAction(socketPath, { jobId, actor = { kind: 'homebase-admin-session', auditRef: 'local' }, ...fields }, options) {

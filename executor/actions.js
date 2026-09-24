@@ -5,16 +5,17 @@ const { buildDinnerInstallPlan } = require('../src/operations/compilers/install'
 const { validateOperationPolicy } = require('../src/operations/policy');
 const { digestOperationPlan } = require('../src/operations/digest');
 const { getAppById } = require('../src/catalog');
+const { isValidSite } = require('../src/homebase-config');
 
 // The executor builds every plan it runs. Callers name a high-level action; they never submit
 // operations, paths, commands, or secrets.
 const ACTIONS = Object.freeze({
   bootstrap: { fields: [] },
-  install: { fields: ['appId', 'ref', 'transport'] },
+  install: { fields: ['appId', 'ref', 'transport', 'site'] },
 });
 // Apps whose install the executor can compile today. Grows as catalog shapes are supported.
 const INSTALLABLE_APPS = Object.freeze(['family-dinner']);
-const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport'];
+const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }
 function invalid(message) { throw new ProtocolError('INVALID_REQUEST', message); }
@@ -29,7 +30,9 @@ function normalizeAction(request) {
   if (typeof request.appId !== 'string' || !getAppById(request.appId)) invalid('appId must name a catalog app.');
   if (typeof request.ref !== 'string' || !/^(main|[a-f0-9]{40})$/.test(request.ref)) invalid('ref must be main or a 40-character commit SHA.');
   if (!['https', 'ssh'].includes(request.transport)) invalid('transport must be https or ssh.');
-  return { action: 'install', appId: request.appId, ref: request.ref, transport: request.transport };
+  if (!isValidSite(request.site)) invalid('site must be exactly { hostname, domain, householdTimezone } with valid values.');
+  const site = { hostname: request.site.hostname, domain: request.site.domain, householdTimezone: request.site.householdTimezone };
+  return { action: 'install', appId: request.appId, ref: request.ref, transport: request.transport, site };
 }
 
 function compileAction(action, { generatedAt = new Date().toISOString() } = {}) {
@@ -38,7 +41,7 @@ function compileAction(action, { generatedAt = new Date().toISOString() } = {}) 
     plan = buildDinnerBootstrapPlan({ generatedAt });
   } else if (action.action === 'install') {
     if (!INSTALLABLE_APPS.includes(action.appId)) deny(`The executor cannot install ${action.appId} yet.`);
-    plan = buildDinnerInstallPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, generatedAt });
+    plan = buildDinnerInstallPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
   } else {
     deny('Unsupported action.');
   }

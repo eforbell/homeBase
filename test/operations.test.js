@@ -92,3 +92,12 @@ test('the web-side install planner no longer produces typed plans; only the exec
   assert.equal('operationPlan' in dinner, false);
   assert.equal(dinner.stateRecord.appId, 'family-dinner');
 });
+
+test('site values appear only on app env files and must be single-line tokens', () => {
+  const envOp = (plan) => plan.operations.find((operation) => operation.purpose === 'app-env');
+  assert.deepEqual(envOp(dinnerPlan()).site, { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' });
+  assertDenied((plan) => { envOp(plan).site.hostname = 'evil\nINJECTED=1'; });
+  assertDenied((plan) => { envOp(plan).site.domain = '..'; }, 'POLICY_DENIED');
+  assertDenied((plan) => { delete envOp(plan).site; }, 'POLICY_DENIED');
+  assertDenied((plan) => { plan.operations.find((operation) => operation.purpose === 'systemd-unit').site = envOp(plan).site; }, 'POLICY_DENIED');
+});

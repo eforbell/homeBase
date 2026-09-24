@@ -5,6 +5,7 @@ const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
 const { getAppById } = require('../src/catalog');
 const { gitTransportForRepository } = require('../src/operations/policy');
+const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 const DIRECTORY_PATHS = Object.freeze({
   'sovereign-root': '/opt/sovereign-home',
@@ -119,15 +120,6 @@ function writeFileAtomic(fsImpl, destination, content, mode) {
   }
 }
 
-function parseEnvFile(content) {
-  const entries = new Map();
-  for (const line of String(content || '').split('\n')) {
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
-    if (match) entries.set(match[1], match[2]);
-  }
-  return entries;
-}
-
 function assertDatabasePassword(password) {
   if (typeof password !== 'string' || !password) throw new ProtocolError('SECRET_BINDING_MISSING', 'Family Dinner database password is missing.');
   // Printable, whitespace-free ASCII keeps the password safe for psql's line-oriented stdin and .env lines.
@@ -135,65 +127,81 @@ function assertDatabasePassword(password) {
   return password;
 }
 
-// Managed keys are authoritative; every other key keeps the operator's non-empty value, and catalog
-// defaults fill anything missing. Keys the operator added outside the catalog survive reinstall.
-function renderDinnerEnv({ password, existingContent = '' }) {
-  const app = getAppById('family-dinner');
-  const existing = parseEnvFile(existingContent);
-  const port = String(app.network.preferredPort);
-  const databaseUrl = `postgresql://${app.database.databaseUser}:${encodeURIComponent(password)}@127.0.0.1:5432/${app.database.databaseName}`;
-  const placeholders = {
+const FONT_ASSETS_DIR = '/opt/sovereign-home/assets/fonts';
+const GOOGLE_FONT_SANS_CSS_URL = 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap';
+const GOOGLE_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap';
+
+// Render context equivalent to the legacy planner's for the same inputs (see test/env-parity.test.js).
+// Secrets are fresh candidates only: the shared reinstall contract keeps any existing secret values.
+function buildEnvContext({ app, site, databaseUrl, fsImpl = fs, randomHex = () => crypto.randomBytes(32).toString('hex') }) {
+  const publicBase = `https://${site.hostname}.${site.domain}`;
+  const mountPath = app.network.preferredMountPath;
+  const localFonts = fsImpl.existsSync(`${FONT_ASSETS_DIR}/source-sans-3.css`) && fsImpl.existsSync(`${FONT_ASSETS_DIR}/jetbrains-mono.css`);
+  return {
+    port: app.network.preferredPort,
+    mountPath,
+    externalUrl: `${publicBase}${mountPath}`,
+    publicUrl: `${publicBase}${mountPath}`,
     databaseUrl,
-    port,
-    sovereignFontSource: 'google',
-    sovereignFontSansCssUrl: 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap',
-    sovereignFontMonoCssUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap',
-    sovereignFontSansCssUrlLocal: '',
-    sovereignFontMonoCssUrlLocal: '',
+    dbUser: app.database?.databaseUser,
+    dbName: app.database?.databaseName,
+    secret1: randomHex(),
+    secret2: randomHex(),
+    secret3: randomHex(),
+    householdTimezone: site.householdTimezone,
+    sovereignFontSource: localFonts ? 'local' : 'google',
+    sovereignFontSansCssUrl: GOOGLE_FONT_SANS_CSS_URL,
+    sovereignFontMonoCssUrl: GOOGLE_FONT_MONO_CSS_URL,
+    sovereignFontSansCssUrlLocal: `${publicBase}/_sovereign/fonts/source-sans-3.css`,
+    sovereignFontMonoCssUrlLocal: `${publicBase}/_sovereign/fonts/jetbrains-mono.css`,
   };
-  const managed = { DATABASE_URL: databaseUrl, PORT: port, NODE_ENV: app.runtime.nodeEnv || 'production' };
-  const lines = [];
-  const written = new Set();
-  const emit = (key, value) => { lines.push(`${key}=${value}`); written.add(key); };
-  for (const [key, template] of Object.entries(app.config.env)) {
-    if (key in managed) { emit(key, managed[key]); continue; }
-    const current = existing.get(key);
-    if (current) { emit(key, current); continue; }
-    emit(key, String(template).replace(/\{\{(\w+)\}\}/g, (_, name) => placeholders[name] ?? ''));
-  }
-  for (const [key, value] of Object.entries(managed)) if (!written.has(key)) emit(key, value);
-  for (const [key, value] of existing) if (!written.has(key)) emit(key, value);
-  return `${lines.join('\n')}\n`;
 }
 
-// Reuse the app's current database password so an update never rotates credentials under a running
-// service (a failed update would otherwise leave the live app unable to connect). Read as sovereign:
-// the .env sits in a sovereign-owned directory. Returns null when there is nothing valid to reuse.
+// The shared reinstall contract (src/operations/env.js), rendered strictly. Executor-written units set
+// no Environment=, so the runtime environment (NODE_ENV) is authoritative in .env.
+function renderDinnerEnv({ password, site, existingContent = '', fsImpl = fs }) {
+  const app = getAppById('family-dinner');
+  const existing = existingContent ? parseDotEnv(existingContent) : null;
+  const canonicalUrl = `postgresql://${app.database.databaseUser}:${encodeURIComponent(password)}@127.0.0.1:5432/${app.database.databaseName}`;
+  const ctx = buildEnvContext({ app, site, databaseUrl: canonicalUrl, fsImpl });
+  let env;
+  try {
+    ({ env } = renderAppEnv({ app, ctx, existing, strict: true }));
+  } catch (error) {
+    if (error.code === 'ENV_TEMPLATE_UNRESOLVED') deny(error.message);
+    throw error;
+  }
+  return renderEnv({ ...env, NODE_ENV: app.runtime.nodeEnv || 'production' });
+}
+
+// The database password this install must use. Existing database wiring is kept verbatim by the
+// reinstall contract, so the role password has to come from it; otherwise updates would rotate
+// credentials under a running service. Read as sovereign (the .env sits in a sovereign-owned
+// directory). Returns null when there is no existing wiring; refuses wiring that points elsewhere.
 function readExistingDinnerPassword({ fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const sovereign = lookupUser('sovereign');
   if (!sovereign) return null;
   const envPath = '/opt/sovereign-home/apps/familyDinner/.env';
-  let content = null;
-  try {
-    content = asUser(sovereign, () => {
-      const stat = lstatOrNull(fsImpl, envPath);
-      return stat && stat.isFile() ? fsImpl.readFileSync(envPath, 'utf8') : null;
-    });
-  } catch { return null; }
-  const url = parseEnvFile(content).get('DATABASE_URL') || '';
-  const match = /^postgresql:\/\/family_dinner:([^@]+)@127\.0\.0\.1:5432\/family_dinner$/.exec(url);
-  if (!match) return null;
-  try {
-    const password = decodeURIComponent(match[1]);
-    return /^[\x21-\x7e]{8,256}$/.test(password) ? password : null;
-  } catch { return null; }
+  const content = asUser(sovereign, () => {
+    const stat = lstatOrNull(fsImpl, envPath);
+    return stat && stat.isFile() ? fsImpl.readFileSync(envPath, 'utf8') : null;
+  });
+  if (!content) return null;
+  const app = getAppById('family-dinner');
+  const existing = parseDotEnv(content);
+  if (!hasExistingDbConfig(existing, app)) return null;
+  const db = resolveExistingDbContext(existing, {}, app);
+  if (db.dbUser !== app.database.databaseUser || db.dbName !== app.database.databaseName) {
+    deny(`The existing Family Dinner DATABASE_URL targets ${db.dbUser || '?'}@${db.dbName || '?'}; the executor manages ${app.database.databaseUser}@${app.database.databaseName}. Fix the .env or move the data before reinstalling.`);
+  }
+  return assertDatabasePassword(db.dbPassword);
 }
 
 function renderManagedFile(operation, secretBindings = {}) {
   const templates = {
     'family-dinner-env-v1': {
       path: '/opt/sovereign-home/apps/familyDinner/.env', mode: 0o640, owner: 'sovereign',
-      render: ({ existingContent }) => renderDinnerEnv({ password: assertDatabasePassword(secretBindings.familyDinnerDatabasePassword), existingContent }),
+      render: ({ existingContent, fsImpl }) => renderDinnerEnv({ password: assertDatabasePassword(secretBindings.familyDinnerDatabasePassword), site: operation.site, existingContent, fsImpl }),
     },
     // No EnvironmentFile=: systemd would read the sovereign-owned .env as root before dropping to
     // User=, letting a planted symlink expose root-only files. Dinner loads .env itself via dotenv.
@@ -404,7 +412,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         const existing = lstatOrNull(fsImpl, template.path);
         if (existing && !existing.isFile()) deny('Managed file destination is not a regular file.');
         const existingContent = existing ? fsImpl.readFileSync(template.path, 'utf8') : '';
-        writeFileAtomic(fsImpl, template.path, template.render({ existingContent }), template.mode);
+        writeFileAtomic(fsImpl, template.path, template.render({ existingContent, fsImpl }), template.mode);
       });
       return `wrote ${operation.template}`;
     },
@@ -427,7 +435,7 @@ module.exports = {
   renderManagedFile,
   readExistingDinnerPassword,
   renderDinnerEnv,
-  parseEnvFile,
+  buildEnvContext,
   runAsUser,
   rootGitEnvironment,
   ROOT_GIT_CONFIG,

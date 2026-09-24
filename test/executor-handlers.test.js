@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const {
-  createBaseHandlers, renderManagedFile, renderDinnerEnv, deployKeyStatus,
+  createBaseHandlers, renderManagedFile, deployKeyStatus,
   GIT_DEPLOY_KEY_PATH, GIT_KNOWN_HOSTS_PATH, GITHUB_KNOWN_HOSTS, NGINX_GATEWAY_CONTENT,
 } = require('../executor/handlers');
 const { createFakeFs } = require('./fixtures/fake-fs');
@@ -224,27 +224,6 @@ test('PostgreSQL handlers send valid psql input on stdin and never place passwor
   await assert.rejects(() => handlers['postgres.ensure-role'](base('postgres.ensure-role', { role: 'family_dinner', passwordSecretRef: 'familyDinnerDatabasePassword' }), { secretBindings: { familyDinnerDatabasePassword: 'two\nlines-pass' } }), (error) => error.code === 'POLICY_DENIED');
 });
 
-test('Dinner env keeps operator values across reinstall while managed keys stay authoritative', () => {
-  const existingContent = [
-    'DATABASE_URL=postgresql://family_dinner:old@127.0.0.1:5432/family_dinner',
-    'OPENAI_API_KEY=sk-operator',
-    'OPENAI_MODEL=gpt-operator',
-    'CUSTOM_FLAG=1',
-    '# comment',
-  ].join('\n');
-  const env = renderDinnerEnv({ password: 'p@ss/word', existingContent });
-  assert.match(env, /^DATABASE_URL=postgresql:\/\/family_dinner:p%40ss%2Fword@127\.0\.0\.1:5432\/family_dinner$/m);
-  assert.match(env, /^OPENAI_API_KEY=sk-operator$/m);
-  assert.match(env, /^OPENAI_MODEL=gpt-operator$/m);
-  assert.match(env, /^CUSTOM_FLAG=1$/m);
-  assert.match(env, /^PORT=3000$/m);
-  assert.match(env, /^NODE_ENV=production$/m);
-  assert.match(env, /^RECIPE_IMPORT_USER_AGENT=Home Base importer\/0\.1$/m);
-  assert.match(env, /^SOVEREIGN_FONT_SOURCE=google$/m);
-  assert.doesNotMatch(env, /\{\{/);
-  assert.equal(env.match(/^DATABASE_URL=/gm).length, 1);
-});
-
 test('managed files have fixed destinations and never accept caller content', () => {
   assert.equal(renderManagedFile(base('filesystem.write-managed-file', { template: 'family-dinner-env-v1' })).path, `${DINNER}/.env`);
   const unit = renderManagedFile(base('filesystem.write-managed-file', { template: 'family-dinner-service-v1' }));
@@ -267,7 +246,7 @@ test('app env is read and written under the sovereign identity; root files are w
   const opens = [];
   fsImpl.openSync = (target, ...rest) => { opens.push([target, current]); return originalOpen(target, ...rest); };
   const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, asUser });
-  await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'family-dinner-env-v1' }), { secretBindings: { familyDinnerDatabasePassword: 'canary-pass' } });
+  await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'family-dinner-env-v1', site: { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' } }), { secretBindings: { familyDinnerDatabasePassword: 'canary-pass' } });
   await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'family-dinner-service-v1' }));
   assert.deepEqual(identities, [SOVEREIGN]);
   assert.deepEqual(opens.map(([target, who]) => [target.replace(/\.tmp-[0-9a-f]+$/, '.tmp'), who]), [
