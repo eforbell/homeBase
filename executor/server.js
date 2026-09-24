@@ -5,6 +5,7 @@ const { digestOperationPlan } = require('../src/operations/digest');
 const { writeAudit } = require('./audit');
 const { executePlan: defaultExecutePlan } = require('./execute');
 const { createBaseHandlers, deployKeyStatus } = require('./handlers');
+const { createHostStatusCollector } = require('./host-status');
 
 function encodeLine(payload) {
   const line = JSON.stringify(payload);
@@ -12,7 +13,7 @@ function encodeLine(payload) {
   return `${line}\n`;
 }
 
-function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null, mutationsEnabled = false, probeDeployKey = () => 'missing' } = {}) {
+function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null, mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null } = {}) {
   const completed = new Map();
   let activeMutation = false;
   return net.createServer((socket) => {
@@ -65,6 +66,10 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
           completed.set(request.requestId, response);
           return finish(null, response);
         }
+        if (request.type === 'host-status') {
+          if (!collectHostStatus) throw new ProtocolError('POLICY_DENIED', 'Host status is not enabled.');
+          return finish(null, result({ requestId: request.requestId, ok: true, result: await collectHostStatus() }));
+        }
         const response = request.type === 'hello'
           ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled, gitDeployKey: probeDeployKey() }), activePlan: activeMutation } })
           : result({ requestId: request.requestId, ok: true, result: { valid: true, planDigest: digestOperationPlan(request.plan), mutationsEnabled: false } });
@@ -79,7 +84,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
 function listenSystemd({ logger = console } = {}) {
   const handlers = createBaseHandlers();
   const executePlan = (request, { emit }) => defaultExecutePlan(request, { handlers, emit });
-  const server = createExecutorServer({ logger, executePlan, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus() });
+  const server = createExecutorServer({ logger, executePlan, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector() });
   if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
   server.listen({ fd: 3 });
   return server;

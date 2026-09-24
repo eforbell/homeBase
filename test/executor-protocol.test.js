@@ -133,3 +133,15 @@ test('accepted plans outlive the pre-acceptance idle deadline and stream events 
   });
   assert.deepEqual(eventsBeforeCompletion, ['operation.started']);
 });
+
+test('host-status is a fixed, argument-free read request', async () => {
+  const { sendRequest, hostStatus } = require('../src/executor/client');
+  await withExecutor(async (socketPath) => {
+    const status = await hostStatus(socketPath);
+    assert.equal(status.checks['nginx-config'].ok, true);
+    await assert.rejects(() => sendRequest(socketPath, { protocolVersion: 1, requestId: crypto.randomUUID(), type: 'host-status', path: '/etc/shadow' }), (error) => error.code === 'INVALID_REQUEST');
+  }, { collectHostStatus: async () => ({ checks: { 'nginx-config': { ok: true } } }) });
+  await withExecutor(async (socketPath) => {
+    await assert.rejects(() => hostStatus(socketPath), (error) => error.code === 'POLICY_DENIED');
+  });
+});

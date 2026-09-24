@@ -46,8 +46,9 @@
     try {
       const data = await window.HB.getJson('/api/preflight');
       const checks = Array.isArray(data.checks) ? data.checks : [];
-      const criticalFail = checks.some((check) => check.severity === 'critical' && !check.ok);
-      const anyFail = checks.some((check) => !check.ok);
+      // ok === null means "not evaluated", which is not a failure; an unreachable executor is its own critical check.
+      const criticalFail = checks.some((check) => check.severity === 'critical' && check.ok === false);
+      const anyFail = checks.some((check) => check.ok === false);
       status = criticalFail ? 'red' : (anyFail ? 'yellow' : 'green');
     } catch (_error) {
       status = 'yellow';

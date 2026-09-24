@@ -486,7 +486,7 @@
         </section>
         <section class="hb-card">
           <h2 style="margin-top:0;">Publishing prerequisites</h2>
-          ${renderChecks(preflight, { ids: ['tailscale', 'nginx', 'nginx-config', 'nginx-snippets-include'], label: 'Network publishing checks' })}
+          ${renderChecks(preflight, { ids: ['tailscale', 'nginx', 'nginx-config', 'nginx-gateway', 'nginx-snippets-include'], label: 'Network publishing checks' })}
         </section>
       </div>
     `;

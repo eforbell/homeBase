@@ -50,6 +50,10 @@ function hello(socketPath, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'hello' }, options);
 }
 
+function hostStatus(socketPath, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'host-status' }, options);
+}
+
 function executePlan(socketPath, { jobId, plan, secretBindings, actor = { kind: 'homebase-admin-session', auditRef: 'local' } }, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'execute-plan', jobId: String(jobId), actor, issuedAt: new Date().toISOString(), planDigest: digestOperationPlan(plan), plan, secretBindings }, options);
 }
@@ -58,4 +62,4 @@ function validatePlan(socketPath, plan, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'validate-plan', planDigest: digestOperationPlan(plan), plan }, options);
 }
 
-module.exports = { sendRequest, hello, validatePlan, executePlan };
+module.exports = { sendRequest, hello, hostStatus, validatePlan, executePlan };

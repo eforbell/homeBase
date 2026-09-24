@@ -1,6 +1,6 @@
 const { spawnSync } = require('child_process');
 
-const CRITICAL_CHECK_IDS = new Set(['os', 'sudo', 'systemd', 'nginx-config', 'postgres-service']);
+const CRITICAL_CHECK_IDS = new Set(['os', 'sudo', 'systemd', 'nginx-config', 'postgres-service', 'executor']);
 
 function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -21,12 +21,15 @@ function runShell(command) {
 }
 
 function getCheckSeverity(id, config = {}) {
-  if (id === 'nginx-config' && config.homeBaseExecutionMode === 'executor') return 'warning';
   return CRITICAL_CHECK_IDS.has(id) ? 'critical' : 'warning';
 }
 
-function buildCheck(id, title, command, hint, runCommand = runShell, config = {}) {
+function buildCheck(id, title, command, hint, runCommand = runShell, config = {}, { missingSummary = null } = {}) {
   const result = runCommand(command);
+  // `command -v x` fails silently when x is absent; say so instead of reporting a bare exit code.
+  if (!result.ok && missingSummary && !result.stdout && !result.stderr) {
+    return { id, title, command, severity: getCheckSeverity(id, config), ok: false, summary: missingSummary, hint };
+  }
   return {
     id,
     title,
@@ -51,10 +54,58 @@ function buildNotEvaluatedCheck(id, title, hint, config = {}) {
   };
 }
 
-function runPreflightChecks(config = {}, { runCommand = runShell } = {}) {
+function buildExecutorCheck(id, title, hint, executorStatus, config) {
+  const fact = executorStatus?.host?.checks?.[id];
+  if (!fact) {
+    return {
+      ...buildNotEvaluatedCheck(id, title, hint, config),
+      summary: executorStatus?.reachable
+        ? 'The executor does not report this check; repair it with install.sh --repair.'
+        : 'The privileged executor is unreachable, so this check could not run.',
+    };
+  }
+  return { id, title, command: '', source: 'executor', severity: getCheckSeverity(id, config), ok: fact.ok, summary: fact.summary || (fact.ok ? 'ok' : 'failed'), hint };
+}
+
+function buildExecutorModeChecks(config, executorStatus) {
+  const reachable = Boolean(executorStatus?.reachable);
+  const checks = [
+    {
+      id: 'executor',
+      title: 'Privileged executor reachable',
+      command: '',
+      severity: getCheckSeverity('executor', config),
+      ok: reachable,
+      summary: reachable
+        ? `protocol ${executorStatus.capabilities?.protocolVersions?.join(', ') || '?'}, mutations ${executorStatus.capabilities?.mutationsEnabled ? 'enabled' : 'disabled'}`
+        : (executorStatus?.error || 'No response from the executor socket.'),
+      hint: 'On the host: sudo systemctl status homebase-executor.socket; repair with sudo bash install.sh --repair.',
+    },
+    buildExecutorCheck('nginx-config', 'nginx configuration validates', 'Checked by the executor with nginx -t. Inspect with: sudo nginx -t', executorStatus, config),
+    buildExecutorCheck('nginx-gateway', 'nginx gateway serves managed apps', 'Run host bootstrap (or any app install) to install and enable the managed gateway site.', executorStatus, config),
+  ];
+  if (config.gitTransport === 'ssh' || config.gitTransport === 'ssh-key') {
+    const key = executorStatus?.host?.checks?.['git-deploy-key'];
+    checks.push(key ? {
+      id: 'git-ssh-key',
+      title: 'Git deploy key installed (root-only)',
+      command: '',
+      source: 'executor',
+      severity: getCheckSeverity('git-ssh-key', config),
+      ok: key.ok,
+      summary: { present: 'Deploy key present at /etc/sovereign-home/git/deploy_key', missing: 'No deploy key installed', insecure: 'Deploy key is not root-owned with mode 0600' }[key.status] || key.status,
+      hint: 'On the host: sudo bash install.sh --source-dir <checkout> --repair --git-ssh-key <path-to-private-key>',
+    } : buildNotEvaluatedCheck('git-ssh-key', 'Git deploy key installed (root-only)', 'The executor holds the deploy key; it could not be queried.', config));
+  }
+  return checks;
+}
+
+function runPreflightChecks(config = {}, { runCommand = runShell, executorStatus = null } = {}) {
+  const executorMode = config.homeBaseExecutionMode === 'executor';
   const checks = [
     buildCheck('os', 'Debian-family host detected', 'test -f /etc/debian_version && . /etc/os-release && echo "$PRETTY_NAME"', 'Home Base currently targets Ubuntu/Debian hosts.', runCommand, config),
-    buildCheck('sudo', 'sudo available', 'command -v sudo', 'Install and configure sudo or run Home Base in a root context.', runCommand, config),
+    // In executor mode the web service never uses sudo (NoNewPrivileges forbids it), so sudo is irrelevant.
+    ...(executorMode ? [] : [buildCheck('sudo', 'sudo available', 'command -v sudo', 'Install and configure sudo or run Home Base in a root context.', runCommand, config)]),
     buildCheck('systemd', 'systemd available', 'command -v systemctl', 'This host must support systemd-managed services.', runCommand, config),
     buildCheck('git', 'git installed', 'command -v git && git --version', 'Install git before attempting app installs.', runCommand, config),
     buildCheck('node', 'Node.js installed', 'command -v node && node --version', 'Install Node.js 18+ for Home Base and Node-managed apps.', runCommand, config),
@@ -62,16 +113,16 @@ function runPreflightChecks(config = {}, { runCommand = runShell } = {}) {
     buildCheck('psql', 'PostgreSQL client installed', 'command -v psql && psql --version', 'Install postgresql-client so Home Base can run schema and backup commands.', runCommand, config),
     buildCheck('nginx', 'nginx installed', 'command -v nginx && nginx -v', 'Install nginx before enabling routed apps.', runCommand, config),
     buildCheck('postgres-service', 'PostgreSQL service active', 'systemctl is-active postgresql', 'Start PostgreSQL or finish bootstrap before app installs.', runCommand, config),
-    config.homeBaseExecutionMode === 'executor'
-      ? buildNotEvaluatedCheck('nginx-config', 'nginx configuration validates', 'Nginx is validated by the privileged executor whenever it applies a bootstrap or typed app plan.', config)
-      : buildCheck('nginx-config', 'nginx configuration validates', 'sudo -n nginx -t', 'Run this check from an operator shell if the service cannot inspect nginx.', runCommand, config),
-    config.homeBaseExecutionMode === 'executor'
-      ? buildNotEvaluatedCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'Managed snippets are inspected and validated by the privileged executor when it applies a typed app plan.', config)
-      : buildCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'sudo -n nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"', 'Run this check from an operator shell if the service cannot inspect protected nginx configuration.', runCommand, config),
-    buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', 'Install Tailscale during bootstrap for private remote access.', runCommand, config),
+    ...(executorMode ? buildExecutorModeChecks(config, executorStatus) : [
+      buildCheck('nginx-config', 'nginx configuration validates', 'sudo -n nginx -t', 'Run this check from an operator shell if the service cannot inspect nginx.', runCommand, config),
+      buildCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'sudo -n nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"', 'Run this check from an operator shell if the service cannot inspect protected nginx configuration.', runCommand, config),
+    ]),
+    buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', executorMode
+      ? 'Tailscale is how household devices reach Home Base. The typed bootstrap does not install it yet; on the host run: curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up'
+      : 'Install Tailscale during bootstrap for private remote access.', runCommand, config, { missingSummary: 'Tailscale is not installed on this host.' }),
   ];
 
-  if (config.gitTransport === 'ssh-key') {
+  if (!executorMode && config.gitTransport === 'ssh-key') {
     const keyPath = config.gitSshKeyPath || '';
     const serviceUser = config.serviceUser || 'sovereign';
     if (keyPath) {

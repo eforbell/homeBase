@@ -30,6 +30,7 @@ const { HealthAlertNotifier } = require('./services/notifications');
 const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
 const { getExecutorCapabilities, canExecuteMutations } = require('./executor/capabilities');
+const { hostStatus: requestExecutorHostStatus } = require('./executor/client');
 const {
   getAdminStatus,
   setupAdmin,
@@ -195,6 +196,15 @@ function parseBody(req) {
       }
     });
     req.on('error', reject);
+  });
+}
+
+// Routes that still build legacy sudo/shell plans must never execute in executor mode. Refuse explicitly
+// rather than relying on which preflight checks happen to be absent there.
+function rejectLegacyExecution(res) {
+  return sendJson(res, 409, {
+    error: 'This operation has not been converted to the typed executor yet, so it cannot run in executor mode. Dry-run plans remain available.',
+    code: 'TYPED_EXECUTION_NOT_SUPPORTED',
   });
 }
 
@@ -508,7 +518,40 @@ function createApp(config) {
     return value;
   }
 
-  function getPreflight(effectiveConfig, { force = false } = {}) {
+  // The web service cannot inspect protected host state itself; the executor answers a fixed set of
+  // read-only questions. Refreshed asynchronously so synchronous preflight gates use the latest facts.
+  const executorStatusCache = { value: null, expiresAt: 0, inFlight: null };
+  function refreshExecutorStatus(effectiveConfig, { force = false } = {}) {
+    if (effectiveConfig.homeBaseExecutionMode !== 'executor') return Promise.resolve(null);
+    if (!force && executorStatusCache.value && executorStatusCache.expiresAt > Date.now()) return Promise.resolve(executorStatusCache.value);
+    // Concurrent callers share one probe instead of each opening a socket.
+    if (!executorStatusCache.inFlight) {
+      executorStatusCache.inFlight = probeExecutorStatus(effectiveConfig).finally(() => { executorStatusCache.inFlight = null; });
+    }
+    return executorStatusCache.inFlight;
+  }
+
+  async function probeExecutorStatus(effectiveConfig) {
+    const socket = effectiveConfig.homeBaseExecutorSocket;
+    let value;
+    try {
+      const capabilities = await getExecutorCapabilities(socket, { timeoutMs: 3000 });
+      let host = null;
+      try { host = await requestExecutorHostStatus(socket, { timeoutMs: 8000 }); } catch { host = null; }
+      value = { reachable: true, capabilities, host };
+    } catch (error) {
+      value = { reachable: false, error: error.code === 'ENOENT' ? 'Executor socket is missing.' : (error.message || 'Executor unavailable.') };
+    }
+    executorStatusCache.value = value;
+    executorStatusCache.expiresAt = Date.now() + 30_000;
+    return value;
+  }
+
+  async function getPreflight(effectiveConfig, { force = false } = {}) {
+    const previousExecutorStatus = executorStatusCache.value;
+    const executorStatus = await refreshExecutorStatus(effectiveConfig, { force });
+    // New executor facts invalidate the host-check cache even when the caller did not force.
+    if (executorStatus !== previousExecutorStatus) force = true;
     const now = Date.now();
     const cacheKey = JSON.stringify({
       gitTransport: effectiveConfig.gitTransport || 'https',
@@ -518,7 +561,7 @@ function createApp(config) {
     if (!force && preflightCache.value && preflightCache.key === cacheKey && preflightCache.expiresAt > now) {
       return preflightCache.value;
     }
-    const value = runPreflightChecks(effectiveConfig);
+    const value = runPreflightChecks(effectiveConfig, { executorStatus });
     preflightCache.key = cacheKey;
     preflightCache.value = value;
     preflightCache.expiresAt = now + 30_000;
@@ -606,9 +649,7 @@ function createApp(config) {
         }
       }
       if (method === 'GET' && pathname === '/api/preflight') {
-        return sendJson(res, 200, getPreflight(effectiveConfig, {
-          force: url.searchParams.get('refresh') === '1',
-        }));
+        return sendJson(res, 200, await getPreflight(effectiveConfig, { force: url.searchParams.get('refresh') === '1' }));
       }
       if (method === 'GET' && pathname === '/api/network/tailscale') {
         return sendJson(res, 200, getTailscaleReadiness(effectiveConfig, {
@@ -793,7 +834,8 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd', 'node']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -884,7 +926,7 @@ function createApp(config) {
           return sendJson(res, 202, { ok: true, jobId, dryRun: false });
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -980,7 +1022,8 @@ function createApp(config) {
             return sendJson(res, auth.statusCode, auth.payload);
           }
 
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['tailscale', 'nginx', 'nginx-config', 'nginx-snippets-include']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1117,7 +1160,7 @@ function createApp(config) {
           const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
           if (app?.runtime?.kind === 'node') required.push('node');
           if (app?.runtime?.kind === 'python') required.push('python3');
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, required);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1239,7 +1282,8 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1332,7 +1376,8 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1434,7 +1479,8 @@ function createApp(config) {
           if (app.database?.engine && app.database.engine.includes('postgres')) {
             required.push('psql', 'postgres-service');
           }
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, required);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1510,7 +1556,8 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
             recordAdminAudit(stateStore, {

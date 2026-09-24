@@ -4,7 +4,7 @@ const { validateOperationPolicy } = require('../src/operations/policy');
 const PROTOCOL_VERSION = 1;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
-const REQUEST_TYPES = new Set(['hello', 'validate-plan', 'execute-plan']);
+const REQUEST_TYPES = new Set(['hello', 'host-status', 'validate-plan', 'execute-plan']);
 
 class ProtocolError extends Error {
   constructor(code, message) {
@@ -23,7 +23,7 @@ function validateRequest(request) {
   if (request.protocolVersion !== PROTOCOL_VERSION) throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported executor protocol version.');
   if (typeof request.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.requestId)) throw new ProtocolError('INVALID_REQUEST', 'requestId must be a UUID.');
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');
-  if (request.type === 'hello') {
+  if (request.type === 'hello' || request.type === 'host-status') {
     requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type']));
     return request;
   }

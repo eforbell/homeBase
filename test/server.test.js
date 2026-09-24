@@ -2051,3 +2051,35 @@ test('executor-mode Dinner over SSH is refused up front when the executor has no
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('legacy sudo/shell execute routes are explicitly refused in executor mode', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-legacy-'));
+  const backupRoot = path.join(tempDir, 'backups');
+  const archiveDir = path.join(backupRoot, 'family-help', '20260403T000000Z');
+  fs.mkdirSync(archiveDir, { recursive: true });
+  fs.writeFileSync(path.join(archiveDir, 'backup-generated-at.txt'), '2026-04-03T00:00:00.000Z\n');
+  fs.writeFileSync(path.join(archiveDir, '.env.backup'), 'DATABASE_URL=postgresql://x:y@localhost/db\n');
+  fs.writeFileSync(path.join(archiveDir, 'database.dump'), 'placeholder');
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  store.upsertInstallation({ appId: 'family-help', name: 'Family Help', purpose: 'help desk', port: 3002, mountPath: '/help/', externalUrl: 'https://homebase.tailnet/help/', installRoot: '/tmp/does-not-matter', serviceName: 'family-help', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: backupRoot, baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: path.join(tempDir, 'missing.sock') });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const routes = [
+      '/api/homebase/install-self',
+      '/api/network/tailscale/publish-execute',
+      '/api/apps/family-help/restart/execute',
+      '/api/apps/family-help/backup/execute',
+      '/api/apps/family-help/uninstall/execute',
+      '/api/apps/family-help/restore/execute',
+    ];
+    for (const route of routes) {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE', backupDir: archiveDir, confirmAppId: 'family-help' }) });
+      const payload = await response.json();
+      assert.equal(response.status, 409, `${route}: ${JSON.stringify(payload)}`);
+      assert.equal(payload.code, 'TYPED_EXECUTION_NOT_SUPPORTED', `${route}: ${JSON.stringify(payload)}`);
+    }
+  } finally { await server.close(); }
+});
