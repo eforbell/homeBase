@@ -101,6 +101,30 @@ test('HTTP API exposes catalog and can persist a planned install', async () => {
   }
 });
 
+test('a saved dry-run can be discarded without an uninstall job or host mutation', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-discard-plan-'));
+  const server = await startServer({
+    appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0,
+    serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'backups'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet',
+  });
+  try {
+    await fetch(`${server.url}/api/apps/family-dinner/install`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mountPath: '/dinner/' }),
+    });
+    const cookie = await setupAdminCookie(server.url);
+    const discard = await fetch(`${server.url}/api/apps/family-dinner/discard-plan`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ confirm: 'DISCARD' }),
+    });
+    assert.equal(discard.status, 200);
+    assert.equal((await discard.json()).discarded, true);
+    const state = await (await fetch(`${server.url}/api/state`)).json();
+    assert.equal(state.installations['family-dinner'], undefined);
+    assert.equal(state.jobs.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test('state exposes active install jobs separately from recent jobs', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-active-install-'));
   const dbPath = path.join(tempDir, 'state.sqlite3');
@@ -410,6 +434,22 @@ test('homebase status endpoint returns runtime state summary', async () => {
     assert.equal(payload.sudoersPolicyStatus, 'absent');
     assert.equal(payload.ok, true);
     assert.equal(typeof payload.paths.stateDbExists, 'boolean');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase status reports executor mode without calling it legacy sudo', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-status-executor-'));
+  const server = await startServer({
+    appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0,
+    serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet',
+    homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true,
+  });
+  try {
+    const payload = await (await fetch(`${server.url}/api/homebase/status`)).json();
+    assert.equal(payload.executionMode, 'executor');
+    assert.equal(payload.privilegedJobsEnabled, true);
   } finally {
     await server.close();
   }
@@ -1418,14 +1458,15 @@ test('app actions marks uninstall available after install record exists', async 
 
     const res = await fetch(`${server.url}/api/apps/family-help/actions`);
     const payload = await res.json();
-    assert.equal(payload.actions.update, true);
-    assert.equal(payload.actions.uninstall, true);
+    assert.equal(payload.actions.update, false);
+    assert.equal(payload.actions.uninstall, false);
+    assert.equal(payload.actions.discardPlan, true);
   } finally {
     await server.close();
   }
 });
 
-test('app actions marks restart available after install record exists', async () => {
+test('app actions keeps restart unavailable for a saved dry-run', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-actions-restart-'));
   const server = await startServer({
     appName: 'Home Base',
@@ -1447,7 +1488,7 @@ test('app actions marks restart available after install record exists', async ()
     });
     const res = await fetch(`${server.url}/api/apps/family-help/actions`);
     const payload = await res.json();
-    assert.equal(payload.actions.restart, true);
+    assert.equal(payload.actions.restart, false);
   } finally {
     await server.close();
   }

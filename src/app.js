@@ -199,7 +199,7 @@ function parseBody(req) {
 }
 
 function missingCheckIds(preflight, ids) {
-  return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok));
+  return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok === true));
 }
 
 function trimTrailingSlash(value) {
@@ -281,7 +281,7 @@ function getHomeBaseStatus(config) {
     envFile,
     serviceName: 'homebase',
     bindHost: config.bindHost || '127.0.0.1',
-    executionMode: privilegedJobsEnabled ? 'legacy-sudo' : 'plan-only',
+    executionMode: config.homeBaseExecutionMode || 'plan-only',
     privilegedJobsEnabled,
     legacyBroadSudoersDetected,
     sudoersPolicyStatus,
@@ -1022,18 +1022,44 @@ function createApp(config) {
         const appId = appActionsMatch[1];
         if (!getAppById(appId)) return notFound(res);
         const installation = (state.installations || {})[appId] || null;
+        const planned = installation?.status === 'planned';
         return sendJson(res, 200, {
           appId,
           actions: {
             install: true,
             backup: true,
             restore: true,
-            update: Boolean(installation),
-            restart: Boolean(installation),
-            uninstall: Boolean(installation),
+            update: Boolean(installation) && !planned,
+            restart: Boolean(installation) && !planned,
+            uninstall: Boolean(installation) && !planned,
+            discardPlan: planned,
           },
-          note: 'Update currently runs through install execute (same deployment pipeline).',
+          note: planned
+            ? 'This is a saved dry-run. Run a real install or discard the plan metadata; no app files were created by the dry-run.'
+            : 'Update currently runs through install execute (same deployment pipeline).',
         });
+      }
+
+      const discardPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/discard-plan$/);
+      if (method === 'POST' && discardPlanMatch) {
+        const body = await parseBody(req);
+        const appId = discardPlanMatch[1];
+        const installation = (state.installations || {})[appId] || null;
+        if (!getAppById(appId)) return notFound(res);
+        if (!installation || installation.status !== 'planned') {
+          return sendJson(res, 409, { error: `App ${appId} does not have a discardable plan.` });
+        }
+        if (body.confirm !== 'DISCARD') {
+          return sendJson(res, 400, { error: 'Discarding a saved plan requires confirm=DISCARD.' });
+        }
+        const adminStatus = await getAdminStatus(req, stateStore);
+        if (!adminStatus.configured) return sendJson(res, 409, { error: 'Admin setup is required before discarding a saved plan.' });
+        if (!adminStatus.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required before discarding a saved plan.' });
+        stateStore.deleteInstallation(appId);
+        recordAdminAudit(stateStore, {
+          action: 'app-plan-discard', target: appId, dryRun: false, outcome: 'completed', reason: 'planned-metadata-only',
+        });
+        return sendJson(res, 200, { ok: true, appId, discarded: true });
       }
 
       const installPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/install-plan$/);

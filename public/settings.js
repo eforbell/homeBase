@@ -32,7 +32,7 @@
             ${checks.map((check) => `
               <tr>
                 <td>${window.HB.escapeHtml(check.title || check.id)}</td>
-                <td>${check.ok ? '<span class="hb-ok">PASS</span>' : (check.severity === 'critical' ? '<span class="hb-err">FAIL</span>' : '<span class="hb-warn">WARN</span>')}</td>
+                <td>${check.ok === true ? '<span class="hb-ok">PASS</span>' : (check.ok === null ? '<span class="hb-warn">NOT CHECKED</span>' : (check.severity === 'critical' ? '<span class="hb-err">FAIL</span>' : '<span class="hb-warn">WARN</span>'))}</td>
                 <td>${window.HB.escapeHtml(check.summary || '')}</td>
                 <td>${window.HB.escapeHtml(check.hint || '')}</td>
               </tr>
@@ -226,8 +226,8 @@
             <h2 style="margin-top:0;">Bootstrap / repair host</h2>
             <form class="hb-form-grid" data-action="bootstrap-host">
               <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked ${status.privilegedJobsEnabled ? '' : 'disabled'}> Plan only</label>
-              <button class="hb-btn" type="submit">Generate bootstrap plan</button>
-              <p class="hb-muted" style="margin:0;">The hardened service does not run host mutations. Review the generated plan and execute it from an operator shell.</p>
+              <button class="hb-btn" type="submit">${status.privilegedJobsEnabled ? 'Run bootstrap' : 'Generate bootstrap plan'}</button>
+              <p class="hb-muted" style="margin:0;">${status.executionMode === 'executor' ? 'The unprivileged web service delegates approved host mutations to the root-only executor after Admin unlock.' : 'Review the generated plan and execute it from an operator shell.'}</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
           </article>
@@ -236,8 +236,8 @@
             <form class="hb-form-grid" data-action="install-self">
               <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(config.port)}"></label>
               <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked ${status.privilegedJobsEnabled ? '' : 'disabled'}> Plan only</label>
-              <button class="hb-btn" type="submit">Generate service plan</button>
-              <p class="hb-muted" style="margin:0;">Installed Home Base binds to loopback and starts in plan-only mode with systemd hardening enabled.</p>
+              <button class="hb-btn" type="submit">${status.privilegedJobsEnabled ? 'Install/repair service' : 'Generate service plan'}</button>
+              <p class="hb-muted" style="margin:0;">Installed Home Base binds to loopback. The web service remains unprivileged even when the root-only executor is enabled.</p>
               <p class="hb-muted" data-result style="margin:0;"></p>
             </form>
           </article>

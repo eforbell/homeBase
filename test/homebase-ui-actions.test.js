@@ -131,6 +131,16 @@ test('installed app cards expose operations and backup posture', () => {
   assert.match(apps, /confirm: 'EXECUTE'/);
 });
 
+test('planned app detail offers real install or metadata-only discard', () => {
+  const detail = readPublicScript('app-detail.js');
+
+  assert.match(detail, /Saved dry-run/);
+  assert.match(detail, /Run real install/);
+  assert.match(detail, /Discard saved plan/);
+  assert.match(detail, /discard-plan/);
+  assert.match(detail, /Backup inventory is unavailable/);
+});
+
 test('dashboard surfaces local-only backup posture warning', () => {
   const dashboard = readPublicScript('dashboard.js');
 

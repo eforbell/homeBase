@@ -20,37 +20,55 @@ function runShell(command) {
   };
 }
 
-function getCheckSeverity(id) {
+function getCheckSeverity(id, config = {}) {
+  if (id === 'nginx-config' && config.homeBaseExecutionMode === 'executor') return 'warning';
   return CRITICAL_CHECK_IDS.has(id) ? 'critical' : 'warning';
 }
 
-function buildCheck(id, title, command, hint, runCommand = runShell) {
+function buildCheck(id, title, command, hint, runCommand = runShell, config = {}) {
   const result = runCommand(command);
   return {
     id,
     title,
     command,
-    severity: getCheckSeverity(id),
+    severity: getCheckSeverity(id, config),
     ok: result.ok,
     summary: result.ok ? (result.stdout || 'ok') : (result.stderr || result.stdout || `exit ${result.exitCode}`),
     hint,
   };
 }
 
+function buildNotEvaluatedCheck(id, title, hint, config = {}) {
+  return {
+    id,
+    title,
+    command: '',
+    severity: getCheckSeverity(id, config),
+    ok: null,
+    status: 'not-evaluated',
+    summary: 'Not evaluated by the unprivileged Home Base web service.',
+    hint,
+  };
+}
+
 function runPreflightChecks(config = {}, { runCommand = runShell } = {}) {
   const checks = [
-    buildCheck('os', 'Debian-family host detected', 'test -f /etc/debian_version && . /etc/os-release && echo "$PRETTY_NAME"', 'Home Base currently targets Ubuntu/Debian hosts.', runCommand),
-    buildCheck('sudo', 'sudo available', 'command -v sudo', 'Install and configure sudo or run Home Base in a root context.', runCommand),
-    buildCheck('systemd', 'systemd available', 'command -v systemctl', 'This host must support systemd-managed services.', runCommand),
-    buildCheck('git', 'git installed', 'command -v git && git --version', 'Install git before attempting app installs.', runCommand),
-    buildCheck('node', 'Node.js installed', 'command -v node && node --version', 'Install Node.js 18+ for Home Base and Node-managed apps.', runCommand),
-    buildCheck('python3', 'Python 3 installed', 'command -v python3 && python3 --version', 'Install Python 3 for Bitcoin Accounting and SQLite state support.', runCommand),
-    buildCheck('psql', 'PostgreSQL client installed', 'command -v psql && psql --version', 'Install postgresql-client so Home Base can run schema and backup commands.', runCommand),
-    buildCheck('nginx', 'nginx installed', 'command -v nginx && nginx -v', 'Install nginx before enabling routed apps.', runCommand),
-    buildCheck('postgres-service', 'PostgreSQL service active', 'systemctl is-active postgresql', 'Start PostgreSQL or finish bootstrap before app installs.', runCommand),
-    buildCheck('nginx-config', 'nginx configuration validates', 'sudo -n nginx -t', 'The service cannot inspect nginx through sudo in plan-only mode; run this check from an operator shell.', runCommand),
-    buildCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'sudo -n nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"', 'The service cannot inspect protected nginx configuration in plan-only mode; verify it from an operator shell.', runCommand),
-    buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', 'Install Tailscale during bootstrap for private remote access.', runCommand),
+    buildCheck('os', 'Debian-family host detected', 'test -f /etc/debian_version && . /etc/os-release && echo "$PRETTY_NAME"', 'Home Base currently targets Ubuntu/Debian hosts.', runCommand, config),
+    buildCheck('sudo', 'sudo available', 'command -v sudo', 'Install and configure sudo or run Home Base in a root context.', runCommand, config),
+    buildCheck('systemd', 'systemd available', 'command -v systemctl', 'This host must support systemd-managed services.', runCommand, config),
+    buildCheck('git', 'git installed', 'command -v git && git --version', 'Install git before attempting app installs.', runCommand, config),
+    buildCheck('node', 'Node.js installed', 'command -v node && node --version', 'Install Node.js 18+ for Home Base and Node-managed apps.', runCommand, config),
+    buildCheck('python3', 'Python 3 installed', 'command -v python3 && python3 --version', 'Install Python 3 for Bitcoin Accounting and SQLite state support.', runCommand, config),
+    buildCheck('psql', 'PostgreSQL client installed', 'command -v psql && psql --version', 'Install postgresql-client so Home Base can run schema and backup commands.', runCommand, config),
+    buildCheck('nginx', 'nginx installed', 'command -v nginx && nginx -v', 'Install nginx before enabling routed apps.', runCommand, config),
+    buildCheck('postgres-service', 'PostgreSQL service active', 'systemctl is-active postgresql', 'Start PostgreSQL or finish bootstrap before app installs.', runCommand, config),
+    config.homeBaseExecutionMode === 'executor'
+      ? buildNotEvaluatedCheck('nginx-config', 'nginx configuration validates', 'Nginx is validated by the privileged executor whenever it applies a bootstrap or typed app plan.', config)
+      : buildCheck('nginx-config', 'nginx configuration validates', 'sudo -n nginx -t', 'Run this check from an operator shell if the service cannot inspect nginx.', runCommand, config),
+    config.homeBaseExecutionMode === 'executor'
+      ? buildNotEvaluatedCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'Managed snippets are inspected and validated by the privileged executor when it applies a typed app plan.', config)
+      : buildCheck('nginx-snippets-include', 'nginx includes managed app snippets', 'sudo -n nginx -T 2>/dev/null | grep -Fq "include /etc/nginx/snippets/*.conf;"', 'Run this check from an operator shell if the service cannot inspect protected nginx configuration.', runCommand, config),
+    buildCheck('tailscale', 'Tailscale installed', 'command -v tailscale && tailscale version', 'Install Tailscale during bootstrap for private remote access.', runCommand, config),
   ];
 
   if (config.gitTransport === 'ssh-key') {
@@ -79,7 +97,7 @@ function runPreflightChecks(config = {}, { runCommand = runShell } = {}) {
 
   return {
     generatedAt: new Date().toISOString(),
-    ok: checks.every((check) => check.ok),
+    ok: checks.every((check) => check.ok !== false),
     checks,
   };
 }

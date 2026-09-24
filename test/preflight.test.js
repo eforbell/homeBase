@@ -23,3 +23,22 @@ test('preflight uses non-interactive sudo for read-only privileged probes', () =
   }
   assert.equal(commands.some((command) => command.includes("test -r '/opt/sovereign-home/.ssh/id_homebase'")), true);
 });
+
+test('executor mode marks protected nginx inspection as not evaluated instead of failing it', () => {
+  const commands = [];
+  const result = runPreflightChecks({ homeBaseExecutionMode: 'executor' }, {
+    runCommand(command) {
+      commands.push(command);
+      return { ok: true, exitCode: 0, stdout: 'ok', stderr: '' };
+    },
+  });
+
+  const nginxConfig = result.checks.find((check) => check.id === 'nginx-config');
+  const nginxSnippets = result.checks.find((check) => check.id === 'nginx-snippets-include');
+  assert.equal(result.ok, true);
+  assert.equal(nginxConfig.ok, null);
+  assert.equal(nginxConfig.severity, 'warning');
+  assert.equal(nginxSnippets.ok, null);
+  assert.equal(commands.some((command) => command.includes('nginx -t')), false);
+  assert.equal(commands.some((command) => command.includes('nginx -T')), false);
+});

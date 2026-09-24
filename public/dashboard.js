@@ -73,10 +73,11 @@
 
   function renderHostWarnings(preflight) {
     const checks = Array.isArray(preflight?.checks) ? preflight.checks : [];
-    const failing = checks.filter((item) => !item.ok);
+    const failing = checks.filter((item) => item.ok === false);
+    const notEvaluated = checks.filter((item) => item.ok === null);
     const critical = failing.filter((item) => item.severity === 'critical');
     const warning = failing.filter((item) => item.severity !== 'critical');
-    if (!failing.length) {
+    if (!failing.length && !notEvaluated.length) {
       return '<p class="hb-ok" style="margin:0;">Host checks are passing.</p>';
     }
 
@@ -85,11 +86,13 @@
         ${critical.length ? `<span class="hb-err">${critical.length} critical host check(s) failing</span>` : ''}
         ${critical.length && warning.length ? ' · ' : ''}
         ${warning.length ? `<span class="hb-warn">${warning.length} warning host check(s)</span>` : ''}
+        ${(critical.length || warning.length) && notEvaluated.length ? ' · ' : ''}
+        ${notEvaluated.length ? `<span class="hb-warn">${notEvaluated.length} protected check(s) not evaluated by the web service</span>` : ''}
       </p>
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
-        ${failing.slice(0, 4).map((item) => `
+        ${[...failing, ...notEvaluated].slice(0, 4).map((item) => `
           <li class="hb-row">
-            <span class="${item.severity === 'critical' ? 'hb-err' : 'hb-warn'}">${window.HB.escapeHtml(item.title || item.id)}</span>
+            <span class="${item.ok === null ? 'hb-warn' : (item.severity === 'critical' ? 'hb-err' : 'hb-warn')}">${window.HB.escapeHtml(item.title || item.id)}</span>
             <span class="hb-muted">${window.HB.escapeHtml(item.hint || item.summary || '')}</span>
           </li>
         `).join('')}
@@ -99,9 +102,11 @@
 
   function preflightSummary(preflight) {
     const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
-    const criticalFail = checks.filter((item) => item.severity === 'critical' && !item.ok).length;
-    const warningFail = checks.filter((item) => item.severity !== 'critical' && !item.ok).length;
-    if (!criticalFail && !warningFail) return '<span class="hb-ok">All checks passing</span>';
+    const criticalFail = checks.filter((item) => item.severity === 'critical' && item.ok === false).length;
+    const warningFail = checks.filter((item) => item.severity !== 'critical' && item.ok === false).length;
+    const notEvaluated = checks.filter((item) => item.ok === null).length;
+    if (!criticalFail && !warningFail && !notEvaluated) return '<span class="hb-ok">All checks passing</span>';
+    if (!criticalFail && !warningFail) return `<span class="hb-warn">${notEvaluated} protected check(s) not evaluated by the web service</span>`;
     if (criticalFail) return `<span class="hb-err">${criticalFail} critical check(s) failing</span> · <span class="hb-warn">${warningFail} warning check(s)</span>`;
     return `<span class="hb-warn">${warningFail} warning check(s) failing</span>`;
   }
