@@ -162,7 +162,7 @@ Run against the actual executor server in a controlled rootful environment where
 
 ## 5. Installer tests
 
-Extend `test/install-script.test.js`, which already asserts `NoNewPrivileges=true`, to cover:
+Extend `test/install-script.test.js`, which asserts `NoNewPrivileges=true` for the web service, to cover:
 
 - fresh rendering of web service, executor service, and executor socket;
 - `homebase.service` remains loopback/plan-safe and does not gain sudo;

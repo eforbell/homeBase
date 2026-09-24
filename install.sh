@@ -462,7 +462,6 @@ ExecStart=${NODE_BIN} ${INSTALL_DIR}/executor/server.js
 User=root
 Group=root
 UMask=0077
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectKernelTunables=true

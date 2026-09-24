@@ -138,7 +138,7 @@ test('installer verifies and installs a release with hardened defaults', () => {
   assert.match(executorSocket, /SocketGroup=homebase-exec/);
   assert.match(executorSocket, /SocketMode=0660/);
   assert.match(executorService, /User=root/);
-  assert.match(executorService, /NoNewPrivileges=true/);
+  assert.doesNotMatch(executorService, /NoNewPrivileges=/);
 });
 
 test('installer packages a clean local checkout without contacting GitHub releases', () => {

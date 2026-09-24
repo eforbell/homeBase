@@ -9,7 +9,6 @@ ExecStart=/usr/bin/node /opt/sovereign-home/homebase/executor/server.js
 User=root
 Group=root
 UMask=0077
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectKernelTunables=true

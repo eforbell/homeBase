@@ -191,7 +191,6 @@ ExecStart=/usr/bin/node /opt/sovereign-home/homebase/executor/server.js
 User=root
 Group=root
 UMask=0077
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectKernelTunables=true
@@ -201,6 +200,8 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 ```
+
+`NoNewPrivileges=true` remains required on `homebase.service`, the unprivileged web control plane. It is intentionally omitted from the root executor because approved operations invoke package tooling and must support its documented privilege transitions.
 
 The implementation agent must verify which hardening directives are compatible with package installation, systemd unit writes, PostgreSQL, and nginx operations instead of copying the example blindly. `ProtectSystem=strict` cannot be enabled unless the exact required write paths are declared. Prefer an explicit `ReadWritePaths=` set if systemd behavior is verified on Ubuntu 24.04 and Debian 12.
 
