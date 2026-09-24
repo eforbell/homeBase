@@ -10,6 +10,7 @@ DRY_RUN=0
 NO_START=0
 REPAIR=0
 REPAIR_EXECUTOR=0
+SOURCE_DIR=''
 TEST_MODE="${HOMEBASE_TEST_MODE:-0}"
 
 INSTALL_DIR="${HOMEBASE_INSTALL_DIR:-/opt/sovereign-home/homebase}"
@@ -32,6 +33,7 @@ Usage:
 
 Options:
   --version <tag>      Release tag to install (default: v0.1.0)
+  --source-dir <path>  Package a clean local Git checkout instead of downloading a release
   --channel preview    Release channel (preview is currently the only channel)
   --port <port>        Loopback HTTP port (default: 3080)
   --dry-run            Print the resolved installation without changing the host
@@ -95,6 +97,11 @@ while [ "$#" -gt 0 ]; do
       RELEASE_VERSION="$2"
       shift 2
       ;;
+    --source-dir)
+      [ "$#" -ge 2 ] || die '--source-dir requires a value'
+      SOURCE_DIR="$2"
+      shift 2
+      ;;
     --channel)
       [ "$#" -ge 2 ] || die '--channel requires a value'
       CHANNEL="$2"
@@ -140,6 +147,14 @@ case "$PORT" in
   ''|*[!0-9]*) die 'port must be an integer' ;;
 esac
 [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die 'port must be between 1 and 65535'
+
+if [ -n "$SOURCE_DIR" ]; then
+  case "$SOURCE_DIR" in
+    /*) ;;
+    *) die '--source-dir must be an absolute path' ;;
+  esac
+  [ -d "$SOURCE_DIR" ] || die "--source-dir does not exist or is not a directory: $SOURCE_DIR"
+fi
 
 for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_SUDOERS_FILE" "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT" "$EXECUTOR_SOCKET_PATH"; do
   case "$candidate" in
@@ -191,7 +206,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 Home Base install plan
   OS:             ${OS_ID} ${OS_VERSION_ID}
   Version:        ${RELEASE_VERSION}
-  Archive:        ${ARCHIVE_URL}
+  Source:         ${SOURCE_DIR:-${ARCHIVE_URL}}
   Install dir:    ${INSTALL_DIR}
   State dir:      ${STATE_DIR}
   Environment:    ${ENV_FILE}
@@ -221,10 +236,10 @@ if [ "$TEST_MODE" != '1' ]; then
   export DEBIAN_FRONTEND=noninteractive
   log 'installing runtime prerequisites'
   apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl tar python3 nodejs npm
+  apt-get install -y --no-install-recommends ca-certificates curl tar python3 nodejs npm ${SOURCE_DIR:+git}
 fi
 
-for command in curl tar python3 node npm; do
+for command in curl tar python3 node npm ${SOURCE_DIR:+git}; do
   command -v "$command" >/dev/null 2>&1 || die "required command unavailable: $command"
 done
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
@@ -239,13 +254,29 @@ trap cleanup EXIT
 
 ARCHIVE_PATH="${TMP_DIR}/${ARCHIVE_NAME}"
 CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
-log "downloading Home Base ${RELEASE_VERSION}"
-CURL_PROTOCOLS='=https'
-if [ "$TEST_MODE" = '1' ] || [ "${HOMEBASE_TEST_ALLOW_FILE_URLS:-0}" = '1' ]; then
-  CURL_PROTOCOLS='=https,file'
+if [ -n "$SOURCE_DIR" ]; then
+  git -c safe.directory="$SOURCE_DIR" -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "--source-dir is not a Git working tree: $SOURCE_DIR"
+  [ -z "$(git -c safe.directory="$SOURCE_DIR" -C "$SOURCE_DIR" status --porcelain)" ] \
+    || die "--source-dir must have a clean Git working tree: $SOURCE_DIR"
+  SOURCE_COMMIT="$(git -c safe.directory="$SOURCE_DIR" -C "$SOURCE_DIR" rev-parse --verify HEAD^{commit})" \
+    || die "--source-dir does not have a checked-out commit: $SOURCE_DIR"
+  log "packaging Home Base ${RELEASE_VERSION} from local commit ${SOURCE_COMMIT}"
+  git -c safe.directory="$SOURCE_DIR" -C "$SOURCE_DIR" archive --format=tar.gz --prefix="homebase-${RELEASE_VERSION#v}/" "$SOURCE_COMMIT" > "$ARCHIVE_PATH"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$ARCHIVE_PATH" > "$CHECKSUM_PATH"
+  else
+    shasum -a 256 "$ARCHIVE_PATH" > "$CHECKSUM_PATH"
+  fi
+else
+  log "downloading Home Base ${RELEASE_VERSION}"
+  CURL_PROTOCOLS='=https'
+  if [ "$TEST_MODE" = '1' ] || [ "${HOMEBASE_TEST_ALLOW_FILE_URLS:-0}" = '1' ]; then
+    CURL_PROTOCOLS='=https,file'
+  fi
+  curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$ARCHIVE_URL" --output "$ARCHIVE_PATH"
+  curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$CHECKSUM_URL" --output "$CHECKSUM_PATH"
 fi
-curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$ARCHIVE_URL" --output "$ARCHIVE_PATH"
-curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$CHECKSUM_URL" --output "$CHECKSUM_PATH"
 
 EXPECTED_SHA256="$(awk 'NF { print $1; exit }' "$CHECKSUM_PATH")"
 printf '%s\n' "$EXPECTED_SHA256" | grep -Eq '^[0-9a-fA-F]{64}$' \

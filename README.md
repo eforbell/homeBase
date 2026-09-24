@@ -2,7 +2,7 @@
 
 Home Base is the control plane for The Sovereign Home: a Debian-first web application that bootstraps a host, installs family apps, generates config artifacts, and centralizes operations.
 
-**Status: Developer Preview.** Home Base is intentionally plan-first. Its installed service binds to loopback, runs without host privileges, and generates inspectable plans for an operator to execute from a shell.
+**Status: Developer Preview.** Home Base is intentionally plan-first and binds its web control plane to loopback. Its unprivileged web service delegates only explicitly confirmed, typed operations to a separate root executor; it does not use broad sudo or arbitrary shell commands.
 
 ## Install on Ubuntu or Debian
 
@@ -14,7 +14,9 @@ less install.sh
 sudo bash install.sh --version v0.1.0
 ```
 
-The installer verifies a tagged release checksum, installs a hardened systemd service, preserves state on safe reruns, and refuses existing Home Base sudoers or privileged-execution configuration. See [`docs/install.md`](docs/install.md) for prerequisites, release packaging, recovery, and the manual equivalent.
+The installer verifies a tagged release checksum, installs hardened web and executor systemd units, preserves state on safe reruns, and refuses existing Home Base sudoers or legacy-execution configuration. See [`docs/install.md`](docs/install.md) for prerequisites, release packaging, recovery, and the manual equivalent.
+
+For a private-repository or pre-release VM, run the checkout directly with `sudo bash install.sh --source-dir "$PWD" --version v0.1.0`; it packages the clean checked-out commit locally and does not access GitHub Releases.
 
 ## Current slice
 
@@ -33,7 +35,7 @@ This initial slice delivers:
   - generated artifact previews (`.env`, systemd units, nginx snippets)
   - SQLite-backed local state tracking for planned installs and jobs
 
-The service does not auto-run privileged host changes. It produces deterministic plans and executable shell scripts so the operator can review and apply them deliberately. Existing private installations can still opt into the legacy execution mode through explicit environment configuration, but the public installer neither enables nor provisions that mode.
+The service does not auto-run host changes. It produces deterministic plans and executes only explicit, admin-confirmed typed jobs through the separate executor. Legacy broad-sudo execution is not supported by the installer.
 
 ## Run
 

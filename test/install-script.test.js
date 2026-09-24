@@ -25,7 +25,17 @@ function createReleaseFixture(tempDir, { version = 'v9.9.9' } = {}) {
   const digest = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
   const checksum = `${archive}.sha256`;
   fs.writeFileSync(checksum, `${digest}  ${path.basename(archive)}\n`);
-  return { archive, checksum, version };
+  return { archive, checksum, releaseRoot, version };
+}
+
+function createSourceCheckout(tempDir, { version = 'v9.9.9' } = {}) {
+  const fixture = createReleaseFixture(tempDir, { version });
+  execFileSync('git', ['init', '--quiet', fixture.releaseRoot]);
+  execFileSync('git', ['-C', fixture.releaseRoot, 'config', 'user.name', 'Home Base Test']);
+  execFileSync('git', ['-C', fixture.releaseRoot, 'config', 'user.email', 'test@example.invalid']);
+  execFileSync('git', ['-C', fixture.releaseRoot, 'add', '.']);
+  execFileSync('git', ['-C', fixture.releaseRoot, 'commit', '--quiet', '-m', 'fixture']);
+  return fixture;
 }
 
 function installerEnv(tempDir, fixture, overrides = {}) {
@@ -129,6 +139,29 @@ test('installer verifies and installs a release with hardened defaults', () => {
   assert.match(executorSocket, /SocketMode=0660/);
   assert.match(executorService, /User=root/);
   assert.match(executorService, /NoNewPrivileges=true/);
+});
+
+test('installer packages a clean local checkout without contacting GitHub releases', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-source-'));
+  const fixture = createSourceCheckout(tempDir);
+  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--no-start'], installerEnv(tempDir, fixture, {
+    HOMEBASE_ARCHIVE_URL: 'https://invalid.example/homebase.tar.gz',
+    HOMEBASE_CHECKSUM_URL: 'https://invalid.example/homebase.tar.gz.sha256',
+  }));
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /packaging Home Base .* from local commit/);
+  assert.equal(fs.existsSync(path.join(tempDir, 'opt', 'homebase', 'server.js')), true);
+});
+
+test('installer refuses a dirty local checkout', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-source-dirty-'));
+  const fixture = createSourceCheckout(tempDir);
+  fs.appendFileSync(path.join(fixture.releaseRoot, 'server.js'), '// dirty\n');
+  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--no-start'], installerEnv(tempDir, fixture));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must have a clean Git working tree/i);
 });
 
 test('installer keeps the release tag separate from os-release VERSION metadata', () => {
