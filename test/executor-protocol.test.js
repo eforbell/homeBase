@@ -145,3 +145,23 @@ test('host-status is a fixed, argument-free read request', async () => {
     await assert.rejects(() => hostStatus(socketPath), (error) => error.code === 'POLICY_DENIED');
   });
 });
+
+test('app-update-status accepts only a catalog app, a transport enum, and main or a SHA', async () => {
+  const { sendRequest, appUpdateStatus } = require('../src/executor/client');
+  const seen = [];
+  await withExecutor(async (socketPath) => {
+    const status = await appUpdateStatus(socketPath, { appId: 'family-dinner', transport: 'https', ref: 'main' });
+    assert.equal(status.behindCount, 2);
+    assert.deepEqual(seen, [{ appId: 'family-dinner', transport: 'https', ref: 'main' }]);
+    const bad = [
+      { appId: '../../etc', transport: 'https', ref: 'main' },
+      { appId: 'family-dinner', transport: 'file', ref: 'main' },
+      { appId: 'family-dinner', transport: 'https', ref: '--upload-pack=/bin/sh' },
+    ];
+    for (const fields of bad) {
+      await assert.rejects(() => appUpdateStatus(socketPath, fields), (error) => error.code === 'INVALID_REQUEST');
+    }
+    await assert.rejects(() => sendRequest(socketPath, { protocolVersion: 1, requestId: crypto.randomUUID(), type: 'app-update-status', appId: 'family-dinner', transport: 'https', ref: 'main', path: '/tmp' }), (error) => error.code === 'INVALID_REQUEST');
+    assert.equal(seen.length, 1);
+  }, { checkAppUpdateStatus: async (fields) => { seen.push(fields); return { behindCount: 2 }; } });
+});

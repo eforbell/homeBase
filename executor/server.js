@@ -6,6 +6,7 @@ const { writeAudit } = require('./audit');
 const { executePlan: defaultExecutePlan } = require('./execute');
 const { createBaseHandlers, deployKeyStatus } = require('./handlers');
 const { createHostStatusCollector } = require('./host-status');
+const { createAppUpdateStatusChecker } = require('./app-status');
 
 function encodeLine(payload) {
   const line = JSON.stringify(payload);
@@ -13,7 +14,7 @@ function encodeLine(payload) {
   return `${line}\n`;
 }
 
-function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null, mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null } = {}) {
+function createExecutorServer({ logger = console, requestTimeoutMs = 10000, executePlan = null, mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, checkAppUpdateStatus = null } = {}) {
   const completed = new Map();
   let activeMutation = false;
   return net.createServer((socket) => {
@@ -66,6 +67,17 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
           completed.set(request.requestId, response);
           return finish(null, response);
         }
+        if (request.type === 'app-update-status') {
+          if (!checkAppUpdateStatus) throw new ProtocolError('POLICY_DENIED', 'App update status is not enabled.');
+          // Shares the mutation lock: it refreshes the same git mirrors an install plan writes.
+          if (activeMutation) throw new ProtocolError('EXECUTOR_BUSY', 'Another mutation plan is active.');
+          activeMutation = true;
+          ownsMutation = true;
+          const status = await checkAppUpdateStatus({ appId: request.appId, transport: request.transport, ref: request.ref });
+          activeMutation = false;
+          ownsMutation = false;
+          return finish(null, result({ requestId: request.requestId, ok: true, result: status }));
+        }
         if (request.type === 'host-status') {
           if (!collectHostStatus) throw new ProtocolError('POLICY_DENIED', 'Host status is not enabled.');
           return finish(null, result({ requestId: request.requestId, ok: true, result: await collectHostStatus() }));
@@ -84,7 +96,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, exec
 function listenSystemd({ logger = console } = {}) {
   const handlers = createBaseHandlers();
   const executePlan = (request, { emit }) => defaultExecutePlan(request, { handlers, emit });
-  const server = createExecutorServer({ logger, executePlan, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector() });
+  const server = createExecutorServer({ logger, executePlan, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker() });
   if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
   server.listen({ fd: 3 });
   return server;

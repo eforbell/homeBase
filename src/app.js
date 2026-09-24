@@ -449,6 +449,9 @@ function createApp(config) {
     gitSshStrictHostKeyChecking: initialEffectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
     checkIntervalMs: config.appUpdateCheckIntervalMs,
     staleAfterMs: config.appUpdateStatusTtlMs,
+    executionMode: initialEffectiveConfig.homeBaseExecutionMode,
+    executorSocket: initialEffectiveConfig.homeBaseExecutorSocket,
+    baseInstallDir: initialEffectiveConfig.baseInstallDir,
   });
   appUpdateMonitor.schedule({
     installationsProvider: () => Object.values(stateStore.loadState().installations || {}),
@@ -461,9 +464,25 @@ function createApp(config) {
         gitSshKeyPath: effective.gitSshKeyPath || '',
         gitSshKnownHostsPath: effective.gitSshKnownHostsPath || '',
         gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
+        executionMode: effective.homeBaseExecutionMode,
+        executorSocket: effective.homeBaseExecutorSocket,
+        baseInstallDir: effective.baseInstallDir,
       };
     },
   });
+
+  function updateGitConfig(effective) {
+    return {
+      serviceUser: effective.serviceUser || 'sovereign',
+      gitTransport: effective.gitTransport || 'https',
+      gitSshKeyPath: effective.gitSshKeyPath || '',
+      gitSshKnownHostsPath: effective.gitSshKnownHostsPath || '',
+      gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
+      executionMode: effective.homeBaseExecutionMode,
+      executorSocket: effective.homeBaseExecutorSocket,
+      baseInstallDir: effective.baseInstallDir,
+    };
+  }
 
   function getTailscaleReadiness(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
@@ -634,6 +653,9 @@ function createApp(config) {
             gitSshKeyPath: effectiveConfig.gitSshKeyPath || '',
             gitSshKnownHostsPath: effectiveConfig.gitSshKnownHostsPath || '',
             gitSshStrictHostKeyChecking: effectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
+            executionMode: effectiveConfig.homeBaseExecutionMode,
+            executorSocket: effectiveConfig.homeBaseExecutorSocket,
+            baseInstallDir: effectiveConfig.baseInstallDir,
           },
         });
         return sendJson(res, 200, {
@@ -1197,7 +1219,13 @@ function createApp(config) {
             });
           }
           const secretBindings = { familyDinnerDatabasePassword: String(body.dbPassword || require('crypto').randomBytes(24).toString('base64url')) };
-          const jobId = jobRunner.startTypedDinnerInstallJob(plan, { secretBindings });
+          const jobId = jobRunner.startTypedDinnerInstallJob(plan, {
+            secretBindings,
+            onComplete: () => {
+              const installed = (stateStore.loadState().installations || {})[appId];
+              if (installed) void appUpdateMonitor.refreshInstalledApps([installed], { force: true, gitConfig: updateGitConfig(effectiveConfig) });
+            },
+          });
           return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
         }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });

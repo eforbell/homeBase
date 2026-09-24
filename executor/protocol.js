@@ -1,10 +1,11 @@
 const { digestOperationPlan } = require('../src/operations/digest');
 const { validateOperationPolicy } = require('../src/operations/policy');
+const { getAppById } = require('../src/catalog');
 
 const PROTOCOL_VERSION = 1;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
-const REQUEST_TYPES = new Set(['hello', 'host-status', 'validate-plan', 'execute-plan']);
+const REQUEST_TYPES = new Set(['hello', 'host-status', 'app-update-status', 'validate-plan', 'execute-plan']);
 
 class ProtocolError extends Error {
   constructor(code, message) {
@@ -19,10 +20,17 @@ function requireExactKeys(value, allowed) {
 }
 
 function validateRequest(request) {
-  requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type', 'jobId', 'actor', 'issuedAt', 'planDigest', 'plan', 'secretBindings']));
+  requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type', 'jobId', 'actor', 'issuedAt', 'planDigest', 'plan', 'secretBindings', 'appId', 'transport', 'ref']));
   if (request.protocolVersion !== PROTOCOL_VERSION) throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported executor protocol version.');
   if (typeof request.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.requestId)) throw new ProtocolError('INVALID_REQUEST', 'requestId must be a UUID.');
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');
+  if (request.type === 'app-update-status') {
+    requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type', 'appId', 'transport', 'ref']));
+    if (typeof request.appId !== 'string' || !getAppById(request.appId)) throw new ProtocolError('INVALID_REQUEST', 'appId must name a catalog app.');
+    if (!['https', 'ssh'].includes(request.transport)) throw new ProtocolError('INVALID_REQUEST', 'transport must be https or ssh.');
+    if (typeof request.ref !== 'string' || !/^(main|[a-f0-9]{40})$/.test(request.ref)) throw new ProtocolError('INVALID_REQUEST', 'ref must be main or a 40-character commit SHA.');
+    return request;
+  }
   if (request.type === 'hello' || request.type === 'host-status') {
     requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type']));
     return request;

@@ -405,4 +405,6 @@ module.exports = {
   renderDinnerEnv,
   parseEnvFile,
   runAsUser,
+  rootGitEnvironment,
+  ROOT_GIT_CONFIG,
 };

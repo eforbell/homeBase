@@ -145,3 +145,29 @@ test('app update monitor uses ssh-key transport invocation for service user git 
   assert.equal(commandArgs[5], '-C');
   assert.equal(commandArgs[6], '/opt/sovereign-home/apps/familyPulse');
 });
+
+test('executor mode asks the executor instead of running sudo git, and keeps the last answer while busy', async () => {
+  const { AppUpdateMonitor } = require('../src/services/app-update-monitor');
+  const rows = {};
+  const store = { listAppUpdateStatuses: () => Object.values(rows), upsertAppUpdateStatus: (row) => { rows[row.appId] = row; } };
+  const requests = [];
+  let reply = async () => ({ localHeadSha: 'a'.repeat(40), remoteHeadSha: 'b'.repeat(40), aheadCount: 0, behindCount: 4 });
+  const monitor = new AppUpdateMonitor(store, {
+    executionMode: 'executor', executorSocket: '/run/homebase/executor.sock', baseInstallDir: '/opt/sovereign-home/apps', gitTransport: 'ssh-key',
+    executorAppUpdateStatus: (socket, fields) => { requests.push([socket, fields]); return reply(); },
+  });
+  monitor.runGit = () => { throw new Error('executor mode must not run git from the web service'); };
+  const install = { appId: 'family-dinner', ref: 'main', installRoot: '/opt/sovereign-home/apps/familyDinner' };
+  await monitor.refreshInstalledApps([install], { force: true });
+  assert.deepEqual(requests, [['/run/homebase/executor.sock', { appId: 'family-dinner', transport: 'ssh', ref: 'main' }]]);
+  assert.equal(rows['family-dinner'].status, 'update-available');
+  assert.equal(rows['family-dinner'].behindCount, 4);
+
+  reply = async () => { throw Object.assign(new Error('Another mutation plan is active.'), { code: 'EXECUTOR_BUSY' }); };
+  await monitor.refreshInstalledApps([install], { force: true });
+  assert.equal(rows['family-dinner'].status, 'update-available', 'a busy executor must not flip status to failed');
+
+  await monitor.refreshInstalledApps([{ ...install, installRoot: '/srv/elsewhere' }], { force: true });
+  assert.equal(rows['family-dinner'].status, 'check-failed');
+  assert.match(rows['family-dinner'].lastError, /standard install root/);
+});
