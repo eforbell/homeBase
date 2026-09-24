@@ -9,6 +9,7 @@ const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan, buildExecutorInstallRecord } = require('./services/install-planner');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
+const { BACKUP_ROOT } = require('./operations/paths');
 const { buildRestorePlan } = require('./services/restore-planner');
 const { buildUninstallPlan } = require('./services/uninstall-planner');
 const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planner');
@@ -206,6 +207,32 @@ function rejectLegacyExecution(res) {
     error: 'This operation has not been converted to the typed executor yet, so it cannot run in executor mode. Dry-run plans remain available.',
     code: 'TYPED_EXECUTION_NOT_SUPPORTED',
   });
+}
+
+// Resolves the restore archive by name only: the web process never reads backup directories (they
+// belong to sovereign and may not be listable by homebase). The executor verifies the archive exists.
+function resolveRestoreBackupId({ appId, backupDir, stateStore }) {
+  const pattern = /^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$/;
+  if (backupDir) {
+    const requested = String(backupDir);
+    const name = path.posix.basename(requested);
+    if (!pattern.test(name)) return null;
+    if (requested.includes('/') && path.posix.normalize(requested) !== `${BACKUP_ROOT}/${appId}/${name}`) return null;
+    return name;
+  }
+  const names = stateStore.listBackups(appId).map((record) => path.posix.basename(record.archiveDir)).filter((name) => pattern.test(name)).sort();
+  return names.at(-1) || null;
+}
+
+// Dry-runs in executor mode preview the plan the executor would actually run (never the legacy sudo plan).
+async function startExecutorPreview({ res, effectiveConfig, appId, kind, action, jobRunner }) {
+  let capabilities;
+  try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch {
+    return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
+  }
+  if (!capabilities?.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor does not manage ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+  const jobId = jobRunner.startTypedPreviewJob({ kind, target: appId, action });
+  return sendJson(res, 202, { ok: true, jobId, appId, dryRun: true });
 }
 
 // Starts an executor lifecycle job after the same capability checks installs use.
@@ -1368,6 +1395,9 @@ function createApp(config) {
             });
           }
         }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'restart', action: { action: 'restart', appId }, jobRunner });
+        }
         const plan = buildRestartPlan({ app, install });
         const jobId = jobRunner.startRestartJob(plan, {
           dryRun: body.dryRun !== false,
@@ -1464,6 +1494,10 @@ function createApp(config) {
               missing,
             });
           }
+        }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          const appId = backupExecuteMatch[1];
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'backup', action: { action: 'backup', appId }, jobRunner });
         }
         const plan = buildBackupPlan({ appId: backupExecuteMatch[1], state, config: effectiveConfig });
         const jobId = jobRunner.startBackupJob(plan, {
@@ -1570,6 +1604,9 @@ function createApp(config) {
             });
           }
         }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'uninstall', action: { action: 'uninstall', appId, keepBackups: body.keepBackups !== false }, jobRunner });
+        }
         const plan = buildUninstallPlan({
           appId,
           state,
@@ -1631,11 +1668,9 @@ function createApp(config) {
         if (body.dryRun === false) {
           if (effectiveConfig.homeBaseExecutionMode === 'executor') {
             const appId = restoreExecuteMatch[1];
-            // Resolve the requested archive against the on-disk inventory; only its name crosses the socket.
-            const { backups } = listBackupsFromDisk({ appId, config: effectiveConfig });
-            const selected = body.backupDir ? backups.find((item) => item.archiveDir === body.backupDir || item.name === body.backupDir) : backups[0];
-            if (!selected || !/^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$/.test(selected.name)) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
-            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restore-execute', auth, start: () => jobRunner.startTypedRestoreJob({ appId, backupId: selected.name }) });
+            const backupId = resolveRestoreBackupId({ appId, backupDir: body.backupDir, stateStore });
+            if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restore-execute', auth, start: () => jobRunner.startTypedRestoreJob({ appId, backupId }) });
           }
           const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
@@ -1655,6 +1690,12 @@ function createApp(config) {
           }
         }
 
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          const appId = restoreExecuteMatch[1];
+          const backupId = resolveRestoreBackupId({ appId, backupDir: body.backupDir, stateStore });
+          if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'restore', action: { action: 'restore', appId, backupId }, jobRunner });
+        }
         const plan = buildRestorePlan({
           appId: restoreExecuteMatch[1],
           backupDir: body.backupDir,

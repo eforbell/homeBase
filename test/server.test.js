@@ -2175,3 +2175,54 @@ test('an upgraded host with privileged jobs but no execution mode gets the exact
     assert.match(payload.error, /add HOME_BASE_EXECUTION_MODE=legacy-sudo/);
   } finally { await server.close(); }
 });
+
+test('executor-mode restore resolves the selected archive by name without reading backup directories; dry-runs preview the executor plan', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-restore-name-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const received = [];
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  store.upsertInstallation({ appId: 'home-source', name: 'Home Source', purpose: 'x', port: 3008, mountPath: '/source/', externalUrl: 'https://homebase.tailnet/source/', installRoot: '/opt/sovereign-home/apps/homeSource', serviceName: 'home-source', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  // Only a database record exists: the archive directory is not readable by (or even present for) the web process.
+  const archiveDir = '/var/lib/sovereign-home/backups/home-source/20260924T101010123Z';
+  store.recordBackup({ appId: 'home-source', archiveDir, generatedAt: '2026-09-24T10:10:10.123Z', dryRun: false, status: 'completed', includedFiles: [], jobId: null, createdAt: '2026-09-24T10:10:11.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'unreadable'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (body) => {
+      const response = await fetch(`${server.url}/api/apps/home-source/restore/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+    const real = await post({ backupDir: archiveDir, dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(real.status, 202, JSON.stringify(real.body));
+    const latest = await post({ dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(latest.status, 202, 'no selection restores the latest recorded backup');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(received.map((spec) => spec.backupId), ['20260924T101010123Z', '20260924T101010123Z']);
+    for (const bad of ['/var/lib/sovereign-home/backups/family-dinner/20260924T101010123Z', '/etc/20260924T101010123Z', '../20260924T101010123Z/x']) {
+      const refused = await post({ backupDir: bad, dryRun: false, confirm: 'EXECUTE' });
+      assert.equal(refused.body.code, 'BACKUP_NOT_FOUND', bad);
+    }
+    const preview = await post({ backupDir: archiveDir, dryRun: true });
+    assert.equal(preview.status, 202, JSON.stringify(preview.body));
+    let job;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      job = await (await fetch(`${server.url}/api/jobs/${preview.body.jobId}`, { headers: { cookie } })).json();
+      if (job.status === 'completed' || job.status === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(job.status, 'completed', job.errorText);
+    const plan = JSON.parse(job.planJson);
+    assert.equal(plan.preview, true);
+    assert.equal(plan.operationPlan.policyProfile, 'app-restore-v1');
+    assert.ok(plan.operationPlan.operations.some((operation) => operation.type === 'backup.restore' && operation.archiveName === '20260924T101010123Z'));
+    assert.equal(received.length, 2, 'a dry-run never runs anything');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});

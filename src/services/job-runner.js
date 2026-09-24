@@ -1,5 +1,5 @@
 const { spawn } = require('child_process');
-const { runAction } = require('../executor/client');
+const { runAction, planAction } = require('../executor/client');
 const { getAppById } = require('../catalog');
 const { BACKUP_ROOT } = require('../operations/paths');
 const { redactText } = require('../operations/redact');
@@ -36,10 +36,11 @@ async function waitForAppReadiness({ app, fetchImpl = global.fetch, attempts = 3
 }
 
 class JobRunner {
-  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, busyRetry = { attempts: 6, delayMs: 10_000 } } = {}) {
+  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, planExecutorAction = planAction, busyRetry = { attempts: 6, delayMs: 10_000 } } = {}) {
     this.stateStore = stateStore;
     this.executorSocket = executorSocket;
     this.runExecutorAction = runExecutorAction;
+    this.planExecutorAction = planExecutorAction;
     this.busyRetry = busyRetry;
   }
 
@@ -139,6 +140,23 @@ class JobRunner {
     }
     if (typeof afterExecution === 'function') await afterExecution(jobId, result, acceptedPlan);
     this.stateStore.updateJob(jobId, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify(result) });
+  }
+
+  // A dry-run in executor mode: the executor compiles (but does not run) the plan, and the job records it.
+  startTypedPreviewJob({ kind, target, action }) {
+    const { id } = this.stateStore.createJob({ kind, target, status: 'queued', dryRun: true, createdAt: new Date().toISOString(), currentStep: null, planJson: JSON.stringify({ action }) });
+    this.planExecutorAction(this.executorSocket, action, { timeoutMs: 30_000 })
+      .then(({ plan, planDigest }) => {
+        this.stateStore.updateJob(id, { planJson: JSON.stringify({ action, planDigest, preview: true, operationPlan: plan }) });
+        const lines = plan.operations.map((operation, index) => `${index + 1}. [${operation.risk}] ${operation.title}`);
+        this.stateStore.appendJobLog(id, `[executor] dry-run preview ${planDigest}\n${lines.join('\n')}\n`);
+        this.stateStore.updateJob(id, { status: 'completed', finishedAt: new Date().toISOString(), resultJson: JSON.stringify({ dryRun: true, planDigest }) });
+      })
+      .catch((error) => {
+        this.stateStore.appendJobLog(id, `\n[executor-error] ${error.message}\n`);
+        this.stateStore.updateJob(id, { status: 'failed', finishedAt: new Date().toISOString(), errorText: error.message });
+      });
+    return id;
   }
 
   startTypedBootstrapJob() {

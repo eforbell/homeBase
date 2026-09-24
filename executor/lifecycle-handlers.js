@@ -45,8 +45,11 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
         if (!isRealDir(BACKUP_ROOT)) deny(`${BACKUP_ROOT} is missing; run host bootstrap.`);
         if (!lstatOrNull(fsImpl, appDir)) fsImpl.mkdirSync(appDir, { mode: 0o755 });
         if (!isRealDir(appDir)) deny(`${appDir} is not a real directory.`);
-        // Listable by Home Base's inventory; every secret-bearing file inside is 0600.
+        // Listable by Home Base's inventory; every secret-bearing file inside is 0600. Modes are set
+        // explicitly so they never depend on the process umask (or on how an older release made them).
+        fsImpl.chmodSync(appDir, 0o755);
         fsImpl.mkdirSync(archiveDir, { mode: 0o755 });
+        fsImpl.chmodSync(archiveDir, 0o755);
         if (isRealFile(layout.envPath)) {
           writeFileAtomic(fsImpl, `${archiveDir}/.env.backup`, fsImpl.readFileSync(layout.envPath, 'utf8'), 0o600);
           included.push('.env.backup');
