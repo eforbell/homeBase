@@ -127,4 +127,4 @@ function gitTransportForRepository(layout, repository) {
   return null;
 }
 
-module.exports = { validateOperationPolicy, gitTransportForRepository, BOOTSTRAP_PACKAGES };
+module.exports = { validateOperationPolicy, gitTransportForRepository, BOOTSTRAP_PACKAGES, PROFILE_TYPES };

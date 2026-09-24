@@ -6,7 +6,7 @@ const { getCatalog, getAppById } = require('./catalog');
 const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
-const { buildInstallPlan } = require('./services/install-planner');
+const { buildInstallPlan, buildExecutorInstallRecord } = require('./services/install-planner');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { buildRestorePlan } = require('./services/restore-planner');
@@ -37,6 +37,7 @@ const {
   lockAdmin,
   rotateAdmin,
   requireAdminForExecute,
+  EXECUTION_MODE_UPGRADE_HINT,
 } = require('./admin-auth');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -808,8 +809,11 @@ function createApp(config) {
           });
           return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
         }
+        // The legacy self-update chowns the checkout to the runtime user, which would undo the root
+        // ownership the executor's own code depends on. Executor hosts update via install.sh --repair.
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-update-self',
@@ -854,7 +858,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-install-self',
@@ -937,7 +941,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'bootstrap-execute',
@@ -1042,7 +1046,7 @@ function createApp(config) {
         }
 
         if (!dryRun) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'tailscale-publish-execute',
@@ -1125,6 +1129,10 @@ function createApp(config) {
         if (!installation || installation.status !== 'planned') {
           return sendJson(res, 409, { error: `App ${appId} does not have a discardable plan.` });
         }
+        // Defense in depth: a "planned" record whose install root exists belongs to a real install.
+        if (installation.installRoot && fs.existsSync(installation.installRoot)) {
+          return sendJson(res, 409, { error: `App ${appId} has files at ${installation.installRoot}; uninstall it instead of discarding the plan.`, code: 'INSTALL_PRESENT' });
+        }
         if (body.confirm !== 'DISCARD') {
           return sendJson(res, 400, { error: 'Discarding a saved plan requires confirm=DISCARD.' });
         }
@@ -1175,7 +1183,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-install-execute',
@@ -1224,8 +1232,11 @@ function createApp(config) {
           const catalogPort = getAppById(appId).network.preferredPort;
           const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && entry.port === catalogPort);
           if (conflict) return sendJson(res, 409, { error: `Port ${catalogPort} is already assigned to ${conflict.appId}; executor installs use catalog ports.`, code: 'PORT_CONFLICT' });
-          // Used only for Home Base's own installation record (port, mount path); the executor builds the real plan.
-          const plan = buildInstallPlan({ appId, state, options: { ...body, dbPassword: '', port: catalogPort }, config: effectiveConfig });
+          // Used only for Home Base's own installation record; the executor builds the real plan from the
+          // catalog. Only the ref comes from the request so the record matches what the executor installs
+          // (catalog mount path and port, standard install root), never caller-edited values.
+          const record = buildExecutorInstallRecord({ appId, state, ref: body.ref, config: effectiveConfig });
+          const plan = { app: { ref: record.ref }, stateRecord: record.stateRecord };
           if (!/^(main|[a-f0-9]{40})$/.test(plan.app.ref)) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
           const transport = effectiveConfig.gitTransport === 'ssh' || effectiveConfig.gitTransport === 'ssh-key' ? 'ssh' : 'https';
           if (transport === 'ssh' && capabilities.gitDeployKey !== 'present') {
@@ -1305,7 +1316,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restart-execute',
@@ -1419,7 +1430,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-backup-execute',
@@ -1521,7 +1532,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-uninstall-execute',
@@ -1604,7 +1615,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true });
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restore-execute',
@@ -1710,6 +1721,7 @@ function createApp(config) {
         const address = server.address();
         const activePort = address && typeof address === 'object' ? address.port : config.port;
         console.log(`Home Base listening on http://${bindHost}:${activePort}`);
+        if (config.homeBaseExecutionModeMissing) console.warn(`[homebase] ${EXECUTION_MODE_UPGRADE_HINT}`);
         if (typeof callback === 'function') callback();
       });
     },

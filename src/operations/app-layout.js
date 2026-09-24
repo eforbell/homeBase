@@ -6,8 +6,7 @@ const { templatePlaceholders } = require('./env');
 // root-owned catalog. Catalog values are trusted, but still validated here so a malformed entry
 // fails closed instead of reaching a root operation.
 
-const APPS_ROOT = '/opt/sovereign-home/apps';
-const MIRROR_ROOT = '/var/lib/sovereign-home/git-mirrors';
+const { APPS_ROOT, MIRROR_ROOT } = require('./paths');
 // Postgres names that must never be managed as an app's role or database.
 const RESERVED_DB = /^(postgres|template[01]|pg_.*)$/;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;

@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { ProtocolError } = require('./protocol-error');
-const { buildDinnerBootstrapPlan } = require('../src/operations/compilers/bootstrap');
+const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
 const { buildAppInstallPlan } = require('../src/operations/compilers/install');
 const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan } = require('../src/operations/compilers/lifecycle');
 const { validateOperationPolicy } = require('../src/operations/policy');
@@ -53,7 +53,7 @@ function normalizeAction(request) {
 function compileAction(action, { generatedAt = new Date().toISOString() } = {}) {
   let plan;
   if (action.action === 'bootstrap') {
-    plan = buildDinnerBootstrapPlan({ generatedAt });
+    plan = buildHostBootstrapPlan({ generatedAt });
   } else if (!INSTALLABLE_APPS.includes(action.appId)) {
     deny(`The executor does not manage ${action.appId} yet.`);
   } else if (action.action === 'install') {

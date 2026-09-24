@@ -224,6 +224,9 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     `sudo install -d -m 0700 -o ${shellSingleQuote(runtimeUser)} -g ${shellSingleQuote(runtimeUser)} ${shellSingleQuote(stateDir)}`,
     `sudo install -d -m 0755 -o root -g root ${shellSingleQuote(envFile.substring(0, envFile.lastIndexOf('/')) || '/etc')}`,
     `tar --exclude .data --exclude node_modules -cf - . | sudo tar -C ${shellSingleQuote(appDir)} -xf -`,
+    // Runtime dependencies (ajv) must exist before the service starts; install them as root with
+    // lifecycle scripts disabled, then hand the tree to root like the rest of the code.
+    `sudo bash -c ${shellSingleQuote(`cd ${appDir} && npm ci --omit=dev --ignore-scripts`)}`,
     `sudo chown -R root:root ${shellSingleQuote(appDir)}`,
     `sudo chmod -R go-w ${shellSingleQuote(appDir)}`,
     `sudo chown -R ${shellSingleQuote(`${runtimeUser}:${runtimeUser}`)} ${shellSingleQuote(stateDir)}`,

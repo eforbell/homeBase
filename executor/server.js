@@ -19,7 +19,14 @@ function encodeLine(payload) {
 }
 
 function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runAction = null, planAction = (spec) => compileAction(spec), mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, checkAppUpdateStatus = null } = {}) {
+  // Replay protection for run-action only (a retried request must not run a plan twice). Read-only
+  // requests are cheap to answer again and are not cached; the map is bounded either way.
   const completed = new Map();
+  const REPLAY_LIMIT = 256;
+  const remember = (requestId, response) => {
+    completed.set(requestId, response);
+    if (completed.size > REPLAY_LIMIT) completed.delete(completed.keys().next().value);
+  };
   let activeMutation = false;
   return net.createServer((socket) => {
     let buffer = '';
@@ -76,7 +83,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
           activeMutation = false;
           ownsMutation = false;
           const response = result({ requestId: request.requestId, ok: true, result: execution });
-          completed.set(request.requestId, response);
+          remember(request.requestId, response);
           return finish(null, response);
         }
         if (request.type === 'app-update-status') {
@@ -97,7 +104,6 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
         const response = request.type === 'hello'
           ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled, gitDeployKey: probeDeployKey() }), activePlan: activeMutation } })
           : result({ requestId: request.requestId, ok: true, result: planAction(request.actionSpec) });
-        completed.set(request.requestId, response);
         writeAudit(logger, `accepted request type=${request.type} requestId=${request.requestId}`);
         finish(null, response);
       } catch (error) { if (ownsMutation) activeMutation = false; finish(error); }

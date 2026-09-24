@@ -1,12 +1,14 @@
 const net = require('net');
 const crypto = require('crypto');
-const { PROTOCOL_VERSION } = require('../../executor/protocol');
+const { PROTOCOL_VERSION } = require('../../executor/protocol-version');
 
-function sendRequest(socketPath, request, { timeoutMs = 10000, onEvent = null } = {}) {
+// deadlineFromEvent lets a caller replace the deadline once it knows the work (e.g. from plan.accepted).
+function sendRequest(socketPath, request, { timeoutMs = 10000, onEvent = null, deadlineFromEvent = null } = {}) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let buffer = '';
-    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('Executor request timed out.')); }, timeoutMs);
+    const expire = () => { socket.destroy(); reject(new Error('Executor request timed out.')); };
+    let timeout = setTimeout(expire, timeoutMs);
     socket.setEncoding('utf8');
     socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
     let response = null;
@@ -14,8 +16,10 @@ function sendRequest(socketPath, request, { timeoutMs = 10000, onEvent = null } 
     const consume = (line) => {
       if (!line.trim()) return;
       const message = JSON.parse(line);
-      if (message.type === 'terminal') response = message;
-      else if (typeof onEvent === 'function') onEvent(message);
+      if (message.type === 'terminal') { response = message; return; }
+      const extended = typeof deadlineFromEvent === 'function' ? deadlineFromEvent(message) : null;
+      if (Number.isFinite(extended) && extended > 0) { clearTimeout(timeout); timeout = setTimeout(expire, extended); }
+      if (typeof onEvent === 'function') onEvent(message);
     };
     socket.on('data', (chunk) => {
       buffer += chunk;

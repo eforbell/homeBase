@@ -25,6 +25,10 @@ function loadConfig() {
   const homeBaseExecutionMode = executionModeFromEnv(process.env.HOME_BASE_EXECUTION_MODE);
   const homeBaseEnablePrivilegedJobs = ['legacy-sudo', 'executor'].includes(homeBaseExecutionMode)
     && boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, false);
+  // Hosts upgraded from before execution modes existed enabled privileged jobs with this flag alone.
+  // They now fail closed to plan-only; this lets the service say exactly how to opt back in.
+  const homeBaseExecutionModeMissing = !String(process.env.HOME_BASE_EXECUTION_MODE || '').trim()
+    && boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, false);
 
   return {
     appName: 'Home Base',
@@ -53,6 +57,7 @@ function loadConfig() {
     homeBaseEnvFile: process.env.HOME_BASE_ENV_FILE || '/etc/sovereign-home/homebase.env',
     homeBaseExecutionMode,
     homeBaseEnablePrivilegedJobs,
+    homeBaseExecutionModeMissing,
     homeBaseExecutorSocket: process.env.HOME_BASE_EXECUTOR_SOCKET || '/run/homebase/executor.sock',
     homeBaseAutoBootstrap: homeBaseEnablePrivilegedJobs
       && boolFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP, false),

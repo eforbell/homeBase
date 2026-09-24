@@ -1,6 +1,6 @@
 const { operation, planEnvelope } = require('./common');
 
-function buildDinnerBootstrapPlan({ generatedAt, catalogRevision } = {}) {
+function buildHostBootstrapPlan({ generatedAt, catalogRevision } = {}) {
   const directories = ['sovereign-root', 'app-root', 'sovereign-home', 'backup-root', 'config-root', 'nginx-snippets', 'nginx-apps'];
   const operations = [
     operation({ id: 'assert-os', type: 'host.assert-debian-family', title: 'Verify a supported Debian-family host', risk: 'read', timeoutMs: 5000 }),
@@ -15,4 +15,4 @@ function buildDinnerBootstrapPlan({ generatedAt, catalogRevision } = {}) {
   return planEnvelope({ kind: 'host-bootstrap', target: 'local-host', policyProfile: 'host-bootstrap-v1', operations, generatedAt, catalogRevision });
 }
 
-module.exports = { buildDinnerBootstrapPlan };
+module.exports = { buildHostBootstrapPlan };

@@ -138,7 +138,9 @@ async function rotateAdmin(req, res, body, stateStore) {
   return { statusCode: 200, payload: { ok: true } };
 }
 
-async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true } = {}) {
+const EXECUTION_MODE_UPGRADE_HINT = 'HOME_BASE_ENABLE_PRIVILEGED_JOBS is set but HOME_BASE_EXECUTION_MODE is not. To keep sudo-based execution, add HOME_BASE_EXECUTION_MODE=legacy-sudo to the Home Base environment file and restart the service.';
+
+async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false } = {}) {
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const sessionTokenHash = token ? hashToken(token) : null;
   const status = await getAdminStatus(req, stateStore);
@@ -153,7 +155,9 @@ async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled =
       ok: false,
       statusCode: 409,
       payload: {
-        error: 'Home Base is running in plan-only mode. Generate and review the plan, then execute it from an operator shell.',
+        error: executionModeMissing
+          ? `Home Base is running in plan-only mode. ${EXECUTION_MODE_UPGRADE_HINT}`
+          : 'Home Base is running in plan-only mode. Generate and review the plan, then execute it from an operator shell.',
         code: 'PRIVILEGED_EXECUTION_DISABLED',
         executionMode: 'plan-only',
       },
@@ -164,6 +168,7 @@ async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled =
 }
 
 module.exports = {
+  EXECUTION_MODE_UPGRADE_HINT,
   getAdminStatus,
   setupAdmin,
   unlockAdmin,

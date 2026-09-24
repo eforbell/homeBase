@@ -1,17 +1,17 @@
 const { PROTOCOL_VERSION, MAX_REQUEST_BYTES } = require('./protocol');
 const { ACTIONS, INSTALLABLE_APPS } = require('./actions');
 
-const SUPPORTED_OPERATION_TYPES = Object.freeze([
-  'host.assert-debian-family', 'package.ensure', 'identity.ensure-user', 'filesystem.ensure-directory',
-  'git.sync', 'postgres.ensure-role', 'postgres.ensure-database', 'filesystem.write-managed-file',
-  'runtime.run-npm', 'systemd.daemon-reload', 'systemd.ensure-service', 'nginx.ensure-gateway', 'nginx.validate-and-reload', 'http.wait-ready',
-]);
+const { PROFILE_TYPES } = require('../src/operations/policy');
+
+// Derived from the policy so the advertised surface can never drift from what is enforced.
+const SUPPORTED_OPERATION_TYPES = Object.freeze([...new Set(Object.values(PROFILE_TYPES).flatMap((types) => [...types]))].sort());
+const POLICY_PROFILES = Object.freeze(Object.keys(PROFILE_TYPES));
 
 function executorCapabilities({ mutationsEnabled = false, gitDeployKey = 'missing' } = {}) {
   return {
     executorVersion: '0.1.0',
     protocolVersions: [PROTOCOL_VERSION],
-    policyVersion: 'app-install-v1',
+    policyProfiles: POLICY_PROFILES,
     actions: Object.keys(ACTIONS),
     installableApps: INSTALLABLE_APPS,
     supportedOperationTypes: SUPPORTED_OPERATION_TYPES,

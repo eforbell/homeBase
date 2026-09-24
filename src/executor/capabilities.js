@@ -1,5 +1,5 @@
 const { hello } = require('./client');
-const { PROTOCOL_VERSION } = require('../../executor/protocol');
+const { PROTOCOL_VERSION } = require('../../executor/protocol-version');
 
 async function getExecutorCapabilities(socketPath, options) {
   const response = await hello(socketPath, options);

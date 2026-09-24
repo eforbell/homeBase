@@ -2132,3 +2132,46 @@ test('executor-mode reinstall keeps the catalog port; only a different app on th
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('review fixes: update-self and discarding a real install are refused', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-review-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async () => ({ completedOperationIds: [] }) });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const installRoot = path.join(tempDir, 'present');
+  fs.mkdirSync(installRoot);
+  store.upsertInstallation({ appId: 'family-plan', name: 'Family Plan', purpose: 'x', port: 3004, mountPath: '/plan/', externalUrl: 'https://homebase.tailnet/plan/', installRoot, serviceName: 'family-plan', ref: 'main', status: 'planned', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/srv/elsewhere', baseBackupDir: path.join(tempDir, 'b'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (route, body) => {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+    const updateSelf = await post('/api/homebase/update-self', { dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(updateSelf.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED');
+    const discard = await post('/api/apps/family-plan/discard-plan', { confirm: 'DISCARD' });
+    assert.equal(discard.status, 409);
+    assert.equal(discard.body.code, 'INSTALL_PRESENT');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('an upgraded host with privileged jobs but no execution mode gets the exact opt-in line', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-upgrade-hint-'));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'plan-only', homeBaseEnablePrivilegedJobs: false, homeBaseExecutionModeMissing: true });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/family-dinner/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 409);
+    assert.equal(payload.code, 'PRIVILEGED_EXECUTION_DISABLED');
+    assert.match(payload.error, /add HOME_BASE_EXECUTION_MODE=legacy-sudo/);
+  } finally { await server.close(); }
+});

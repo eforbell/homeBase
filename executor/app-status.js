@@ -4,32 +4,26 @@ const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
 const { getAppById } = require('../src/catalog');
 const { lookupSystemUser, rootGitEnvironment, ROOT_GIT_CONFIG, SOVEREIGN_HOME } = require('./handlers');
+const { appLayout } = require('../src/operations/app-layout');
+const { INSTALLABLE_APPS } = require('./actions');
+const { MIRROR_ROOT } = require('../src/operations/paths');
 
-const MIRROR_ROOT = '/var/lib/sovereign-home/git-mirrors';
-const APPS_ROOT = '/opt/sovereign-home/apps';
 const SHA = /^[0-9a-f]{40}$/;
-
-// Catalog-derived locations: the caller names an app, never a path or URL.
-function appGitLocations(app, transport) {
-  const repository = transport === 'ssh'
-    ? `ssh://${String(app.repository.sshUrl || '').replace(':', '/')}`
-    : app.repository.url;
-  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(app.repoKey || '')) throw new ProtocolError('POLICY_DENIED', 'Catalog entry has no usable repoKey.');
-  if (transport === 'ssh' && !app.repository.sshUrl) throw new ProtocolError('POLICY_DENIED', `${app.id} has no SSH repository.`);
-  return { repository, mirror: path.join(MIRROR_ROOT, `${app.repoKey}.git`), checkout: path.join(APPS_ROOT, app.repoKey) };
-}
 
 // Reports how an installed checkout compares with its upstream branch. Root refreshes only the
 // root-owned mirror; sovereign reads the checkout's HEAD. Root never runs git inside the
 // sovereign-owned checkout, whose config could otherwise execute code as root.
 function createAppUpdateStatusChecker({ run = runApproved, fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl) } = {}) {
   return async function checkAppUpdateStatus({ appId, transport, ref }) {
-    const app = getAppById(appId);
-    if (!app) throw new ProtocolError('POLICY_DENIED', 'Unknown catalog app.');
-    const { repository, mirror, checkout } = appGitLocations(app, transport);
+    // Only apps the executor manages: root should not clone mirrors for anything else.
+    if (!INSTALLABLE_APPS.includes(appId)) throw new ProtocolError('POLICY_DENIED', `The executor does not manage ${appId}.`);
+    const layout = appLayout(getAppById(appId));
+    const { mirror, checkout } = layout;
+    const repository = layout.repositories[transport];
+    if (!repository) throw new ProtocolError('POLICY_DENIED', `${appId} has no ${transport} repository.`);
     const sovereign = lookupUser('sovereign');
     if (!sovereign) throw new ProtocolError('POLICY_DENIED', 'The sovereign identity does not exist.');
-    if (!fsImpl.existsSync(path.join(checkout, '.git'))) throw new ProtocolError('NOT_INSTALLED', `${app.name} has no checkout at ${checkout}.`);
+    if (!fsImpl.existsSync(path.join(checkout, '.git'))) throw new ProtocolError('NOT_INSTALLED', `${layout.app.name} has no checkout at ${checkout}.`);
 
     const rootEnv = rootGitEnvironment(transport, fsImpl);
     const rootGit = (args) => run({ binary: '/usr/bin/git', args: [...ROOT_GIT_CONFIG, ...args], uid: 0, gid: 0, timeoutMs: 60000, env: rootEnv });
@@ -64,4 +58,4 @@ function createAppUpdateStatusChecker({ run = runApproved, fsImpl = fs, lookupUs
   };
 }
 
-module.exports = { createAppUpdateStatusChecker, appGitLocations };
+module.exports = { createAppUpdateStatusChecker };

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const { runApproved } = require('./spawn');
 const {
-  DIRECTORY_PATHS, SOVEREIGN_HOME, lookupSystemUser, runAsUser, readExistingDatabasePassword,
+  SOVEREIGN_HOME, lookupSystemUser, runAsUser, readExistingDatabasePassword,
   lstatOrNull, writeFileAtomic, requireLayout, deny,
 } = require('./handlers');
 const { parseDotEnv, renderEnv } = require('../src/operations/env');
@@ -10,7 +10,7 @@ const { parseDotEnv, renderEnv } = require('../src/operations/env');
 // .env, backups, storage) is read, written, or removed as sovereign; root only touches root-owned
 // paths derived from the catalog layout (unit files, the nginx snippet, the git mirror).
 
-const BACKUP_ROOT = DIRECTORY_PATHS['backup-root'];
+const { BACKUP_ROOT } = require('../src/operations/paths');
 // Legacy restore semantics: the backup's .env comes back, but live database wiring is kept.
 const PRESERVED_DB_ENV_KEYS = ['DATABASE_URL', 'HELM_DATABASE_URL', 'DB_BACKEND', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'SQLITE_DB_PATH'];
 
@@ -29,6 +29,9 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
     return password;
   };
   const asSovereign = (sovereign, spec) => run({ ...spec, uid: sovereign.uid, gid: sovereign.gid });
+  // Create tool output files 0600 up front: pg_dump and tar would otherwise create them under the
+  // executor's 0022 umask, leaving a database dump world-readable until the job finished.
+  const createPrivateFile = (sovereign, target) => asUser(sovereign, () => fsImpl.closeSync(fsImpl.openSync(target, 'wx', 0o600)));
 
   return {
     'backup.create': async (operation, { layout } = {}) => {
@@ -50,15 +53,15 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
         }
       });
       if (layout.database) {
+        createPrivateFile(sovereign, `${archiveDir}/database.dump`);
         await asSovereign(sovereign, { binary: '/usr/bin/pg_dump', args: ['--no-password', '-Fc', '-f', `${archiveDir}/database.dump`], timeoutMs: operation.timeoutMs, env: pgEnvironment(layout, password), secrets: [password] });
-        asUser(sovereign, () => fsImpl.chmodSync(`${archiveDir}/database.dump`, 0o600));
         included.push('database.dump');
       }
       for (const subpath of layout.storage?.subpaths || []) {
         const present = asUser(sovereign, () => isRealDir(`${layout.storage.root}/${subpath}`));
         if (!present) continue;
+        createPrivateFile(sovereign, `${archiveDir}/${subpath}.tgz`);
         await asSovereign(sovereign, { binary: '/usr/bin/tar', args: ['-C', layout.storage.root, '-czf', `${archiveDir}/${subpath}.tgz`, subpath], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
-        asUser(sovereign, () => fsImpl.chmodSync(`${archiveDir}/${subpath}.tgz`, 0o600));
         included.push(`${subpath}.tgz`);
       }
       asUser(sovereign, () => writeFileAtomic(fsImpl, `${archiveDir}/backup-generated-at.txt`, `${now().toISOString()}\n`, 0o644));

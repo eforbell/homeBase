@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const { runAction } = require('../executor/client');
 const { getAppById } = require('../catalog');
+const { BACKUP_ROOT } = require('../operations/paths');
 const { redactText } = require('../operations/redact');
 const { digestOperationPlan } = require('../operations/digest');
 
@@ -79,6 +80,10 @@ class JobRunner {
       steps: plan.executionSteps || [],
       dryRun,
       onComplete: () => {
+        // A dry-run must never downgrade a real installation to "planned": that status hides the
+        // app's update/restart/uninstall actions and makes its record discardable.
+        const existing = (this.stateStore.loadState().installations || {})[plan.app.id];
+        if (dryRun && existing && existing.status !== 'planned') return;
         this.stateStore.upsertInstallation({
           ...plan.stateRecord,
           updatedAt: new Date().toISOString(),
@@ -115,10 +120,15 @@ class JobRunner {
       if (event.operationId) this.stateStore.updateJob(jobId, { currentStep: event.operationId });
       appendExecutorEventLog(this.stateStore, jobId, event);
     };
+    // The executor bounds every step; wait for the whole accepted plan (plus margin) rather than a
+    // fixed deadline that could mark a still-running install failed.
+    const planDeadline = (event) => (event.eventType === 'plan.accepted' && Array.isArray(event.plan?.operations)
+      ? event.plan.operations.reduce((total, operation) => total + (operation.timeoutMs || 0), 0) + 5 * 60 * 1000
+      : null);
     let result;
     for (let attempt = 1; ; attempt += 1) {
       try {
-        result = await this.runExecutorAction(this.executorSocket, { jobId, ...action }, { timeoutMs: 30 * 60 * 1000, onEvent });
+        result = await this.runExecutorAction(this.executorSocket, { jobId, ...action }, { timeoutMs: 30 * 60 * 1000, onEvent, deadlineFromEvent: planDeadline });
         break;
       } catch (error) {
         // A background update check briefly holds the executor; nothing ran yet, so waiting is safe.
@@ -200,7 +210,7 @@ class JobRunner {
     if (!operation) return;
     this.stateStore.recordBackup({
       appId,
-      archiveDir: `/var/lib/sovereign-home/backups/${appId}/${operation.archiveName}`,
+      archiveDir: `${BACKUP_ROOT}/${appId}/${operation.archiveName}`,
       generatedAt: acceptedPlan.generatedAt,
       dryRun: false,
       status: 'completed',

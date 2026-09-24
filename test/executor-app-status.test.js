@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createAppUpdateStatusChecker, appGitLocations } = require('../executor/app-status');
+const { createAppUpdateStatusChecker } = require('../executor/app-status');
+const { appLayout } = require('../src/operations/app-layout');
 const { GIT_DEPLOY_KEY_PATH } = require('../executor/handlers');
 const { getAppById } = require('../src/catalog');
 const { createFakeFs } = require('./fixtures/fake-fs');
@@ -27,11 +28,13 @@ function responder({ counts = '0 3', revListFails = false } = {}) {
   };
 }
 
-test('catalog-derived git locations accept no caller paths', () => {
-  const dinner = getAppById('family-dinner');
-  assert.deepEqual(appGitLocations(dinner, 'https'), { repository: 'https://github.com/eforbell/familyDinner.git', mirror: MIRROR, checkout: CHECKOUT });
-  assert.equal(appGitLocations(dinner, 'ssh').repository, 'ssh://git@github.com/eforbell/familyDinner.git');
-  assert.equal(appGitLocations(getAppById('helm'), 'https').checkout, '/opt/sovereign-home/apps/helm');
+test('update checks use the shared catalog layout and refuse apps the executor does not manage', async () => {
+  const dinner = appLayout(getAppById('family-dinner'));
+  assert.equal(dinner.mirror, MIRROR);
+  assert.equal(dinner.checkout, CHECKOUT);
+  assert.equal(dinner.repositories.ssh, 'ssh://git@github.com/eforbell/familyDinner.git');
+  const check = createAppUpdateStatusChecker({ fsImpl: fixture(), lookupUser: () => SOVEREIGN, run: responder() });
+  await assert.rejects(() => check({ appId: 'helm', transport: 'https', ref: 'main' }), (error) => error.code === 'POLICY_DENIED' && /does not manage helm/.test(error.message));
 });
 
 test('update status refreshes the mirror as root, reads HEAD as sovereign, and compares only inside the mirror', async () => {

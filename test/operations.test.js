@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildDinnerBootstrapPlan } = require('../src/operations/compilers/bootstrap');
+const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
 const { buildAppInstallPlan } = require('../src/operations/compilers/install');
 const { canonicalize, digestOperationPlan } = require('../src/operations/digest');
 const { validateOperationSchema } = require('../src/operations/validate');
@@ -18,8 +18,8 @@ function assertDenied(mutator, code = 'INVALID_PLAN') {
   assert.throws(() => validateOperationPolicy(plan), (error) => error.code === code);
 }
 
-test('Dinner bootstrap and install plans validate against the checked-in schema and policy', () => {
-  const bootstrap = buildDinnerBootstrapPlan({ generatedAt: '2026-09-20T14:00:00.000Z' });
+test('bootstrap and Dinner install plans validate against the checked-in schema and policy', () => {
+  const bootstrap = buildHostBootstrapPlan({ generatedAt: '2026-09-20T14:00:00.000Z' });
   const dinner = dinnerPlan();
   assert.equal(validateOperationPolicy(bootstrap), bootstrap);
   assert.equal(validateOperationPolicy(dinner), dinner);

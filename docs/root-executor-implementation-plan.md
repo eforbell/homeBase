@@ -1,5 +1,8 @@
 # Home Base Root Executor and Typed Operation Protocol
 
+> **Superseded in part (2026-09-24).** This was the implementation plan for protocol v1, where Home Base submitted typed plans and secret bindings (`execute-plan`/`validate-plan`) and a `family-dinner-v1` profile hard-coded Family Dinner. The shipped design is protocol v2. Callers name actions (bootstrap, install, restart, backup, restore, uninstall), and the executor compiles every plan from the catalog (`src/operations/app-layout.js`), generates its own secrets, and supports SSH deploy keys and confirmed destructive operations. Sections 7-9 and the "no SSH" / "no destructive operations" / "executor-local secrets later" statements describe v1. For current behavior see `docs/executor-app-runbook.md`, `SECURITY.md`, and `executor/protocol.js`.
+
+
 **Status:** implementation-ready plan  
 **Prepared for:** Terra implementation agent  
 **Repository:** `/Users/forbell/workspace/homeApps/homeBase`  

@@ -1,7 +1,6 @@
 const { getAppById } = require('../src/catalog');
 
-// v2: callers request high-level actions; the executor compiles every plan it runs (v1 accepted plans).
-const PROTOCOL_VERSION = 2;
+const { PROTOCOL_VERSION } = require('./protocol-version');
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
 const REQUEST_TYPES = new Set(['hello', 'host-status', 'app-update-status', 'plan-action', 'run-action']);

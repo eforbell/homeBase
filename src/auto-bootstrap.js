@@ -7,6 +7,10 @@ function getAutoBootstrapDecision({ config, latestBootstrapJob }) {
   if (config.homeBaseEnablePrivilegedJobs === false) {
     return { shouldStart: false, reason: 'privileged-jobs-disabled' };
   }
+  // Auto-bootstrap runs the legacy sudo plan; executor hosts bootstrap through the typed executor.
+  if (config.homeBaseExecutionMode === 'executor') {
+    return { shouldStart: false, reason: 'executor-mode' };
+  }
   if (latestBootstrapJob && latestBootstrapJob.status !== 'failed') {
     return {
       shouldStart: false,

@@ -25,6 +25,7 @@ function harness(files = {}) {
   });
   const calls = [];
   const identities = [];
+  const modesAtSpawn = [];
   let current = 'root';
   const asUser = (user, fn) => { identities.push(user.uid); const previous = current; current = 'sovereign'; try { return fn(); } finally { current = previous; } };
   const handlers = createLifecycleHandlers({
@@ -33,18 +34,22 @@ function harness(files = {}) {
     run: async (input) => {
       calls.push({ ...input, as: current });
       // Simulate tools creating their output files.
-      const outputIndex = input.args.indexOf('-f');
-      if (outputIndex >= 0) fsImpl.writeFileSync(input.args[outputIndex + 1], 'dump');
-      const tarIndex = input.args.indexOf('-czf');
-      if (tarIndex >= 0) fsImpl.writeFileSync(input.args[tarIndex + 1], 'tgz');
+      // Like the real tools, write into the pre-created file (keeping its mode) and record the mode seen.
+      for (const flag of ['-f', '-czf']) {
+        const index = input.args.indexOf(flag);
+        if (index < 0) continue;
+        const target = fsImpl.entries.get(input.args[index + 1]);
+        modesAtSpawn.push(target ? target.mode : 'missing');
+        if (target) target.content = 'data';
+      }
       return { stdout: '' };
     },
   });
-  return { fsImpl, calls, identities, handlers };
+  return { fsImpl, calls, identities, handlers, modesAtSpawn };
 }
 
 test('backup runs entirely as sovereign, keeps secrets 0600, and never passes credentials in argv', async () => {
-  const { fsImpl, calls, handlers } = harness();
+  const { fsImpl, calls, handlers, modesAtSpawn } = harness();
   const output = await handlers['backup.create'](op('backup.create', { archiveName: '20260924T101010Z' }), { layout: SOURCE });
   assert.match(output, /\.env\.backup, database\.dump, documents\.tgz/);
   const dump = calls.find((call) => call.binary === '/usr/bin/pg_dump');
@@ -55,6 +60,7 @@ test('backup runs entirely as sovereign, keeps secrets 0600, and never passes cr
   assert.deepEqual(dump.secrets, ['Live-pass-123']);
   const tar = calls.find((call) => call.binary === '/usr/bin/tar');
   assert.deepEqual([tar.uid, tar.args], [1001, ['-C', '/var/lib/sovereign-home/home-source/data', '-czf', `${ARCHIVE}/documents.tgz`, 'documents']]);
+  assert.deepEqual(modesAtSpawn, [0o600, 0o600], 'dump and archives are private before the tools write a byte');
   assert.equal(fsImpl.entries.get(`${ARCHIVE}/.env.backup`).mode, 0o600);
   assert.equal(fsImpl.entries.get(`${ARCHIVE}/database.dump`).mode, 0o600);
   assert.equal(fsImpl.entries.get(`${ARCHIVE}`).mode, 0o755, 'listable by the Home Base inventory');
@@ -137,7 +143,7 @@ test('lifecycle plans validate, and destructive operations exist only where an o
 
 test('executePlan hands every app plan kind its catalog layout, and bootstrap none', async () => {
   const { executePlan } = require('../executor/execute');
-  const { buildDinnerBootstrapPlan } = require('../src/operations/compilers/bootstrap');
+  const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
   const seen = [];
   const record = async (operation, context) => { seen.push([operation.type, context.layout?.app.id ?? null]); };
   const handlers = new Proxy({}, { get: () => record });
@@ -146,7 +152,7 @@ test('executePlan hands every app plan kind its catalog layout, and bootstrap no
     buildAppRestartPlan({ appId: 'family-dinner' }),
     buildAppUninstallPlan({ appId: 'home-source' }),
   ]) await executePlan({ plan, secretBindings: {} }, { handlers });
-  await executePlan({ plan: buildDinnerBootstrapPlan(), secretBindings: {} }, { handlers });
+  await executePlan({ plan: buildHostBootstrapPlan(), secretBindings: {} }, { handlers });
   assert.deepEqual(seen.find(([type]) => type === 'backup.create'), ['backup.create', 'home-source']);
   assert.ok(seen.filter(([type]) => type === 'systemd.ensure-service').some(([, app]) => app === 'family-dinner'));
   assert.ok(seen.filter(([type]) => type === 'host.assert-debian-family').every(([, app]) => app === null));
