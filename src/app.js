@@ -7,7 +7,6 @@ const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
-const { buildDinnerBootstrapPlan } = require('./operations/compilers/bootstrap');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { buildRestorePlan } = require('./services/restore-planner');
@@ -943,8 +942,7 @@ function createApp(config) {
             const capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket);
             if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
           } catch { return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' }); }
-          const operationPlan = buildDinnerBootstrapPlan();
-          const jobId = jobRunner.startTypedBootstrapJob(operationPlan);
+          const jobId = jobRunner.startTypedBootstrapJob();
           return sendJson(res, 202, { ok: true, jobId, dryRun: false });
         }
         if (body.dryRun === false) {
@@ -1202,15 +1200,17 @@ function createApp(config) {
 
         const appId = executeInstallMatch[1];
         if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
-          if (appId !== 'family-dinner') return sendJson(res, 409, { error: 'Typed execution is currently supported only for Family Dinner.', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
           let capabilities;
           try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch (error) {
             return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
           }
           if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+          if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot install ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+          // Used only for Home Base's own installation record (port, mount path); the executor builds the real plan.
           const plan = buildInstallPlan({ appId, state, options: { ...body, dbPassword: '' }, config: effectiveConfig });
-          const usesSshTransport = plan.operationPlan?.operations.some((operation) => operation.type === 'git.sync' && operation.repository.startsWith('ssh://'));
-          if (usesSshTransport && capabilities.gitDeployKey !== 'present') {
+          if (!/^(main|[a-f0-9]{40})$/.test(plan.app.ref)) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+          const transport = effectiveConfig.gitTransport === 'ssh' || effectiveConfig.gitTransport === 'ssh-key' ? 'ssh' : 'https';
+          if (transport === 'ssh' && capabilities.gitDeployKey !== 'present') {
             return sendJson(res, 409, {
               error: capabilities.gitDeployKey === 'insecure'
                 ? 'The executor deploy key must be a root-owned regular file with mode 0600. Re-run: sudo bash install.sh --repair --git-ssh-key <path>'
@@ -1218,9 +1218,12 @@ function createApp(config) {
               code: 'GIT_DEPLOY_KEY_REQUIRED',
             });
           }
-          const secretBindings = { familyDinnerDatabasePassword: String(body.dbPassword || require('crypto').randomBytes(24).toString('base64url')) };
-          const jobId = jobRunner.startTypedDinnerInstallJob(plan, {
-            secretBindings,
+          // Database credentials are generated inside the executor; a caller-supplied dbPassword is ignored here.
+          const jobId = jobRunner.startTypedInstallJob({
+            appId,
+            ref: plan.app.ref,
+            transport,
+            stateRecord: plan.stateRecord,
             onComplete: () => {
               const installed = (stateStore.loadState().installations || {})[appId];
               if (installed) void appUpdateMonitor.refreshInstalledApps([installed], { force: true, gitConfig: updateGitConfig(effectiveConfig) });

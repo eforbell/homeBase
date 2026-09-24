@@ -1,7 +1,6 @@
 const net = require('net');
 const crypto = require('crypto');
 const { PROTOCOL_VERSION } = require('../../executor/protocol');
-const { digestOperationPlan } = require('../operations/digest');
 
 function sendRequest(socketPath, request, { timeoutMs = 10000, onEvent = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -58,12 +57,17 @@ function appUpdateStatus(socketPath, { appId, transport, ref }, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'app-update-status', appId, transport, ref }, options);
 }
 
-function executePlan(socketPath, { jobId, plan, secretBindings, actor = { kind: 'homebase-admin-session', auditRef: 'local' } }, options) {
-  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'execute-plan', jobId: String(jobId), actor, issuedAt: new Date().toISOString(), planDigest: digestOperationPlan(plan), plan, secretBindings }, options);
+// The executor compiles the plan; Home Base only names the action.
+function actionFields({ action, appId, ref, transport }) {
+  return action === 'bootstrap' ? { action } : { action, appId, ref, transport };
 }
 
-function validatePlan(socketPath, plan, options) {
-  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'validate-plan', planDigest: digestOperationPlan(plan), plan }, options);
+function runAction(socketPath, { jobId, actor = { kind: 'homebase-admin-session', auditRef: 'local' }, ...fields }, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'run-action', jobId: String(jobId), actor, issuedAt: new Date().toISOString(), ...actionFields(fields) }, options);
 }
 
-module.exports = { sendRequest, hello, hostStatus, appUpdateStatus, validatePlan, executePlan };
+function planAction(socketPath, fields, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'plan-action', ...actionFields(fields) }, options);
+}
+
+module.exports = { sendRequest, hello, hostStatus, appUpdateStatus, runAction, planAction };

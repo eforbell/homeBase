@@ -166,6 +166,29 @@ function renderDinnerEnv({ password, existingContent = '' }) {
   return `${lines.join('\n')}\n`;
 }
 
+// Reuse the app's current database password so an update never rotates credentials under a running
+// service (a failed update would otherwise leave the live app unable to connect). Read as sovereign:
+// the .env sits in a sovereign-owned directory. Returns null when there is nothing valid to reuse.
+function readExistingDinnerPassword({ fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
+  const sovereign = lookupUser('sovereign');
+  if (!sovereign) return null;
+  const envPath = '/opt/sovereign-home/apps/familyDinner/.env';
+  let content = null;
+  try {
+    content = asUser(sovereign, () => {
+      const stat = lstatOrNull(fsImpl, envPath);
+      return stat && stat.isFile() ? fsImpl.readFileSync(envPath, 'utf8') : null;
+    });
+  } catch { return null; }
+  const url = parseEnvFile(content).get('DATABASE_URL') || '';
+  const match = /^postgresql:\/\/family_dinner:([^@]+)@127\.0\.0\.1:5432\/family_dinner$/.exec(url);
+  if (!match) return null;
+  try {
+    const password = decodeURIComponent(match[1]);
+    return /^[\x21-\x7e]{8,256}$/.test(password) ? password : null;
+  } catch { return null; }
+}
+
 function renderManagedFile(operation, secretBindings = {}) {
   const templates = {
     'family-dinner-env-v1': {
@@ -402,6 +425,7 @@ module.exports = {
   deployKeyStatus,
   createBaseHandlers,
   renderManagedFile,
+  readExistingDinnerPassword,
   renderDinnerEnv,
   parseEnvFile,
   runAsUser,

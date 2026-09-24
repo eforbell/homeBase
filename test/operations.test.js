@@ -86,12 +86,9 @@ test('redaction removes exact and URL-encoded secrets without masking harmless f
   assert.equal(redactText('exit code 1', [secret]), 'exit code 1');
 });
 
-test('legacy install planner attaches a non-secret typed Dinner plan only for Family Dinner', () => {
+test('the web-side install planner no longer produces typed plans; only the executor compiles them', () => {
   const config = { port: 3080, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', defaultHostname: 'homebase', defaultDomain: 'tailnet' };
-  const dinner = buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: { dbPassword: 'do-not-persist' }, config });
-  const other = buildInstallPlan({ appId: 'family-help', state: { installations: {} }, options: {}, config });
-  assert.equal(dinner.operationPlan.target, 'family-dinner');
-  assert.ok(dinner.operationPlanDigest.startsWith('sha256:'));
-  assert.doesNotMatch(JSON.stringify(dinner.operationPlan), /do-not-persist/);
-  assert.equal(other.operationPlan, null);
+  const dinner = buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: {}, config });
+  assert.equal('operationPlan' in dinner, false);
+  assert.equal(dinner.stateRecord.appId, 'family-dinner');
 });

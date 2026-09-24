@@ -320,6 +320,7 @@ elif op == "update_job":
         "currentStep": "current_step",
         "resultJson": "result_json",
         "errorText": "error_text",
+        "planJson": "plan_json",
     }
     assignments = []
     params = []

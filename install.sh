@@ -419,7 +419,7 @@ HOME_BASE_EXECUTION_MODE=executor
 HOME_BASE_ENABLE_PRIVILEGED_JOBS=1
 HOME_BASE_AUTO_BOOTSTRAP=0
 HOME_BASE_EXECUTOR_SOCKET=${EXECUTOR_SOCKET_PATH}
-HOME_BASE_EXECUTOR_PROTOCOL_VERSION=1
+HOME_BASE_EXECUTOR_PROTOCOL_VERSION=2
 EOF
   if [ "$TEST_MODE" != '1' ]; then
     chown root:"$RUNTIME_USER" "$ENV_FILE"
@@ -541,7 +541,7 @@ if [ "$TEST_MODE" != '1' ]; then
     if ! runuser -u "$RUNTIME_USER" -- "$NODE_BIN" - "$EXECUTOR_SOCKET_PATH" <<'NODE'
 const net = require('net');
 const socketPath = process.argv[2];
-const request = { protocolVersion: 1, requestId: require('crypto').randomUUID(), type: 'hello' };
+const request = { protocolVersion: 2, requestId: require('crypto').randomUUID(), type: 'hello' };
 const socket = net.createConnection(socketPath);
 let response = '';
 const timer = setTimeout(() => { socket.destroy(); process.exit(1); }, 5000);
@@ -553,7 +553,7 @@ socket.on('end', () => {
   clearTimeout(timer);
   try {
     const payload = JSON.parse(response.trim());
-    process.exit(payload.protocolVersion === 1 && payload.ok === true && payload.result?.capabilities?.mutationsEnabled === true ? 0 : 1);
+    process.exit(payload.protocolVersion === 2 && payload.ok === true && payload.result?.capabilities?.mutationsEnabled === true ? 0 : 1);
   } catch { process.exit(1); }
 });
 NODE

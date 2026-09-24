@@ -1,4 +1,5 @@
 const { PROTOCOL_VERSION, MAX_REQUEST_BYTES } = require('./protocol');
+const { ACTIONS, INSTALLABLE_APPS } = require('./actions');
 
 const SUPPORTED_OPERATION_TYPES = Object.freeze([
   'host.assert-debian-family', 'package.ensure', 'identity.ensure-user', 'filesystem.ensure-directory',
@@ -11,6 +12,8 @@ function executorCapabilities({ mutationsEnabled = false, gitDeployKey = 'missin
     executorVersion: '0.1.0',
     protocolVersions: [PROTOCOL_VERSION],
     policyVersion: 'family-dinner-v1',
+    actions: Object.keys(ACTIONS),
+    installableApps: INSTALLABLE_APPS,
     supportedOperationTypes: SUPPORTED_OPERATION_TYPES,
     maximumRequestBytes: MAX_REQUEST_BYTES,
     mutationsEnabled,

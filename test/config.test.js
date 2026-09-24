@@ -64,10 +64,13 @@ test('unknown execution modes fail closed to plan-only', () => {
 
 
 test('executor capability checks distinguish healthy protocol support from mutation authority', () => {
-  const capabilities = { protocolVersions: [1], policyVersion: 'family-dinner-v1', mutationsEnabled: false };
+  const capabilities = { protocolVersions: [2], actions: ['bootstrap', 'install'], mutationsEnabled: false };
   assert.equal(isProtocolCompatible(capabilities), true);
   assert.equal(canExecuteMutations(capabilities), false);
-  assert.equal(isProtocolCompatible({ ...capabilities, protocolVersions: [2] }), false);
+  assert.equal(canExecuteMutations({ ...capabilities, mutationsEnabled: true }), true);
+  // A v1 executor that still expects submitted plans must read as incompatible, not half-working.
+  assert.equal(isProtocolCompatible({ ...capabilities, protocolVersions: [1] }), false);
+  assert.equal(isProtocolCompatible({ protocolVersions: [2], mutationsEnabled: true }), false);
 });
 
 test('executor mode is explicit and exposes only the protected socket path', () => {

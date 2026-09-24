@@ -2035,7 +2035,7 @@ test('executor-mode Dinner over SSH is refused up front when the executor has no
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-ssh-'));
   const socketPath = path.join(tempDir, 'e.sock');
   let executed = false;
-  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, probeDeployKey: () => 'missing', executePlan: async () => { executed = true; return {}; } });
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, probeDeployKey: () => 'missing', runAction: async () => { executed = true; return {}; } });
   await new Promise((resolve) => executor.listen(socketPath, resolve));
   const server = await startServer({ appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath, gitTransport: 'ssh-key', gitSshKeyPath: '/etc/sovereign-home/git/deploy_key' });
   try {

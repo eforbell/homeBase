@@ -54,7 +54,7 @@ hello('/run/homebase/executor.sock').then(console.log).catch((error) => { consol
 NODE
 ```
 
-Expected: protocol version 1 and `mutationsEnabled: true`.
+Expected: `protocolVersions: [2]`, `actions: ['bootstrap', 'install']`, and `mutationsEnabled: true`. Protocol v2 executors compile every plan themselves, so a v1 executor left behind by a partial upgrade reads as incompatible; fix it with `install.sh --repair`.
 
 ## Host bootstrap
 

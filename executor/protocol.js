@@ -1,56 +1,48 @@
-const { digestOperationPlan } = require('../src/operations/digest');
-const { validateOperationPolicy } = require('../src/operations/policy');
 const { getAppById } = require('../src/catalog');
 
-const PROTOCOL_VERSION = 1;
+// v2: callers request high-level actions; the executor compiles every plan it runs (v1 accepted plans).
+const PROTOCOL_VERSION = 2;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
-const REQUEST_TYPES = new Set(['hello', 'host-status', 'app-update-status', 'validate-plan', 'execute-plan']);
+const REQUEST_TYPES = new Set(['hello', 'host-status', 'app-update-status', 'plan-action', 'run-action']);
 
-class ProtocolError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-}
+const { ProtocolError } = require('./protocol-error');
+const { normalizeAction, ACTION_FIELDS } = require('./actions');
 
 function requireExactKeys(value, allowed) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProtocolError('INVALID_REQUEST', 'Request must be an object.');
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new ProtocolError('INVALID_REQUEST', `Unsupported request field: ${key}`);
 }
 
+const BASE_KEYS = ['protocolVersion', 'requestId', 'type'];
+
 function validateRequest(request) {
-  requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type', 'jobId', 'actor', 'issuedAt', 'planDigest', 'plan', 'secretBindings', 'appId', 'transport', 'ref']));
+  requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actor', 'issuedAt', 'appId', 'transport', 'ref', 'action']));
   if (request.protocolVersion !== PROTOCOL_VERSION) throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported executor protocol version.');
   if (typeof request.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.requestId)) throw new ProtocolError('INVALID_REQUEST', 'requestId must be a UUID.');
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');
+  if (request.type === 'hello' || request.type === 'host-status') {
+    requireExactKeys(request, new Set(BASE_KEYS));
+    return request;
+  }
   if (request.type === 'app-update-status') {
-    requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type', 'appId', 'transport', 'ref']));
+    requireExactKeys(request, new Set([...BASE_KEYS, 'appId', 'transport', 'ref']));
     if (typeof request.appId !== 'string' || !getAppById(request.appId)) throw new ProtocolError('INVALID_REQUEST', 'appId must name a catalog app.');
     if (!['https', 'ssh'].includes(request.transport)) throw new ProtocolError('INVALID_REQUEST', 'transport must be https or ssh.');
     if (typeof request.ref !== 'string' || !/^(main|[a-f0-9]{40})$/.test(request.ref)) throw new ProtocolError('INVALID_REQUEST', 'ref must be main or a 40-character commit SHA.');
     return request;
   }
-  if (request.type === 'hello' || request.type === 'host-status') {
-    requireExactKeys(request, new Set(['protocolVersion', 'requestId', 'type']));
-    return request;
-  }
-  const execute = request.type === 'execute-plan';
-  requireExactKeys(request, execute
-    ? new Set(['protocolVersion', 'requestId', 'type', 'jobId', 'actor', 'issuedAt', 'planDigest', 'plan', 'secretBindings'])
-    : new Set(['protocolVersion', 'requestId', 'type', 'planDigest', 'plan']));
-  if (typeof request.planDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(request.planDigest)) throw new ProtocolError('INVALID_REQUEST', 'planDigest must be a SHA-256 digest.');
-  validateOperationPolicy(request.plan);
-  if (digestOperationPlan(request.plan) !== request.planDigest) throw new ProtocolError('PLAN_DIGEST_MISMATCH', 'Plan digest does not match the validated plan.');
-  if (execute) {
+  const run = request.type === 'run-action';
+  requireExactKeys(request, new Set([...BASE_KEYS, ...ACTION_FIELDS, ...(run ? ['jobId', 'actor', 'issuedAt'] : [])]));
+  const action = normalizeAction(request);
+  if (run) {
     if (typeof request.jobId !== 'string' || !/^[1-9][0-9]*$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
-    if (!request.secretBindings || typeof request.secretBindings !== 'object' || Array.isArray(request.secretBindings)) throw new ProtocolError('INVALID_REQUEST', 'secretBindings must be an object.');
-    const expected = new Set(request.plan.operations.flatMap((operation) => operation.secretRefs));
-    if (Object.keys(request.secretBindings).some((key) => !expected.has(key)) || [...expected].some((key) => typeof request.secretBindings[key] !== 'string' || !request.secretBindings[key])) throw new ProtocolError('SECRET_BINDING_MISSING', 'Required secret bindings are missing or invalid.');
+    requireExactKeys(request.actor, new Set(['kind', 'auditRef']));
+    if (request.actor.kind !== 'homebase-admin-session' || typeof request.actor.auditRef !== 'string' || request.actor.auditRef.length > 128) throw new ProtocolError('INVALID_REQUEST', 'actor is invalid.');
     const issuedAt = Date.parse(request.issuedAt || '');
     if (!Number.isFinite(issuedAt) || Math.abs(Date.now() - issuedAt) > 5 * 60 * 1000) throw new ProtocolError('INVALID_REQUEST', 'issuedAt is outside the accepted clock skew.');
   }
-  return request;
+  return { ...request, actionSpec: action };
 }
 
 function requestIdFromValue(value) {
