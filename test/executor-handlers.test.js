@@ -235,7 +235,7 @@ test('PostgreSQL handlers send valid psql input on stdin and never place passwor
 
 test('managed files have fixed destinations and never accept caller content', () => {
   assert.equal(renderManagedFile(base('filesystem.write-managed-file', { template: 'app-env-v1' }), { layout: LAYOUT }).path, `${DINNER}/.env`);
-  const unit = renderManagedFile(base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service' }), { layout: LAYOUT });
+  const unit = renderManagedFile(base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT });
   assert.match(unit.content, /User=sovereign/);
   assert.match(unit.content, /NoNewPrivileges=yes/);
   // systemd reads EnvironmentFile= as root; Dinner loads its sovereign-owned .env via dotenv instead.
@@ -256,9 +256,10 @@ test('app env is read and written under the sovereign identity; root files are w
   fsImpl.openSync = (target, ...rest) => { opens.push([target, current]); return originalOpen(target, ...rest); };
   const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, asUser });
   await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-env-v1', site: { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' } }), { secretBindings: { databasePassword: 'canary-pass' }, layout: LAYOUT });
-  await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service' }), { layout: LAYOUT });
+  await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT });
   assert.deepEqual(identities, [SOVEREIGN]);
   assert.deepEqual(opens.map(([target, who]) => [target.replace(/\.tmp-[0-9a-f]+$/, '.tmp'), who]), [
+    [`${DINNER}/.env`, 'sovereign'],
     [`${DINNER}/.env.tmp`, 'sovereign'],
     ['/etc/systemd/system/family-dinner.service.tmp', 'root'],
   ]);
@@ -271,7 +272,7 @@ test('app env is read and written under the sovereign identity; root files are w
 test('managed-file handler rejects a symlinked parent before creating its temporary file', async () => {
   const fsImpl = createFakeFs({ '/etc/systemd/system': { kind: 'link', target: '/tmp/evil' } });
   const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN });
-  await assert.rejects(() => handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
+  await assert.rejects(() => handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
   assert.equal(fsImpl.calls.some(([call]) => call === 'open'), false);
 });
 
@@ -309,7 +310,7 @@ test('homeSource: storage lives outside the checkout, sovereign-owned 0750 under
 });
 
 test('homeSource: service, sidecar, and timer units come from the catalog with fixed argv and no EnvironmentFile', () => {
-  const render = (template, unit) => renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template, unit }), { layout: SOURCE });
+  const render = (template, unit) => renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template, unit, ...(template === 'app-timer-v1' ? {} : { timezone: 'America/New_York' }) }), { layout: SOURCE });
   const service = render('app-service-v1', 'home-source.service');
   assert.equal(service.path, '/etc/systemd/system/home-source.service');
   assert.match(service.content, /^ExecStart=\/usr\/bin\/node server\.js$/m);
@@ -366,7 +367,7 @@ test('upload limits from the catalog reach both the executor and legacy nginx sn
 
 test('unit descriptions cannot continue onto the next line or expand specifiers', () => {
   const layout = { ...SOURCE, service: { ...SOURCE.service, description: 'Evil %n \\' } };
-  const unit = renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template: 'app-service-v1', unit: 'home-source.service' }), { layout });
+  const unit = renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template: 'app-service-v1', unit: 'home-source.service', timezone: 'America/New_York' }), { layout });
   assert.match(unit.content, /^Description=Evil %%n $/m);
   assert.match(unit.content, /^After=network.target postgresql.service$/m);
 });

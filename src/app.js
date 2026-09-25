@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
-const { getCatalog, getAppById } = require('./catalog');
+const { getCatalog, getAppById, catalogPorts } = require('./catalog');
 const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
@@ -1273,9 +1273,15 @@ function createApp(config) {
           if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot install ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
           // Executor units, snippets, and env use the catalog's preferred port. Only a *different* app holding
           // it is a conflict; a reinstall keeps the port it already has.
-          const catalogPort = getAppById(appId).network.preferredPort;
-          const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && entry.port === catalogPort);
-          if (conflict) return sendJson(res, 409, { error: `Port ${catalogPort} is already assigned to ${conflict.appId}; executor installs use catalog ports.`, code: 'PORT_CONFLICT' });
+          // Sidecar ports are reserved in the catalog too. Legacy numbered every sidecar after the app's
+          // own port (port + i + 1), but only sidecars with a reserved port actually bind one.
+          const appPorts = catalogPorts(getAppById(appId));
+          const portsOf = (entry) => {
+            const sidecars = getAppById(entry.appId)?.sidecars || [];
+            return [entry.port, ...sidecars.flatMap((sidecar, index) => (sidecar.port != null ? [entry.port + index + 1, sidecar.port] : []))];
+          };
+          const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && portsOf(entry).some((port) => appPorts.includes(port)));
+          if (conflict) return sendJson(res, 409, { error: `${conflict.appId} already uses a port ${getAppById(appId).name} needs (${appPorts.join(', ')}); executor installs use catalog ports.`, code: 'PORT_CONFLICT' });
           // Used only for Home Base's own installation record; the executor builds the real plan from the
           // catalog. Only the ref comes from the request so the record matches what the executor installs
           // (catalog mount path and port, standard install root), never caller-edited values.

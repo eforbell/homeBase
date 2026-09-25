@@ -86,3 +86,30 @@ test('the executor reuses any valid existing database wiring and refuses wiring 
   assert.equal(read('OPENAI_API_KEY=x\n'), null);
   assert.throws(() => read('DATABASE_URL=postgresql://other_role:Long-pass-1@127.0.0.1:5432/family_dinner\n'), (error) => error.code === 'POLICY_DENIED' && /other_role/.test(error.message));
 });
+
+test('every catalog app: a fresh executor .env equals the legacy planner output plus its runtime env', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { renderAppEnvFile } = require('../executor/handlers');
+  const { appLayout } = require('../src/operations/app-layout');
+  const { catalog } = require('../src/catalog');
+  const { createFakeFs } = require('./fixtures/fake-fs');
+  const { withDeterministicRandom } = require('./fixtures/env/scenarios');
+  const site = { hostname: 'newhost', domain: 'tailnet', householdTimezone: 'America/Chicago' };
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-exec-parity-all-'));
+  const config = { port: 3080, serviceUser: 'sovereign', baseInstallDir: base, homeBaseSharedRoot: base, homeBaseAssetsRoot: path.join(base, 'assets'), defaultHostname: site.hostname, defaultDomain: site.domain, householdTimezone: site.householdTimezone };
+  try {
+    for (const app of catalog) {
+      const layout = appLayout(app);
+      const legacy = env.parseDotEnv(withDeterministicRandom(() => buildInstallPlan({ appId: app.id, state: { installations: {} }, options: {}, config })).files['.env']);
+      const password = layout.database ? env.resolveExistingDbContext(legacy, {}, app).dbPassword : null;
+      // Secrets are random per render; the reinstall contract keeps the legacy values, as on a real host.
+      const executor = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv(legacy), fsImpl: createFakeFs() }));
+      const runtimeEnv = layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {};
+      assert.deepEqual(executor, { ...legacy, ...runtimeEnv }, app.id);
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});

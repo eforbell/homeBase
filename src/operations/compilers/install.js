@@ -35,11 +35,15 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
   if (layout.packages.length) {
     add({ id: 'install-app-packages', type: 'package.ensure', title: `Install ${name} system packages`, timeoutMs: 600000, packages: layout.packages, updateCache: true });
   }
-  if (layout.storage) {
+  if (layout.storage && !layout.storage.inCheckout) {
     add({ id: 'ensure-storage-root', type: 'filesystem.ensure-directory', title: `Ensure ${name} storage directory`, purpose: 'app-storage-root' });
     layout.storage.subpaths.forEach((subpath, index) => add({ id: `ensure-storage-${index + 1}`, type: 'filesystem.ensure-directory', title: `Ensure ${name} ${subpath} storage`, purpose: 'app-storage', subpath }));
   }
   add({ id: 'sync-repository', type: 'git.sync', title: `Synchronize ${name} repository`, timeoutMs: 300000, preconditions: ['directory-layout'], repository: repositoryForTransport(layout, gitTransport), ref });
+  // In-checkout storage can only exist once the checkout does (git clones only into an empty directory).
+  if (layout.storage?.inCheckout) {
+    layout.storage.subpaths.forEach((subpath, index) => add({ id: `ensure-storage-${index + 1}`, type: 'filesystem.ensure-directory', title: `Ensure ${name} ${subpath} storage`, preconditions: ['app-checkout'], purpose: 'app-checkout-storage', subpath }));
+  }
   if (layout.database) {
     add({ id: 'ensure-db-role', type: 'postgres.ensure-role', title: `Ensure ${name} database role`, preconditions: ['postgres-ready'], secretRefs: [DATABASE_PASSWORD_REF], role: layout.database.user, passwordSecretRef: DATABASE_PASSWORD_REF });
     add({ id: 'ensure-database', type: 'postgres.ensure-database', title: `Ensure ${name} database`, database: layout.database.name, owner: layout.database.user });
@@ -49,15 +53,23 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
     secretRefs: layout.database ? [DATABASE_PASSWORD_REF] : [], purpose: 'app-env', template: 'app-env-v1',
     site: { hostname: site.hostname, domain: site.domain, householdTimezone: site.householdTimezone },
   });
-  add({ id: 'write-service', type: 'filesystem.write-managed-file', title: `Write ${name} service unit`, purpose: 'systemd-unit', template: 'app-service-v1', unit: layout.service.unit });
-  layout.sidecars.forEach((sidecar, index) => add({ id: `write-sidecar-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${sidecar.name} service unit`, purpose: 'systemd-unit', template: 'app-sidecar-service-v1', unit: sidecar.unit }));
+  // Service units run in the household timezone (TZ=), like legacy units; the host clock may be UTC.
+  const timezone = site.householdTimezone;
+  add({ id: 'write-service', type: 'filesystem.write-managed-file', title: `Write ${name} service unit`, purpose: 'systemd-unit', template: 'app-service-v1', unit: layout.service.unit, timezone });
+  layout.sidecars.forEach((sidecar, index) => add({ id: `write-sidecar-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${sidecar.name} service unit`, purpose: 'systemd-unit', template: 'app-sidecar-service-v1', unit: sidecar.unit, timezone }));
   layout.timers.forEach((timer, index) => {
-    add({ id: `write-timer-service-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${timer.serviceName} service unit`, purpose: 'systemd-unit', template: 'app-timer-service-v1', unit: timer.serviceUnit });
+    add({ id: `write-timer-service-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${timer.serviceName} service unit`, purpose: 'systemd-unit', template: 'app-timer-service-v1', unit: timer.serviceUnit, timezone });
     add({ id: `write-timer-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${timer.timerUnit}`, purpose: 'systemd-unit', template: 'app-timer-v1', unit: timer.timerUnit });
   });
   add({ id: 'ensure-nginx-apps', type: 'filesystem.ensure-directory', title: 'Ensure managed nginx app directory', purpose: 'nginx-apps' });
   add({ id: 'write-nginx', type: 'filesystem.write-managed-file', title: `Write ${name} nginx snippet`, purpose: 'nginx-snippet', template: 'app-nginx-v1' });
-  add({ id: 'install-runtime', type: 'runtime.run-app-task', title: `Install ${name} runtime dependencies`, timeoutMs: 600000, preconditions: ['app-checkout'], task: 'install-dependencies' });
+  if (layout.runtime.kind === 'python') {
+    add({ id: 'ensure-venv', type: 'runtime.run-app-task', title: `Ensure ${name} Python virtualenv`, timeoutMs: 300000, preconditions: ['app-checkout'], task: 'ensure-venv' });
+  }
+  add({ id: 'install-runtime', type: 'runtime.run-app-task', title: `Install ${name} runtime dependencies`, timeoutMs: 900000, preconditions: ['app-checkout'], task: 'install-dependencies' });
+  if (layout.database?.schemaFile) {
+    add({ id: 'bootstrap-schema', type: 'runtime.run-app-task', title: `Create ${name} tables in an empty database`, timeoutMs: 120000, preconditions: ['app-checkout', 'postgres-ready'], task: 'bootstrap-schema' });
+  }
   if (layout.migrationArgv) {
     add({ id: 'run-migrations', type: 'runtime.run-app-task', title: `Run ${name} migrations`, timeoutMs: 300000, preconditions: ['app-checkout'], task: 'migrate' });
   }

@@ -34,7 +34,7 @@ test('update checks use the shared catalog layout and refuse apps the executor d
   assert.equal(dinner.checkout, CHECKOUT);
   assert.equal(dinner.repositories.ssh, 'ssh://git@github.com/eforbell/familyDinner.git');
   const check = createAppUpdateStatusChecker({ fsImpl: fixture(), lookupUser: () => SOVEREIGN, run: responder() });
-  await assert.rejects(() => check({ appId: 'helm', transport: 'https', ref: 'main' }), (error) => error.code === 'POLICY_DENIED' && /does not manage helm/.test(error.message));
+  await assert.rejects(() => check({ appId: 'not-in-catalog', transport: 'https', ref: 'main' }), (error) => error.code === 'POLICY_DENIED' && /does not manage not-in-catalog/.test(error.message));
 });
 
 test('update status refreshes the mirror as root, reads HEAD as sovereign, and compares only inside the mirror', async () => {

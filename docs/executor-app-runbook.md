@@ -33,7 +33,7 @@ Run through these on every change. Each one has already been violated once and c
 - [ ] **Root never runs git in a sovereign-owned repository.** Its config (`core.fsmonitor`, hooks) executes code. Root works only in the root-owned mirror (`/var/lib/sovereign-home/git-mirrors/`) with `ROOT_GIT_CONFIG`. Sovereign reaches the mirror through `GIT_CONFIG_SYSTEM=/etc/sovereign-home/sovereign.gitconfig`.
 - [ ] **Untrusted code runs as `sovereign`, never root:** npm/pip installs, migrations, app scripts.
 - [ ] **No `EnvironmentFile=` pointing into app directories.** systemd reads it as root before switching to `User=`. The app must load `.env` itself (see 3.1).
-- [ ] **Secrets never cross the socket or enter argv or env.** They are generated in `executor/actions.js` (`SECRET_GENERATORS`), reused on reinstall, and delivered through stdin or files written as the owner. Output is redacted in `execute.js`/`spawn.js`.
+- [ ] **Secrets never cross the socket or enter argv or env.** They are generated in `executor/actions.js` (`SECRET_GENERATORS`), reused on reinstall, and delivered through stdin or files written as the owner. Output is redacted in `execute.js`/`spawn.js`. One exception: the app's own database password goes to `pg_dump`/`pg_restore`/`psql` children as `PGPASSWORD`. Those children run as sovereign, which can already read the app's `.env`, and the password is passed in their `secrets` list for redaction.
 - [ ] **Shared state keeps its owner.** `/opt/sovereign-home` stays root-owned (it holds the executor's code); only `apps/` belongs to sovereign.
 - [ ] **Fail closed and say why.** Unknown field → `INVALID_REQUEST`. Not allowed → `POLICY_DENIED` with operator guidance. Never fall back to legacy shell execution (`rejectLegacyExecution`).
 - [ ] **Don't re-harden the executor unit.** `NoNewPrivileges`, `RestrictSUIDSGID`, `ProtectHome` and a strict `UMask` break apt/dpkg and buy nothing for a process that starts units (see `SECURITY.md`).
@@ -46,22 +46,25 @@ Run through these on every change. Each one has already been violated once and c
 |---|---|---|
 | Node runtime, `npm ci --omit=dev` | yes | |
 | Commands `node <script.js> [--flags]`, `npm run <script>` | yes | parsed to fixed argv; anything else is refused |
-| Postgres database | yes | simple identifiers, not `postgres`/`template*`/`pg_*`, and unique across the catalog |
+| Python runtime (`runtime.python`: `requirements`, `editable`, `editableNoDeps`) | yes | helm, bitcoin-accounting. `ensure-venv` builds `.venv` with the system `python3` and rebuilds it (`--clear`) when the interpreter version changes; pip installs the lockfile, then the checkout. Adds `python3`, `python3-venv` to the app's packages |
+| Commands `.venv/bin/<tool> [token ...]` | yes | Python apps only; absolute argv under the checkout; `{{port}}` is the only placeholder; tokens only, no absolute paths or `..`. Venv tools and `python3` may run only as a non-root uid (`spawn.js`) |
+| Postgres database | yes | simple identifiers, not `postgres`/`template*`/`pg_*`, and unique across the catalog. `urlEnvKey` may be any `*DATABASE_URL` key (helm) |
+| Database bootstrap from a SQL file (`database.bootstrap: schema-file`, `database.schemaFile`) | yes | bitcoin-accounting. Runs as the **app role**, with `ON_ERROR_STOP` in one transaction, and only while the database has no objects in `public`, so the app role owns its tables |
 | apt `systemPackages` | yes | allowed per app on top of the bootstrap baseline |
 | Storage at exactly `/var/lib/sovereign-home/<app id>/<name>` (`storage.absoluteRoot`) | yes | root-owned `<app id>` parent, sovereign `0750` leaf and sub-paths |
+| Storage inside the checkout (`storage.paths` without `absoluteRoot`) | yes | family-help, home-ops, bug-base (`uploads`), helm (`.secrets`). Created **as sovereign**, `0700`, after the clone; backed up as `<path>.tgz` (legacy names); removed with the checkout on uninstall (the safety backup holds it) |
 | Unit names | yes | main service, sidecars, and timers must be the app id or start with `<app id>-`, and be unique |
-| Sidecars without nginx | yes | extra `.service` with catalog `Environment=` values (simple tokens only) |
-| Timers (`onCalendar`, `onBootSec`, `onUnitActiveSec`, `randomizedDelaySec`) | yes | oneshot service + timer |
+| Sidecars | yes | extra `.service` with catalog `Environment=` values (simple tokens only) |
+| Sidecar ports (`sidecars[].port`, `{{sidecar.<name>.port}}`) | yes | reserved in the catalog (family-pulse 3004, bug-base 3006: the ports legacy assigns). Every port is unique across the catalog |
+| Sidecars published through nginx (`sidecars[].nginx`: `mountPathSuffix`, `upstreamPath`) | yes | bug-base-mcp at `/bugs/mcp/`, in the app's own snippet |
+| Timers (`onCalendar`, `onBootSec`, `onUnitActiveSec`, `randomizedDelaySec`) | yes | oneshot service + timer; calendars carried over exactly (including an explicit timezone) |
 | Upload limit (`network.clientMaxBodySize`, e.g. `55M`) | yes | rendered as `client_max_body_size` |
-| Storage inside the install root (`storage.paths` without `absoluteRoot`) | **no** | family-help, home-ops, helm (`.secrets`: Schwab OAuth tokens) |
-| Sidecars published through nginx | **no** | bug-base |
-| Env referencing sidecar ports (`{{sidecar.<name>.port}}`) | **no** | family-pulse, bug-base: ports must be reserved in the catalog before the executor allocates them |
-| Python runtime / venv | **no** | helm, bitcoin-accounting (see [Python apps and adopting legacy installs](#python-apps-and-adopting-legacy-installs)) |
-| Database bootstrap from a SQL file (`database.bootstrap: schema-file`) | **no** | bitcoin-accounting |
-| Custom nginx proxying (`preserveMountPath`, `upstreamPath`, extra headers) | **no** | the Python apps |
-| SQLite databases | **won't do** | bitcoin-accounting is Postgres-only under Home Base (decision 2026-09-24); drop its SQLite path when Python lands |
+| Mount-path-preserving proxying (`network.preserveMountPath`) | yes | helm, bitcoin-accounting: `proxy_pass` without a URI |
+| Household timezone | yes | every process unit gets `Environment=TZ=<householdTimezone>` (the host clock may be UTC, as on erebor) |
+| Custom `upstreamPath` / `extraProxyHeaders` on an app | **no** | no catalog app uses them |
+| SQLite databases | **won't do** | bitcoin-accounting is Postgres-only under Home Base (decision 2026-09-24) |
 
-An app is installable only when it compiles **and** appears in `INSTALLABLE_APPS` (`executor/actions.js`) after passing this runbook. Today that's family-dinner and home-source.
+An app is installable only when it compiles **and** appears in `INSTALLABLE_APPS` (`executor/actions.js`) after passing this runbook. Since 2026-09-25 that is every catalog app: all ten were installed, reinstalled and exercised in the container harness (see section 8).
 
 ## 2. Survey the app
 
@@ -106,7 +109,7 @@ Everything else is **re-derived on every install**, so hostname, port, mount and
 Executor-specific rules:
 - Render with `strict: true`. An unresolved placeholder refuses the install (`ENV_TEMPLATE_UNRESOLVED`); it never writes `''`.
 - The context must provide every placeholder the app uses. Site values (`hostname`, `domain`, `householdTimezone`) arrive in the action and ride inside the plan's `app-env` step, where policy validates them (`isValidSite`).
-- The runtime environment (`NODE_ENV`, or `PYTHONUNBUFFERED` for Python) is written into `.env`, because executor units set no `Environment=`.
+- `NODE_ENV` is written into `.env` (Node apps read it after dotenv loads). Settings the interpreter needs **before** it starts (`TZ`, `PYTHONUNBUFFERED`) go into the unit as fixed `Environment=` lines instead; `.env` is loaded too late for them.
 - Database passwords are reused from existing wiring (`readExisting…Password` via `resolveExistingDbContext`). Wiring for a different role or database is refused, not overwritten.
 - `{{secretN}}` values are generated fresh each render as *candidates*; rule 3 keeps existing ones.
 
@@ -205,7 +208,9 @@ Suggested order:
 4. Proxying that keeps the mount path.
 5. `adopt`: test it in the container harness against a host built with legacy mode from `main`, then adopt erebor, then numenor.
 
-### Python runtime (`runtime/python.js`)
+### Python runtime
+
+**Status (2026-09-25): built.** The notes below are the original spec; where they differ, the support matrix above describes what shipped. Differences: `PYTHONUNBUFFERED` is set in the unit (a value in `.env` would arrive after the interpreter started); venvs are rebuilt in place with `--clear` when the interpreter version changes, rather than swapped, because venv scripts hardcode their absolute path; `pip install --upgrade pip` is not run; there is no separate PyPI preflight (pip runs with `--timeout 30 --retries 2`, so an offline host fails in about a minute with pip's own error). bitcoin-accounting still installs unpinned (`editable` only) until its repo ships a lockfile.
 
 Legacy behavior (`src/services/install-planner.js`), which is what production has today:
 - `python3 -m venv .venv`, then `pip install --upgrade pip`, then the catalog `runtime.installCommand`, all as `sovereign` through `sudo -u`.
@@ -315,5 +320,6 @@ Catalog strain, in expected order: sidecar ports (keep them reserved in the cata
 - Tailscale installation is not a typed operation.
 - Ports are the catalog's preferred ports (by design); a conflicting app must be moved before an executor install.
 - The shapes marked **no** in the support matrix.
-- Removing bitcoin-accounting's SQLite option from the catalog (Postgres-only decision), done alongside Python support.
-- Python, in-root storage, schema-file bootstrap, mount-path-preserving proxying and `adopt`: see [Python apps and adopting legacy installs](#python-apps-and-adopting-legacy-installs).
+- `adopt` (taking over legacy installs in place): see [The `adopt` action](#the-adopt-action). Until it exists, a legacy host moves to executor mode only by reinstalling its apps.
+- bitcoin-accounting installs unpinned Python dependencies (no lockfile in its repo yet).
+- bitcoin-accounting's `migrations/001_add_soft_delete_columns.sql` is not wired into `migrationCommand`. Fresh installs don't need it (`tables.sql` already has the columns); a database created from an older `tables.sql` (possibly numenor's) does, so check during `adopt`.

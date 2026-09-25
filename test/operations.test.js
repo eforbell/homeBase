@@ -61,11 +61,29 @@ test('homeSource compiles to a plan covering packages, storage, sidecar, timers,
   assert.throws(() => validateOperationPolicy(relabelled), (error) => error.code === 'POLICY_DENIED');
 });
 
-test('apps with unsupported shapes are refused with the reason, never half-compiled', () => {
-  assert.throws(() => buildAppInstallPlan({ appId: 'helm' }), /runtime python/);
-  assert.throws(() => buildAppInstallPlan({ appId: 'bug-base' }), /sidecar ports/);
-  assert.throws(() => buildAppInstallPlan({ appId: 'family-pulse' }), /sidecar ports/);
-  assert.throws(() => buildAppInstallPlan({ appId: 'family-help' }), /storage paths inside the install root/);
+test('every catalog app compiles to a plan that satisfies its own policy', () => {
+  for (const { id } of require('../src/catalog').catalog) validateOperationPolicy(buildAppInstallPlan({ appId: id }));
+});
+
+test('shapes the executor does not support are refused with the reason, never half-compiled', () => {
+  const { appLayout } = require('../src/operations/app-layout');
+  const { getAppById } = require('../src/catalog');
+  const variant = (id, mutate) => { const app = JSON.parse(JSON.stringify(getAppById(id))); mutate(app); return () => appLayout(app); };
+  assert.throws(variant('helm', (app) => { app.runtime.kind = 'ruby'; }), /runtime ruby/);
+  assert.throws(variant('helm', (app) => { delete app.runtime.python; }), /runtime.python needs/);
+  assert.throws(variant('helm', (app) => { app.runtime.startCommand = '.venv/bin/uvicorn app --root /etc'; }), /unsupported arguments/);
+  assert.throws(variant('helm', (app) => { app.runtime.startCommand = '.venv/bin/../../bin/sh -c id'; }), /unsupported venv tool/);
+  assert.throws(variant('family-dinner', (app) => { app.runtime.startCommand = '.venv/bin/uvicorn app'; }), /not a supported/);
+  assert.throws(variant('bug-base', (app) => { delete app.sidecars[0].port; }), /reserved catalog port/);
+  assert.throws(variant('family-pulse', (app) => { app.sidecars[0].port = 3005; }), /shared with another catalog app/);
+  assert.throws(variant('family-pulse', (app) => { app.sidecars[0].port = 3003; }), /distinct ports/);
+  assert.throws(variant('bug-base', (app) => { app.sidecars[0].nginx.extraProxyHeaders = ['x']; }), /nginx supports only/);
+  assert.throws(variant('family-help', (app) => { app.storage.paths = ['.git']; }), /in-checkout storage/);
+  assert.throws(variant('family-help', (app) => { app.storage.paths = ['../etc']; }), /in-checkout storage/);
+  assert.throws(variant('bitcoin-accounting', (app) => { app.database.schemaFile = '../x.sql'; }), /schemaFile/);
+  assert.throws(variant('bitcoin-accounting', (app) => { app.database.engine = 'postgres-or-sqlite'; }), /engine postgres-or-sqlite/);
+  assert.throws(variant('helm', (app) => { app.database.urlEnvKey = 'PATH'; }), /DATABASE_URL/);
+  assert.throws(variant('helm', (app) => { app.network.extraProxyHeaders = ['add_header X 1;']; }), /upstream paths and headers/);
 });
 
 test('operation schema fails closed for unknown fields, raw shell primitives, and invalid dependency order', () => {

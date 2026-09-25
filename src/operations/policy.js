@@ -9,7 +9,10 @@ const { appLayout } = require('./app-layout');
 
 const BOOTSTRAP_PACKAGES = new Set(['git', 'ca-certificates', 'openssh-client', 'ssl-cert', 'nginx', 'postgresql', 'postgresql-client', 'nodejs', 'npm']);
 const BOOTSTRAP_DIRECTORIES = new Set(['sovereign-root', 'app-root', 'sovereign-home', 'backup-root', 'config-root', 'nginx-snippets', 'nginx-apps']);
-const INSTALL_DIRECTORIES = new Set(['sovereign-root', 'app-root', 'sovereign-home', 'app-install', 'nginx-apps', 'app-storage-root', 'app-storage']);
+const INSTALL_DIRECTORIES = new Set(['sovereign-root', 'app-root', 'sovereign-home', 'app-install', 'nginx-apps', 'app-storage-root', 'app-storage', 'app-checkout-storage']);
+const SUBPATH_PURPOSES = new Set(['app-storage', 'app-checkout-storage']);
+// Unit templates that start a process; they carry the household timezone (TZ=).
+const TIMEZONE_TEMPLATES = new Set(['app-service-v1', 'app-sidecar-service-v1', 'app-timer-service-v1']);
 const PROFILE_TYPES = {
   'host-bootstrap-v1': new Set(['host.assert-debian-family', 'package.ensure', 'identity.ensure-user', 'filesystem.ensure-directory', 'systemd.ensure-service', 'nginx.ensure-gateway', 'nginx.validate-and-reload']),
   'app-install-v1': new Set(['package.ensure', 'filesystem.ensure-directory', 'git.sync', 'postgres.ensure-role', 'postgres.ensure-database', 'filesystem.write-managed-file', 'runtime.run-app-task', 'systemd.daemon-reload', 'systemd.ensure-service', 'nginx.ensure-gateway', 'nginx.validate-and-reload', 'http.wait-ready']),
@@ -58,9 +61,12 @@ function checkInstallOperation(operation, layout, plan) {
       break;
     case 'filesystem.ensure-directory':
       if (!INSTALL_DIRECTORIES.has(operation.purpose)) deny('Directory purpose is not allowed for app installs.');
-      if ((operation.purpose === 'app-storage') !== ('subpath' in operation)) deny('Only app-storage directories take a subpath.');
-      if (operation.purpose.startsWith('app-storage') && !layout.storage) deny('This app declares no storage.');
-      if (operation.purpose === 'app-storage' && !layout.storage.subpaths.includes(operation.subpath)) deny('Storage subpath is not declared by this app.');
+      if (SUBPATH_PURPOSES.has(operation.purpose) !== ('subpath' in operation)) deny('Only storage directories take a subpath.');
+      if (/storage/.test(operation.purpose)) {
+        if (!layout.storage) deny('This app declares no storage.');
+        if ((operation.purpose === 'app-checkout-storage') !== layout.storage.inCheckout) deny('Storage purpose does not match where this app keeps its storage.');
+        if ('subpath' in operation && !layout.storage.subpaths.includes(operation.subpath)) deny('Storage subpath is not declared by this app.');
+      }
       break;
     case 'git.sync':
       if (![layout.repositories.https, layout.repositories.ssh].includes(operation.repository)) deny('Git repository does not match this app.');
@@ -80,6 +86,11 @@ function checkInstallOperation(operation, layout, plan) {
       const needsSite = operation.purpose === 'app-env';
       if (needsSite !== ('site' in operation)) deny('Managed file site values are required for app env files only.');
       if (needsSite && !isValidSite(operation.site)) deny('Managed file site values are invalid.');
+      if (TIMEZONE_TEMPLATES.has(operation.template) !== ('timezone' in operation)) deny('Only process unit templates carry a timezone.');
+      if ('timezone' in operation) {
+        const siteTimezone = plan.operations.find((entry) => entry.purpose === 'app-env')?.site?.householdTimezone;
+        if (operation.timezone !== siteTimezone) deny('Unit timezone must match the install site timezone.');
+      }
       break;
     }
     case 'backup.create':
@@ -88,6 +99,8 @@ function checkInstallOperation(operation, layout, plan) {
       break;
     case 'runtime.run-app-task':
       if (operation.task === 'migrate' && !layout.migrationArgv) deny('This app declares no migrations.');
+      if (operation.task === 'ensure-venv' && layout.runtime.kind !== 'python') deny('Only Python apps have a virtualenv.');
+      if (operation.task === 'bootstrap-schema' && !layout.database?.schemaFile) deny('This app declares no schema file.');
       break;
     case 'systemd.ensure-service':
       if (!layout.unitNames.includes(operation.unit)) deny('Systemd unit is not declared by this app.');

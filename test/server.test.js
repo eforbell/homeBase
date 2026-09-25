@@ -2080,10 +2080,6 @@ test('executor mode routes lifecycle actions to the executor and still refuses u
       assert.equal(response.status, 409, route);
       assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', route);
     }
-    for (const action of ['restart', 'backup', 'uninstall']) {
-      const response = await post(`/api/apps/family-help/${action}/execute`);
-      assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', `family-help ${action}: ${JSON.stringify(response.body)}`);
-    }
     for (const [action, extra] of [['restart'], ['backup'], ['restore', { backupDir: '20260924T101010Z' }], ['uninstall', { keepBackups: false }]]) {
       const response = await post(`/api/apps/home-source/${action}/execute`, extra);
       assert.equal(response.status, 202, `${action}: ${JSON.stringify(response.body)}`);
@@ -2116,6 +2112,8 @@ test('executor-mode reinstall keeps the catalog port; only a different app on th
   const record = (appId, port) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
   store.upsertInstallation(record('home-source', 3008));
   store.upsertInstallation(record('family-plan', 3000));
+  // A legacy bug-base moved to 3009 put its MCP sidecar on 3010, bitcoin-accounting's catalog port.
+  store.upsertInstallation(record('bug-base', 3009));
   const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
   try {
     const cookie = await setupAdminCookie(server.url);
@@ -2127,6 +2125,31 @@ test('executor-mode reinstall keeps the catalog port; only a different app on th
     assert.equal(conflict.status, 409);
     assert.equal(payload.code, 'PORT_CONFLICT');
     assert.match(payload.error, /family-plan/);
+    const sidecarConflict = await execute('bitcoin-accounting');
+    assert.equal(sidecarConflict.status, 409);
+    assert.match((await sidecarConflict.json()).error, /bug-base/);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('a portless sidecar does not reserve the next port: home-ops installs beside home-source', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-port-sidecar-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async () => ({ completedOperationIds: [] }) });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  // home-source (3008) has an import-worker sidecar that binds no port; legacy's 3008 + 1 is home-ops' port.
+  store.upsertInstallation({ appId: 'home-source', name: 'home-source', purpose: 'x', port: 3008, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: 'home-source', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/home-ops/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    assert.equal(response.status, 202, JSON.stringify(await response.clone().json()));
   } finally {
     await server.close();
     await new Promise((resolve) => executor.close(resolve));

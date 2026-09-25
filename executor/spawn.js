@@ -4,6 +4,14 @@ const { redactText } = require('../src/operations/redact');
 const ALLOWED_BINARIES = new Set([
   '/usr/bin/apt-get', '/usr/sbin/useradd', '/usr/bin/git', '/usr/bin/npm', '/usr/bin/node', '/usr/bin/pg_dump', '/usr/bin/pg_restore', '/usr/bin/tar', '/usr/bin/psql', '/usr/bin/systemctl', '/usr/sbin/nginx', '/usr/bin/id',
 ]);
+// App-controlled interpreters: the system python3 (to build a venv) and tools inside an app's venv.
+// They run app code, so they are refused for root.
+const SOVEREIGN_ONLY_BINARIES = new Set(['/usr/bin/python3']);
+const VENV_BINARY = /^\/opt\/sovereign-home\/apps\/[A-Za-z][A-Za-z0-9]{0,62}\/\.venv\/bin\/[a-z][a-z0-9._-]{0,62}$/;
+function isApprovedBinary(binary, uid, gid) {
+  if (ALLOWED_BINARIES.has(binary)) return true;
+  return Number.isInteger(uid) && uid !== 0 && Number.isInteger(gid) && gid !== 0 && (SOVEREIGN_ONLY_BINARIES.has(binary) || VENV_BINARY.test(String(binary)));
+}
 // Values for these keys are always composed by handlers from fixed strings, never from plan fields.
 const ALLOWED_ENV_KEYS = new Set([
   'HOME', 'LANG', 'LC_ALL', 'NODE_ENV', 'PATH',
@@ -14,7 +22,7 @@ const ALLOWED_ENV_KEYS = new Set([
 ]);
 
 function runApproved({ binary, args = [], uid, gid, cwd, env = {}, stdin = null, timeoutMs, outputLimit = 64 * 1024, secrets = [], spawnImpl = spawn }) {
-  if (!ALLOWED_BINARIES.has(binary)) throw new Error('Executor attempted an unapproved binary.');
+  if (!isApprovedBinary(binary, uid, gid)) throw new Error('Executor attempted an unapproved binary.');
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) throw new Error('Executor arguments must be a string argv array.');
   if (!Number.isInteger(uid) || !Number.isInteger(gid)) throw new Error('Executor child identity is required.');
   if (args.some((arg) => arg.includes('\0'))) throw new Error('Executor arguments may not contain NUL bytes.');
@@ -71,4 +79,4 @@ function runApproved({ binary, args = [], uid, gid, cwd, env = {}, stdin = null,
   });
 }
 
-module.exports = { ALLOWED_BINARIES, runApproved };
+module.exports = { ALLOWED_BINARIES, isApprovedBinary, runApproved };
