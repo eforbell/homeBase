@@ -101,6 +101,26 @@ function runAsUser(user, fn, processImpl = process) {
   }
 }
 
+// Reads a small regular file inside a sovereign-controlled directory. O_NOFOLLOW refuses a planted
+// symlink, O_NONBLOCK keeps a planted FIFO from blocking the executor, and the size cap bounds memory.
+// Returns null when the path is missing, a symlink, or not a regular file.
+function readSmallFileNoFollow(fsImpl, target, limit = 64 * 1024) {
+  let fd;
+  try {
+    fd = fsImpl.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (error) {
+    if (['ENOENT', 'ELOOP', 'ENOTDIR'].includes(error.code)) return null;
+    throw error;
+  }
+  try {
+    if (!fsImpl.fstatSync(fd).isFile()) return null;
+    const buffer = Buffer.alloc(limit + 1);
+    const bytes = fsImpl.readSync(fd, buffer, 0, limit + 1, 0);
+    if (bytes > limit) deny(`${target} is larger than ${limit} bytes.`);
+    return buffer.subarray(0, bytes).toString('utf8');
+  } finally { fsImpl.closeSync(fd); }
+}
+
 function writeFileAtomic(fsImpl, destination, content, mode) {
   const parent = path.dirname(destination);
   if (!fsImpl.existsSync(parent) || fsImpl.realpathSync(parent) !== parent) deny('Managed file parent is missing or a symlink.');
@@ -195,10 +215,7 @@ function readExistingDatabasePassword({ layout, fsImpl = fs, lookupUser = (name)
   if (!layout?.database) return null;
   const sovereign = lookupUser('sovereign');
   if (!sovereign) return null;
-  const content = asUser(sovereign, () => {
-    const stat = lstatOrNull(fsImpl, layout.envPath);
-    return stat && stat.isFile() ? fsImpl.readFileSync(layout.envPath, 'utf8') : null;
-  });
+  const content = asUser(sovereign, () => readSmallFileNoFollow(fsImpl, layout.envPath));
   if (!content) return null;
   const existing = parseDotEnv(content);
   if (!hasExistingDbConfig(existing, layout.app)) return null;
@@ -360,6 +377,8 @@ function directoryFor(operation, layout) {
   if (operation.purpose === 'app-storage-root' || operation.purpose === 'app-storage') {
     const storage = requireLayout(layout).storage;
     if (!storage) deny('This app declares no storage.');
+    // In-checkout storage sits under sovereign-owned directories; only app-checkout-storage (as sovereign) may create it.
+    if (storage.inCheckout) deny('This app keeps its storage in the checkout.');
     if (operation.purpose === 'app-storage-root') return storage.root;
     if (!storage.subpaths.includes(operation.subpath)) deny('Storage subpath is not declared by this app.');
     return `${storage.root}/${operation.subpath}`;
@@ -445,12 +464,15 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const sovereign = lookupUser('sovereign');
       if (!sovereign) deny('The sovereign identity must exist before running app tasks.');
       // libuv chdirs before dropping to sovereign, and sovereign owns the parent directory: refuse a
-      // checkout that is not a real sovereign-owned directory right before spawning.
-      const checkoutStat = lstatOrNull(fsImpl, layout.checkout);
-      if (!checkoutStat || checkoutStat.isSymbolicLink() || !checkoutStat.isDirectory() || checkoutStat.uid !== sovereign.uid) deny(`${layout.app.name} checkout is not a sovereign-owned directory.`);
+      // checkout that is not a real sovereign-owned directory right before each spawn.
+      const assertCheckout = () => {
+        const checkoutStat = lstatOrNull(fsImpl, layout.checkout);
+        if (!checkoutStat || checkoutStat.isSymbolicLink() || !checkoutStat.isDirectory() || checkoutStat.uid !== sovereign.uid) deny(`${layout.app.name} checkout is not a sovereign-owned directory.`);
+      };
+      assertCheckout();
       const env = { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, LANG: 'C', ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) };
       // Every argv is fixed by the catalog layout; the plan only names the task.
-      const runApp = ([binary, ...args], extra = {}) => run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env, ...extra });
+      const runApp = ([binary, ...args], extra = {}) => assertCheckout() ?? run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env, ...extra });
       const venvPython = `${layout.checkout}/.venv/bin/python`;
       const outputs = [];
       const collect = (result) => { const text = String(result.stdout || '').trim(); if (text) outputs.push(text); };
@@ -458,13 +480,11 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (operation.task === 'ensure-venv') {
         if (layout.runtime.kind !== 'python') deny('Only Python apps have a virtualenv.');
         const current = String((await runApp(['/usr/bin/python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'])).stdout || '').trim();
-        const existing = asUser(sovereign, () => {
-          const cfg = lstatOrNull(fsImpl, `${layout.checkout}/.venv/pyvenv.cfg`);
-          return {
-            config: cfg && cfg.isFile() ? fsImpl.readFileSync(`${layout.checkout}/.venv/pyvenv.cfg`, 'utf8') : null,
-            python: Boolean(lstatOrNull(fsImpl, venvPython)),
-          };
-        });
+        if (!/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/.test(current)) deny('Could not read the system Python version.');
+        const existing = asUser(sovereign, () => ({
+          config: readSmallFileNoFollow(fsImpl, `${layout.checkout}/.venv/pyvenv.cfg`, 4096),
+          python: Boolean(lstatOrNull(fsImpl, venvPython)),
+        }));
         const version = existing.config ? (/^version(?:_info)?\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)/m.exec(existing.config) || [])[1] : null;
         if (version === current && existing.python) return `virtualenv ready (Python ${current})`;
         // A venv is bound to the interpreter that built it: rebuild it rather than repair it in place.
@@ -489,8 +509,10 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         const password = readExistingDatabasePassword({ layout, fsImpl, lookupUser, asUser });
         if (!password) deny(`${layout.app.name} has no database wiring in its .env.`);
         const pgEnv = { ...env, PGHOST: '127.0.0.1', PGPORT: '5432', PGUSER: layout.database.user, PGDATABASE: layout.database.name, PGPASSWORD: password };
-        const psql = (args) => runApp(['/usr/bin/psql', '--no-password', '-v', 'ON_ERROR_STOP=1', ...args], { env: pgEnv, secrets: [password] });
+        // -X: never read sovereign's ~/.psqlrc.
+        const psql = (args) => runApp(['/usr/bin/psql', '-X', '--no-password', '-v', 'ON_ERROR_STOP=1', ...args], { env: pgEnv, secrets: [password] });
         const count = String((await psql(['-tA', '-c', "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S')"])).stdout || '').trim();
+        if (!/^[0-9]{1,9}$/.test(count)) deny('Could not count the objects in the app database.');
         if (count !== '0') return `database already has ${count} objects; schema file not re-run`;
         await psql(['-1', '-q', '-f', layout.database.schemaFile]);
         return `created tables from ${layout.database.schemaFile}`;
@@ -610,7 +632,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       asUser(sovereign, () => {
         const existing = lstatOrNull(fsImpl, template.path);
         if (existing && !existing.isFile()) deny('Managed file destination is not a regular file.');
-        const existingContent = existing ? fsImpl.readFileSync(template.path, 'utf8') : '';
+        const existingContent = existing ? (readSmallFileNoFollow(fsImpl, template.path) ?? deny('Managed file destination is not a regular file.')) : '';
         writeFileAtomic(fsImpl, template.path, template.render({ existingContent, fsImpl }), template.mode);
       });
       return `wrote ${operation.template}`;
@@ -637,6 +659,7 @@ module.exports = {
   rootGitEnvironment,
   ROOT_GIT_CONFIG,
   lstatOrNull,
+  readSmallFileNoFollow,
   writeFileAtomic,
   requireLayout,
   deny,

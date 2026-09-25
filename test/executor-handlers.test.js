@@ -259,6 +259,7 @@ test('app env is read and written under the sovereign identity; root files are w
   await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT });
   assert.deepEqual(identities, [SOVEREIGN]);
   assert.deepEqual(opens.map(([target, who]) => [target.replace(/\.tmp-[0-9a-f]+$/, '.tmp'), who]), [
+    [`${DINNER}/.env`, 'sovereign'],
     [`${DINNER}/.env.tmp`, 'sovereign'],
     ['/etc/systemd/system/family-dinner.service.tmp', 'root'],
   ]);

@@ -2112,6 +2112,8 @@ test('executor-mode reinstall keeps the catalog port; only a different app on th
   const record = (appId, port) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
   store.upsertInstallation(record('home-source', 3008));
   store.upsertInstallation(record('family-plan', 3000));
+  // A legacy bug-base moved to 3009 put its MCP sidecar on 3010, bitcoin-accounting's catalog port.
+  store.upsertInstallation(record('bug-base', 3009));
   const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
   try {
     const cookie = await setupAdminCookie(server.url);
@@ -2123,6 +2125,9 @@ test('executor-mode reinstall keeps the catalog port; only a different app on th
     assert.equal(conflict.status, 409);
     assert.equal(payload.code, 'PORT_CONFLICT');
     assert.match(payload.error, /family-plan/);
+    const sidecarConflict = await execute('bitcoin-accounting');
+    assert.equal(sidecarConflict.status, 409);
+    assert.match((await sidecarConflict.json()).error, /bug-base/);
   } finally {
     await server.close();
     await new Promise((resolve) => executor.close(resolve));

@@ -2,7 +2,7 @@ const fs = require('fs');
 const { runApproved } = require('./spawn');
 const {
   SOVEREIGN_HOME, lookupSystemUser, runAsUser, readExistingDatabasePassword,
-  lstatOrNull, writeFileAtomic, requireLayout, deny,
+  lstatOrNull, readSmallFileNoFollow, writeFileAtomic, requireLayout, deny,
 } = require('./handlers');
 const { parseDotEnv, renderEnv } = require('../src/operations/env');
 
@@ -67,8 +67,9 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
         fsImpl.chmodSync(appDir, 0o755);
         fsImpl.mkdirSync(archiveDir, { mode: 0o755 });
         fsImpl.chmodSync(archiveDir, 0o755);
-        if (isRealFile(layout.envPath)) {
-          writeFileAtomic(fsImpl, `${archiveDir}/.env.backup`, fsImpl.readFileSync(layout.envPath, 'utf8'), 0o600);
+        const envContent = readSmallFileNoFollow(fsImpl, layout.envPath);
+        if (envContent != null) {
+          writeFileAtomic(fsImpl, `${archiveDir}/.env.backup`, envContent, 0o600);
           included.push('.env.backup');
         }
       });
@@ -131,8 +132,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       const restored = [];
       if (present.env) {
         asUser(sovereign, () => {
-          const restoredEnv = parseDotEnv(fsImpl.readFileSync(`${archiveDir}/.env.backup`, 'utf8'));
-          const current = isRealFile(layout.envPath) ? parseDotEnv(fsImpl.readFileSync(layout.envPath, 'utf8')) : {};
+          const restoredEnv = parseDotEnv(readSmallFileNoFollow(fsImpl, `${archiveDir}/.env.backup`) ?? deny('The backup .env is not a regular file.'));
+          const current = parseDotEnv(readSmallFileNoFollow(fsImpl, layout.envPath) ?? '');
           for (const key of PRESERVED_DB_ENV_KEYS) {
             if (!current[key]) continue;
             delete restoredEnv[key];

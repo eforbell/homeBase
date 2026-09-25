@@ -169,8 +169,8 @@ test('schema-file bootstrap runs once, as the app role, only on an empty databas
     return { calls, result };
   };
   const empty = await attempt(0);
-  assert.deepEqual(empty.calls[0].args.slice(0, 5), ['--no-password', '-v', 'ON_ERROR_STOP=1', '-tA', '-c']);
-  assert.deepEqual(empty.calls[1].args, ['--no-password', '-v', 'ON_ERROR_STOP=1', '-1', '-q', '-f', 'src/sql/tables.sql']);
+  assert.deepEqual(empty.calls[0].args.slice(0, 6), ['-X', '--no-password', '-v', 'ON_ERROR_STOP=1', '-tA', '-c']);
+  assert.deepEqual(empty.calls[1].args, ['-X', '--no-password', '-v', 'ON_ERROR_STOP=1', '-1', '-q', '-f', 'src/sql/tables.sql']);
   for (const call of empty.calls) {
     assert.equal(call.binary, '/usr/bin/psql');
     assert.equal(call.uid, 1001);
@@ -183,13 +183,14 @@ test('schema-file bootstrap runs once, as the app role, only on an empty databas
 });
 
 test('app interpreters and venv tools may run only as a non-root identity', () => {
-  assert.equal(isApprovedBinary('/usr/bin/python3', 1001), true);
-  assert.equal(isApprovedBinary('/usr/bin/python3', 0), false);
-  assert.equal(isApprovedBinary(`${HELM_ROOT}/.venv/bin/python`, 1001), true);
-  assert.equal(isApprovedBinary(`${HELM_ROOT}/.venv/bin/python`, 0), false);
-  assert.equal(isApprovedBinary(`${HELM_ROOT}/.venv/bin/../../../../bin/sh`, 1001), false);
-  assert.equal(isApprovedBinary('/opt/sovereign-home/apps/helm/node_modules/.bin/x', 1001), false);
-  assert.equal(isApprovedBinary('/usr/bin/git', 0), true);
+  assert.equal(isApprovedBinary('/usr/bin/python3', 1001, 1002), true);
+  assert.equal(isApprovedBinary('/usr/bin/python3', 0, 0), false);
+  assert.equal(isApprovedBinary('/usr/bin/python3', 1001, 0), false);
+  assert.equal(isApprovedBinary(`${HELM_ROOT}/.venv/bin/python`, 1001, 1002), true);
+  assert.equal(isApprovedBinary(`${HELM_ROOT}/.venv/bin/python`, 0, 0), false);
+  assert.equal(isApprovedBinary(`${HELM_ROOT}/.venv/bin/../../../../bin/sh`, 1001, 1002), false);
+  assert.equal(isApprovedBinary('/opt/sovereign-home/apps/helm/node_modules/.bin/x', 1001, 1002), false);
+  assert.equal(isApprovedBinary('/usr/bin/git', 0, 0), true);
 });
 
 test('policy binds unit timezones to the site, storage purposes to the layout, and Python-only tasks', () => {
@@ -207,4 +208,37 @@ test('policy binds unit timezones to the site, storage purposes to the layout, a
   const noSchema = JSON.parse(JSON.stringify(buildAppInstallPlan({ appId: 'helm' })));
   noSchema.operations.find((op) => op.id === 'install-runtime').task = 'bootstrap-schema';
   assert.throws(() => validateOperationPolicy(noSchema), (error) => error.code === 'POLICY_DENIED');
+});
+
+test('files read inside sovereign directories refuse symlinks, non-files, and oversized content', () => {
+  const { readSmallFileNoFollow } = require('../executor/handlers');
+  const fsImpl = createFakeFs({ '/app/.env': 'A=1\n', '/app/link': { kind: 'link', target: '/etc/shadow' }, '/app/dir': { kind: 'dir' }, '/app/big': 'x'.repeat(5000) });
+  assert.equal(readSmallFileNoFollow(fsImpl, '/app/.env'), 'A=1\n');
+  assert.equal(readSmallFileNoFollow(fsImpl, '/app/link'), null);
+  assert.equal(readSmallFileNoFollow(fsImpl, '/app/dir'), null);
+  assert.equal(readSmallFileNoFollow(fsImpl, '/app/missing'), null);
+  assert.throws(() => readSmallFileNoFollow(fsImpl, '/app/big', 4096), (error) => error.code === 'POLICY_DENIED');
+});
+
+test('root-managed storage purposes are refused for apps whose storage lives in the checkout', async () => {
+  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN });
+  for (const fields of [{ purpose: 'app-storage-root' }, { purpose: 'app-storage', subpath: '.secrets' }]) {
+    await assert.rejects(() => handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', fields), { layout: HELM }), /keeps its storage in the checkout/);
+  }
+});
+
+test('app tasks re-check the checkout before every spawn, and refuse unexpected probe output', async () => {
+  const fsImpl = createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } });
+  let spawns = 0;
+  const run = async () => {
+    spawns += 1;
+    // After the first pip call, sovereign swaps the checkout for a symlink.
+    fsImpl.entries.set(HELM_ROOT, { kind: 'link', target: '/root', uid: 1001, gid: 1002, mode: 0o777 });
+    return { stdout: '' };
+  };
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run });
+  await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM }), /not a sovereign-owned directory/);
+  assert.equal(spawns, 1);
+  const noisy = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: async () => ({ stdout: 'x'.repeat(70000) }) });
+  await assert.rejects(() => noisy['runtime.run-app-task'](base('runtime.run-app-task', { task: 'ensure-venv' }), { layout: HELM }), /system Python version/);
 });
