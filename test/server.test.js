@@ -2134,6 +2134,28 @@ test('executor-mode reinstall keeps the catalog port; only a different app on th
   }
 });
 
+test('a portless sidecar does not reserve the next port: home-ops installs beside home-source', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-port-sidecar-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async () => ({ completedOperationIds: [] }) });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  // home-source (3008) has an import-worker sidecar that binds no port; legacy's 3008 + 1 is home-ops' port.
+  store.upsertInstallation({ appId: 'home-source', name: 'home-source', purpose: 'x', port: 3008, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: 'home-source', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/home-ops/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    assert.equal(response.status, 202, JSON.stringify(await response.clone().json()));
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
 test('review fixes: update-self and discarding a real install are refused', async () => {
   const { createExecutorServer } = require('../executor/server');
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-review-'));

@@ -115,7 +115,11 @@ function readSmallFileNoFollow(fsImpl, target, limit = 64 * 1024) {
   try {
     if (!fsImpl.fstatSync(fd).isFile()) return null;
     const buffer = Buffer.alloc(limit + 1);
-    const bytes = fsImpl.readSync(fd, buffer, 0, limit + 1, 0);
+    let bytes = 0;
+    for (let read = -1; read !== 0 && bytes <= limit;) {
+      read = fsImpl.readSync(fd, buffer, bytes, limit + 1 - bytes, bytes);
+      bytes += read;
+    }
     if (bytes > limit) deny(`${target} is larger than ${limit} bytes.`);
     return buffer.subarray(0, bytes).toString('utf8');
   } finally { fsImpl.closeSync(fd); }

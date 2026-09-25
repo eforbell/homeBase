@@ -99,9 +99,9 @@ function createFakeFs(initial = {}) {
     },
     fchmodSync: (fd, mode) => { entries.get(fds.get(fd)).mode = mode; },
     writeSync: (fd, content) => { entries.get(fds.get(fd)).content += content; },
-    readSync: (fd, buffer, offset, length) => {
+    readSync: (fd, buffer, offset, length, position = 0) => {
       const bytes = Buffer.from(entries.get(fds.get(fd)).content || '', 'utf8');
-      return bytes.copy(buffer, offset, 0, Math.min(length, bytes.length));
+      return bytes.copy(buffer, offset, position, Math.min(position + length, bytes.length));
     },
     fsyncSync: () => {},
     closeSync: (fd) => { fds.delete(fd); },

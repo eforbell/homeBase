@@ -1273,12 +1273,12 @@ function createApp(config) {
           if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot install ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
           // Executor units, snippets, and env use the catalog's preferred port. Only a *different* app holding
           // it is a conflict; a reinstall keeps the port it already has.
-          // Sidecar ports are reserved in the catalog too. A legacy install gave its sidecars the ports
-          // after its own (port + 1, ...), so those count as taken as well.
+          // Sidecar ports are reserved in the catalog too. Legacy numbered every sidecar after the app's
+          // own port (port + i + 1), but only sidecars with a reserved port actually bind one.
           const appPorts = catalogPorts(getAppById(appId));
           const portsOf = (entry) => {
             const sidecars = getAppById(entry.appId)?.sidecars || [];
-            return [entry.port, ...sidecars.map((sidecar, index) => entry.port + index + 1), ...sidecars.map((sidecar) => sidecar.port)];
+            return [entry.port, ...sidecars.flatMap((sidecar, index) => (sidecar.port != null ? [entry.port + index + 1, sidecar.port] : []))];
           };
           const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && portsOf(entry).some((port) => appPorts.includes(port)));
           if (conflict) return sendJson(res, 409, { error: `${conflict.appId} already uses a port ${getAppById(appId).name} needs (${appPorts.join(', ')}); executor installs use catalog ports.`, code: 'PORT_CONFLICT' });
