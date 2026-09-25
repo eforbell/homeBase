@@ -10,6 +10,8 @@ DRY_RUN=0
 NO_START=0
 REPAIR=0
 REPAIR_EXECUTOR=0
+ADD_EXECUTOR=0
+SWITCH_TO_EXECUTOR=0
 SOURCE_DIR=''
 GIT_SSH_KEY_SOURCE=''
 FORCE=0
@@ -27,6 +29,10 @@ EXECUTOR_SOCKET_PATH="${HOMEBASE_EXECUTOR_SOCKET_PATH:-/run/homebase/executor.so
 EXECUTOR_GROUP="${HOMEBASE_EXECUTOR_GROUP:-homebase-exec}"
 GIT_DEPLOY_KEY_DIR="${HOMEBASE_GIT_DEPLOY_KEY_DIR:-/etc/sovereign-home/git}"
 GIT_DEPLOY_KEY_PATH="${GIT_DEPLOY_KEY_DIR}/deploy_key"
+# --add-executor only: the executor's own root-owned code, kept apart from a legacy host's web checkout
+# (which its runtime user owns, so root must never load code from it).
+COEXIST_EXECUTOR_DIR="${HOMEBASE_COEXIST_EXECUTOR_DIR:-/opt/homebase-executor}"
+STATE_DB="${HOMEBASE_STATE_DB:-${STATE_DIR}/home-base.sqlite3}"
 
 usage() {
   cat <<'EOF'
@@ -50,6 +56,13 @@ Options:
   --git-ssh-key <path> Install an unencrypted SSH deploy key for private app repositories
                        (stored root-only at /etc/sovereign-home/git/deploy_key) and
                        switch Home Base to SSH git transport
+  --add-executor       Legacy-sudo hosts: add the typed executor next to the running legacy
+                       service (root-owned code in /opt/homebase-executor) without changing
+                       its mode, sudoers policy, or web checkout, so apps can be adopted one
+                       at a time. With --git-ssh-key, only the executor uses the key.
+  --switch-to-executor Legacy-sudo hosts, after every app is adopted: replace the legacy web
+                       checkout with the managed hardened install, switch to executor mode,
+                       and remove the legacy sudoers policy
   --help               Show this help
 
 The installer does not grant Home Base sudo access or execute host bootstrap.
@@ -142,6 +155,14 @@ while [ "$#" -gt 0 ]; do
       FORCE=1
       shift
       ;;
+    --add-executor)
+      ADD_EXECUTOR=1
+      shift
+      ;;
+    --switch-to-executor)
+      SWITCH_TO_EXECUTOR=1
+      shift
+      ;;
     --git-ssh-key)
       [ "$#" -ge 2 ] || die '--git-ssh-key requires a path'
       GIT_SSH_KEY_SOURCE="$2"
@@ -158,6 +179,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$CHANNEL" = 'preview' ] || die "unsupported channel: $CHANNEL"
+[ $((REPAIR + REPAIR_EXECUTOR + ADD_EXECUTOR + SWITCH_TO_EXECUTOR)) -le 1 ] \
+  || die '--repair, --repair-executor, --add-executor, and --switch-to-executor are mutually exclusive'
 printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   || die "version must be a tag such as v0.1.0"
 printf '%s\n' "$RUNTIME_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$' \
@@ -175,7 +198,7 @@ if [ -n "$SOURCE_DIR" ]; then
   [ -d "$SOURCE_DIR" ] || die "--source-dir does not exist or is not a directory: $SOURCE_DIR"
 fi
 
-for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_SUDOERS_FILE" "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT" "$EXECUTOR_SOCKET_PATH"; do
+for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_SUDOERS_FILE" "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT" "$EXECUTOR_SOCKET_PATH" "$COEXIST_EXECUTOR_DIR" "$STATE_DB"; do
   case "$candidate" in
     /*) ;;
     *) die "installation paths must be absolute: $candidate" ;;
@@ -265,7 +288,7 @@ release_maintenance() {
   fi
 }
 trap release_maintenance EXIT
-if { [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ]; } && [ "$TEST_MODE" != '1' ] && [ -d "$(dirname "$EXECUTOR_SOCKET_PATH")" ]; then
+if { [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ] || [ "$ADD_EXECUTOR" -eq 1 ] || [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; } && [ "$TEST_MODE" != '1' ] && [ -d "$(dirname "$EXECUTOR_SOCKET_PATH")" ]; then
   install -m 0644 -o root -g root /dev/null "$MAINTENANCE_FLAG"
   MAINTENANCE_HELD=1
   require_executor_idle
@@ -348,10 +371,125 @@ EOF
   exit 0
 fi
 
-if [ -e "$LEGACY_SUDOERS_FILE" ]; then
-  die "existing Home Base sudoers policy detected at ${LEGACY_SUDOERS_FILE}; inspect and remove it before installing the hardened service"
+set_env_value() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+env_value() {
+  [ -f "$ENV_FILE" ] || return 0
+  awk -v key="$1" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2); gsub(/^["\047]|["\047]$/, "", value); last = value } END { print last }' "$ENV_FILE"
+}
+
+# Writes the executor's socket and service units; $1 is the directory holding its code.
+write_executor_units() {
+  local code_dir="$1"
+  if [ "$TEST_MODE" = '1' ]; then mkdir -p "$(dirname "$EXECUTOR_SOCKET_UNIT")" "$(dirname "$EXECUTOR_SERVICE_UNIT")"; fi
+  cat > "$EXECUTOR_SOCKET_UNIT" <<EOF
+[Unit]
+Description=Home Base privileged executor socket
+
+[Socket]
+ListenStream=${EXECUTOR_SOCKET_PATH}
+SocketUser=root
+SocketGroup=${EXECUTOR_GROUP}
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target
+EOF
+
+  cat > "$EXECUTOR_SERVICE_UNIT" <<EOF
+[Unit]
+Description=Home Base privileged executor
+Requires=homebase-executor.socket
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=${NODE_BIN} ${code_dir}/executor/server.js
+User=root
+Group=root
+UMask=0022
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+LockPersonality=true
+EOF
+  if [ "$TEST_MODE" != '1' ]; then
+    chown root:root "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT"
+    chmod 0644 "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT"
+  fi
+}
+
+# Proves the runtime user reaches a mutation-enabled protocol v2 executor through the socket.
+probe_executor() {
+  runuser -u "$RUNTIME_USER" -- "$NODE_BIN" - "$EXECUTOR_SOCKET_PATH" <<'NODE'
+const net = require('net');
+const socketPath = process.argv[2];
+const request = { protocolVersion: 2, requestId: require('crypto').randomUUID(), type: 'hello' };
+const socket = net.createConnection(socketPath);
+let response = '';
+const timer = setTimeout(() => { socket.destroy(); process.exit(1); }, 5000);
+socket.setEncoding('utf8');
+socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
+socket.on('data', (chunk) => { response += chunk; });
+socket.on('error', () => { clearTimeout(timer); process.exit(1); });
+socket.on('end', () => {
+  clearTimeout(timer);
+  try {
+    const payload = JSON.parse(response.trim());
+    process.exit(payload.protocolVersion === 2 && payload.ok === true && payload.result?.capabilities?.mutationsEnabled === true ? 0 : 1);
+  } catch { process.exit(1); }
+});
+NODE
+}
+
+# Installs the git key root-only; only the executor reads it.
+install_git_deploy_key() {
+  if [ "$TEST_MODE" = '1' ]; then
+    mkdir -p "$GIT_DEPLOY_KEY_DIR"
+    cp "$GIT_SSH_KEY_SOURCE" "$GIT_DEPLOY_KEY_PATH"
+    chmod 0600 "$GIT_DEPLOY_KEY_PATH"
+  else
+    install -d -m 0700 -o root -g root "$GIT_DEPLOY_KEY_DIR"
+    install -m 0600 -o root -g root "$GIT_SSH_KEY_SOURCE" "$GIT_DEPLOY_KEY_PATH"
+  fi
+}
+
+# The two legacy-host modes run only on legacy-sudo hosts; every other mode refuses a legacy host.
+if [ "$ADD_EXECUTOR" -eq 1 ] || [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
+  [ "$(env_value HOME_BASE_EXECUTION_MODE)" = 'legacy-sudo' ] \
+    || die "--add-executor and --switch-to-executor are for legacy-sudo hosts; ${ENV_FILE} does not set HOME_BASE_EXECUTION_MODE=legacy-sudo"
 fi
-if [ -f "$ENV_FILE" ]; then
+if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
+  [ -f "${COEXIST_EXECUTOR_DIR}/executor/server.js" ] \
+    || die "--switch-to-executor needs the executor added first (install.sh --add-executor) and every app adopted"
+  # Every installed app must already be executor-managed: after the switch nothing runs legacy plans.
+  UNADOPTED="$(python3 - "$STATE_DB" <<'PY'
+import sqlite3, sys
+conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+columns = {row[1] for row in conn.execute("PRAGMA table_info(installations)")}
+managed = "COALESCE(managed_by, '')" if "managed_by" in columns else "''"
+rows = conn.execute(f"SELECT app_id FROM installations WHERE status = 'installed' AND {managed} != 'executor' ORDER BY app_id").fetchall()
+print(" ".join(row[0] for row in rows))
+PY
+)" || die "could not read Home Base state at ${STATE_DB}"
+  if [ -n "$UNADOPTED" ] && [ "$FORCE" -ne 1 ]; then
+    die "these installed apps are still legacy-managed; adopt (or uninstall) them first: ${UNADOPTED}"
+  fi
+fi
+if [ -e "$LEGACY_SUDOERS_FILE" ] && [ "$ADD_EXECUTOR" -eq 0 ] && [ "$SWITCH_TO_EXECUTOR" -eq 0 ]; then
+  die "existing Home Base sudoers policy detected at ${LEGACY_SUDOERS_FILE}; inspect and remove it before installing the hardened service (legacy hosts: install.sh --add-executor, adopt every app, then install.sh --switch-to-executor)"
+fi
+if [ -f "$ENV_FILE" ] && [ "$ADD_EXECUTOR" -eq 0 ] && [ "$SWITCH_TO_EXECUTOR" -eq 0 ]; then
   UNSAFE_ENV_SETTING=''
   if ! UNSAFE_ENV_SETTING="$(validate_preserved_env "$ENV_FILE")"; then
     die "existing environment enables unsafe or unknown execution settings (${UNSAFE_ENV_SETTING:-unknown}): $ENV_FILE"
@@ -458,7 +596,63 @@ SOURCE_DIR="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 [ -f "$SOURCE_DIR/package.json" ] && [ -f "$SOURCE_DIR/package-lock.json" ] && [ -f "$SOURCE_DIR/server.js" ] && [ -d "$SOURCE_DIR/src" ] && [ -f "$SOURCE_DIR/executor/server.js" ] \
   || die 'release archive is missing required Home Base files'
 
+if [ "$ADD_EXECUTOR" -eq 1 ]; then
+  log "adding the typed executor next to the legacy service; its code goes to ${COEXIST_EXECUTOR_DIR} (root-owned)"
+  STAGE_DIR="${COEXIST_EXECUTOR_DIR}.new"
+  rm -rf "$STAGE_DIR"
+  mkdir -p "$STAGE_DIR"
+  cp -R "$SOURCE_DIR"/. "$STAGE_DIR"/
+  if [ "$TEST_MODE" != '1' ]; then
+    (cd "$STAGE_DIR" && npm ci --omit=dev --ignore-scripts)
+    chown -R root:root "$STAGE_DIR"
+    chmod -R go-w "$STAGE_DIR"
+    chmod 0755 "$STAGE_DIR"
+  fi
+  rm -rf "${COEXIST_EXECUTOR_DIR}.old"
+  if [ -d "$COEXIST_EXECUTOR_DIR" ]; then mv "$COEXIST_EXECUTOR_DIR" "${COEXIST_EXECUTOR_DIR}.old"; fi
+  mv "$STAGE_DIR" "$COEXIST_EXECUTOR_DIR"
+  rm -rf "${COEXIST_EXECUTOR_DIR}.old"
+  if [ "$TEST_MODE" != '1' ]; then
+    getent group "$EXECUTOR_GROUP" >/dev/null 2>&1 || groupadd --system "$EXECUTOR_GROUP"
+    usermod -a -G "$EXECUTOR_GROUP" "$RUNTIME_USER"
+  fi
+  if [ -n "$GIT_SSH_KEY_SOURCE" ]; then
+    install_git_deploy_key
+    # Only the executor fetches with the root-only key; HOME_BASE_GIT_TRANSPORT keeps serving legacy apps.
+    set_env_value HOME_BASE_EXECUTOR_GIT_TRANSPORT ssh
+    log "installed the executor git key at ${GIT_DEPLOY_KEY_PATH} (root-only); legacy git settings unchanged"
+  fi
+  set_env_value HOME_BASE_EXECUTOR_SOCKET "$EXECUTOR_SOCKET_PATH"
+  write_executor_units "$COEXIST_EXECUTOR_DIR"
+  if [ "$TEST_MODE" != '1' ] && [ "$NO_START" -eq 0 ]; then
+    systemctl daemon-reload
+    systemctl enable homebase-executor.socket
+    require_executor_idle
+    systemctl stop homebase-executor.service 2>/dev/null || true
+    systemctl restart homebase-executor.socket
+    systemctl is-active --quiet homebase-executor.socket \
+      || die 'homebase-executor.socket did not become active; inspect journalctl -u homebase-executor.socket'
+    [ "$(stat -c '%U:%G %a' "$EXECUTOR_SOCKET_PATH")" = "root:${EXECUTOR_GROUP} 660" ] \
+      || die "executor socket has unexpected owner or mode: $EXECUTOR_SOCKET_PATH"
+    probe_executor || die 'executor hello/capability probe failed; inspect journalctl -u homebase-executor'
+    # The web service picks up its new socket group only when it restarts.
+    systemctl try-restart homebase.service || log 'homebase.service did not restart; inspect journalctl -u homebase'
+  fi
+  log 'executor added; this host stays in legacy-sudo mode'
+  log 'Next: 1) add "include /etc/nginx/sovereign-home.d/*.conf;" beside "include /etc/nginx/snippets/*.conf;" in your nginx server block, then: sudo nginx -t && sudo systemctl reload nginx'
+  log '      2) adopt each app from its Home Base page (preview first)'
+  log '      3) when every app is adopted: sudo bash install.sh --switch-to-executor'
+  exit 0
+fi
+
 VERSION_MARKER="${INSTALL_DIR}/.homebase-version"
+if [ "$SWITCH_TO_EXECUTOR" -eq 1 ] && [ -e "$INSTALL_DIR" ] && [ ! -f "$VERSION_MARKER" ]; then
+  # The legacy web checkout (owned by the runtime user) is kept aside, not deleted.
+  LEGACY_ASIDE="${INSTALL_DIR}.legacy-$(date +%Y%m%d%H%M%S)"
+  log "moving the legacy web checkout aside to ${LEGACY_ASIDE}"
+  if [ "$TEST_MODE" != '1' ]; then systemctl stop homebase.service 2>/dev/null || true; fi
+  mv "$INSTALL_DIR" "$LEGACY_ASIDE"
+fi
 if [ -e "$INSTALL_DIR" ] && [ ! -f "$VERSION_MARKER" ]; then
   die "existing install directory is not managed by this installer: $INSTALL_DIR"
 fi
@@ -547,16 +741,11 @@ elif [ "$REPAIR_EXECUTOR" -eq 0 ]; then
   log "preserving existing environment file: $ENV_FILE"
 fi
 
-set_env_value() {
-  local key="$1" value="$2"
-  if grep -q "^${key}=" "$ENV_FILE"; then
-    sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
-  fi
-}
-
-if [ "$REPAIR" -eq 1 ] && [ -f "$ENV_FILE" ]; then
+if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
+  # Executor mode never auto-runs host plans; the legacy auto-bootstrap setting goes with the sudo policy.
+  set_env_value HOME_BASE_AUTO_BOOTSTRAP 0
+fi
+if { [ "$REPAIR" -eq 1 ] || [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; } && [ -f "$ENV_FILE" ]; then
   # These keys define the executor-mode boundary; repair restores them if they drifted.
   set_env_value HOME_BASE_EXECUTION_MODE executor
   set_env_value HOME_BASE_ENABLE_PRIVILEGED_JOBS 1
@@ -567,14 +756,7 @@ fi
 
 if [ -n "$GIT_SSH_KEY_SOURCE" ]; then
   [ -f "$ENV_FILE" ] || die "--git-ssh-key requires an existing environment file: $ENV_FILE"
-  if [ "$TEST_MODE" = '1' ]; then
-    mkdir -p "$GIT_DEPLOY_KEY_DIR"
-    cp "$GIT_SSH_KEY_SOURCE" "$GIT_DEPLOY_KEY_PATH"
-    chmod 0600 "$GIT_DEPLOY_KEY_PATH"
-  else
-    install -d -m 0700 -o root -g root "$GIT_DEPLOY_KEY_DIR"
-    install -m 0600 -o root -g root "$GIT_SSH_KEY_SOURCE" "$GIT_DEPLOY_KEY_PATH"
-  fi
+  install_git_deploy_key
   set_env_value HOME_BASE_GIT_TRANSPORT ssh-key
   set_env_value HOME_BASE_GIT_SSH_KEY_PATH "$GIT_DEPLOY_KEY_PATH"
   log "installed git deploy key at ${GIT_DEPLOY_KEY_PATH} (root-only); Home Base will clone app repositories over SSH"
@@ -612,48 +794,13 @@ WantedBy=multi-user.target
 EOF
 fi
 
-cat > "$EXECUTOR_SOCKET_UNIT" <<EOF
-[Unit]
-Description=Home Base privileged executor socket
-
-[Socket]
-ListenStream=${EXECUTOR_SOCKET_PATH}
-SocketUser=root
-SocketGroup=${EXECUTOR_GROUP}
-SocketMode=0660
-RemoveOnStop=true
-
-[Install]
-WantedBy=sockets.target
-EOF
-
-cat > "$EXECUTOR_SERVICE_UNIT" <<EOF
-[Unit]
-Description=Home Base privileged executor
-Requires=homebase-executor.socket
-After=local-fs.target
-
-[Service]
-Type=simple
-ExecStart=${NODE_BIN} ${INSTALL_DIR}/executor/server.js
-User=root
-Group=root
-UMask=0022
-PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictRealtime=true
-LockPersonality=true
-EOF
+write_executor_units "$INSTALL_DIR"
 
 if [ "$TEST_MODE" != '1' ]; then
   if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
     chown root:root "$UNIT_FILE"
     chmod 0644 "$UNIT_FILE"
   fi
-  chown root:root "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT"
-  chmod 0644 "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT"
   systemctl daemon-reload
   systemctl enable homebase-executor.socket
   if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
@@ -672,28 +819,7 @@ if [ "$TEST_MODE" != '1' ]; then
       || die 'homebase-executor.socket did not become active; inspect journalctl -u homebase-executor.socket'
     [ "$(stat -c '%U:%G %a' "$EXECUTOR_SOCKET_PATH")" = "root:${EXECUTOR_GROUP} 660" ] \
       || die "executor socket has unexpected owner or mode: $EXECUTOR_SOCKET_PATH"
-    if ! runuser -u "$RUNTIME_USER" -- "$NODE_BIN" - "$EXECUTOR_SOCKET_PATH" <<'NODE'
-const net = require('net');
-const socketPath = process.argv[2];
-const request = { protocolVersion: 2, requestId: require('crypto').randomUUID(), type: 'hello' };
-const socket = net.createConnection(socketPath);
-let response = '';
-const timer = setTimeout(() => { socket.destroy(); process.exit(1); }, 5000);
-socket.setEncoding('utf8');
-socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
-socket.on('data', (chunk) => { response += chunk; });
-socket.on('error', () => { clearTimeout(timer); process.exit(1); });
-socket.on('end', () => {
-  clearTimeout(timer);
-  try {
-    const payload = JSON.parse(response.trim());
-    process.exit(payload.protocolVersion === 2 && payload.ok === true && payload.result?.capabilities?.mutationsEnabled === true ? 0 : 1);
-  } catch { process.exit(1); }
-});
-NODE
-    then
-      die 'executor hello/capability probe failed; inspect journalctl -u homebase-executor'
-    fi
+    probe_executor || die 'executor hello/capability probe failed; inspect journalctl -u homebase-executor'
     if [ "$REPAIR_EXECUTOR" -eq 1 ] && [ -z "$GIT_SSH_KEY_SOURCE" ]; then
       # Keep web and executor on the same shared code; an unhealthy web service is not a blocker here.
       systemctl try-restart homebase.service || log 'homebase.service did not restart; inspect journalctl -u homebase'
@@ -714,6 +840,17 @@ NODE
         || die "homebase.service is active but its loopback health endpoint did not respond on port ${PORT}"
     fi
   fi
+fi
+
+if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
+  # Only now that the hardened service answers: the legacy sudo policy and extra access go.
+  rm -f "$LEGACY_SUDOERS_FILE"
+  rm -rf "$COEXIST_EXECUTOR_DIR"
+  if [ "$TEST_MODE" != '1' ] && id -nG "$RUNTIME_USER" 2>/dev/null | tr ' ' '\n' | grep -qx sovereign; then
+    gpasswd -d "$RUNTIME_USER" sovereign >/dev/null || log "could not remove ${RUNTIME_USER} from the sovereign group; do it by hand"
+  fi
+  log "switched to executor mode: removed ${LEGACY_SUDOERS_FILE} and ${COEXIST_EXECUTOR_DIR}; the legacy web checkout is kept at ${LEGACY_ASIDE:-its old path}"
+  log 'Consider deleting any app-readable copy of the git key now that only the executor needs it.'
 fi
 
 log "Home Base ${RELEASE_VERSION} installed with an unprivileged executor-mode web service and typed executor"
