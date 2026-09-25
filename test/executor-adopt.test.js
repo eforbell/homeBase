@@ -112,3 +112,15 @@ test('adopt never generates database credentials: no existing wiring means nothi
   assert.equal(executed, false);
   assert.equal(finished[0].ok, false);
 });
+
+test('the web client sends exactly the fields the executor accepts for every action', () => {
+  const { ACTIONS } = require('../executor/actions');
+  const source = require('fs').readFileSync(require.resolve('../src/executor/client'), 'utf8');
+  const table = source.slice(source.indexOf('const ACTION_FIELD_NAMES = {'), source.indexOf('};', source.indexOf('const ACTION_FIELD_NAMES = {')));
+  for (const [name, spec] of Object.entries(ACTIONS)) {
+    const match = new RegExp(`\\n  ${name}: \\[([^\\]]*)\\]`).exec(table);
+    assert.ok(match, `client has no field list for ${name}`);
+    const fields = match[1].split(',').map((field) => field.trim().replace(/'/g, '')).filter(Boolean);
+    assert.deepEqual(fields, spec.fields, name);
+  }
+});

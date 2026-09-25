@@ -233,12 +233,12 @@ class JobRunner {
       return;
     }
     const app = action.appId ? getAppById(action.appId) : null;
-    if (['install', 'restart', 'restore'].includes(action.action)) {
+    if (['install', 'adopt', 'restart', 'restore'].includes(action.action)) {
       // Installed/restored only after the app answers readiness, never merely because systemd started it.
       this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
       await waitForAppReadiness({ app, ...this.readinessOptions });
     }
-    if (action.action === 'install') {
+    if (action.action === 'install' || action.action === 'adopt') {
       const { stateRecord } = buildExecutorInstallRecord({ appId: action.appId, ref: action.ref, config: { defaultHostname: action.site.hostname, defaultDomain: action.site.domain, householdTimezone: action.site.householdTimezone } });
       this.stateStore.upsertInstallation({ ...stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
     }
@@ -298,6 +298,12 @@ class JobRunner {
   startTypedInstallJob({ appId, ref, transport, site, onComplete = null }) {
     if (!getAppById(appId)) throw new Error(`Unknown catalog app: ${appId}`);
     return this.startTypedActionJob({ kind: 'install', target: appId, action: { action: 'install', appId, ref, transport, site }, onComplete });
+  }
+
+  // Takes over a legacy install in place; on success the app is recorded as executor-managed.
+  startTypedAdoptJob({ appId, ref, transport, site, onComplete = null }) {
+    if (!getAppById(appId)) throw new Error(`Unknown catalog app: ${appId}`);
+    return this.startTypedActionJob({ kind: 'adopt', target: appId, action: { action: 'adopt', appId, ref, transport, site }, onComplete });
   }
 
   startTypedRestartJob({ appId }) {

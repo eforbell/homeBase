@@ -16,7 +16,10 @@ function siteFor(config = {}) {
   };
 }
 
+// The executor's own transport wins: on a legacy host that is adopting apps, HOME_BASE_GIT_TRANSPORT
+// still describes the legacy path (sovereign's key), while the executor fetches with its root-only key.
 function transportFor(config = {}) {
+  if (config.homeBaseExecutorGitTransport === 'ssh' || config.homeBaseExecutorGitTransport === 'https') return config.homeBaseExecutorGitTransport;
   return config.gitTransport === 'ssh' || config.gitTransport === 'ssh-key' ? 'ssh' : 'https';
 }
 
@@ -26,10 +29,18 @@ function resolveRef(app, requested) {
 }
 
 // The install action Home Base sends; null ref means the request asked for something the executor refuses.
-function buildExecutorInstallAction({ appId, ref, config = {} }) {
+function buildExecutorInstallAction({ appId, ref, config = {}, action = 'install' }) {
   const app = getAppById(appId);
   if (!app) return null;
-  return { action: 'install', appId, ref: resolveRef(app, ref), transport: transportFor(config), site: siteFor(config) };
+  return { action, appId, ref: resolveRef(app, ref), transport: transportFor(config), site: siteFor(config) };
+}
+
+// Which path manages an app. A host in executor mode manages every app through the executor. A host in
+// legacy-sudo mode keeps the legacy path for each app until that app is adopted, so apps move over one
+// at a time and the host switches mode only once all of them have.
+function executorManagesApp(config = {}, state = {}, appId) {
+  if (config.homeBaseExecutionMode === 'executor') return true;
+  return config.homeBaseExecutionMode === 'legacy-sudo' && state.installations?.[appId]?.managedBy === 'executor';
 }
 
 // Home Base's record of an executor install: the executor always installs at the catalog's port and
@@ -52,8 +63,9 @@ function buildExecutorInstallRecord({ appId, ref, config = {} }) {
       ref: resolvedRef,
       status: 'planned',
       plannedAt: new Date().toISOString(),
+      managedBy: 'executor',
     },
   };
 }
 
-module.exports = { buildExecutorInstallAction, buildExecutorInstallRecord, siteFor, transportFor };
+module.exports = { buildExecutorInstallAction, buildExecutorInstallRecord, executorManagesApp, siteFor, transportFor };

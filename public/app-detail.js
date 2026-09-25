@@ -235,6 +235,32 @@
     }
   }
 
+  async function handleAdopt(form) {
+    if (form.dataset.submitting === 'true') return;
+    const dryRun = form.elements.dryRun.checked;
+    const resultNode = form.querySelector('[data-result]');
+    const payload = { dryRun };
+    if (!dryRun) {
+      try {
+        await window.HB.confirmInline(resultNode, 'Adopt backs up this app, then rewrites its units, .env, and nginx snippet so the executor manages it from now on. Data and settings are kept.');
+      } catch (_error) {
+        return;
+      }
+      payload.confirm = 'EXECUTE';
+    }
+    form.dataset.submitting = 'true';
+    resultNode.textContent = 'Submitting...';
+    try {
+      const response = await window.HB.postJson(`/api/apps/${appId}/adopt/execute`, payload);
+      resultNode.innerHTML = `Started ${dryRun ? 'adopt preview' : 'adopt'} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>.`;
+      void waitForJobCompletion(response.jobId, resultNode, { refreshOnComplete: !dryRun });
+    } catch (error) {
+      resultNode.textContent = error.message;
+    } finally {
+      form.dataset.submitting = 'false';
+    }
+  }
+
   async function handleUninstall(form) {
     if (form.dataset.submitting === 'true') return;
     form.dataset.submitting = 'true';
@@ -338,6 +364,12 @@
         handleUninstall(uninstallForm);
         return;
       }
+      const adoptForm = event.target.closest('form[data-action="adopt"]');
+      if (adoptForm) {
+        event.preventDefault();
+        handleAdopt(adoptForm);
+        return;
+      }
       const discardPlanForm = event.target.closest('form[data-action="discard-plan"]');
       if (discardPlanForm) {
         event.preventDefault();
@@ -392,7 +424,7 @@
             </div>
             <p class="hb-muted" style="margin:0.45rem 0 0;font-size:0.9rem;">${window.HB.escapeHtml(app.purpose || '')}</p>
             <p class="hb-muted" style="margin:0.35rem 0 0;font-size:0.83rem;">
-              App ID: ${window.HB.escapeHtml(app.id)} · Port: ${window.HB.escapeHtml(port)} · Route: ${window.HB.escapeHtml(mountPath)}
+              App ID: ${window.HB.escapeHtml(app.id)} · Port: ${window.HB.escapeHtml(port)} · Route: ${window.HB.escapeHtml(mountPath)}${install && actionsPayload.managedBy ? ` · Managed by: ${actionsPayload.managedBy === 'executor' ? 'executor' : 'legacy (sudo)'}` : ''}
             </p>
             <div class="hb-actions" style="margin-top:0.75rem;">
               ${install?.externalUrl ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>` : ''}
@@ -448,6 +480,18 @@
                   <p class="hb-muted" data-result style="margin:0;"></p>
                 </form>
               ` : ''}
+            </section>
+          ` : ''}
+
+          ${actions.adopt ? `
+            <section id="adopt" class="hb-card">
+              <h2 style="margin-top:0;">Executor adoption</h2>
+              <p class="hb-muted" style="margin:0 0 0.75rem;">This app was installed by legacy (sudo) mode. Adopting hands it to the typed executor in place: same checkout, data, and settings. Adopt apps one at a time; switch the host to executor mode once all of them are adopted.</p>
+              <form class="hb-form-grid" data-action="adopt">
+                <label class="hb-label hb-check-row"><input name="dryRun" type="checkbox" checked> Preview the plan only</label>
+                <div><button class="hb-btn hb-btn-primary" type="submit">Adopt into executor</button></div>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
             </section>
           ` : ''}
 

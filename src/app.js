@@ -7,7 +7,7 @@ const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
-const { buildExecutorInstallAction } = require('./services/executor-install');
+const { buildExecutorInstallAction, executorManagesApp } = require('./services/executor-install');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { BACKUP_ROOT } = require('./operations/paths');
@@ -249,6 +249,30 @@ async function startExecutorLifecycle({ res, effectiveConfig, stateStore, appId,
   return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
 }
 
+// Executor installs and adopts use the catalog's ports. Only a *different* app holding one is a
+// conflict. Legacy numbered every sidecar after the app's own port (port + i + 1), but only sidecars
+// with a reserved port actually bind one.
+function executorPortConflict(state, appId) {
+  const appPorts = catalogPorts(getAppById(appId));
+  const portsOf = (entry) => {
+    const sidecars = getAppById(entry.appId)?.sidecars || [];
+    return [entry.port, ...sidecars.flatMap((sidecar, index) => (sidecar.port != null ? [entry.port + index + 1, sidecar.port] : []))];
+  };
+  const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && portsOf(entry).some((port) => appPorts.includes(port)));
+  return conflict ? { error: `${conflict.appId} already uses a port ${getAppById(appId).name} needs (${appPorts.join(', ')}); executor installs use catalog ports.`, code: 'PORT_CONFLICT' } : null;
+}
+
+// Why the executor cannot fetch over SSH yet, or null when it can.
+function deployKeyProblem(transport, capabilities) {
+  if (transport !== 'ssh' || capabilities.gitDeployKey === 'present') return null;
+  return {
+    error: capabilities.gitDeployKey === 'insecure'
+      ? 'The executor deploy key must be a root-owned regular file with mode 0600. Re-run: sudo bash install.sh --repair --git-ssh-key <path>'
+      : 'SSH git transport needs a deploy key. On the host run: sudo bash install.sh --repair --git-ssh-key <path-to-private-key>',
+    code: 'GIT_DEPLOY_KEY_REQUIRED',
+  };
+}
+
 function missingCheckIds(preflight, ids) {
   return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok === true));
 }
@@ -440,7 +464,8 @@ function createApp(config) {
   try {
     jobRunner.reconcileStaleUpdateJobs();
     // Typed jobs that were in flight when Home Base stopped: the executor's journal has the outcome.
-    if (config.homeBaseExecutionMode === 'executor') jobRunner.reconcileTypedJobs();
+    // Legacy-sudo hosts adopting apps run typed jobs for those apps too.
+    if (['executor', 'legacy-sudo'].includes(config.homeBaseExecutionMode)) jobRunner.reconcileTypedJobs();
   } catch (error) {
     console.warn(`[homebase] stale update reconciliation failed: ${error.message}`);
   }
@@ -494,6 +519,7 @@ function createApp(config) {
     staleAfterMs: config.appUpdateStatusTtlMs,
     executionMode: initialEffectiveConfig.homeBaseExecutionMode,
     executorSocket: initialEffectiveConfig.homeBaseExecutorSocket,
+    executorGitTransport: initialEffectiveConfig.homeBaseExecutorGitTransport || '',
     baseInstallDir: initialEffectiveConfig.baseInstallDir,
   });
   appUpdateMonitor.schedule({
@@ -509,6 +535,7 @@ function createApp(config) {
         gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
         executionMode: effective.homeBaseExecutionMode,
         executorSocket: effective.homeBaseExecutorSocket,
+        executorGitTransport: effective.homeBaseExecutorGitTransport || '',
         baseInstallDir: effective.baseInstallDir,
       };
     },
@@ -523,6 +550,7 @@ function createApp(config) {
       gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
       executionMode: effective.homeBaseExecutionMode,
       executorSocket: effective.homeBaseExecutorSocket,
+      executorGitTransport: effective.homeBaseExecutorGitTransport || '',
       baseInstallDir: effective.baseInstallDir,
     };
   }
@@ -1143,7 +1171,9 @@ function createApp(config) {
             restart: Boolean(installation) && !planned,
             uninstall: Boolean(installation) && !planned,
             discardPlan: planned,
+            adopt: effectiveConfig.homeBaseExecutionMode === 'legacy-sudo' && installation?.status === 'installed' && installation.managedBy !== 'executor',
           },
+          managedBy: executorManagesApp(effectiveConfig, state, appId) ? 'executor' : (effectiveConfig.homeBaseExecutionMode === 'legacy-sudo' ? 'legacy' : 'plan-only'),
           note: planned
             ? 'This is a saved dry-run. Run a real install or discard the plan metadata; no app files were created by the dry-run.'
             : 'Update currently runs through install execute (same deployment pipeline).',
@@ -1179,7 +1209,7 @@ function createApp(config) {
       const installPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/install-plan$/);
       if (method === 'POST' && installPlanMatch) {
         const body = await parseBody(req);
-        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+        if (executorManagesApp(effectiveConfig, state, installPlanMatch[1])) {
           const action = buildExecutorInstallAction({ appId: installPlanMatch[1], ref: body.ref, config: effectiveConfig });
           if (!action) return notFound(res);
           if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
@@ -1198,7 +1228,7 @@ function createApp(config) {
         const body = await parseBody(req);
         const appId = installMatch[1];
         // Saving a "planned" record from the legacy plan has no executor meaning; preview with a dry-run.
-        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+        if (executorManagesApp(effectiveConfig, state, appId)) {
           return sendJson(res, 409, { error: 'In executor mode, preview an install with a dry-run (POST /api/apps/:id/execute with dryRun: true).', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
         }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
@@ -1210,6 +1240,56 @@ function createApp(config) {
         });
         return sendJson(res, 200, plan);
       }
+      // Adopt: on a legacy-sudo host, hand one legacy-installed app to the executor in place. Afterwards
+      // every action for that app goes through the executor; other apps stay on legacy.
+      const adoptMatch = pathname.match(/^\/api\/apps\/([^/]+)\/adopt\/execute$/);
+      if (method === 'POST' && adoptMatch) {
+        const body = await parseBody(req);
+        const appId = adoptMatch[1];
+        const app = getAppById(appId);
+        if (!app) return notFound(res);
+        if (effectiveConfig.homeBaseExecutionMode !== 'legacy-sudo') return sendJson(res, 409, { error: 'Adopt takes over legacy installs; this host is not in legacy-sudo mode.', code: 'ADOPT_NOT_APPLICABLE' });
+        const install = (state.installations || {})[appId];
+        if (!install || install.status !== 'installed') return sendJson(res, 409, { error: `${app.name} is not installed, so there is nothing to adopt. Install it instead.`, code: 'ADOPT_NOT_APPLICABLE' });
+        if (install.managedBy === 'executor') return sendJson(res, 409, { error: `${app.name} is already managed by the executor.`, code: 'ALREADY_ADOPTED' });
+        const dryRun = body.dryRun !== false;
+        let auth = null;
+        if (!dryRun) {
+          if (body.confirm !== 'EXECUTE') {
+            recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
+            return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
+          }
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+        }
+        let capabilities;
+        try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch {
+          return sendJson(res, 503, { error: 'The Home Base executor is not installed or not reachable. Add it with: sudo bash install.sh --add-executor --git-ssh-key <key>', code: 'EXECUTOR_UNAVAILABLE' });
+        }
+        if (!capabilities.actions?.includes('adopt') || !capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot adopt ${app.name}; update it with install.sh --add-executor.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+        const conflict = executorPortConflict(state, appId);
+        if (conflict) return sendJson(res, 409, conflict);
+        // The legacy record's ref, when it is one the executor tracks; otherwise the catalog default.
+        const action = buildExecutorInstallAction({ appId, ref: body.ref || (/^(main|[a-f0-9]{40})$/.test(install.ref || '') ? install.ref : undefined), config: effectiveConfig, action: 'adopt' });
+        if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+        const keyProblem = deployKeyProblem(action.transport, capabilities);
+        if (keyProblem) return sendJson(res, 409, keyProblem);
+        if (dryRun) return startExecutorPreview({ res, effectiveConfig, appId, kind: 'adopt', action, jobRunner });
+        if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+        const jobId = jobRunner.startTypedAdoptJob({
+          appId, ref: action.ref, transport: action.transport, site: action.site,
+          onComplete: () => {
+            const adopted = (stateStore.loadState().installations || {})[appId];
+            if (adopted) void appUpdateMonitor.refreshInstalledApps([adopted], { force: true, gitConfig: updateGitConfig(effectiveConfig) });
+          },
+        });
+        recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: 'queued', jobId, sessionTokenHash: auth?.sessionTokenHash });
+        return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
+      }
+
       const executeInstallMatch = pathname.match(/^\/api\/apps\/([^/]+)\/execute$/);
       if (method === 'POST' && executeInstallMatch) {
         const body = await parseBody(req);
@@ -1240,7 +1320,7 @@ function createApp(config) {
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
-        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode !== 'executor') {
+        if (body.dryRun === false && !executorManagesApp(effectiveConfig, state, executeInstallMatch[1])) {
           const app = getAppById(executeInstallMatch[1]);
           const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
           if (app?.runtime?.kind === 'node') required.push('node');
@@ -1264,38 +1344,25 @@ function createApp(config) {
         }
 
         const appId = executeInstallMatch[1];
-        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
+        const executorManaged = executorManagesApp(effectiveConfig, state, appId);
+        if (body.dryRun === false && executorManaged) {
           let capabilities;
           try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch (error) {
             return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
           }
           if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
           if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot install ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
-          // Executor units, snippets, and env use the catalog's preferred port. Only a *different* app holding
-          // it is a conflict; a reinstall keeps the port it already has.
-          // Sidecar ports are reserved in the catalog too. Legacy numbered every sidecar after the app's
-          // own port (port + i + 1), but only sidecars with a reserved port actually bind one.
-          const appPorts = catalogPorts(getAppById(appId));
-          const portsOf = (entry) => {
-            const sidecars = getAppById(entry.appId)?.sidecars || [];
-            return [entry.port, ...sidecars.flatMap((sidecar, index) => (sidecar.port != null ? [entry.port + index + 1, sidecar.port] : []))];
-          };
-          const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && portsOf(entry).some((port) => appPorts.includes(port)));
-          if (conflict) return sendJson(res, 409, { error: `${conflict.appId} already uses a port ${getAppById(appId).name} needs (${appPorts.join(', ')}); executor installs use catalog ports.`, code: 'PORT_CONFLICT' });
+          // Executor units, snippets, and env use the catalog's ports; a reinstall keeps the port it has.
+          const conflict = executorPortConflict(state, appId);
+          if (conflict) return sendJson(res, 409, conflict);
           // Used only for Home Base's own installation record; the executor builds the real plan from the
           // catalog. Only the ref comes from the request so the record matches what the executor installs
           // (catalog mount path and port, standard install root), never caller-edited values.
           const action = buildExecutorInstallAction({ appId, ref: body.ref, config: effectiveConfig });
           if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
           const { transport } = action;
-          if (transport === 'ssh' && capabilities.gitDeployKey !== 'present') {
-            return sendJson(res, 409, {
-              error: capabilities.gitDeployKey === 'insecure'
-                ? 'The executor deploy key must be a root-owned regular file with mode 0600. Re-run: sudo bash install.sh --repair --git-ssh-key <path>'
-                : 'SSH git transport needs a deploy key. On the host run: sudo bash install.sh --repair --git-ssh-key <path-to-private-key>',
-              code: 'GIT_DEPLOY_KEY_REQUIRED',
-            });
-          }
+          const keyProblem = deployKeyProblem(transport, capabilities);
+          if (keyProblem) return sendJson(res, 409, keyProblem);
           // Database credentials are generated inside the executor; a caller-supplied dbPassword is ignored here.
           const jobId = jobRunner.startTypedInstallJob({
             appId,
@@ -1310,7 +1377,7 @@ function createApp(config) {
           });
           return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
         }
-        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+        if (executorManaged) {
           // Preview only: the executor compiles the plan it would run. No legacy plan, .env, or record.
           const action = buildExecutorInstallAction({ appId, ref: body.ref, config: effectiveConfig });
           if (!action) return notFound(res);
@@ -1399,7 +1466,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          if (executorManagesApp(effectiveConfig, state, appId)) {
             return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restart-execute', auth, start: () => jobRunner.startTypedRestartJob({ appId }) });
           }
           const preflight = await getPreflight(effectiveConfig, { force: true });
@@ -1419,7 +1486,7 @@ function createApp(config) {
             });
           }
         }
-        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+        if (executorManagesApp(effectiveConfig, state, appId)) {
           return startExecutorPreview({ res, effectiveConfig, appId, kind: 'restart', action: { action: 'restart', appId }, jobRunner });
         }
         const plan = buildRestartPlan({ app, install });
@@ -1498,7 +1565,7 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          if (executorManagesApp(effectiveConfig, state, backupExecuteMatch[1])) {
             const appId = backupExecuteMatch[1];
             return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-backup-execute', auth, start: () => jobRunner.startTypedBackupJob({ appId }) });
           }
@@ -1519,7 +1586,7 @@ function createApp(config) {
             });
           }
         }
-        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+        if (executorManagesApp(effectiveConfig, state, backupExecuteMatch[1])) {
           const appId = backupExecuteMatch[1];
           return startExecutorPreview({ res, effectiveConfig, appId, kind: 'backup', action: { action: 'backup', appId }, jobRunner });
         }
@@ -1608,7 +1675,7 @@ function createApp(config) {
           if (app.database?.engine && app.database.engine.includes('postgres')) {
             required.push('psql', 'postgres-service');
           }
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          if (executorManagesApp(effectiveConfig, state, appId)) {
             return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-uninstall-execute', auth, start: () => jobRunner.startTypedUninstallJob({ appId, keepBackups: body.keepBackups !== false }) });
           }
           const preflight = await getPreflight(effectiveConfig, { force: true });
@@ -1628,7 +1695,7 @@ function createApp(config) {
             });
           }
         }
-        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+        if (executorManagesApp(effectiveConfig, state, appId)) {
           return startExecutorPreview({ res, effectiveConfig, appId, kind: 'uninstall', action: { action: 'uninstall', appId, keepBackups: body.keepBackups !== false }, jobRunner });
         }
         const plan = buildUninstallPlan({
@@ -1690,7 +1757,7 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          if (executorManagesApp(effectiveConfig, state, restoreExecuteMatch[1])) {
             const appId = restoreExecuteMatch[1];
             const backupId = resolveRestoreBackupId({ appId, backupDir: body.backupDir, stateStore });
             if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
@@ -1714,7 +1781,7 @@ function createApp(config) {
           }
         }
 
-        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+        if (executorManagesApp(effectiveConfig, state, restoreExecuteMatch[1])) {
           const appId = restoreExecuteMatch[1];
           const backupId = resolveRestoreBackupId({ appId, backupDir: body.backupDir, stateStore });
           if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });

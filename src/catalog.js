@@ -448,7 +448,7 @@ const catalog = [
     repository: {
       url: 'https://github.com/eforbell/bitcoinAccounting.git',
       sshUrl: 'git@github.com:eforbell/bitcoinAccounting.git',
-      defaultRef: 'master',
+      defaultRef: 'main',
     },
     runtime: {
       kind: 'python',

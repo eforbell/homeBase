@@ -2156,6 +2156,62 @@ test('a portless sidecar does not reserve the next port: home-ops installs besid
   }
 });
 
+test('legacy-sudo hosts adopt apps one at a time: adopted apps route to the executor, others stay legacy', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-adopt-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const received = [];
+  const planned = [];
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, probeDeployKey: () => 'present', runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; }, planAction: (spec) => { planned.push(spec); return require('../executor/actions').compileAction(spec); } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const record = (appId, port, extra = {}) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://home.tailnet/x/', installRoot: '/opt/sovereign-home/apps/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z', ...extra });
+  store.upsertInstallation(record('helm', 3011));
+  store.upsertInstallation(record('home-source', 3008, { managedBy: 'executor' }));
+  store.upsertInstallation(record('family-dinner', 3000));
+  // A later legacy-style upsert without managedBy keeps the adopted marker.
+  store.upsertInstallation(record('home-source', 3008, { updatedAt: '2026-04-04T00:00:00.000Z' }));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'backups'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'home', defaultDomain: 'tailnet', homeBaseExecutionMode: 'legacy-sudo', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath, homeBaseExecutorGitTransport: 'ssh' });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (route, body) => {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+    const actions = await (await fetch(`${server.url}/api/apps/helm/actions`, { headers: { cookie } })).json();
+    assert.equal(actions.actions.adopt, true);
+    assert.equal(actions.managedBy, 'legacy');
+    const sourceActions = await (await fetch(`${server.url}/api/apps/home-source/actions`, { headers: { cookie } })).json();
+    assert.deepEqual([sourceActions.actions.adopt, sourceActions.managedBy], [false, 'executor']);
+
+    // Dry-run adopt: the executor compiles the plan it would run.
+    const preview = await post('/api/apps/helm/adopt/execute', {});
+    assert.equal(preview.status, 202, JSON.stringify(preview.body));
+    assert.equal(preview.body.dryRun, true);
+    // Real adopt: confirm required, then the executor receives a named adopt action over SSH.
+    assert.equal((await post('/api/apps/helm/adopt/execute', { dryRun: false })).status, 400);
+    const adopt = await post('/api/apps/helm/adopt/execute', { dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(adopt.status, 202, JSON.stringify(adopt.body));
+    assert.equal((await post('/api/apps/home-source/adopt/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ALREADY_ADOPTED');
+    assert.equal((await post('/api/apps/bug-base/adopt/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ADOPT_NOT_APPLICABLE');
+
+    // The adopted app's lifecycle goes to the executor; the legacy app's does not.
+    const restart = await post('/api/apps/home-source/restart/execute', { dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(restart.status, 202, JSON.stringify(restart.body));
+    const legacyRestart = await post('/api/apps/family-dinner/restart/execute', { dryRun: false, confirm: 'EXECUTE' });
+    assert.notEqual(legacyRestart.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const previewJob = await (await fetch(`${server.url}/api/jobs/${preview.body.jobId}`, { headers: { cookie } })).json();
+    assert.equal(planned[0]?.action, 'adopt', JSON.stringify(previewJob).slice(0, 600));
+    assert.deepEqual(received.map((spec) => [spec.action, spec.appId, spec.transport]), [['adopt', 'helm', 'ssh'], ['restart', 'home-source', undefined]]);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
 test('review fixes: update-self and discarding a real install are refused', async () => {
   const { createExecutorServer } = require('../executor/server');
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-review-'));

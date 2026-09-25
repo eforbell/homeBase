@@ -59,6 +59,9 @@ function loadConfig() {
     homeBaseEnablePrivilegedJobs,
     homeBaseExecutionModeMissing,
     homeBaseExecutorSocket: process.env.HOME_BASE_EXECUTOR_SOCKET || '/run/homebase/executor.sock',
+    // How the executor fetches app repositories on a legacy-sudo host that is adopting apps. Kept apart
+    // from HOME_BASE_GIT_TRANSPORT, which the legacy path still uses for apps not adopted yet.
+    homeBaseExecutorGitTransport: ['ssh', 'https'].includes(process.env.HOME_BASE_EXECUTOR_GIT_TRANSPORT) ? process.env.HOME_BASE_EXECUTOR_GIT_TRANSPORT : '',
     homeBaseAutoBootstrap: homeBaseEnablePrivilegedJobs
       && boolFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP, false),
     homeBaseAutoBootstrapMode: process.env.HOME_BASE_AUTO_BOOTSTRAP_MODE || 'execute',
