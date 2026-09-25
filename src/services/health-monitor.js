@@ -56,11 +56,22 @@ function defaultProbeUnits(unitNames) {
     encoding: 'utf8',
     timeout: 3000,
   });
-  if (result.error || result.status !== 0) return states;
+  if (result.error || result.status !== 0) {
+    console.warn(`[health] systemctl show failed for helper units: ${result.error?.message || `exit ${result.status}`}`);
+    return states;
+  }
+  return parseSystemctlShow(result.stdout, names);
+}
 
-  // systemctl prints one blank-line-separated block per argument, in argument order.
-  const blocks = String(result.stdout || '').trim().split(/\n\s*\n/);
-  if (blocks.length !== names.length) return states;
+// systemctl prints one blank-line-separated block per argument, in argument order,
+// so blocks are keyed by the requested name (aliases resolve under the catalog name).
+function parseSystemctlShow(stdout, names) {
+  const states = new Map();
+  const blocks = String(stdout || '').trim().split(/\n\s*\n/);
+  if (blocks.length !== names.length) {
+    console.warn(`[health] systemctl show returned ${blocks.length} blocks for ${names.length} units; helper states unknown`);
+    return states;
+  }
   blocks.forEach((block, index) => {
     const props = {};
     for (const line of block.split('\n')) {
@@ -213,6 +224,9 @@ function listHelperUnits(catalogEntry) {
   return units;
 }
 
+// Brief states during a start/restart/reload; not a verdict either way.
+const TRANSITIONAL_STATES = new Set(['activating', 'deactivating', 'reloading']);
+
 // ok: true = healthy, false = failing (drives helper-failing), null = no verdict
 // (state unavailable, or the catalog names a unit this install never created).
 function classifyHelperUnit(unit, probed) {
@@ -222,7 +236,13 @@ function classifyHelperUnit(unit, probed) {
   if (probed.loadState === 'not-found') {
     return { ...unit, state: 'not-deployed', ok: null, message: 'Unit not installed yet; update or reinstall the app to create it' };
   }
+  if (probed.loadState === 'masked') {
+    return { ...unit, state: 'masked', ok: null, message: 'Unit masked by an operator' };
+  }
   const state = probed.activeState;
+  if (TRANSITIONAL_STATES.has(state)) {
+    return { ...unit, state, ok: null, message: `Unit ${state}` };
+  }
   if (unit.kind === 'timer-service-result') {
     return state === 'failed'
       ? { ...unit, state, ok: false, message: `Last run failed; see journalctl -u ${unit.unitName}` }
@@ -480,6 +500,7 @@ module.exports = {
   defaultProbeUnits,
   isSafeSystemdUnitName,
   listHelperUnits,
+  parseSystemctlShow,
   defaultProbeHttp,
   defaultProbeHttpJson,
   evaluateRuntimeState,

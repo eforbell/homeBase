@@ -9,6 +9,7 @@ const {
   defaultProbeUnits,
   isSafeSystemdUnitName,
   listHelperUnits,
+  parseSystemctlShow,
 } = require('../src/services/health-monitor');
 
 test('evaluateRuntimeState marks service-down when service probe fails', () => {
@@ -329,4 +330,37 @@ test('isSafeSystemdUnitName rejects option-like and shell-unsafe names', () => {
     assert.equal(isSafeSystemdUnitName(bad), false, bad);
   }
   assert.equal(defaultProbeUnits(['-Hevil']).size, 0);
+});
+
+test('parseSystemctlShow keys blocks by requested name in argument order', () => {
+  // Real erebor output shape: an alias argument prints its target's block in place.
+  const stdout = 'LoadState=loaded\nActiveState=active\n\nLoadState=not-found\nActiveState=inactive\n\nLoadState=loaded\nActiveState=failed\n';
+  const states = parseSystemctlShow(stdout, ['app-mcp-alias', 'gone.service', 'app-sync.service']);
+  assert.deepEqual(states.get('app-mcp-alias'), { loadState: 'loaded', activeState: 'active' });
+  assert.deepEqual(states.get('gone.service'), { loadState: 'not-found', activeState: 'inactive' });
+  assert.deepEqual(states.get('app-sync.service'), { loadState: 'loaded', activeState: 'failed' });
+});
+
+test('parseSystemctlShow returns nothing when block count does not match', () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(parseSystemctlShow('LoadState=loaded\nActiveState=active\n', ['a.service', 'b.service']).size, 0);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test('masked and transitional helper units are neutral', async () => {
+  const record = await helperRecord({
+    units: {
+      ...allUnitsHealthy,
+      'family-pulse-mcp.service': { loadState: 'loaded', activeState: 'activating' },
+      'family-pulse-notifications.timer': { loadState: 'masked', activeState: 'inactive' },
+    },
+  });
+  const byName = Object.fromEntries(record.helperUnits.map((unit) => [unit.unitName, unit]));
+  assert.equal(byName['family-pulse-mcp.service'].ok, null);
+  assert.equal(byName['family-pulse-notifications.timer'].state, 'masked');
+  assert.equal(record.runtimeStatus, 'healthy');
 });
