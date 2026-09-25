@@ -24,7 +24,8 @@
         "app-restart",
         "app-backup",
         "app-restore",
-        "app-uninstall"
+        "app-uninstall",
+        "app-adopt"
       ]
     },
     "target": {
@@ -47,7 +48,8 @@
         "app-restart-v1",
         "app-backup-v1",
         "app-restore-v1",
-        "app-uninstall-v1"
+        "app-uninstall-v1",
+        "app-adopt-v1"
       ]
     },
     "operations": {
@@ -199,6 +201,15 @@
         },
         {
           "$ref": "#/$defs/backupVerify"
+        },
+        {
+          "$ref": "#/$defs/nginxAssertInclude"
+        },
+        {
+          "$ref": "#/$defs/nginxRetireLegacy"
+        },
+        {
+          "$ref": "#/$defs/postgresTransfer"
         }
       ]
     },
@@ -918,6 +929,90 @@
           },
           "required": [
             "archiveName"
+          ]
+        }
+      ]
+    },
+    "nginxAssertInclude": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "nginx.assert-app-include"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "nginxRetireLegacy": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "nginx.retire-legacy-snippets"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "postgresTransfer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "postgres.transfer-ownership"
+            },
+            "database": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "owner": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          },
+          "required": [
+            "database",
+            "owner"
           ]
         }
       ]

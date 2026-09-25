@@ -21,6 +21,9 @@ const PROFILE_TYPES = {
   'app-restore-v1': new Set(['backup.verify', 'backup.create', 'systemd.ensure-service', 'backup.restore', 'http.wait-ready']),
   'app-uninstall-v1': new Set(['backup.create', 'systemd.ensure-service', 'filesystem.remove-app-artifacts', 'systemd.daemon-reload', 'nginx.validate-and-reload', 'postgres.drop-database', 'filesystem.remove-checkout', 'backup.remove-all']),
 };
+// Adopt takes over a legacy install in place: the install operations, plus a safety backup, the nginx
+// include check, retiring the legacy snippet, and handing database objects to the app role.
+PROFILE_TYPES['app-adopt-v1'] = new Set([...PROFILE_TYPES['app-install-v1'], 'backup.create', 'nginx.assert-app-include', 'nginx.retire-legacy-snippets', 'postgres.transfer-ownership']);
 const PROFILE_KIND = {
   'host-bootstrap-v1': 'host-bootstrap',
   'app-install-v1': 'app-install',
@@ -28,10 +31,11 @@ const PROFILE_KIND = {
   'app-backup-v1': 'app-backup',
   'app-restore-v1': 'app-restore',
   'app-uninstall-v1': 'app-uninstall',
+  'app-adopt-v1': 'app-adopt',
 };
 // Destructive operations exist only in the profiles an operator explicitly confirms.
-const DESTRUCTIVE_PROFILES = new Set(['app-restore-v1', 'app-uninstall-v1']);
-const DESTRUCTIVE_TYPES = new Set(['backup.restore', 'backup.remove-all', 'filesystem.remove-app-artifacts', 'filesystem.remove-checkout', 'postgres.drop-database']);
+const DESTRUCTIVE_PROFILES = new Set(['app-restore-v1', 'app-uninstall-v1', 'app-adopt-v1']);
+const DESTRUCTIVE_TYPES = new Set(['backup.restore', 'backup.remove-all', 'filesystem.remove-app-artifacts', 'filesystem.remove-checkout', 'postgres.drop-database', 'nginx.retire-legacy-snippets']);
 const TEMPLATE_PURPOSE = {
   'app-env-v1': 'app-env',
   'app-service-v1': 'systemd-unit',
@@ -76,6 +80,7 @@ function checkInstallOperation(operation, layout, plan) {
       break;
     case 'postgres.ensure-database':
     case 'postgres.drop-database':
+    case 'postgres.transfer-ownership':
       if (!layout.database || operation.database !== layout.database.name || operation.owner !== layout.database.user) deny('Database does not match this app.');
       break;
     case 'filesystem.write-managed-file': {

@@ -42,6 +42,11 @@ const GITHUB_KNOWN_HOSTS = [
 ].join('\n');
 
 const NGINX_GATEWAY_SITE = '/etc/nginx/sites-available/sovereign-home';
+// Legacy mode wrote app snippets here; an operator's own server block includes them.
+const LEGACY_SNIPPET_DIR = '/etc/nginx/snippets';
+// Retired legacy snippets are kept here (root-only) so an adopt can be undone by hand.
+const RETIRED_SNIPPET_ROOT = '/var/lib/homebase-executor/retired-nginx-snippets';
+const APP_SNIPPET_INCLUDE = /^[ \t]*include[ \t]+\/etc\/nginx\/sovereign-home\.d\/\*\.conf[ \t]*;/m;
 const NGINX_GATEWAY_LINK = '/etc/nginx/sites-enabled/sovereign-home';
 const NGINX_DEFAULT_LINK = '/etc/nginx/sites-enabled/default';
 const NGINX_GATEWAY_CONTENT = [
@@ -394,6 +399,11 @@ function directoryFor(operation, layout) {
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
+  // Whether the active nginx configuration (nginx -T, as root) includes the executor's snippet directory.
+  const nginxIncludesAppSnippets = async (timeoutMs) => {
+    const result = await run({ binary: '/usr/sbin/nginx', args: ['-T'], ...rootIdentity, timeoutMs, env: ROOT_ENV, outputLimit: 8 * 1024 * 1024 });
+    return APP_SNIPPET_INCLUDE.test(`${result.stdout || ''}\n${result.stderr || ''}`);
+  };
   const missingPackages = async (packages, timeoutMs) => {
     let stdout = '';
     try {
@@ -595,7 +605,14 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (operation.action === 'enable-and-restart') await run({ binary: '/usr/bin/systemctl', args: ['restart', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       return `${operation.action} ${operation.unit}`;
     },
-    'nginx.ensure-gateway': async () => {
+    'nginx.ensure-gateway': async (operation) => {
+      // A host whose own server block already includes the app snippets (adopted legacy hosts) keeps
+      // its gateway: installing ours would take over default_server on 80/443 from the operator's site.
+      if (!lstatOrNull(fsImpl, NGINX_GATEWAY_SITE)) {
+        let operatorGateway = false;
+        try { operatorGateway = await nginxIncludesAppSnippets(operation?.timeoutMs || 30000); } catch { operatorGateway = false; }
+        if (operatorGateway) return 'the host nginx configuration already includes /etc/nginx/sovereign-home.d; managed gateway not installed';
+      }
       writeFileAtomic(fsImpl, NGINX_GATEWAY_SITE, NGINX_GATEWAY_CONTENT, 0o644);
       const link = lstatOrNull(fsImpl, NGINX_GATEWAY_LINK);
       if (!link) fsImpl.symlinkSync(NGINX_GATEWAY_SITE, NGINX_GATEWAY_LINK);
@@ -604,6 +621,57 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (defaultSite && !defaultSite.isSymbolicLink()) deny(`${NGINX_DEFAULT_LINK} is a regular file; disable it manually so the managed gateway can own the default server.`);
       if (defaultSite) fsImpl.unlinkSync(NGINX_DEFAULT_LINK);
       return 'installed managed nginx gateway site';
+    },
+    'nginx.assert-app-include': async (operation) => {
+      if (!await nginxIncludesAppSnippets(operation.timeoutMs)) {
+        deny('nginx does not include /etc/nginx/sovereign-home.d/*.conf. Add "include /etc/nginx/sovereign-home.d/*.conf;" next to the existing "include /etc/nginx/snippets/*.conf;" in the server block that serves your apps, run "sudo nginx -t && sudo systemctl reload nginx", then adopt again.');
+      }
+      return 'nginx includes /etc/nginx/sovereign-home.d/*.conf';
+    },
+    'nginx.retire-legacy-snippets': async (operation, { layout } = {}) => {
+      requireLayout(layout);
+      // Legacy wrote the app's snippet and one per nginx-published sidecar; names come from the catalog.
+      const names = [layout.app.id, ...layout.sidecars.filter((sidecar) => sidecar.nginx).map((sidecar) => sidecar.name)];
+      const keep = `${RETIRED_SNIPPET_ROOT}/${layout.app.id}`;
+      const retired = [];
+      for (const name of names) {
+        const source = `${LEGACY_SNIPPET_DIR}/${name}.conf`;
+        const stat = lstatOrNull(fsImpl, source);
+        if (!stat) continue;
+        if (!stat.isFile()) deny(`${source} is not a regular file.`);
+        if (!fsImpl.existsSync(keep)) fsImpl.mkdirSync(keep, { recursive: true, mode: 0o700 });
+        writeFileAtomic(fsImpl, `${keep}/${name}.conf`, fsImpl.readFileSync(source, 'utf8'), 0o600);
+        fsImpl.unlinkSync(source);
+        retired.push(source);
+      }
+      return retired.length ? `retired ${retired.join(', ')} (copies kept in ${keep})` : 'no legacy nginx snippets to retire';
+    },
+    'postgres.transfer-ownership': async (operation, { layout } = {}) => {
+      requireLayout(layout);
+      const postgres = lookupUser('postgres');
+      if (!postgres || !layout.database || operation.database !== layout.database.name || operation.owner !== layout.database.user) deny('Ownership transfer does not match this app.');
+      const { name, user } = layout.database; // validated, non-reserved simple identifiers (app-layout.js)
+      // Tables, views, and standalone sequences in public; sequences owned by a column move with their
+      // table. Refuses databases with other schemas, which this transfer would silently leave behind.
+      const sql = `DO $$
+DECLARE r record; moved integer := 0;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname NOT IN ('public', 'information_schema') AND nspname NOT LIKE 'pg\\_%') THEN
+    RAISE EXCEPTION 'database ${name} has schemas other than public; transfer ownership by hand';
+  END IF;
+  FOR r IN SELECT c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') AND c.relowner <> '${user}'::regrole
+      AND NOT (c.relkind = 'S' AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('a', 'i')))
+  LOOP
+    EXECUTE format('ALTER %s public.%I OWNER TO %I', CASE r.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, r.relname, '${user}');
+    moved := moved + 1;
+  END LOOP;
+  RAISE NOTICE 'transferred % objects to ${user}', moved;
+END $$;
+`;
+      const result = await run({ binary: '/usr/bin/psql', args: ['-X', '-v', 'ON_ERROR_STOP=1', '-d', name], uid: postgres.uid, gid: postgres.gid, stdin: sql, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+      const moved = /transferred ([0-9]+) objects/.exec(`${result.stderr || ''}${result.stdout || ''}`);
+      return moved ? `transferred ${moved[1]} objects to ${user}` : `ensured ${user} owns the objects in ${name}`;
     },
     'nginx.validate-and-reload': async (operation) => {
       await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });

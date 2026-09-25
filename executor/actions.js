@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { ProtocolError } = require('./protocol-error');
 const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
-const { buildAppInstallPlan } = require('../src/operations/compilers/install');
+const { buildAppInstallPlan, buildAppAdoptPlan } = require('../src/operations/compilers/install');
 const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan } = require('../src/operations/compilers/lifecycle');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const { digestOperationPlan } = require('../src/operations/digest');
@@ -13,6 +13,7 @@ const { isValidSite } = require('../src/homebase-config');
 const ACTIONS = Object.freeze({
   bootstrap: { fields: [] },
   install: { fields: ['appId', 'ref', 'transport', 'site'] },
+  adopt: { fields: ['appId', 'ref', 'transport', 'site'] },
   restart: { fields: ['appId'] },
   backup: { fields: ['appId'] },
   restore: { fields: ['appId', 'backupId'] },
@@ -47,7 +48,7 @@ function normalizeAction(request) {
   if (!['https', 'ssh'].includes(request.transport)) invalid('transport must be https or ssh.');
   if (!isValidSite(request.site)) invalid('site must be exactly { hostname, domain, householdTimezone } with valid values.');
   const site = { hostname: request.site.hostname, domain: request.site.domain, householdTimezone: request.site.householdTimezone };
-  return { action: 'install', appId: request.appId, ref: request.ref, transport: request.transport, site };
+  return { action: request.action, appId: request.appId, ref: request.ref, transport: request.transport, site };
 }
 
 function compileAction(action, { generatedAt = new Date().toISOString() } = {}) {
@@ -58,6 +59,8 @@ function compileAction(action, { generatedAt = new Date().toISOString() } = {}) 
     deny(`The executor does not manage ${action.appId} yet.`);
   } else if (action.action === 'install') {
     plan = buildAppInstallPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
+  } else if (action.action === 'adopt') {
+    plan = buildAppAdoptPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
   } else if (action.action === 'restart') {
     plan = buildAppRestartPlan({ appId: action.appId, generatedAt });
   } else if (action.action === 'backup') {
