@@ -8,7 +8,7 @@
     return installations.map((item) => {
       const health = healthByAppId[item.appId] || {};
       const catalogEntry = catalogById?.get(item.appId);
-      const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
+      const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'helper-failing', 'needs-setup']);
       const needsAttention = attentionStatuses.has(health.runtimeStatus);
       const icon = catalogEntry?.icon ? `<span class="hb-app-icon">${window.HB.escapeHtml(catalogEntry.icon)}</span>` : '';
       const openLink = item.externalUrl
@@ -49,7 +49,7 @@
   }
 
   function renderAppHealthWarnings(installations, healthByAppId) {
-    const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'needs-setup']);
+    const attentionStatuses = new Set(['service-down', 'http-failing', 'readiness-failing', 'helper-failing', 'needs-setup']);
     const items = installations
       .map((install) => ({ install, health: healthByAppId[install.appId] || {} }))
       .filter(({ health }) => attentionStatuses.has(health.runtimeStatus));

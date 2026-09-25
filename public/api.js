@@ -81,6 +81,7 @@
       'service-down': { label: 'Service down', className: 'hb-err' },
       'http-failing': { label: 'HTTP check failing', className: 'hb-err' },
       'readiness-failing': { label: 'Needs attention', className: 'hb-warn' },
+      'helper-failing': { label: 'Helper failing', className: 'hb-warn' },
       'needs-setup': { label: 'Needs setup', className: 'hb-warn' },
       'not-installed': { label: 'Not installed', className: 'hb-muted' },
       unknown: { label: 'Unknown', className: 'hb-warn' },

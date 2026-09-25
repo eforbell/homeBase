@@ -40,3 +40,20 @@ test('family dinner catalog uses current OpenAI defaults and preserves operator 
     'OPENAI_REASONING_EFFORT',
   ]);
 });
+
+test('systemd-facing descriptions are sanitized for neutral/FOSS-safe wording', () => {
+  const founderPattern = /forbell/i;
+  for (const entry of catalog) {
+    if (entry.service?.description) {
+      assert.equal(founderPattern.test(entry.service.description), false, `service description should be neutral for ${entry.id}`);
+    }
+    for (const timer of entry.timers || []) {
+      if (!timer.description) continue;
+      assert.equal(founderPattern.test(timer.description), false, `timer description should be neutral for ${entry.id}`);
+    }
+    for (const sidecar of entry.sidecars || []) {
+      if (!sidecar.description) continue;
+      assert.equal(founderPattern.test(sidecar.description), false, `sidecar description should be neutral for ${entry.id}`);
+    }
+  }
+});
