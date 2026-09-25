@@ -28,6 +28,8 @@ const catalog = [
       preferredMountPath: '/pulse/',
       preferredPort: 3003,
       upstreamBind: '127.0.0.1',
+      // Transaction attachments are up to 10 MB (lib/routes/transactions.js); nginx defaults to 1 MB.
+      clientMaxBodySize: '12M',
       health: {
         type: 'http',
         livenessPath: '/api/health',
@@ -131,6 +133,8 @@ const catalog = [
       preferredMountPath: '/help/',
       preferredPort: 3002,
       upstreamBind: '127.0.0.1',
+      // Ticket attachments are up to 10 MB (server.js MAX_FILE_SIZE); nginx defaults to 1 MB.
+      clientMaxBodySize: '12M',
       health: {
         type: 'http',
         livenessPath: '/api/health',
@@ -457,6 +461,8 @@ const catalog = [
     network: {
       preferredMountPath: '/bitcoin-accounting/',
       preferredPort: 3010,
+      // Exchange CSV imports have no app-side cap; nginx's 1 MB default rejects long histories.
+      clientMaxBodySize: '20M',
       preserveMountPath: true,
       upstreamBind: '127.0.0.1',
       health: {
