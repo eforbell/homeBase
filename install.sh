@@ -179,6 +179,9 @@ for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_S
   case "$candidate" in
     *' '*|*$'\t'*) die "installation paths may not contain whitespace: $candidate" ;;
   esac
+  # Paths are written into unit and env files (via sed); keep them to plain path characters.
+  printf '%s\n' "$candidate" | grep -Eq '^[A-Za-z0-9/._-]+$' \
+    || die "installation paths may only contain letters, digits, '/', '.', '_', and '-': $candidate"
 done
 
 if [ -n "$GIT_SSH_KEY_SOURCE" ]; then
@@ -198,6 +201,31 @@ fi
 
 if [ "$TEST_MODE" != '1' ]; then
   [ "$(id -u)" -eq 0 ] || die 'run this installer through sudo or as root'
+fi
+
+# True when a live executor reports a plan in flight. Repairs refuse then: interrupting a restore or
+# uninstall midway is worse than running stale code a little longer.
+executor_plan_active() {
+  [ "$TEST_MODE" != '1' ] && [ -S "$EXECUTOR_SOCKET_PATH" ] && command -v node >/dev/null 2>&1 \
+    && id -u "$RUNTIME_USER" >/dev/null 2>&1 || return 1
+  runuser -u "$RUNTIME_USER" -- node - "$EXECUTOR_SOCKET_PATH" <<'NODE'
+const net = require('net');
+const socket = net.createConnection(process.argv[2]);
+let response = '';
+const timer = setTimeout(() => { socket.destroy(); process.exit(1); }, 5000);
+socket.setEncoding('utf8');
+socket.on('connect', () => socket.write(`${JSON.stringify({ protocolVersion: 2, requestId: require('crypto').randomUUID(), type: 'hello' })}\n`));
+socket.on('data', (chunk) => { response += chunk; });
+socket.on('error', () => { clearTimeout(timer); process.exit(1); });
+socket.on('end', () => {
+  clearTimeout(timer);
+  try { process.exit(JSON.parse(response.trim()).result?.activePlan === true ? 0 : 1); } catch { process.exit(1); }
+});
+NODE
+}
+
+if [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ]; then
+  executor_plan_active && die 'the executor is running a plan right now; retry the repair when it finishes (journalctl -u homebase-executor)'
 fi
 
 OS_ID="${HOMEBASE_OS_ID:-}"
@@ -547,8 +575,12 @@ if [ "$TEST_MODE" != '1' ]; then
     systemctl enable homebase.service
   fi
   if [ "$NO_START" -eq 0 ]; then
-    # Stop the running executor so the next connection starts it from the refreshed code and unit.
-    systemctl stop homebase-executor.service 2>/dev/null || true
+    if [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ]; then
+      # Code was refreshed: stop the running executor so the next connection loads it, but never
+      # interrupt a plan in flight (a half-finished restore or uninstall is worse than stale code).
+      executor_plan_active && die 'the executor is running a plan right now; retry the repair when it finishes (journalctl -u homebase-executor)'
+      systemctl stop homebase-executor.service 2>/dev/null || true
+    fi
     systemctl restart homebase-executor.socket
     systemctl is-active --quiet homebase-executor.socket \
       || die 'homebase-executor.socket did not become active; inspect journalctl -u homebase-executor.socket'

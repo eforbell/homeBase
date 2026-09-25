@@ -48,7 +48,9 @@ test('typed jobs record the executor-accepted plan and complete through the shar
   let completedCallbacks = 0;
   const id = runner.startTypedActionJob({ kind: 'bootstrap', target: 'local-host', action: { action: 'bootstrap' }, onComplete: () => { completedCallbacks += 1; } });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(sent, [{ jobId: id, action: 'bootstrap' }]);
+  assert.equal(sent.length, 1);
+  assert.deepEqual({ ...sent[0], requestId: undefined }, { jobId: id, action: 'bootstrap', requestId: undefined });
+  assert.equal(sent[0].requestId, JSON.parse(jobs[id].planJson).requestId, 'the stored nonce is the one sent');
   const stored = JSON.parse(jobs[id].planJson);
   assert.equal(stored.planDigest, 'sha256:abc');
   assert.equal(stored.digestVerified, false, 'a digest that does not match the recorded plan is flagged');

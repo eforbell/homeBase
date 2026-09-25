@@ -16,7 +16,7 @@ function requireExactKeys(value, allowed) {
 const BASE_KEYS = ['protocolVersion', 'requestId', 'type'];
 
 function validateRequest(request) {
-  requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actor', 'issuedAt', 'appId', 'transport', 'ref', 'action', 'site', 'backupId', 'keepBackups']));
+  requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actor', 'issuedAt', 'appId', 'transport', 'ref', 'action', 'site', 'backupId', 'keepBackups', 'actionRequestId']));
   if (request.protocolVersion !== PROTOCOL_VERSION) throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported executor protocol version.');
   if (typeof request.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.requestId)) throw new ProtocolError('INVALID_REQUEST', 'requestId must be a UUID.');
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');
@@ -25,8 +25,9 @@ function validateRequest(request) {
     return request;
   }
   if (request.type === 'action-status') {
-    requireExactKeys(request, new Set([...BASE_KEYS, 'jobId']));
-    if (typeof request.jobId !== 'string' || !/^[1-9][0-9]*$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
+    requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actionRequestId']));
+    if (typeof request.actionRequestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.actionRequestId)) throw new ProtocolError('INVALID_REQUEST', 'actionRequestId must be the run-action request UUID.');
+    if (typeof request.jobId !== 'string' || !/^[1-9][0-9]{0,14}$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
     return request;
   }
   if (request.type === 'app-update-status') {
@@ -40,7 +41,7 @@ function validateRequest(request) {
   requireExactKeys(request, new Set([...BASE_KEYS, ...ACTION_FIELDS, ...(run ? ['jobId', 'actor', 'issuedAt'] : [])]));
   const action = normalizeAction(request);
   if (run) {
-    if (typeof request.jobId !== 'string' || !/^[1-9][0-9]*$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
+    if (typeof request.jobId !== 'string' || !/^[1-9][0-9]{0,14}$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
     requireExactKeys(request.actor, new Set(['kind', 'auditRef']));
     if (request.actor.kind !== 'homebase-admin-session' || typeof request.actor.auditRef !== 'string' || request.actor.auditRef.length > 128) throw new ProtocolError('INVALID_REQUEST', 'actor is invalid.');
     const issuedAt = Date.parse(request.issuedAt || '');

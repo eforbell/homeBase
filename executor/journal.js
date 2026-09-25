@@ -17,23 +17,27 @@ function createJournal({ dir = JOURNAL_DIR, fsImpl = fs, now = () => new Date() 
     if (!stat || stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== 0) throw new Error(`${dir} must be a root-owned directory.`);
   };
   const read = (jobId) => {
-    if (!/^[1-9][0-9]*$/.test(String(jobId))) return null;
+    if (!/^[1-9][0-9]{0,14}$/.test(String(jobId))) return null;
     try { return JSON.parse(fsImpl.readFileSync(fileFor(jobId), 'utf8')); } catch { return null; }
   };
   const write = (entry) => {
     ensureDir();
     writeFileAtomic(fsImpl, fileFor(entry.jobId), `${JSON.stringify(entry)}\n`, 0o600);
   };
-  const prune = () => {
-    const files = fsImpl.readdirSync(dir).filter((name) => /^[1-9][0-9]*\.json$/.test(name))
-      .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
-    for (const name of files.slice(0, Math.max(0, files.length - KEEP))) fsImpl.unlinkSync(path.join(dir, name));
+  // Oldest first by start time (job ids restart if Home Base's database is recreated), never the entry
+  // just written.
+  const prune = (keepJobId) => {
+    const entries = fsImpl.readdirSync(dir).filter((name) => /^[1-9][0-9]{0,14}\.json$/.test(name))
+      .map((name) => ({ name, jobId: name.slice(0, -5), startedAt: read(name.slice(0, -5))?.startedAt || '' }))
+      .filter((entry) => entry.jobId !== String(keepJobId))
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    for (const entry of entries.slice(0, Math.max(0, entries.length - (KEEP - 1)))) fsImpl.unlinkSync(path.join(dir, entry.name));
   };
 
   return {
     begin({ jobId, requestId, action, plan, planDigest }) {
       write({ jobId, requestId, action, planDigest, plan, status: 'running', completedOperationIds: [], startedAt: now().toISOString() });
-      prune();
+      prune(jobId);
     },
     progress(jobId, event) {
       const entry = read(jobId);
@@ -51,13 +55,16 @@ function createJournal({ dir = JOURNAL_DIR, fsImpl = fs, now = () => new Date() 
     // Called once at executor start: no plan can still be running in a fresh process.
     markInterrupted() {
       if (!fsImpl.existsSync(dir)) return;
-      for (const name of fsImpl.readdirSync(dir).filter((file) => /^[1-9][0-9]*\.json$/.test(file))) {
-        const entry = read(Number.parseInt(name, 10));
+      for (const name of fsImpl.readdirSync(dir).filter((file) => /^[1-9][0-9]{0,14}\.json$/.test(file))) {
+        const entry = read(name.slice(0, -5));
         if (entry?.status === 'running') write({ ...entry, status: 'interrupted', finishedAt: now().toISOString() });
       }
     },
-    status(jobId) {
-      return read(jobId) || { jobId: String(jobId), status: 'unknown' };
+    // An entry answers only for the run-action request that created it; a reused job id (e.g. after
+    // Home Base's database was recreated) reads as unknown rather than someone else's outcome.
+    status(jobId, requestId) {
+      const entry = read(jobId);
+      return entry && entry.requestId === requestId ? entry : { jobId: String(jobId), status: 'unknown' };
     },
   };
 }

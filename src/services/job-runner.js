@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { runAction, planAction, actionStatus } = require('../executor/client');
 const { buildExecutorInstallRecord } = require('./executor-install');
@@ -111,8 +112,11 @@ class JobRunner {
   // Typed jobs name an action; the executor compiles the plan, generates any secrets, and streams
   // the accepted plan back so the job records exactly what ran. No plan or secret leaves Home Base.
   startTypedActionJob({ kind, target, action, onComplete = null }) {
-    const { id } = this.stateStore.createJob({ kind, target, status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: JSON.stringify({ action }) });
-    this.runTypedActionJob(id, action, onComplete).catch((error) => this.failTypedJob(id, error.message));
+    // The nonce is persisted before anything is sent, so reconciliation can prove a journal entry
+    // belongs to this job (job ids restart if Home Base's database is ever recreated).
+    const requestId = crypto.randomUUID();
+    const { id } = this.stateStore.createJob({ kind, target, status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: JSON.stringify({ action, requestId }) });
+    this.runTypedActionJob(id, action, onComplete, requestId).catch((error) => this.failTypedJob(id, error.message));
     return id;
   }
 
@@ -121,7 +125,7 @@ class JobRunner {
     this.stateStore.updateJob(jobId, { status: 'failed', finishedAt: new Date().toISOString(), errorText: message });
   }
 
-  async runTypedActionJob(jobId, action, onComplete = null) {
+  async runTypedActionJob(jobId, action, onComplete = null, requestId = crypto.randomUUID()) {
     this.stateStore.updateJob(jobId, { status: 'running', startedAt: new Date().toISOString() });
     let acceptedPlan = null;
     const onEvent = (event) => {
@@ -129,7 +133,7 @@ class JobRunner {
         acceptedPlan = event.plan;
         // Stored verbatim (it carries secret ref names, never values) so it re-digests to what ran.
         const verified = digestOperationPlan(event.plan) === event.planDigest;
-        this.stateStore.updateJob(jobId, { planJson: JSON.stringify({ action, planDigest: event.planDigest, digestVerified: verified, operationPlan: event.plan }) });
+        this.stateStore.updateJob(jobId, { planJson: JSON.stringify({ action, requestId, planDigest: event.planDigest, digestVerified: verified, operationPlan: event.plan }) });
         this.stateStore.appendJobLog(jobId, `[executor] plan.accepted ${event.planDigest}${verified ? '' : ' (DIGEST MISMATCH)'}\n`);
         return;
       }
@@ -144,38 +148,46 @@ class JobRunner {
     const planDeadline = (event) => (event.eventType === 'plan.accepted' && Array.isArray(event.plan?.operations)
       ? event.plan.operations.reduce((total, operation) => total + (operation.timeoutMs || 0), 0) + 5 * 60 * 1000
       : null);
-    for (let attempt = 1; ; attempt += 1) {
+    let outcome = null;
+    for (let attempt = 1; !outcome; attempt += 1) {
       try {
-        const result = await this.runExecutorAction(this.executorSocket, { jobId, ...action }, { timeoutMs: 30 * 60 * 1000, onEvent, deadlineFromEvent: planDeadline });
-        await this.settleTypedJob(jobId, action, { status: 'completed', plan: acceptedPlan, result }, { onComplete });
-        return;
+        // The same nonce is reused across busy retries: a rejected attempt never ran.
+        const result = await this.runExecutorAction(this.executorSocket, { jobId, requestId, ...action }, { timeoutMs: 30 * 60 * 1000, onEvent, deadlineFromEvent: planDeadline });
+        outcome = { status: 'completed', plan: acceptedPlan, result };
       } catch (error) {
         // Accepted, then the connection was lost (timeout, reset, restart): the executor keeps going,
-        // so ask it for the real outcome instead of guessing.
+        // so ask it for the real outcome instead of guessing. Only the executor call is classified
+        // here; errors while applying the outcome below are never mistaken for a lost connection.
         if (acceptedPlan && isTransportError(error)) {
           this.stateStore.appendJobLog(jobId, `[executor] lost contact after the plan was accepted (${error.message}); asking the executor for the outcome\n`);
-          const outcome = await this.awaitExecutorOutcome(jobId);
-          await this.settleTypedJob(jobId, action, outcome, { onComplete });
-          return;
+          outcome = await this.awaitExecutorOutcome(jobId, requestId);
+        } else if (error.code === 'EXECUTOR_BUSY' && attempt < this.busyRetry.attempts) {
+          // A background update check briefly holds the executor; nothing ran yet, so waiting is safe.
+          this.stateStore.appendJobLog(jobId, `[executor] busy; retrying (${attempt}/${this.busyRetry.attempts - 1})\n`);
+          await new Promise((resolve) => setTimeout(resolve, this.busyRetry.delayMs));
+        } else {
+          throw error;
         }
-        // A background update check briefly holds the executor; nothing ran yet, so waiting is safe.
-        if (error.code !== 'EXECUTOR_BUSY' || attempt >= this.busyRetry.attempts) throw error;
-        this.stateStore.appendJobLog(jobId, `[executor] busy; retrying (${attempt}/${this.busyRetry.attempts - 1})\n`);
-        await new Promise((resolve) => setTimeout(resolve, this.busyRetry.delayMs));
       }
     }
+    await this.settleTypedJob(jobId, action, outcome, { onComplete });
   }
 
   // Polls the executor's journal until the job leaves "running". Transient socket failures (the
   // executor restarting) are retried within the budget; the budget covers the longest plan.
-  async awaitExecutorOutcome(jobId, { intervalMs = this.reconcile.intervalMs, maxWaitMs = this.reconcile.maxWaitMs } = {}) {
+  async awaitExecutorOutcome(jobId, requestId, { intervalMs = this.reconcile.intervalMs, maxWaitMs = this.reconcile.maxWaitMs } = {}) {
+    if (!requestId) return { status: 'unknown' };
     const deadline = Date.now() + maxWaitMs;
     let lastError = null;
     while (Date.now() < deadline) {
       try {
-        const entry = await this.executorActionStatus(this.executorSocket, jobId, { timeoutMs: 10_000 });
+        const entry = await this.executorActionStatus(this.executorSocket, jobId, requestId, { timeoutMs: 10_000 });
         if (entry.status !== 'running') return entry;
-      } catch (error) { lastError = error; }
+      } catch (error) {
+        // An executor that cannot answer this question at all (older protocol, refused) will not start to.
+        if (['INVALID_REQUEST', 'UNSUPPORTED_PROTOCOL', 'POLICY_DENIED'].includes(error.code)) return { status: 'unreachable', error: error.message };
+        lastError = error;
+      }
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
     return { status: 'unreachable', error: lastError?.message || 'The executor still reports the job as running.' };
@@ -220,9 +232,9 @@ class JobRunner {
     const unfinished = typeof this.stateStore.listUnfinishedJobs === 'function' ? this.stateStore.listUnfinishedJobs() : [];
     const typed = unfinished.filter((job) => !job.dryRun && parsePlanJson(job.planJson)?.action);
     for (const job of typed) {
-      const { action } = parsePlanJson(job.planJson);
+      const { action, requestId } = parsePlanJson(job.planJson);
       this.stateStore.appendJobLog(job.id, '[executor] Home Base restarted while this job was in flight; reconciling with the executor\n');
-      this.awaitExecutorOutcome(job.id)
+      this.awaitExecutorOutcome(job.id, requestId)
         .then((outcome) => this.settleTypedJob(job.id, action, outcome))
         .catch((error) => this.failTypedJob(job.id, `Reconciliation failed: ${error.message}`));
     }

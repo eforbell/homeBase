@@ -29,6 +29,13 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
     return password;
   };
   const asSovereign = (sovereign, spec) => run({ ...spec, uid: sovereign.uid, gid: sovereign.gid });
+  // Integrity reads list archive members (file and table names); keep those out of web-visible job logs.
+  const verifyAsSovereign = async (sovereign, spec) => {
+    try { return await asSovereign(sovereign, spec); } catch (error) {
+      if (error.output) error.output = { ...error.output, stdout: '' };
+      throw error;
+    }
+  };
   // Create tool output files 0600 up front: pg_dump and tar would otherwise create them under the
   // executor's 0022 umask, leaving a database dump world-readable until the job finished.
   const createPrivateFile = (sovereign, target) => asUser(sovereign, () => fsImpl.closeSync(fsImpl.openSync(target, 'wx', 0o600)));
@@ -86,11 +93,11 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       if (layout.database && !present.dump) deny(`Backup ${operation.archiveName} has no database dump; refusing to restore ${layout.app.name} from an incomplete backup.`);
       const checked = [];
       if (layout.database) {
-        await asSovereign(sovereign, { binary: '/usr/bin/pg_restore', args: ['--list', `${archiveDir}/database.dump`], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
+        await verifyAsSovereign(sovereign, { binary: '/usr/bin/pg_restore', args: ['--list', `${archiveDir}/database.dump`], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
         checked.push('database.dump');
       }
       for (const subpath of present.storage) {
-        await asSovereign(sovereign, { binary: '/usr/bin/tar', args: ['-tzf', `${archiveDir}/${subpath}.tgz`], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
+        await verifyAsSovereign(sovereign, { binary: '/usr/bin/tar', args: ['-tzf', `${archiveDir}/${subpath}.tgz`], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
         checked.push(`${subpath}.tgz`);
       }
       const missingStorage = (layout.storage?.subpaths || []).filter((subpath) => !present.storage.includes(subpath));

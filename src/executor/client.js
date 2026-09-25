@@ -57,8 +57,8 @@ function hostStatus(socketPath, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'host-status' }, options);
 }
 
-function actionStatus(socketPath, jobId, options) {
-  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', jobId: String(jobId) }, options);
+function actionStatus(socketPath, jobId, actionRequestId, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', jobId: String(jobId), actionRequestId }, options);
 }
 
 function appUpdateStatus(socketPath, { appId, transport, ref }, options) {
@@ -81,8 +81,10 @@ function actionFields(fields) {
   return { action: fields.action, ...Object.fromEntries(names.map((name) => [name, fields[name]])) };
 }
 
-function runAction(socketPath, { jobId, actor = { kind: 'homebase-admin-session', auditRef: 'local' }, ...fields }, options) {
-  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'run-action', jobId: String(jobId), actor, issuedAt: new Date().toISOString(), ...actionFields(fields) }, options);
+// requestId doubles as the job's nonce: Home Base stores it before sending, and action-status only
+// answers for a matching one.
+function runAction(socketPath, { jobId, requestId = crypto.randomUUID(), actor = { kind: 'homebase-admin-session', auditRef: 'local' }, ...fields }, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId, type: 'run-action', jobId: String(jobId), actor, issuedAt: new Date().toISOString(), ...actionFields(fields) }, options);
 }
 
 function planAction(socketPath, fields, options) {

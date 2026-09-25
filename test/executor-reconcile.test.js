@@ -35,22 +35,28 @@ function memoryStore() {
 
 test('the journal records progress and outcome, marks cut-off plans interrupted, and prunes old entries', () => {
   const fsImpl = createFakeFs({ '/j': { kind: 'dir', uid: 0 } });
-  const journal = createJournal({ dir: '/j', fsImpl, now: () => new Date('2026-09-24T00:00:00.000Z') });
-  journal.begin({ jobId: '7', requestId: 'r', action: { action: 'bootstrap' }, plan, planDigest: 'sha256:d' });
-  journal.progress('7', { eventType: 'operation.completed', operationId: 'a' });
-  journal.progress('7', { eventType: 'operation.output', operationId: 'a' });
-  assert.deepEqual(journal.status('7').completedOperationIds, ['a']);
-  assert.equal(journal.status('7').status, 'running');
-  journal.markInterrupted();
-  assert.equal(journal.status('7').status, 'interrupted', 'a fresh executor process cannot still be running a plan');
-  journal.begin({ jobId: '8', requestId: 'r', action: { action: 'bootstrap' }, plan, planDigest: 'sha256:d' });
-  journal.finish('8', { ok: false, error: 'boom' });
-  assert.deepEqual([journal.status('8').status, journal.status('8').error], ['failed', 'boom']);
-  assert.deepEqual(journal.status('999'), { jobId: '999', status: 'unknown' });
-  assert.deepEqual(journal.status('../etc'), { jobId: '../etc', status: 'unknown' });
+  let clock = 0;
+  const timed = createJournal({ dir: '/j', fsImpl, now: () => new Date(Date.UTC(2026, 8, 24) + (clock += 1000)) });
+  timed.begin({ jobId: '7', requestId: 'r7', action: { action: 'bootstrap' }, plan, planDigest: 'sha256:d' });
+  timed.progress('7', { eventType: 'operation.completed', operationId: 'a' });
+  timed.progress('7', { eventType: 'operation.output', operationId: 'a' });
+  assert.deepEqual(timed.status('7', 'r7').completedOperationIds, ['a']);
+  assert.equal(timed.status('7', 'r7').status, 'running');
+  assert.equal(timed.status('7', 'someone-else').status, 'unknown', 'an entry answers only for the request that created it');
+  timed.markInterrupted();
+  assert.equal(timed.status('7', 'r7').status, 'interrupted', 'a fresh executor process cannot still be running a plan');
+  timed.begin({ jobId: '8', requestId: 'r8', action: { action: 'bootstrap' }, plan, planDigest: 'sha256:d' });
+  timed.finish('8', { ok: false, error: 'boom' });
+  assert.deepEqual([timed.status('8', 'r8').status, timed.status('8', 'r8').error], ['failed', 'boom']);
+  assert.deepEqual(timed.status('999', 'x'), { jobId: '999', status: 'unknown' });
+  assert.deepEqual(timed.status('../etc', 'x'), { jobId: '../etc', status: 'unknown' });
   assert.equal(fsImpl.entries.get('/j/8.json').mode, 0o600);
-  for (let id = 100; id < 320; id += 1) journal.begin({ jobId: String(id), requestId: 'r', action: {}, plan, planDigest: 'x' });
+  for (let id = 300; id < 520; id += 1) timed.begin({ jobId: String(id), requestId: `r${id}`, action: {}, plan, planDigest: 'x' });
   assert.equal(fsImpl.readdirSync('/j').length, 200);
+  // Job ids restart after Home Base's database is recreated: a new, low id must survive pruning.
+  timed.begin({ jobId: '1', requestId: 'fresh', action: {}, plan, planDigest: 'x' });
+  assert.equal(timed.status('1', 'fresh').status, 'running');
+  assert.equal(fsImpl.existsSync('/j/300.json'), false, 'the oldest entry by start time was pruned instead');
 });
 
 test('runAction journals before streaming and keeps running when the peer has gone away', async () => {
@@ -71,19 +77,22 @@ test('runAction journals before streaming and keeps running when the peer has go
   const result = await runAction({ action: 'bootstrap' }, { emit: send, jobId: '5', requestId: 'r' });
   assert.deepEqual(result.completedOperationIds, ['a', 'b']);
   assert.deepEqual(sent, ['plan.accepted'], 'the client vanished after the first event');
-  assert.deepEqual([journal.status('5').status, journal.status('5').completedOperationIds], ['completed', ['a', 'b']]);
+  assert.deepEqual([journal.status('5', 'r').status, journal.status('5', 'r').completedOperationIds], ['completed', ['a', 'b']]);
 });
 
 test('action-status accepts only a job id and answers from the journal', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-status-'));
   const socketPath = path.join(dir, 's.sock');
-  const server = createExecutorServer({ logger: { info() {} }, actionStatus: (jobId) => ({ jobId, status: jobId === '3' ? 'completed' : 'unknown' }) });
+  const nonce = '11111111-1111-4111-8111-111111111111';
+  const server = createExecutorServer({ logger: { info() {} }, actionStatus: (jobId, requestId) => ({ jobId, status: jobId === '3' && requestId === nonce ? 'completed' : 'unknown' }) });
   await new Promise((resolve) => server.listen(socketPath, resolve));
   try {
-    assert.equal((await actionStatus(socketPath, 3)).status, 'completed');
-    assert.equal((await actionStatus(socketPath, 4)).status, 'unknown');
-    await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', jobId: '../x' }), (error) => error.code === 'INVALID_REQUEST');
-    await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', jobId: '3', plan: {} }), (error) => error.code === 'INVALID_REQUEST');
+    assert.equal((await actionStatus(socketPath, 3, nonce)).status, 'completed');
+    assert.equal((await actionStatus(socketPath, 3, crypto.randomUUID())).status, 'unknown');
+    assert.equal((await actionStatus(socketPath, 4, nonce)).status, 'unknown');
+    for (const bad of [{ jobId: '../x', actionRequestId: nonce }, { jobId: '3', actionRequestId: nonce, plan: {} }, { jobId: '3' }, { jobId: '1'.repeat(16), actionRequestId: nonce }]) {
+      await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', ...bad }), (error) => error.code === 'INVALID_REQUEST', JSON.stringify(bad));
+    }
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
@@ -125,13 +134,13 @@ test('an executor restart mid-plan fails the job with re-run guidance, keeping a
 test('startup reconciliation settles jobs that finished while Home Base was down', async () => {
   const store = memoryStore();
   const installAction = { action: 'install', appId: 'home-source', ref: 'main', transport: 'https', site: { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' } };
-  store.createJob({ kind: 'install', target: 'home-source', status: 'running', dryRun: false, planJson: JSON.stringify({ action: installAction }) });
-  store.createJob({ kind: 'backup', target: 'home-source', status: 'queued', dryRun: false, planJson: JSON.stringify({ action: { action: 'backup', appId: 'home-source' } }) });
+  store.createJob({ kind: 'install', target: 'home-source', status: 'running', dryRun: false, planJson: JSON.stringify({ action: installAction, requestId: 'nonce-1' }) });
+  store.createJob({ kind: 'backup', target: 'home-source', status: 'queued', dryRun: false, planJson: JSON.stringify({ action: { action: 'backup', appId: 'home-source' }, requestId: 'nonce-2' }) });
   store.createJob({ kind: 'install', target: 'x', status: 'running', dryRun: false, planJson: JSON.stringify({ steps: [] }) });
   const runner = new JobRunner(store, {
     reconcile: { intervalMs: 5, maxWaitMs: 500 },
     readinessOptions: { attempts: 1, fetchImpl: async () => ({ ok: true, status: 200 }) },
-    executorActionStatus: async (socket, jobId) => (String(jobId) === '1' ? { status: 'completed', plan: { operations: [] }, completedOperationIds: [] } : { status: 'unknown' }),
+    executorActionStatus: async (socket, jobId, requestId) => (String(jobId) === '1' && requestId === 'nonce-1' ? { status: 'completed', plan: { operations: [] }, completedOperationIds: [] } : { status: 'unknown' }),
   });
   assert.deepEqual(runner.reconcileTypedJobs(), [1, 2], 'legacy (untyped) jobs are left alone');
   for (let i = 0; i < 100 && (store.jobs[1].status === 'running' || store.jobs[2].status === 'queued'); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -141,4 +150,53 @@ test('startup reconciliation settles jobs that finished while Home Base was down
   assert.equal(store.jobs[2].status, 'failed');
   assert.match(store.jobs[2].errorText, /never started/);
   assert.equal(store.jobs[3].status, 'running');
+});
+
+test('the nonce is stored before sending and reused across busy retries and status polling', async () => {
+  const store = memoryStore();
+  const seen = [];
+  let calls = 0;
+  const runner = new JobRunner(store, {
+    busyRetry: { attempts: 3, delayMs: 1 },
+    reconcile: { intervalMs: 5, maxWaitMs: 500 },
+    runExecutorAction: async (socket, fields, { onEvent }) => {
+      seen.push(['run', fields.requestId, JSON.parse(store.jobs[fields.jobId].planJson).requestId]);
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('busy'), { code: 'EXECUTOR_BUSY' });
+      onEvent({ eventType: 'plan.accepted', planDigest: 'sha256:d', plan });
+      throw new Error('Executor request timed out.');
+    },
+    executorActionStatus: async (socket, jobId, requestId) => { seen.push(['status', requestId]); return { status: 'completed', plan, completedOperationIds: [] }; },
+  });
+  const id = runner.startTypedBootstrapJob();
+  for (let i = 0; i < 100 && store.jobs[id].status !== 'completed'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  const nonce = JSON.parse(store.jobs[id].planJson).requestId;
+  assert.match(nonce, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(seen, [['run', nonce, nonce], ['run', nonce, nonce], ['status', nonce]]);
+});
+
+test('a failure while applying a successful outcome is not mistaken for a lost connection', async () => {
+  const store = memoryStore();
+  let statusCalls = 0;
+  const runner = new JobRunner(store, {
+    runExecutorAction: async (socket, fields, { onEvent }) => { onEvent({ eventType: 'plan.accepted', planDigest: 'd', plan }); return { completedOperationIds: [] }; },
+    executorActionStatus: async () => { statusCalls += 1; return { status: 'completed' }; },
+  });
+  const id = runner.startTypedActionJob({ kind: 'bootstrap', target: 'local-host', action: { action: 'bootstrap' }, onComplete: () => { throw new Error('database is locked'); } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(statusCalls, 0, 'no re-poll and no second settle');
+  assert.equal(store.jobs[id].status, 'failed');
+  assert.match(store.jobs[id].errorText, /database is locked/);
+});
+
+test('status polling stops at once when the executor cannot answer the question', async () => {
+  const runner = new JobRunner(memoryStore(), {
+    reconcile: { intervalMs: 5, maxWaitMs: 60_000 },
+    executorActionStatus: async () => { throw Object.assign(new Error('Unsupported request type.'), { code: 'INVALID_REQUEST' }); },
+  });
+  const started = Date.now();
+  const outcome = await runner.awaitExecutorOutcome('3', 'nonce');
+  assert.equal(outcome.status, 'unreachable');
+  assert.ok(Date.now() - started < 1000);
+  assert.deepEqual(await runner.awaitExecutorOutcome('3', undefined), { status: 'unknown' }, 'jobs without a nonce cannot be matched');
 });

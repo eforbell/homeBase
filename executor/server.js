@@ -97,7 +97,8 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
         }
         if (request.type === 'action-status') {
           if (!actionStatus) throw new ProtocolError('POLICY_DENIED', 'Action status is not enabled.');
-          return finish(null, result({ requestId: request.requestId, ok: true, result: actionStatus(request.jobId) }));
+          writeAudit(logger, `accepted request type=action-status jobId=${request.jobId}`);
+          return finish(null, result({ requestId: request.requestId, ok: true, result: actionStatus(request.jobId, request.actionRequestId) }));
         }
         if (request.type === 'host-status') {
           if (!collectHostStatus) throw new ProtocolError('POLICY_DENIED', 'Host status is not enabled.');
@@ -118,7 +119,7 @@ function listenSystemd({ logger = console } = {}) {
   const journal = createJournal();
   journal.markInterrupted();
   const runAction = createRunAction({ handlers, journal });
-  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker(), actionStatus: (jobId) => journal.status(jobId) });
+  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker(), actionStatus: (jobId, actionRequestId) => journal.status(jobId, actionRequestId) });
   if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
   server.listen({ fd: 3 });
   return server;

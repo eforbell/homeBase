@@ -212,3 +212,9 @@ test('a safety backup is recorded as soon as it exists, even if the restore then
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(deleted, ['installation:home-source'], 'backup records survive an uninstall that keeps backups');
 });
+
+test('verify failures keep archive listings out of job logs', async () => {
+  const { fsImpl } = harness({ [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'garbage', uid: 1001 } });
+  const handlers = createLifecycleHandlers({ fsImpl, asUser: (user, fn) => fn(), lookupUser: () => SOVEREIGN, run: async () => { throw Object.assign(new Error('exit 1'), { code: 'OPERATION_FAILED', output: { stdout: 'TABLE public secret_table_name', stderr: 'pg_restore: error: corrupt' } }); } });
+  await assert.rejects(() => handlers['backup.verify'](op('backup.verify', { risk: 'read', archiveName: '20260924T101010Z' }), { layout: SOURCE }), (error) => error.output.stdout === '' && /corrupt/.test(error.output.stderr));
+});
