@@ -18,6 +18,9 @@ function buildPublicBase(config = {}) {
   return `https://${hostname}.${domain}`;
 }
 
+// helper-failing is deliberately excluded: a failed timer run stays flagged until
+// its next run (up to a week for weekly timers), so a 15-minute cooldown would page
+// repeatedly for one failure. It surfaces on the dashboard instead.
 function isCriticalRuntimeStatus(status) {
   return ['service-down', 'http-failing', 'readiness-failing'].includes(String(status || ''));
 }

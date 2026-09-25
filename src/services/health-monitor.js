@@ -7,8 +7,9 @@ function asTrimmedString(value, fallback = '') {
   return next || fallback;
 }
 
+// First character excludes '-' and '.' so a name can never be parsed as a systemctl option.
 function isSafeSystemdUnitName(value) {
-  return /^[A-Za-z0-9@%:_.-]+$/.test(String(value || ''));
+  return /^[A-Za-z0-9@_][A-Za-z0-9@%:_.-]*$/.test(String(value || ''));
 }
 
 function statusFromHttpCode(statusCode) {
@@ -42,30 +43,35 @@ function defaultProbeServiceState(serviceName) {
   };
 }
 
-function defaultProbeUnitFailed(unitName) {
-  const safeName = asTrimmedString(unitName);
-  if (!safeName || !isSafeSystemdUnitName(safeName)) {
-    return {
-      state: 'unknown',
-      ok: false,
-      message: 'Invalid or missing unit name',
-    };
-  }
+const UNIT_TYPE_SUFFIX = /\.(service|timer|socket|target|path|mount|slice|scope)$/;
 
-  const cmd = `command -v systemctl >/dev/null 2>&1 && systemctl is-failed ${safeName} || true`;
-  const result = spawnSync('/bin/bash', ['-lc', cmd], {
+// Returns Map<unitName, { loadState, activeState }> from one `systemctl show` call.
+// Units missing from the map could not be probed (no systemctl, timeout, bad name).
+function defaultProbeUnits(unitNames) {
+  const names = (unitNames || []).map((name) => asTrimmedString(name)).filter(isSafeSystemdUnitName);
+  const states = new Map();
+  if (!names.length) return states;
+
+  const result = spawnSync('systemctl', ['show', '--property=LoadState,ActiveState', '--', ...names], {
     encoding: 'utf8',
     timeout: 3000,
   });
-  const state = asTrimmedString(result.stdout, 'unknown');
-  const ok = state !== 'failed';
-  const message = ok ? 'No failed state reported' : 'Unit is in failed state';
+  if (result.error || result.status !== 0) return states;
 
-  return {
-    state,
-    ok,
-    message,
-  };
+  // systemctl prints one blank-line-separated block per argument, in argument order.
+  const blocks = String(result.stdout || '').trim().split(/\n\s*\n/);
+  if (blocks.length !== names.length) return states;
+  blocks.forEach((block, index) => {
+    const props = {};
+    for (const line of block.split('\n')) {
+      const eq = line.indexOf('=');
+      if (eq > 0) props[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+    }
+    if (props.LoadState && props.ActiveState) {
+      states.set(names[index], { loadState: props.LoadState, activeState: props.ActiveState });
+    }
+  });
+  return states;
 }
 
 function requestWithTimeout(url, { timeoutMs = 2500, parseJson = false } = {}) {
@@ -170,54 +176,68 @@ function readOnboardingReadyValue(payload, readyWhen) {
   return null;
 }
 
-function buildHelperUnitProbes({ catalogEntry, probeServiceState, probeUnitFailed }) {
+function listHelperUnits(catalogEntry) {
   const sidecars = Array.isArray(catalogEntry?.sidecars) ? catalogEntry.sidecars : [];
   const timers = Array.isArray(catalogEntry?.timers) ? catalogEntry.timers : [];
-  const helperUnits = [];
+  const units = [];
 
   for (const sidecar of sidecars) {
-    const unitName = asTrimmedString(sidecar?.name);
-    if (!unitName) continue;
-    const probe = probeServiceState(unitName);
-    helperUnits.push({
+    const name = asTrimmedString(sidecar?.name);
+    if (!name) continue;
+    units.push({
       kind: 'sidecar-service',
-      unitName,
-      label: sidecar?.description || unitName,
-      state: probe.state,
-      ok: probe.ok,
-      message: probe.message,
+      unitName: UNIT_TYPE_SUFFIX.test(name) ? name : `${name}.service`,
+      label: sidecar?.description || name,
     });
   }
 
   for (const timer of timers) {
     const timerUnitName = asTrimmedString(timer?.timerName || (timer?.serviceName ? `${timer.serviceName}.timer` : ''));
     if (timerUnitName) {
-      const timerProbe = probeServiceState(timerUnitName);
-      helperUnits.push({
+      units.push({
         kind: 'timer-unit',
         unitName: timerUnitName,
         label: timer?.description ? `${timer.description} schedule` : timerUnitName,
-        state: timerProbe.state,
-        ok: timerProbe.ok,
-        message: timerProbe.message,
       });
     }
-
-    const timerServiceUnit = asTrimmedString(timer?.serviceName ? `${timer.serviceName}.service` : '');
-    if (timerServiceUnit) {
-      const failureProbe = probeUnitFailed(timerServiceUnit);
-      helperUnits.push({
+    const serviceName = asTrimmedString(timer?.serviceName);
+    if (serviceName) {
+      units.push({
         kind: 'timer-service-result',
-        unitName: timerServiceUnit,
-        label: timer?.description ? `${timer.description} last run` : timerServiceUnit,
-        state: failureProbe.state,
-        ok: failureProbe.ok,
-        message: failureProbe.message,
+        unitName: `${serviceName}.service`,
+        label: timer?.description ? `${timer.description} last run` : `${serviceName}.service`,
       });
     }
   }
 
-  return helperUnits;
+  return units;
+}
+
+// ok: true = healthy, false = failing (drives helper-failing), null = no verdict
+// (state unavailable, or the catalog names a unit this install never created).
+function classifyHelperUnit(unit, probed) {
+  if (!probed) {
+    return { ...unit, state: 'unknown', ok: null, message: 'Unit state unavailable' };
+  }
+  if (probed.loadState === 'not-found') {
+    return { ...unit, state: 'not-deployed', ok: null, message: 'Unit not installed yet; update or reinstall the app to create it' };
+  }
+  const state = probed.activeState;
+  if (unit.kind === 'timer-service-result') {
+    return state === 'failed'
+      ? { ...unit, state, ok: false, message: `Last run failed; see journalctl -u ${unit.unitName}` }
+      : { ...unit, state, ok: true, message: 'No failed run reported' };
+  }
+  return state === 'active'
+    ? { ...unit, state, ok: true, message: 'Active' }
+    : { ...unit, state, ok: false, message: `Unit ${state}; see journalctl -u ${unit.unitName}` };
+}
+
+function buildHelperUnitProbes({ catalogEntry, probeUnits }) {
+  const units = listHelperUnits(catalogEntry);
+  if (!units.length) return [];
+  const probed = probeUnits(units.map((unit) => unit.unitName)) || new Map();
+  return units.map((unit) => classifyHelperUnit(unit, probed.get(unit.unitName)));
 }
 
 function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessProbe, readinessProbe, onboarding, helperUnits }) {
@@ -293,11 +313,12 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
     };
   }
 
-  if (helperUnitStates.some((unit) => unit && unit.ok === false)) {
+  const failingHelpers = helperUnitStates.filter((unit) => unit && unit.ok === false);
+  if (failingHelpers.length) {
     return {
       runtimeStatus: 'helper-failing',
       severity: 'warning',
-      recoveryHint: 'A helper unit is failing (timer or sidecar). Open app detail and inspect helper statuses.',
+      recoveryHint: `Helper unit failing: ${failingHelpers.map((unit) => unit.unitName).join(', ')}. Check journalctl for the unit. A failed timer run stays flagged until its next successful run or \`systemctl reset-failed\`.`,
       service,
       liveness,
       readiness,
@@ -331,7 +352,7 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
   };
 }
 
-async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeUnitFailed = defaultProbeUnitFailed, probeHttp, probeHttpJson = defaultProbeHttpJson, nowIso }) {
+async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeUnits = defaultProbeUnits, probeHttp, probeHttpJson = defaultProbeHttpJson, nowIso }) {
   const healthConfig = catalogEntry?.network?.health || null;
   const serviceProbe = probeServiceState(install?.serviceName);
   const onboardingConfig = catalogEntry?.onboarding || null;
@@ -361,11 +382,9 @@ async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, 
     };
   }
 
-  const helperUnits = buildHelperUnitProbes({
-    catalogEntry,
-    probeServiceState,
-    probeUnitFailed,
-  });
+  const helperUnits = install?.status === 'installed'
+    ? buildHelperUnitProbes({ catalogEntry, probeUnits })
+    : [];
 
   const runtime = evaluateRuntimeState({
     install,
@@ -403,10 +422,10 @@ function computeInstallationsKey(installations) {
 }
 
 class HealthMonitor {
-  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeUnitFailed = defaultProbeUnitFailed, probeHttp = defaultProbeHttp, probeHttpJson = defaultProbeHttpJson, ttlMs = 15000, now = () => Date.now() } = {}) {
+  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeUnits = defaultProbeUnits, probeHttp = defaultProbeHttp, probeHttpJson = defaultProbeHttpJson, ttlMs = 15000, now = () => Date.now() } = {}) {
     this.catalogById = catalogById;
     this.probeServiceState = probeServiceState;
-    this.probeUnitFailed = probeUnitFailed;
+    this.probeUnits = probeUnits;
     this.probeHttp = probeHttp;
     this.probeHttpJson = probeHttpJson;
     this.ttlMs = ttlMs;
@@ -432,7 +451,7 @@ class HealthMonitor {
       install,
       catalogEntry: this.catalogById.get(install.appId) || null,
       probeServiceState: this.probeServiceState,
-      probeUnitFailed: this.probeUnitFailed,
+      probeUnits: this.probeUnits,
       probeHttp: this.probeHttp,
       probeHttpJson: this.probeHttpJson,
       nowIso,
@@ -458,7 +477,9 @@ module.exports = {
   HealthMonitor,
   buildAppHealthRecord,
   defaultProbeServiceState,
-  defaultProbeUnitFailed,
+  defaultProbeUnits,
+  isSafeSystemdUnitName,
+  listHelperUnits,
   defaultProbeHttp,
   defaultProbeHttpJson,
   evaluateRuntimeState,
