@@ -226,6 +226,26 @@ test('installer keeps the release tag separate from os-release VERSION metadata'
   assert.match(result.stdout, new RegExp(`Home Base ${fixture.version.replaceAll('.', '\\.')} installed`));
 });
 
+test('installer accepts Ubuntu 22.04 derivatives such as Linux Mint 21 and refuses older bases', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-mint-'));
+  const fixture = createReleaseFixture(tempDir);
+  const osRelease = path.join(tempDir, 'os-release');
+  const write = (lines) => fs.writeFileSync(osRelease, `${lines.join('\n')}\n`);
+  const env = installerEnv(tempDir, fixture, { HOMEBASE_OS_ID: '', HOMEBASE_OS_VERSION_ID: '', HOMEBASE_OS_RELEASE_FILE: osRelease });
+  // numenor's os-release.
+  write(['NAME="Linux Mint"', 'VERSION="21.3 (Virginia)"', 'ID=linuxmint', 'ID_LIKE="ubuntu debian"', 'VERSION_ID="21.3"', 'UBUNTU_CODENAME=jammy']);
+  const mint = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.equal(mint.status, 0, mint.stderr);
+
+  write(['ID=linuxmint', 'ID_LIKE="ubuntu debian"', 'VERSION_ID="20.3"', 'UBUNTU_CODENAME=focal']);
+  const old = runInstaller(['--version', fixture.version, '--no-start'], env);
+  assert.notEqual(old.status, 0);
+  assert.match(old.stderr, /Ubuntu base focal \(22\.04 jammy or newer required\)/);
+
+  write(['ID=ubuntu', 'VERSION_ID="20.04"']);
+  assert.match(runInstaller(['--version', fixture.version, '--no-start'], env).stderr, /Ubuntu 22\.04 or newer is required/);
+});
+
 test('installer rerun preserves existing environment state', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-rerun-'));
   const fixture = createReleaseFixture(tempDir);

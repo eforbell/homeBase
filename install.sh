@@ -272,26 +272,53 @@ if { [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ]; } && [ "$TEST_MODE" !=
   log 'executor quiesced for repair; new jobs wait until it finishes'
 fi
 
+# Supported: Ubuntu 22.04+, Debian 12+, and derivatives built on them (Linux Mint 21/22, ...), which are
+# recognised by their Ubuntu or Debian base codename. Same rule as src/operations/host-support.js.
 OS_ID="${HOMEBASE_OS_ID:-}"
 OS_VERSION_ID="${HOMEBASE_OS_VERSION_ID:-}"
+OS_ID_LIKE="${HOMEBASE_OS_ID_LIKE:-}"
+OS_UBUNTU_CODENAME="${HOMEBASE_OS_UBUNTU_CODENAME:-}"
+OS_DEBIAN_CODENAME="${HOMEBASE_OS_DEBIAN_CODENAME:-}"
+os_release_field() {
+  awk -F= -v key="$1" '$1 == key { value=substr($0, index($0, "=")+1); gsub(/^"|"$/, "", value); print value; exit }' "$2"
+}
 if [ -z "$OS_ID" ]; then
   OS_RELEASE_FILE="${HOMEBASE_OS_RELEASE_FILE:-/etc/os-release}"
   [ -r "$OS_RELEASE_FILE" ] || die 'supported Ubuntu or Debian host required'
-  OS_ID="$(awk -F= '$1 == "ID" { value=substr($0, index($0, "=")+1); gsub(/^"|"$/, "", value); print value; exit }' "$OS_RELEASE_FILE")"
-  OS_VERSION_ID="$(awk -F= '$1 == "VERSION_ID" { value=substr($0, index($0, "=")+1); gsub(/^"|"$/, "", value); print value; exit }' "$OS_RELEASE_FILE")"
+  OS_ID="$(os_release_field ID "$OS_RELEASE_FILE")"
+  OS_VERSION_ID="$(os_release_field VERSION_ID "$OS_RELEASE_FILE")"
+  OS_ID_LIKE="$(os_release_field ID_LIKE "$OS_RELEASE_FILE")"
+  OS_UBUNTU_CODENAME="$(os_release_field UBUNTU_CODENAME "$OS_RELEASE_FILE")"
+  OS_DEBIAN_CODENAME="$(os_release_field DEBIAN_CODENAME "$OS_RELEASE_FILE")"
+  [ -n "$OS_DEBIAN_CODENAME" ] || OS_DEBIAN_CODENAME="$(os_release_field VERSION_CODENAME "$OS_RELEASE_FILE")"
 fi
 
 OS_MAJOR="${OS_VERSION_ID%%.*}"
-printf '%s\n' "$OS_MAJOR" | grep -Eq '^[0-9]+$' || die "invalid operating-system version: ${OS_VERSION_ID:-unknown}"
 case "$OS_ID" in
-  ubuntu)
-    [ "${OS_MAJOR:-0}" -ge 24 ] || die 'Ubuntu 24.04 or newer is required'
-    ;;
-  debian)
-    [ "${OS_MAJOR:-0}" -ge 12 ] || die 'Debian 12 or newer is required'
+  ubuntu|debian)
+    printf '%s\n' "$OS_MAJOR" | grep -Eq '^[0-9]+$' || die "invalid operating-system version: ${OS_VERSION_ID:-unknown}"
+    if [ "$OS_ID" = 'ubuntu' ]; then
+      [ "$OS_MAJOR" -ge 22 ] || die 'Ubuntu 22.04 or newer is required'
+    else
+      [ "$OS_MAJOR" -ge 12 ] || die 'Debian 12 or newer is required'
+    fi
     ;;
   *)
-    die "unsupported operating system: ${OS_ID:-unknown}"
+    case " ${OS_ID_LIKE} " in
+      *' ubuntu '*)
+        case "$OS_UBUNTU_CODENAME" in
+          jammy|noble|oracular|plucky|questing) ;;
+          *) die "unsupported ${OS_ID:-unknown} release: Ubuntu base ${OS_UBUNTU_CODENAME:-unknown} (22.04 jammy or newer required)" ;;
+        esac
+        ;;
+      *' debian '*)
+        case "$OS_DEBIAN_CODENAME" in
+          bookworm|trixie) ;;
+          *) die "unsupported ${OS_ID:-unknown} release: Debian base ${OS_DEBIAN_CODENAME:-unknown} (12 bookworm or newer required)" ;;
+        esac
+        ;;
+      *) die "unsupported operating system: ${OS_ID:-unknown}" ;;
+    esac
     ;;
 esac
 
@@ -333,9 +360,22 @@ fi
 
 if [ "$TEST_MODE" != '1' ]; then
   export DEBIAN_FRONTEND=noninteractive
-  log 'installing runtime prerequisites'
-  apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl tar python3 nodejs npm ${SOURCE_DIR:+git}
+  # Only what is missing: NodeSource's nodejs already bundles npm (apt's npm package conflicts with it),
+  # and an existing Node 18+ from any source is kept.
+  MISSING_PACKAGES=''
+  for package in ca-certificates curl tar python3 ${SOURCE_DIR:+git}; do
+    dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii' || MISSING_PACKAGES="$MISSING_PACKAGES $package"
+  done
+  command -v node >/dev/null 2>&1 || MISSING_PACKAGES="$MISSING_PACKAGES nodejs"
+  command -v npm >/dev/null 2>&1 || MISSING_PACKAGES="$MISSING_PACKAGES npm"
+  if [ -n "$MISSING_PACKAGES" ]; then
+    log "installing runtime prerequisites:${MISSING_PACKAGES}"
+    apt-get update
+    # shellcheck disable=SC2086
+    apt-get install -y --no-install-recommends $MISSING_PACKAGES
+  else
+    log 'runtime prerequisites already installed'
+  fi
 fi
 
 for command in curl tar python3 node npm ${SOURCE_DIR:+git}; do

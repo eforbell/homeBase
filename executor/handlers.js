@@ -6,6 +6,7 @@ const { runApproved } = require('./spawn');
 const { catalog } = require('../src/catalog');
 const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
 const { MIRROR_ROOT } = require('../src/operations/app-layout');
+const { hostSupport } = require('../src/operations/host-support');
 const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
@@ -392,19 +393,38 @@ function directoryFor(operation, layout) {
 
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
+  // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
+  const missingPackages = async (packages, timeoutMs) => {
+    let stdout = '';
+    try {
+      stdout = (await run({ binary: '/usr/bin/dpkg-query', args: ['-W', '-f=${Package} ${db:Status-Abbrev}\n', ...packages], ...rootIdentity, timeoutMs, env: ROOT_ENV })).stdout;
+    } catch (error) {
+      if (error.code !== 'OPERATION_FAILED') throw error;
+      stdout = error.output?.stdout || '';
+    }
+    const installed = new Set(String(stdout).split('\n').map((line) => line.trim().split(/\s+/)).filter(([, status]) => status === 'ii').map(([name]) => name));
+    // NodeSource's nodejs ships npm itself; apt's npm package would conflict with it.
+    if (installed.has('nodejs') && fsImpl.existsSync('/usr/bin/npm')) installed.add('npm');
+    return packages.filter((pkg) => !installed.has(pkg));
+  };
   return {
     'host.assert-debian-family': async () => {
       if (platform !== 'linux') deny('Executor requires a Linux Debian-family host.');
-      const content = fsImpl.readFileSync('/etc/os-release', 'utf8');
-      if (!/^ID=(ubuntu|debian)$/m.test(content)) deny('Executor requires Ubuntu or Debian.');
-      return 'supported Debian-family host';
+      const host = hostSupport(fsImpl.readFileSync('/etc/os-release', 'utf8'));
+      if (!host.supported) deny(`Executor requires Ubuntu 22.04+, Debian 12+, or a derivative of them; found ${host.name}.`);
+      return `supported host: ${host.name} (${host.base} base)`;
     },
     'package.ensure': async (operation, { layout } = {}) => {
       const allowed = new Set([...BOOTSTRAP_PACKAGES, ...(layout?.packages || [])]);
       if (!operation.packages.every((pkg) => allowed.has(pkg))) deny('Package is not in the compiled policy allowlist.');
+      // Only missing packages go to apt. Reinstalling present ones is at best a no-op and at worst
+      // breaks the host: NodeSource's nodejs bundles npm (apt's npm then conflicts), and a PGDG host
+      // would pull a newer PostgreSQL meta-version.
+      const missing = await missingPackages(operation.packages, operation.timeoutMs);
+      if (!missing.length) return `all ${operation.packages.length} approved packages already installed`;
       if (operation.updateCache) await run({ binary: '/usr/bin/apt-get', args: ['update'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: APT_ENV });
-      await run({ binary: '/usr/bin/apt-get', args: ['install', '--yes', '--no-install-recommends', ...APT_DPKG_OPTIONS, ...operation.packages], ...rootIdentity, timeoutMs: operation.timeoutMs, env: APT_ENV });
-      return `ensured ${operation.packages.length} approved packages`;
+      await run({ binary: '/usr/bin/apt-get', args: ['install', '--yes', '--no-install-recommends', ...APT_DPKG_OPTIONS, ...missing], ...rootIdentity, timeoutMs: operation.timeoutMs, env: APT_ENV });
+      return `installed ${missing.join(', ')} (${operation.packages.length - missing.length} already present)`;
     },
     'identity.ensure-user': async (operation) => {
       if (operation.user !== 'sovereign') deny('Only the sovereign identity may be created.');
@@ -449,7 +469,9 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         await git(['clone', '--origin', 'origin', '--no-checkout', mirror, destination]);
       } else {
         if (!existingCheckout.isDirectory()) deny(`${label} checkout metadata is not a directory.`);
-        const status = await git(['-C', destination, 'status', '--porcelain']);
+        // Untracked files (runtime caches, operator notes) never block: a fast-forward cannot overwrite
+        // them, and git refuses on its own if an incoming commit adds the same path.
+        const status = await git(['-C', destination, 'status', '--porcelain', '--untracked-files=no']);
         if (String(status.stdout || '').trim()) deny(`${label} checkout is dirty; refusing to overwrite operator changes.`);
         await git(['-C', destination, 'remote', 'set-url', 'origin', mirror]);
         await git(['-C', destination, 'fetch', 'origin']);
@@ -485,6 +507,10 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         if (layout.runtime.kind !== 'python') deny('Only Python apps have a virtualenv.');
         const current = String((await runApp(['/usr/bin/python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'])).stdout || '').trim();
         if (!/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/.test(current)) deny('Could not read the system Python version.');
+        const { minVersion } = layout.runtime.python;
+        const [major, minor] = current.split('.').map(Number);
+        const [needMajor, needMinor] = String(minVersion || '0.0').split('.').map(Number);
+        if (major < needMajor || (major === needMajor && minor < needMinor)) deny(`${layout.app.name} needs Python ${minVersion} or newer; this host has ${current}.`);
         const existing = asUser(sovereign, () => ({
           config: readSmallFileNoFollow(fsImpl, `${layout.checkout}/.venv/pyvenv.cfg`, 4096),
           python: Boolean(lstatOrNull(fsImpl, venvPython)),

@@ -25,16 +25,38 @@ function recordingRun(calls, respond = () => ({ stdout: '' })) {
   return async (input) => { calls.push(input); return respond(input); };
 }
 
+test('package handler installs only missing packages and treats NodeSource npm as present', async () => {
+  const calls = [];
+  // Like erebor: everything installed except npm, which NodeSource's nodejs provides (dpkg shows rc).
+  const status = 'git ii \nnginx ii \nnodejs ii \nnpm rc \npostgresql ii \n';
+  const fsImpl = createFakeFs({ '/usr/bin/npm': 'x' });
+  const handlers = createBaseHandlers({ fsImpl, run: recordingRun(calls, (input) => ({ stdout: input.binary === '/usr/bin/dpkg-query' ? status : '' })) });
+  const result = await handlers['package.ensure'](base('package.ensure', { packages: ['git', 'nginx', 'nodejs', 'npm', 'postgresql'], updateCache: true }), { layout: LAYOUT });
+  assert.match(result, /already installed/);
+  assert.deepEqual(calls.map((call) => call.binary), ['/usr/bin/dpkg-query']);
+
+  // Unknown names make dpkg-query exit non-zero; the known ones are still read from its stdout.
+  const partial = [];
+  const failing = async (input) => {
+    partial.push(input);
+    if (input.binary === '/usr/bin/dpkg-query') throw Object.assign(new Error('exit 1'), { code: 'OPERATION_FAILED', output: { stdout: 'git ii \n' } });
+    return { stdout: '' };
+  };
+  await createBaseHandlers({ fsImpl: createFakeFs(), run: failing })['package.ensure'](base('package.ensure', { packages: ['git', 'npm'], updateCache: false }), { layout: LAYOUT });
+  assert.deepEqual(partial.at(-1).args.slice(-1), ['npm'], 'npm without /usr/bin/npm is installed');
+});
+
 test('package handler runs apt non-interactively with fixed argv and rejects packages outside policy', async () => {
   const calls = [];
   const handlers = createBaseHandlers({ run: recordingRun(calls) });
   await handlers['package.ensure'](base('package.ensure', { packages: ['git', 'openssh-client'], updateCache: true }), { layout: LAYOUT });
   assert.deepEqual(calls.map((call) => [call.binary, call.args]), [
+    ['/usr/bin/dpkg-query', ['-W', '-f=${Package} ${db:Status-Abbrev}\n', 'git', 'openssh-client']],
     ['/usr/bin/apt-get', ['update']],
     ['/usr/bin/apt-get', ['install', '--yes', '--no-install-recommends', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold', 'git', 'openssh-client']],
   ]);
   for (const call of calls) {
-    assert.equal(call.env.DEBIAN_FRONTEND, 'noninteractive');
+    if (call.binary === '/usr/bin/apt-get') assert.equal(call.env.DEBIAN_FRONTEND, 'noninteractive');
     assert.equal(call.uid, 0);
   }
   await assert.rejects(() => handlers['package.ensure'](base('package.ensure', { packages: ['git;reboot'], updateCache: false }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
@@ -125,7 +147,7 @@ test('git handler refreshes the mirror, fast-forwards an existing checkout, and 
   assert.deepEqual(calls.map((call) => [call.uid, call.args]), [
     [0, [...ROOT_GIT, '-C', MIRROR, 'remote', 'set-url', 'origin', HTTPS_REPO]],
     [0, [...ROOT_GIT, '-C', MIRROR, 'fetch', '--prune', 'origin']],
-    [1001, ['-C', DINNER, 'status', '--porcelain']],
+    [1001, ['-C', DINNER, 'status', '--porcelain', '--untracked-files=no']],
     [1001, ['-C', DINNER, 'remote', 'set-url', 'origin', MIRROR]],
     [1001, ['-C', DINNER, 'fetch', 'origin']],
     [1001, ['-C', DINNER, 'merge', '--ff-only', 'origin/main']],
