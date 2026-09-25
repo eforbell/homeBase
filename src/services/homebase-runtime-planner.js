@@ -1,8 +1,40 @@
-function renderServiceUnit({ appDir, envFile, user, port }) {
+const SAFE_RUNTIME_USER_PATTERN = /^[a-z_][a-z0-9_-]*$/;
+const SAFE_PATH_PATTERN = /^\/[A-Za-z0-9._/-]+$/;
+
+function fail(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  throw error;
+}
+
+function assertSafeRuntimeUser(value) {
+  if (!SAFE_RUNTIME_USER_PATTERN.test(value)) {
+    fail('INVALID_RUNTIME_USER', 'runtimeUser must be a valid system account name');
+  }
+}
+
+function assertSafeAbsolutePath(name, value) {
+  if (!SAFE_PATH_PATTERN.test(value) || value.split('/').includes('..')) {
+    fail('INVALID_RUNTIME_PATH', `${name} must be an absolute path containing only letters, numbers, dots, dashes, underscores, and slashes`);
+  }
+}
+
+function assertSingleLine(name, value) {
+  if (String(value).includes('\0') || /[\r\n]/.test(String(value))) {
+    fail('INVALID_RUNTIME_VALUE', `${name} must be a single-line value`);
+  }
+}
+
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function renderServiceUnit({ appDir, envFile, user, port, stateDir }) {
   return [
     '[Unit]',
     'Description=Home Base Control Plane',
-    'After=network.target',
+    'After=network-online.target',
+    'Wants=network-online.target',
     '',
     '[Service]',
     'Type=simple',
@@ -13,6 +45,16 @@ function renderServiceUnit({ appDir, envFile, user, port }) {
     'Restart=always',
     'RestartSec=5',
     'KillSignal=SIGTERM',
+    'UMask=0077',
+    'NoNewPrivileges=true',
+    'PrivateTmp=true',
+    'ProtectSystem=strict',
+    'ProtectHome=true',
+    'ProtectKernelTunables=true',
+    'ProtectKernelModules=true',
+    'ProtectControlGroups=true',
+    'RestrictSUIDSGID=true',
+    `ReadWritePaths=${stateDir}`,
     '',
     '[Install]',
     'WantedBy=multi-user.target',
@@ -22,6 +64,7 @@ function renderServiceUnit({ appDir, envFile, user, port }) {
 
 function renderEnvFile({
   port,
+  bindHost,
   stateDbPath,
   baseInstallDir,
   baseBackupDir,
@@ -33,6 +76,7 @@ function renderEnvFile({
   repositoryUrl,
   repositorySshUrl,
   enablePrivilegedJobs,
+  executionMode,
   defaultHostname,
   defaultDomain,
   autoBootstrap,
@@ -46,6 +90,7 @@ function renderEnvFile({
 }) {
   return [
     `PORT=${port}`,
+    `HOME_BASE_BIND_HOST=${bindHost}`,
     `HOME_BASE_STATE_DB=${stateDbPath}`,
     `HOME_BASE_INSTALL_DIR=${baseInstallDir}`,
     `HOME_BASE_SHARED_ROOT=${sharedRoot}`,
@@ -60,6 +105,7 @@ function renderEnvFile({
     `HOME_BASE_REPOSITORY_SSH_URL=${repositorySshUrl || 'git@github.com:eforbell/homeBase.git'}`,
     `HOME_BASE_DEFAULT_HOSTNAME=${defaultHostname || 'homebase'}`,
     `HOME_BASE_DEFAULT_DOMAIN=${defaultDomain || 'tailnet'}`,
+    `HOME_BASE_EXECUTION_MODE=${executionMode}`,
     `HOME_BASE_ENABLE_PRIVILEGED_JOBS=${enablePrivilegedJobs ? '1' : '0'}`,
     `HOME_BASE_AUTO_BOOTSTRAP=${autoBootstrap ? '1' : '0'}`,
     `HOME_BASE_AUTO_BOOTSTRAP_MODE=${autoBootstrapMode || 'execute'}`,
@@ -73,28 +119,53 @@ function renderEnvFile({
 
 function buildHomeBaseRuntimePlan(config = {}, options = {}) {
   const generatedAt = new Date().toISOString();
-  const runtimeUser = options.runtimeUser || config.homeBaseRuntimeUser || 'homebase';
-  const serviceUser = config.serviceUser || 'sovereign';
-  const appDir = options.appDir || config.homeBaseAppDir || '/opt/sovereign-home/homebase';
-  const stateDir = options.stateDir || config.homeBaseStateDir || '/var/lib/sovereign-home/homebase';
-  const stateDbPath = options.stateDbPath || config.homeBaseRuntimeStateDbPath || `${stateDir}/home-base.sqlite3`;
-  const envFile = options.envFile || config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env';
+  const runtimeUser = String(options.runtimeUser || config.homeBaseRuntimeUser || 'homebase');
+  const appDir = String(options.appDir || config.homeBaseAppDir || '/opt/sovereign-home/homebase');
+  const stateDir = String(options.stateDir || config.homeBaseStateDir || '/var/lib/sovereign-home/homebase');
+  const stateDbPath = String(options.stateDbPath || config.homeBaseRuntimeStateDbPath || `${stateDir}/home-base.sqlite3`);
+  const envFile = String(options.envFile || config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env');
   const serviceName = 'homebase';
-  const port = options.port || config.port || 3080;
+  const configuredPort = Number(config.port);
+  const port = Number(options.port !== undefined
+    ? options.port
+    : (Number.isInteger(configuredPort) && configuredPort >= 1 ? configuredPort : 3080));
+  const requestedBindHost = String(options.bindHost ?? config.bindHost ?? '127.0.0.1');
   const startImmediately = options.startImmediately === true;
-  const enablePrivilegedJobs = options.enablePrivilegedJobs !== undefined
+  assertSafeRuntimeUser(runtimeUser);
+  assertSafeAbsolutePath('appDir', appDir);
+  assertSafeAbsolutePath('stateDir', stateDir);
+  assertSafeAbsolutePath('stateDbPath', stateDbPath);
+  assertSafeAbsolutePath('envFile', envFile);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    fail('INVALID_RUNTIME_PORT', 'port must be an integer between 1 and 65535');
+  }
+  if (requestedBindHost !== '127.0.0.1') {
+    fail('INVALID_BIND_HOST', 'the hardened runtime binds only to 127.0.0.1');
+  }
+  const bindHost = '127.0.0.1';
+  const requestedPrivilegedJobs = options.enablePrivilegedJobs !== undefined
     ? options.enablePrivilegedJobs === true
-    : config.homeBaseEnablePrivilegedJobs !== false;
-  const autoBootstrap = options.autoBootstrap !== undefined
-    ? options.autoBootstrap === true
-    : enablePrivilegedJobs && config.homeBaseRuntimeAutoBootstrap !== false;
+    : config.homeBaseEnablePrivilegedJobs === true;
+  if (requestedPrivilegedJobs) {
+    fail('UNSAFE_PRIVILEGED_CONFIGURATION', 'Home Base no longer generates privileged sudoers configuration; install the service in plan-only mode.');
+  }
+  if (options.autoBootstrap === true || config.homeBaseAutoBootstrap === true) {
+    fail('UNSAFE_AUTO_BOOTSTRAP_CONFIGURATION', 'Home Base service auto-bootstrap is unavailable in the hardened plan-only runtime.');
+  }
+  const executionMode = 'plan-only';
+  const enablePrivilegedJobs = false;
+  const autoBootstrap = false;
   const autoBootstrapMode = options.autoBootstrapMode || config.homeBaseAutoBootstrapMode || 'execute';
   const autoBootstrapDelayMs = options.autoBootstrapDelayMs || config.homeBaseAutoBootstrapDelayMs || 5000;
   const sudoersFile = `/etc/sudoers.d/${serviceName}`;
+  if (!['execute', 'dry-run'].includes(autoBootstrapMode)) {
+    fail('INVALID_AUTO_BOOTSTRAP_MODE', 'autoBootstrapMode must be execute or dry-run');
+  }
+  if (!Number.isInteger(Number(autoBootstrapDelayMs)) || Number(autoBootstrapDelayMs) < 0) {
+    fail('INVALID_AUTO_BOOTSTRAP_DELAY', 'autoBootstrapDelayMs must be a non-negative integer');
+  }
 
-  const envContent = renderEnvFile({
-    port,
-    stateDbPath,
+  const envValues = {
     baseInstallDir: config.baseInstallDir || '/opt/sovereign-home/apps',
     sharedRoot: config.homeBaseSharedRoot || '/opt/sovereign-home',
     assetsRoot: config.homeBaseAssetsRoot || '/opt/sovereign-home/assets',
@@ -108,13 +179,31 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     repositorySshUrl: config.homeBaseRepositorySshUrl || 'git@github.com:eforbell/homeBase.git',
     defaultHostname: config.defaultHostname || 'homebase',
     defaultDomain: config.defaultDomain || 'tailnet',
-    enablePrivilegedJobs,
-    autoBootstrap,
-    autoBootstrapMode,
-    autoBootstrapDelayMs,
     sovereignFontMountPath: config.sovereignFontMountPath || '/_sovereign/fonts/',
     sovereignFontSansCssUrl: config.sovereignFontGoogleSansCssUrl || 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap',
     sovereignFontMonoCssUrl: config.sovereignFontGoogleMonoCssUrl || 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap',
+  };
+  for (const [name, value] of Object.entries(envValues)) assertSingleLine(name, value);
+  if (!['https', 'ssh', 'ssh-key'].includes(envValues.gitTransport)) {
+    fail('INVALID_GIT_TRANSPORT', 'gitTransport must be https, ssh, or ssh-key');
+  }
+  for (const name of ['baseInstallDir', 'sharedRoot', 'assetsRoot', 'baseBackupDir', 'baseConfigDir']) {
+    assertSafeAbsolutePath(name, String(envValues[name]));
+  }
+  for (const name of ['gitSshKeyPath', 'gitSshKnownHostsPath']) {
+    if (envValues[name]) assertSafeAbsolutePath(name, String(envValues[name]));
+  }
+
+  const envContent = renderEnvFile({
+    port,
+    bindHost,
+    stateDbPath,
+    ...envValues,
+    enablePrivilegedJobs,
+    executionMode,
+    autoBootstrap,
+    autoBootstrapMode,
+    autoBootstrapDelayMs,
   });
 
   const serviceContent = renderServiceUnit({
@@ -122,6 +211,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
     envFile,
     user: runtimeUser,
     port,
+    stateDir,
   });
 
   const executionSteps = [
@@ -129,37 +219,37 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       id: 'prepare-runtime',
       title: 'Prepare Home Base runtime directories and config',
       run: [
-    `id -u ${runtimeUser} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${stateDir} --shell /usr/sbin/nologin ${runtimeUser}`,
-    `getent group ${serviceUser} >/dev/null 2>&1 && sudo usermod -aG ${serviceUser} ${runtimeUser} || true`,
-    `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${appDir}`,
-    `sudo install -d -m 0755 -o ${runtimeUser} -g ${runtimeUser} ${stateDir}`,
-    `sudo install -d -m 0755 -o root -g root ${envFile.substring(0, envFile.lastIndexOf('/')) || '/etc'}`,
-    `tar --exclude .data --exclude node_modules -cf - . | sudo tar -C ${appDir} -xf -`,
-    `sudo chown -R ${runtimeUser}:${runtimeUser} ${appDir} ${stateDir}`,
+    `id -u ${shellSingleQuote(runtimeUser)} >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir ${shellSingleQuote(stateDir)} --shell /usr/sbin/nologin ${shellSingleQuote(runtimeUser)}`,
+    `sudo install -d -m 0755 -o root -g root ${shellSingleQuote(appDir)}`,
+    `sudo install -d -m 0700 -o ${shellSingleQuote(runtimeUser)} -g ${shellSingleQuote(runtimeUser)} ${shellSingleQuote(stateDir)}`,
+    `sudo install -d -m 0755 -o root -g root ${shellSingleQuote(envFile.substring(0, envFile.lastIndexOf('/')) || '/etc')}`,
+    `tar --exclude .data --exclude node_modules -cf - . | sudo tar -C ${shellSingleQuote(appDir)} -xf -`,
+    // Runtime dependencies (ajv) must exist before the service starts; install them as root with
+    // lifecycle scripts disabled, then hand the tree to root like the rest of the code.
+    `sudo bash -c ${shellSingleQuote(`cd ${appDir} && npm ci --omit=dev --ignore-scripts`)}`,
+    `sudo chown -R root:root ${shellSingleQuote(appDir)}`,
+    `sudo chmod -R go-w ${shellSingleQuote(appDir)}`,
+    `sudo chown -R ${shellSingleQuote(`${runtimeUser}:${runtimeUser}`)} ${shellSingleQuote(stateDir)}`,
     config.stateDbPath && config.stateDbPath !== stateDbPath
-      ? `if [ -f ${config.stateDbPath} ]; then sudo cp ${config.stateDbPath} ${stateDbPath}; sudo chown ${runtimeUser}:${runtimeUser} ${stateDbPath}; fi`
+      ? `if [ -f ${shellSingleQuote(config.stateDbPath)} ]; then sudo cp ${shellSingleQuote(config.stateDbPath)} ${shellSingleQuote(stateDbPath)}; sudo chown ${shellSingleQuote(`${runtimeUser}:${runtimeUser}`)} ${shellSingleQuote(stateDbPath)}; fi`
       : null,
-    `sudo tee ${envFile} > /dev/null <<'EOF'\n${envContent}EOF`,
+    `sudo tee ${shellSingleQuote(envFile)} > /dev/null <<'EOF'\n${envContent}EOF`,
+    `sudo chown ${shellSingleQuote(`root:${runtimeUser}`)} ${shellSingleQuote(envFile)}`,
+    `sudo chmod 0640 ${shellSingleQuote(envFile)}`,
     `sudo tee /etc/systemd/system/${serviceName}.service > /dev/null <<'EOF'\n${serviceContent}EOF`,
-    `sudo -u ${runtimeUser} -H bash -lc 'cd ${appDir} && if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi'`,
+    `sudo chown root:root /etc/systemd/system/${serviceName}.service`,
+    `sudo chmod 0644 /etc/systemd/system/${serviceName}.service`,
     'sudo systemctl daemon-reload',
     `sudo systemctl enable ${serviceName}`,
       ].filter(Boolean),
     },
     {
-      id: 'configure-privileges',
-      title: enablePrivilegedJobs
-        ? 'Allow Home Base service user to run host-management jobs'
-        : 'Skip privileged job sudoers configuration',
-      run: enablePrivilegedJobs
-        ? [
-            `sudo tee ${sudoersFile} > /dev/null <<'EOF'\n${runtimeUser} ALL=(ALL) NOPASSWD:ALL\nEOF`,
-            `sudo chmod 0440 ${sudoersFile}`,
-            `sudo visudo -cf ${sudoersFile}`,
-          ]
-        : [
-            `echo "Privileged jobs disabled. Home Base service will serve UI/status only until executor privileges are configured."`,
-          ],
+      id: 'verify-privilege-boundary',
+      title: 'Verify the installed service has no legacy broad sudoers access',
+      run: [
+        `if sudo test -f ${shellSingleQuote(sudoersFile)}; then echo "Refusing to continue while an existing Home Base sudoers policy is present at ${sudoersFile}. Remove it before installing the hardened service." >&2; exit 1; fi`,
+        'echo "Home Base will run in plan-only mode. Execute reviewed host plans from an operator shell."',
+      ],
     },
     {
       id: 'activate-service',
@@ -189,6 +279,7 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
       port,
       startImmediately,
       enablePrivilegedJobs,
+      executionMode,
       autoBootstrap,
       autoBootstrapMode,
       autoBootstrapDelayMs,
@@ -206,4 +297,5 @@ function buildHomeBaseRuntimePlan(config = {}, options = {}) {
 
 module.exports = {
   buildHomeBaseRuntimePlan,
+  assertSafeAbsolutePath,
 };

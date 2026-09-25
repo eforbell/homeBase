@@ -43,6 +43,28 @@ async function setupAdminCookie(baseUrl, passphrase = 'test-admin-passphrase') {
   return cookie;
 }
 
+test('managed listener binds to loopback by default', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-loopback-'));
+  const app = createApp({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+
+  await new Promise((resolve) => app.listen(resolve));
+  try {
+    assert.equal(app.server.address().address, '127.0.0.1');
+  } finally {
+    await new Promise((resolve, reject) => app.server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test('HTTP API exposes catalog and can persist a planned install', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-'));
   const server = await startServer({
@@ -74,6 +96,30 @@ test('HTTP API exposes catalog and can persist a planned install', async () => {
     const stateRes = await fetch(`${server.url}/api/state`);
     const state = await stateRes.json();
     assert.equal(state.installations['family-dinner'].status, 'planned');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a saved dry-run can be discarded without an uninstall job or host mutation', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-discard-plan-'));
+  const server = await startServer({
+    appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0,
+    serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'backups'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet',
+  });
+  try {
+    await fetch(`${server.url}/api/apps/family-dinner/install`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mountPath: '/dinner/' }),
+    });
+    const cookie = await setupAdminCookie(server.url);
+    const discard = await fetch(`${server.url}/api/apps/family-dinner/discard-plan`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ confirm: 'DISCARD' }),
+    });
+    assert.equal(discard.status, 200);
+    assert.equal((await discard.json()).discarded, true);
+    const state = await (await fetch(`${server.url}/api/state`)).json();
+    assert.equal(state.installations['family-dinner'], undefined);
+    assert.equal(state.jobs.length, 0);
   } finally {
     await server.close();
   }
@@ -205,6 +251,35 @@ test('homebase runtime plan endpoint returns service-install scaffolding', async
     const plan = await res.json();
     assert.equal(plan.kind, 'homebase-runtime');
     assert.equal(plan.runtime.serviceName, 'homebase');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase runtime plan endpoint rejects command-bearing options', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-runtime-plan-invalid-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/runtime-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appDir: '/opt/homebase; touch /tmp/pwned' }),
+    });
+    const payload = await res.json();
+    assert.equal(res.status, 400);
+    assert.match(payload.error, /appDir must be an absolute path/i);
   } finally {
     await server.close();
   }
@@ -352,8 +427,85 @@ test('homebase status endpoint returns runtime state summary', async () => {
     const res = await fetch(`${server.url}/api/homebase/status`);
     const payload = await res.json();
     assert.equal(payload.runtimeUser, 'homebase');
+    assert.equal(payload.bindHost, '127.0.0.1');
+    assert.equal(payload.executionMode, 'plan-only');
+    assert.equal(payload.privilegedJobsEnabled, false);
+    assert.equal(payload.legacyBroadSudoersDetected, false);
+    assert.equal(payload.sudoersPolicyStatus, 'absent');
     assert.equal(payload.ok, true);
     assert.equal(typeof payload.paths.stateDbExists, 'boolean');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase status reports executor mode without calling it legacy sudo', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-status-executor-'));
+  const server = await startServer({
+    appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0,
+    serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet',
+    homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true,
+  });
+  try {
+    const payload = await (await fetch(`${server.url}/api/homebase/status`)).json();
+    assert.equal(payload.executionMode, 'executor');
+    assert.equal(payload.privilegedJobsEnabled, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase status reports unknown when a configured sudoers path cannot be read as a file', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-sudoers-status-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+    homeBaseSudoersFile: tempDir,
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/status`);
+    const payload = await res.json();
+    assert.equal(payload.paths.sudoersFileExists, true);
+    assert.equal(payload.legacyBroadSudoersDetected, false);
+    assert.equal(payload.sudoersPolicyStatus, 'unknown');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase status detects broad sudoers for the configured runtime user', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-sudoers-user-'));
+  const sudoersFile = path.join(tempDir, 'homebase-sudoers');
+  fs.writeFileSync(sudoersFile, 'customhb ALL=(ALL) NOPASSWD:ALL\n');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+    homeBaseRuntimeUser: 'customhb',
+    homeBaseSudoersFile: sudoersFile,
+  });
+
+  try {
+    const res = await fetch(`${server.url}/api/homebase/status`);
+    const payload = await res.json();
+    assert.equal(payload.legacyBroadSudoersDetected, true);
+    assert.equal(payload.sudoersPolicyStatus, 'legacy-broad');
   } finally {
     await server.close();
   }
@@ -476,6 +628,47 @@ test('admin status starts unconfigured and locked', async () => {
   }
 });
 
+test('plan-only mode blocks real host execution after admin unlock', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-plan-only-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+    homeBaseExecutionMode: 'plan-only',
+    homeBaseEnablePrivilegedJobs: false,
+  });
+
+  try {
+    const cookie = await setupAdminCookie(server.url, 'plan-only-passphrase');
+    const res = await fetch(`${server.url}/api/bootstrap/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }),
+    });
+    const payload = await res.json();
+    assert.equal(res.status, 409);
+    assert.equal(payload.code, 'PRIVILEGED_EXECUTION_DISABLED');
+    assert.equal(payload.executionMode, 'plan-only');
+    assert.match(payload.error, /operator shell/i);
+
+    const auditRes = await fetch(`${server.url}/api/admin/audit?limit=1`, {
+      headers: { cookie },
+    });
+    assert.equal(auditRes.status, 200);
+    const audit = await auditRes.json();
+    assert.equal(audit.entries[0].outcome, 'blocked-execution-mode');
+  } finally {
+    await server.close();
+  }
+});
+
 test('real execute requires admin setup/unlock', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-admin-guard-'));
   const server = await startServer({
@@ -489,6 +682,7 @@ test('real execute requires admin setup/unlock', async () => {
     defaultHostname: 'homebase',
     defaultDomain: 'tailnet',
     gitTransport: 'https',
+    homeBaseEnablePrivilegedJobs: true,
   });
 
   try {
@@ -559,6 +753,7 @@ test('admin passphrase rotation requires unlock and invalidates prior sessions',
     defaultHostname: 'homebase',
     defaultDomain: 'tailnet',
     gitTransport: 'https',
+    homeBaseEnablePrivilegedJobs: true,
   });
 
   try {
@@ -638,6 +833,7 @@ test('admin audit endpoint requires unlock and records destructive attempts', as
     defaultHostname: 'homebase',
     defaultDomain: 'tailnet',
     gitTransport: 'https',
+    homeBaseEnablePrivilegedJobs: true,
   });
 
   try {
@@ -972,6 +1168,18 @@ test('homebase config endpoint rejects invalid updates', async () => {
     });
     assert.equal(missingKey.status, 400);
 
+    const injectedKeyPath = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        gitTransport: 'ssh-key',
+        gitSshKeyPath: '/tmp/key; touch /tmp/homebase-preflight-pwned',
+      }),
+    });
+    assert.equal(injectedKeyPath.status, 400);
+    const injectedKeyPayload = await injectedKeyPath.json();
+    assert.match(injectedKeyPayload.error, /only letters, numbers/i);
+
     const unknownField = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1250,14 +1458,15 @@ test('app actions marks uninstall available after install record exists', async 
 
     const res = await fetch(`${server.url}/api/apps/family-help/actions`);
     const payload = await res.json();
-    assert.equal(payload.actions.update, true);
-    assert.equal(payload.actions.uninstall, true);
+    assert.equal(payload.actions.update, false);
+    assert.equal(payload.actions.uninstall, false);
+    assert.equal(payload.actions.discardPlan, true);
   } finally {
     await server.close();
   }
 });
 
-test('app actions marks restart available after install record exists', async () => {
+test('app actions keeps restart unavailable for a saved dry-run', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-actions-restart-'));
   const server = await startServer({
     appName: 'Home Base',
@@ -1279,7 +1488,7 @@ test('app actions marks restart available after install record exists', async ()
     });
     const res = await fetch(`${server.url}/api/apps/family-help/actions`);
     const payload = await res.json();
-    assert.equal(payload.actions.restart, true);
+    assert.equal(payload.actions.restart, false);
   } finally {
     await server.close();
   }
@@ -1806,5 +2015,259 @@ test('network tailscale verify endpoint reports stale config when hostname/domai
     assert.equal(typeof payload.recommendedUrls?.appsBase, 'string');
   } finally {
     await server.close();
+  }
+});
+
+test('executor-mode Dinner execution fails at the socket boundary without legacy sudo fallback', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-executor-route-'));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: path.join(tempDir, 'missing.sock') });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/family-dinner/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(payload.code, 'EXECUTOR_UNAVAILABLE');
+  } finally { await server.close(); }
+});
+
+test('executor-mode Dinner over SSH is refused up front when the executor has no deploy key', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-ssh-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  let executed = false;
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, probeDeployKey: () => 'missing', runAction: async () => { executed = true; return {}; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath, gitTransport: 'ssh-key', gitSshKeyPath: '/etc/sovereign-home/git/deploy_key' });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/family-dinner/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 409);
+    assert.equal(payload.code, 'GIT_DEPLOY_KEY_REQUIRED');
+    assert.match(payload.error, /install\.sh --repair --git-ssh-key/);
+    assert.equal(executed, false);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('executor mode routes lifecycle actions to the executor and still refuses unconverted legacy routes', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-lifecycle-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const received = [];
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const backupRoot = path.join(tempDir, 'backups');
+  fs.mkdirSync(path.join(backupRoot, 'home-source', '20260924T101010Z'), { recursive: true });
+  fs.writeFileSync(path.join(backupRoot, 'home-source', '20260924T101010Z', 'backup-generated-at.txt'), '2026-09-24T10:10:10.000Z\n');
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const record = (appId, port) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  store.upsertInstallation(record('home-source', 3008));
+  store.upsertInstallation(record('family-help', 3002));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: backupRoot, baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (route, extra = {}) => {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE', ...extra }) });
+      return { status: response.status, body: await response.json() };
+    };
+    for (const route of ['/api/homebase/install-self', '/api/network/tailscale/publish-execute']) {
+      const response = await post(route);
+      assert.equal(response.status, 409, route);
+      assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', route);
+    }
+    for (const action of ['restart', 'backup', 'uninstall']) {
+      const response = await post(`/api/apps/family-help/${action}/execute`);
+      assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', `family-help ${action}: ${JSON.stringify(response.body)}`);
+    }
+    for (const [action, extra] of [['restart'], ['backup'], ['restore', { backupDir: '20260924T101010Z' }], ['uninstall', { keepBackups: false }]]) {
+      const response = await post(`/api/apps/home-source/${action}/execute`, extra);
+      assert.equal(response.status, 202, `${action}: ${JSON.stringify(response.body)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(received, [
+      { action: 'restart', appId: 'home-source' },
+      { action: 'backup', appId: 'home-source' },
+      { action: 'restore', appId: 'home-source', backupId: '20260924T101010Z' },
+      { action: 'uninstall', appId: 'home-source', keepBackups: false },
+    ]);
+    const missing = await post('/api/apps/home-source/restore/execute', { backupDir: '/etc/shadow' });
+    assert.equal(missing.body.code, 'BACKUP_NOT_FOUND');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('executor-mode reinstall keeps the catalog port; only a different app on that port is a conflict', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-port-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const started = [];
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async (spec) => { started.push(spec.appId); return { completedOperationIds: [] }; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const record = (appId, port) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  store.upsertInstallation(record('home-source', 3008));
+  store.upsertInstallation(record('family-plan', 3000));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const execute = (appId) => fetch(`${server.url}/api/apps/${appId}/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const reinstall = await execute('home-source');
+    assert.equal(reinstall.status, 202, JSON.stringify(await reinstall.clone().json()));
+    const conflict = await execute('family-dinner');
+    const payload = await conflict.json();
+    assert.equal(conflict.status, 409);
+    assert.equal(payload.code, 'PORT_CONFLICT');
+    assert.match(payload.error, /family-plan/);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('review fixes: update-self and discarding a real install are refused', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-review-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async () => ({ completedOperationIds: [] }) });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const installRoot = path.join(tempDir, 'present');
+  fs.mkdirSync(installRoot);
+  store.upsertInstallation({ appId: 'family-plan', name: 'Family Plan', purpose: 'x', port: 3004, mountPath: '/plan/', externalUrl: 'https://homebase.tailnet/plan/', installRoot, serviceName: 'family-plan', ref: 'main', status: 'planned', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/srv/elsewhere', baseBackupDir: path.join(tempDir, 'b'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (route, body) => {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+    const updateSelf = await post('/api/homebase/update-self', { dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(updateSelf.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED');
+    const discard = await post('/api/apps/family-plan/discard-plan', { confirm: 'DISCARD' });
+    assert.equal(discard.status, 409);
+    assert.equal(discard.body.code, 'INSTALL_PRESENT');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('an upgraded host with privileged jobs but no execution mode gets the exact opt-in line', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-upgrade-hint-'));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'plan-only', homeBaseEnablePrivilegedJobs: false, homeBaseExecutionModeMissing: true });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const response = await fetch(`${server.url}/api/apps/family-dinner/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 409);
+    assert.equal(payload.code, 'PRIVILEGED_EXECUTION_DISABLED');
+    assert.match(payload.error, /add HOME_BASE_EXECUTION_MODE=legacy-sudo/);
+  } finally { await server.close(); }
+});
+
+test('executor-mode restore resolves the selected archive by name without reading backup directories; dry-runs preview the executor plan', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-restore-name-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const received = [];
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  store.upsertInstallation({ appId: 'home-source', name: 'Home Source', purpose: 'x', port: 3008, mountPath: '/source/', externalUrl: 'https://homebase.tailnet/source/', installRoot: '/opt/sovereign-home/apps/homeSource', serviceName: 'home-source', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  // Only a database record exists: the archive directory is not readable by (or even present for) the web process.
+  const archiveDir = '/var/lib/sovereign-home/backups/home-source/20260924T101010123Z';
+  store.recordBackup({ appId: 'home-source', archiveDir, generatedAt: '2026-09-24T10:10:10.123Z', dryRun: false, status: 'completed', includedFiles: [], jobId: null, createdAt: '2026-09-24T10:10:11.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'unreadable'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (body) => {
+      const response = await fetch(`${server.url}/api/apps/home-source/restore/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+    const real = await post({ backupDir: archiveDir, dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(real.status, 202, JSON.stringify(real.body));
+    const latest = await post({ dryRun: false, confirm: 'EXECUTE' });
+    assert.equal(latest.status, 202, 'no selection restores the latest recorded backup');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(received.map((spec) => spec.backupId), ['20260924T101010123Z', '20260924T101010123Z']);
+    for (const bad of ['/var/lib/sovereign-home/backups/family-dinner/20260924T101010123Z', '/etc/20260924T101010123Z', '../20260924T101010123Z/x']) {
+      const refused = await post({ backupDir: bad, dryRun: false, confirm: 'EXECUTE' });
+      assert.equal(refused.body.code, 'BACKUP_NOT_FOUND', bad);
+    }
+    const preview = await post({ backupDir: archiveDir, dryRun: true });
+    assert.equal(preview.status, 202, JSON.stringify(preview.body));
+    let job;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      job = await (await fetch(`${server.url}/api/jobs/${preview.body.jobId}`, { headers: { cookie } })).json();
+      if (job.status === 'completed' || job.status === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(job.status, 'completed', job.errorText);
+    const plan = JSON.parse(job.planJson);
+    assert.equal(plan.preview, true);
+    assert.equal(plan.operationPlan.policyProfile, 'app-restore-v1');
+    assert.ok(plan.operationPlan.operations.some((operation) => operation.type === 'backup.restore' && operation.archiveName === '20260924T101010123Z'));
+    assert.equal(received.length, 2, 'a dry-run never runs anything');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('executor-mode install previews and records carry no generated credentials, .env contents, or shell commands', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-preview-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async () => ({ completedOperationIds: [] }) });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'b'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  const leaks = /DATABASE_URL|postgresql:\/\/|PASSWORD=|sudo |bash -lc|tee \/etc|systemctl /;
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (route, body) => {
+      const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, text: await response.text() };
+    };
+    const dryRun = await post('/api/apps/home-source/execute', { dryRun: true });
+    assert.equal(dryRun.status, 202, dryRun.text);
+    const { jobId } = JSON.parse(dryRun.text);
+    let job;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      job = await (await fetch(`${server.url}/api/jobs/${jobId}`, { headers: { cookie } })).json();
+      if (job.status !== 'queued' && job.status !== 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(job.status, 'completed', job.errorText);
+    const plan = JSON.parse(job.planJson);
+    assert.equal(plan.preview, true);
+    assert.equal(plan.operationPlan.policyProfile, 'app-install-v1');
+    assert.doesNotMatch(JSON.stringify(job), leaks, 'the dry-run job stores the executor plan only');
+
+    const installPlan = await post('/api/apps/home-source/install-plan', {});
+    assert.equal(installPlan.status, 200, installPlan.text);
+    assert.equal(JSON.parse(installPlan.text).kind, 'executor-plan');
+    assert.doesNotMatch(installPlan.text, leaks);
+
+    const legacySave = await post('/api/apps/home-source/install', {});
+    assert.equal(legacySave.status, 409);
+    const state = await (await fetch(`${server.url}/api/state`)).json();
+    assert.equal((state.installations || {})['home-source'], undefined, 'a preview never creates an installation record');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
   }
 });

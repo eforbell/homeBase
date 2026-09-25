@@ -3,6 +3,7 @@ const DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/i;
 const ALLOWED_GIT_TRANSPORTS = new Set(['https', 'ssh', 'ssh-key']);
 const TAILSCALE_MANAGED_SERVICE_ID_PATTERN = /^svc:[a-z0-9](?:[a-z0-9-_.]{0,61}[a-z0-9])?$/i;
 const TIMEZONE_PATTERN = /^[A-Za-z_]+\/[A-Za-z_\/-]+$/;
+const SAFE_ABSOLUTE_PATH_PATTERN = /^\/[A-Za-z0-9._/-]+$/;
 
 function mergeHomeBaseConfig(baseConfig, override = {}) {
   return {
@@ -58,6 +59,13 @@ function validateDomain(domain) {
   return null;
 }
 
+function validateAbsolutePath(value, fieldName) {
+  if (!SAFE_ABSOLUTE_PATH_PATTERN.test(value) || value.split('/').includes('..')) {
+    return `${fieldName} must be an absolute path containing only letters, numbers, dots, dashes, underscores, and slashes`;
+  }
+  return null;
+}
+
 function validateHomeBaseConfigPatch(payload, currentConfig) {
   const patch = payload && typeof payload === 'object' ? payload : {};
   const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId', 'householdTimezone'];
@@ -88,8 +96,9 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
   if (!ALLOWED_GIT_TRANSPORTS.has(candidate.gitTransport)) {
     return { error: 'gitTransport must be one of: https, ssh, ssh-key' };
   }
-  if (candidate.gitSshKeyPath && !candidate.gitSshKeyPath.startsWith('/')) {
-    return { error: 'gitSshKeyPath must be an absolute path when provided' };
+  if (candidate.gitSshKeyPath) {
+    const pathError = validateAbsolutePath(candidate.gitSshKeyPath, 'gitSshKeyPath');
+    if (pathError) return { error: pathError };
   }
   if (candidate.gitTransport === 'ssh-key' && !candidate.gitSshKeyPath) {
     return { error: 'gitSshKeyPath is required when gitTransport=ssh-key' };
@@ -119,9 +128,25 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
   return { value: candidate };
 }
 
+// Site values flow into app .env files through the root executor; they must be single-line tokens.
+function isValidSite(site) {
+  if (!site || typeof site !== 'object' || Array.isArray(site)) return false;
+  const keys = Object.keys(site).sort().join(',');
+  if (keys !== 'domain,hostname,householdTimezone') return false;
+  const { hostname, domain, householdTimezone } = site;
+  return typeof hostname === 'string' && HOSTNAME_PATTERN.test(hostname)
+    && typeof domain === 'string' && DOMAIN_PATTERN.test(domain) && !domain.includes('..') && !domain.startsWith('.') && !domain.endsWith('.')
+    && typeof householdTimezone === 'string' && TIMEZONE_PATTERN.test(householdTimezone) && householdTimezone.length <= 64;
+}
+
 module.exports = {
   ALLOWED_GIT_TRANSPORTS,
+  HOSTNAME_PATTERN,
+  DOMAIN_PATTERN,
+  TIMEZONE_PATTERN,
+  isValidSite,
   mergeHomeBaseConfig,
   toClientHomeBaseConfig,
+  validateAbsolutePath,
   validateHomeBaseConfigPatch,
 };

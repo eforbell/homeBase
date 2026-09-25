@@ -120,7 +120,7 @@
     }
   }
 
-  async function handleUpdate(form) {
+  async function handleUpdate(form, actionLabel = 'Update') {
     if (form.dataset.submitting === 'true') return;
     form.dataset.submitting = 'true';
     const mountPath = form.elements.mountPath.value.trim();
@@ -139,7 +139,7 @@
     resultNode.textContent = 'Submitting...';
     try {
       const response = await window.HB.postJson(`/api/apps/${appId}/execute`, payload);
-      const mode = dryRun ? 'Update dry-run' : 'Update';
+      const mode = dryRun ? `${actionLabel} dry-run` : actionLabel;
       resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started. This page will refresh when it finishes.`;
       void waitForJobCompletion(response.jobId, resultNode, {
         onComplete: () => {
@@ -265,6 +265,20 @@
     if (submitButton) submitButton.disabled = false;
   }
 
+  async function handleDiscardPlan(form) {
+    const resultNode = form.querySelector('[data-result]');
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton) submitButton.disabled = true;
+    try {
+      await window.HB.confirmInline(resultNode, 'Discard this saved dry-run? It only removes Home Base metadata; no app files or backups will be deleted.');
+      await window.HB.postJson(`/api/apps/${appId}/discard-plan`, { confirm: 'DISCARD' });
+      window.location.href = '/apps';
+    } catch (error) {
+      resultNode.textContent = error.message === 'cancelled' ? 'Cancelled.' : error.message;
+      if (submitButton) submitButton.disabled = false;
+    }
+  }
+
   function wireActions() {
     root.addEventListener('submit', (event) => {
       const backupForm = event.target.closest('form[data-action="backup"]');
@@ -277,6 +291,12 @@
       if (updateForm) {
         event.preventDefault();
         handleUpdate(updateForm);
+        return;
+      }
+      const installPlannedForm = event.target.closest('form[data-action="install-planned"]');
+      if (installPlannedForm) {
+        event.preventDefault();
+        handleUpdate(installPlannedForm, 'Install');
         return;
       }
       const updateCheckForm = event.target.closest('form[data-action="update-check"]');
@@ -301,6 +321,12 @@
       if (uninstallForm) {
         event.preventDefault();
         handleUninstall(uninstallForm);
+        return;
+      }
+      const discardPlanForm = event.target.closest('form[data-action="discard-plan"]');
+      if (discardPlanForm) {
+        event.preventDefault();
+        handleDiscardPlan(discardPlanForm);
       }
     });
   }
@@ -331,6 +357,7 @@
       const lastAppJob = allJobs.find((j) => j.target === appId && ['completed', 'failed'].includes(j.status));
       const activeAppJob = (Array.isArray(statePayload.activeJobs) ? statePayload.activeJobs : []).find((j) => j.target === appId);
       const backups = Array.isArray(backupPayload.backups) ? backupPayload.backups : [];
+      const backupAccess = backupPayload.access || { status: 'available' };
       const actions = actionsPayload.actions || {};
       const appHealth = (healthPayload.byAppId || {})[appId] || null;
       const updateStatus = (updatesPayload.byAppId || {})[appId] || install?.updateStatus || null;
@@ -379,6 +406,29 @@
               ${probeSummary('Onboarding', appHealth?.onboarding)}
             </ul>
           </section>
+
+          ${install?.status === 'planned' ? `
+            <section class="hb-card">
+              <h2 style="margin-top:0;">Saved dry-run</h2>
+              <p class="hb-warn" style="margin:0 0 0.75rem;">This plan did not install the app. Run the real typed install below, or discard only the saved Home Base metadata.</p>
+              <form class="hb-form-grid" data-action="install-planned">
+                <label class="hb-label">Mount path <input class="hb-input" name="mountPath" value="${window.HB.escapeHtml(mountPath)}"></label>
+                <label class="hb-label">Port <input class="hb-input" name="port" type="number" min="1" max="65535" value="${window.HB.escapeHtml(port)}"></label>
+                <label class="hb-label">Git ref <input class="hb-input" name="ref" value="${window.HB.escapeHtml(ref)}" placeholder="main"></label>
+                <label class="hb-label hb-check-row"><input name="dryRun" type="checkbox"> Plan only</label>
+                <div><button class="hb-btn hb-btn-primary" type="submit">Run real install</button></div>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>
+              ${actions.discardPlan ? `
+                <form class="hb-form-grid" data-action="discard-plan" style="margin-top:0.85rem;">
+                  <div><button class="hb-btn" type="submit" style="border-color:rgba(248,113,113,0.35);color:var(--red);">Discard saved plan</button></div>
+                  <p class="hb-muted" data-result style="margin:0;"></p>
+                </form>
+              ` : ''}
+            </section>
+          ` : ''}
+
+          ${backupAccess.status === 'unavailable' ? `<section class="hb-card"><p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(backupAccess.summary || 'Backup inventory is unavailable.')}</p></section>` : ''}
 
           <section class="hb-grid hb-grid-2">
             <article id="backup" class="hb-card">

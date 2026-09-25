@@ -8,6 +8,10 @@ function renderRunAsServiceUserCommand({ serviceUser, command }) {
   return `sudo -u ${serviceUser} -H bash -lc ${shellSingleQuote(command)}`;
 }
 
+function storageBaseDir(app, installRoot) {
+  return app.storage?.absoluteRoot ? String(app.storage.absoluteRoot).replace(/\/+$/, '') : installRoot;
+}
+
 function buildBackupPlan({ appId, state = {}, config = {} }) {
   const app = getAppById(appId);
   if (!app) {
@@ -50,10 +54,13 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
     }));
   }
 
+  // Storage paths are relative to storage.absoluteRoot when the app keeps data outside its checkout
+  // (e.g. home-source's documents); archiving them relative to the install root silently skipped them.
+  const storageBase = storageBaseDir(app, installRoot);
   for (const relativePath of app.storage?.paths || []) {
     commands.push(renderRunAsServiceUserCommand({
       serviceUser,
-      command: `if [ -e ${installRoot}/${relativePath} ]; then tar -C ${installRoot} -czf ${archiveDir}/${relativePath.replaceAll('/', '_')}.tgz ${relativePath}; fi`,
+      command: `if [ -e ${storageBase}/${relativePath} ]; then tar -C ${storageBase} -czf ${archiveDir}/${relativePath.replaceAll('/', '_')}.tgz ${relativePath}; fi`,
     }));
   }
 
@@ -80,6 +87,7 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
         ...(app.storage?.paths || []).map((relativePath) => `${relativePath.replaceAll('/', '_')}.tgz`),
       ],
       storagePaths: app.storage?.paths || [],
+      storageBase,
     },
     commands,
     script: `#!/usr/bin/env bash\nset -euo pipefail\n\n${commands.join('\n')}\n`,
@@ -88,4 +96,5 @@ function buildBackupPlan({ appId, state = {}, config = {} }) {
 
 module.exports = {
   buildBackupPlan,
+  storageBaseDir,
 };

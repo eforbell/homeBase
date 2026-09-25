@@ -1,4 +1,7 @@
+const path = require('path');
 const { spawn } = require('child_process');
+const { appUpdateStatus: requestExecutorAppUpdateStatus } = require('../executor/client');
+const { getAppById } = require('../catalog');
 
 const DEFAULT_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const DEFAULT_STALE_AFTER_MS = 30 * 60 * 1000;
@@ -103,8 +106,13 @@ class AppUpdateMonitor {
     checkIntervalMs = DEFAULT_CHECK_INTERVAL_MS,
     staleAfterMs = DEFAULT_STALE_AFTER_MS,
     gitTimeoutMs = DEFAULT_GIT_TIMEOUT_MS,
+    executionMode = 'plan-only',
+    executorSocket = '',
+    baseInstallDir = '/opt/sovereign-home/apps',
+    executorAppUpdateStatus = requestExecutorAppUpdateStatus,
   } = {}) {
     this.stateStore = stateStore;
+    this.executorAppUpdateStatus = executorAppUpdateStatus;
     this.logger = logger;
     this.defaultGitConfig = {
       serviceUser: String(serviceUser || '').trim(),
@@ -112,6 +120,9 @@ class AppUpdateMonitor {
       gitSshKeyPath: String(gitSshKeyPath || '').trim(),
       gitSshKnownHostsPath: String(gitSshKnownHostsPath || '').trim(),
       gitSshStrictHostKeyChecking: String(gitSshStrictHostKeyChecking || 'accept-new').trim() || 'accept-new',
+      executionMode: String(executionMode || 'plan-only'),
+      executorSocket: String(executorSocket || ''),
+      baseInstallDir: String(baseInstallDir || '/opt/sovereign-home/apps'),
     };
     this.checkIntervalMs = Number.isFinite(checkIntervalMs) ? Math.max(10_000, checkIntervalMs) : DEFAULT_CHECK_INTERVAL_MS;
     this.staleAfterMs = Number.isFinite(staleAfterMs) ? Math.max(1_000, staleAfterMs) : DEFAULT_STALE_AFTER_MS;
@@ -128,7 +139,52 @@ class AppUpdateMonitor {
       gitSshKeyPath: String(overrides.gitSshKeyPath ?? this.defaultGitConfig.gitSshKeyPath).trim(),
       gitSshKnownHostsPath: String(overrides.gitSshKnownHostsPath ?? this.defaultGitConfig.gitSshKnownHostsPath).trim(),
       gitSshStrictHostKeyChecking: String(overrides.gitSshStrictHostKeyChecking ?? this.defaultGitConfig.gitSshStrictHostKeyChecking).trim() || 'accept-new',
+      executionMode: String(overrides.executionMode ?? this.defaultGitConfig.executionMode),
+      executorSocket: String(overrides.executorSocket ?? this.defaultGitConfig.executorSocket),
+      baseInstallDir: String(overrides.baseInstallDir ?? this.defaultGitConfig.baseInstallDir),
     };
+  }
+
+  // In executor mode the web service cannot run git as sovereign (no sudo under NoNewPrivileges), the
+  // checkout's origin is a local mirror, and the SSH key is root-only; the executor answers instead.
+  async evaluateViaExecutor(install, gitConfig, { appId, trackedRef, installRoot, checkedAt }) {
+    const failed = (lastError, extra = {}) => ({
+      appId, trackedRef, status: 'check-failed', canUpdate: null, aheadCount: 0, behindCount: 0,
+      localHeadSha: '', remoteHeadSha: '', lastCheckedAt: checkedAt, lastError, ...extra,
+    });
+    const app = getAppById(appId);
+    if (!app) return failed('App is no longer in the catalog.');
+    const expectedRoot = path.join(gitConfig.baseInstallDir, app.repoKey);
+    if (path.resolve(installRoot) !== expectedRoot) return failed(`Update checks in executor mode require the standard install root ${expectedRoot}.`);
+    if (!/^(main|[a-f0-9]{40})$/.test(trackedRef)) return failed(`Executor update checks track main or a pinned commit, not ${trackedRef}.`);
+    const transport = gitConfig.gitTransport === 'ssh' || gitConfig.gitTransport === 'ssh-key' ? 'ssh' : 'https';
+    let result;
+    try {
+      result = await this.executorAppUpdateStatus(gitConfig.executorSocket, { appId, transport, ref: trackedRef }, { timeoutMs: 120_000 });
+    } catch (error) {
+      if (error.code === 'EXECUTOR_BUSY' || error.code === 'EXECUTOR_MAINTENANCE') {
+        // An install or update is running; keep the last known answer rather than flapping to failed.
+        const previous = this.buildSnapshotByApp()[appId];
+        if (previous) return previous;
+      }
+      return failed(error.message || 'Executor update check failed.');
+    }
+    const base = { appId, trackedRef, localHeadSha: result.localHeadSha || '', remoteHeadSha: result.remoteHeadSha || '', lastCheckedAt: checkedAt, lastError: '' };
+    if (result.pinned) {
+      return { ...base, status: result.matchesPin ? 'up-to-date' : 'diverged', canUpdate: false, aheadCount: 0, behindCount: 0,
+        lastError: result.matchesPin ? '' : 'Checkout no longer matches its pinned commit.' };
+    }
+    if (result.unknownLocalCommit) {
+      return { ...base, status: 'diverged', canUpdate: false, aheadCount: 0, behindCount: 0,
+        lastError: 'The installed commit is not on the upstream branch (local commits or an upstream force-push).' };
+    }
+    const ahead = result.aheadCount || 0;
+    const behind = result.behindCount || 0;
+    let status = 'up-to-date';
+    if (behind > 0 && ahead > 0) status = 'diverged';
+    else if (behind > 0) status = 'update-available';
+    else if (ahead > 0) status = 'ahead';
+    return { ...base, status, canUpdate: behind > 0, aheadCount: ahead, behindCount: behind };
   }
 
   buildGitSshCommand(gitConfig) {
@@ -250,6 +306,10 @@ class AppUpdateMonitor {
         lastCheckedAt: checkedAt,
         lastError: 'Install root is not recorded for this app.',
       };
+    }
+
+    if (gitConfig.executionMode === 'executor') {
+      return this.evaluateViaExecutor(install, gitConfig, { appId, trackedRef, installRoot, checkedAt });
     }
 
     if (gitConfig.gitTransport === 'ssh-key' && !gitConfig.gitSshKeyPath) {

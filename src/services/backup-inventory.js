@@ -16,6 +16,7 @@ function listBackupsFromDisk({ appId, config = {} }) {
 
   const backupRoot = getBackupRoot(appId, config);
   let entries = [];
+  let access = { status: 'available', summary: 'Backup inventory is readable.' };
   try {
     entries = fs.readdirSync(backupRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
@@ -36,13 +37,21 @@ function listBackupsFromDisk({ appId, config = {} }) {
       })
       .sort((a, b) => (b.generatedAt || b.name).localeCompare(a.generatedAt || a.name));
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    if (error.code === 'EACCES' || error.code === 'EPERM') {
+      access = {
+        status: 'unavailable',
+        summary: 'Backup inventory is protected from the unprivileged Home Base web service.',
+      };
+    } else if (error.code !== 'ENOENT') {
+      throw error;
+    }
   }
 
   return {
     app: { id: app.id, name: app.name },
     backupRoot,
     backups: entries,
+    access,
   };
 }
 

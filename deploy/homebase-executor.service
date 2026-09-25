@@ -1,0 +1,17 @@
+[Unit]
+Description=Home Base privileged executor
+Requires=homebase-executor.socket
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/sovereign-home/homebase/executor/server.js
+User=root
+Group=root
+UMask=0022
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+LockPersonality=true

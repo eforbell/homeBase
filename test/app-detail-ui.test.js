@@ -33,7 +33,7 @@ test('app detail exposes operations sections and anchors', () => {
   assert.match(source, /id="uninstall"/);
   assert.match(source, /data-action="restart"/);
   assert.match(source, /Git ref/);
-  assert.match(source, /Update dry-run/);
+  assert.match(source, /actionLabel} dry-run/);
   assert.match(source, /href="#health"/);
   assert.match(source, /href="#backup"/);
   assert.match(source, /href="#restore"/);

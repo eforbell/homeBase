@@ -320,6 +320,7 @@ elif op == "update_job":
         "currentStep": "current_step",
         "resultJson": "result_json",
         "errorText": "error_text",
+        "planJson": "plan_json",
     }
     assignments = []
     params = []
@@ -426,6 +427,29 @@ elif op == "list_running_jobs_by_kind":
         for row in conn.execute(
             "SELECT * FROM jobs WHERE kind = ? AND status = 'running' ORDER BY id DESC",
             (payload["kind"],),
+        )
+    ]
+    emit(jobs)
+
+elif op == "list_unfinished_jobs":
+    jobs = [
+        {
+            "id": row["id"],
+            "kind": row["kind"],
+            "target": row["target"],
+            "status": row["status"],
+            "dryRun": bool(row["dry_run"]),
+            "createdAt": row["created_at"],
+            "startedAt": row["started_at"],
+            "finishedAt": row["finished_at"],
+            "currentStep": row["current_step"],
+            "planJson": row["plan_json"],
+            "log": row["log_text"],
+            "resultJson": row["result_json"],
+            "error": row["error_text"],
+        }
+        for row in conn.execute(
+            "SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY id ASC", (),
         )
     ]
     emit(jobs)

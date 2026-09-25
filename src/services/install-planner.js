@@ -2,6 +2,14 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { getAppById } = require('../catalog');
+const {
+  renderEnv,
+  resolveEnvTemplate,
+  parseDotEnv,
+  resolveExistingDbContext,
+  hasExistingDbConfig,
+  mergeExistingEnvValues,
+} = require('../operations/env');
 
 const DEFAULT_SOVEREIGN_FONT_SANS_CSS_URL = 'https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap';
 const DEFAULT_SOVEREIGN_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap';
@@ -83,18 +91,6 @@ function allocatePort(preferred, usedPorts) {
   let candidate = preferred;
   while (usedPorts.has(candidate)) candidate += 1;
   return candidate;
-}
-
-function quoteEnvValue(value) {
-  const stringValue = value == null ? '' : String(value);
-  if (/^[A-Za-z0-9_./:@-]*$/.test(stringValue)) return stringValue;
-  return JSON.stringify(stringValue);
-}
-
-function renderEnv(envMap) {
-  return `${Object.entries(envMap)
-    .map(([key, value]) => `${key}=${quoteEnvValue(value)}`)
-    .join('\n')}\n`;
 }
 
 function renderServiceUnit({ description, serviceUser, installRoot, envFile, execStart, extraEnvironment = {}, umask = null }) {
@@ -181,6 +177,7 @@ function renderNginxSnippet({
   extraProxyHeaders = [],
   preserveMountPath = false,
   upstreamPath = '/',
+  clientMaxBodySize = null,
 }) {
   const basePath = trimTrailingSlash(mountPath === '/' ? '' : mountPath);
   const normalizedUpstreamPath = normalizeMountPath(upstreamPath || '/');
@@ -190,6 +187,7 @@ function renderNginxSnippet({
   }
   lines.push(
     `location ${mountPath} {`,
+    ...(clientMaxBodySize ? [`    client_max_body_size ${clientMaxBodySize};`] : []),
     `    proxy_pass http://127.0.0.1:${port}${preserveMountPath ? '' : normalizedUpstreamPath};`,
     '    proxy_set_header Host $host;',
     '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
@@ -334,143 +332,6 @@ function renderCommandTemplate(command, ctx) {
 
 function renderStartCommand(app, ctx) {
   return renderCommandTemplate(app.runtime.startCommand, ctx);
-}
-
-function resolveEnvTemplate(template, ctx) {
-  const resolved = {};
-  for (const [key, value] of Object.entries(template)) {
-    let next = String(value);
-    next = next.replaceAll('{{databaseUrl}}', ctx.databaseUrl);
-    next = next.replaceAll('{{port}}', String(ctx.port));
-    next = next.replaceAll('{{externalUrl}}', ctx.externalUrl);
-    next = next.replaceAll('{{publicUrl}}', ctx.publicUrl);
-    next = next.replaceAll('{{dbUser}}', ctx.dbUser);
-    next = next.replaceAll('{{dbPassword}}', ctx.dbPassword);
-    next = next.replaceAll('{{dbName}}', ctx.dbName);
-    next = next.replaceAll('{{mountBasePath}}', trimTrailingSlash(ctx.mountPath));
-    next = next.replaceAll('{{secret1}}', ctx.secret1);
-    next = next.replaceAll('{{secret2}}', ctx.secret2);
-    next = next.replaceAll('{{secret3}}', ctx.secret3);
-    next = next.replaceAll('{{householdTimezone}}', ctx.householdTimezone);
-    next = next.replaceAll('{{sovereignFontSource}}', ctx.sovereignFontSource);
-    next = next.replaceAll('{{sovereignFontSansCssUrl}}', ctx.sovereignFontSansCssUrl);
-    next = next.replaceAll('{{sovereignFontMonoCssUrl}}', ctx.sovereignFontMonoCssUrl);
-    next = next.replaceAll('{{sovereignFontSansCssUrlLocal}}', ctx.sovereignFontSansCssUrlLocal);
-    next = next.replaceAll('{{sovereignFontMonoCssUrlLocal}}', ctx.sovereignFontMonoCssUrlLocal);
-    if (ctx.sidecarPorts) {
-      for (const [sidecarName, sidecarPort] of Object.entries(ctx.sidecarPorts)) {
-        next = next.replaceAll(`{{sidecar.${sidecarName}.port}}`, String(sidecarPort));
-      }
-    }
-    resolved[key] = next;
-  }
-  return resolved;
-}
-
-function parseDotEnv(content) {
-  const env = {};
-  const lines = String(content || '').split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const idx = trimmed.indexOf('=');
-    if (idx <= 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    let value = trimmed.slice(idx + 1);
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith('\'') && value.endsWith('\''))) {
-      value = value.slice(1, -1);
-    }
-    env[key] = value;
-  }
-  return env;
-}
-
-function parseDatabaseUrl(value) {
-  try {
-    const parsed = new URL(String(value || ''));
-    const dbName = parsed.pathname ? parsed.pathname.replace(/^\//, '') : '';
-    return {
-      databaseUrl: String(value),
-      dbUser: parsed.username ? decodeURIComponent(parsed.username) : '',
-      dbPassword: parsed.password ? decodeURIComponent(parsed.password) : '',
-      dbName,
-    };
-  } catch (_error) {
-    return null;
-  }
-}
-
-function getDatabaseUrlEnvKey(app = {}) {
-  return app.database?.urlEnvKey || 'DATABASE_URL';
-}
-
-function resolveExistingDbContext(existing = {}, defaults = {}, app = {}) {
-  const next = { ...defaults };
-  const databaseUrlEnvKey = getDatabaseUrlEnvKey(app);
-  const existingDatabaseUrl = existing[databaseUrlEnvKey] || existing.DATABASE_URL;
-
-  if (existingDatabaseUrl) {
-    const parsed = parseDatabaseUrl(existingDatabaseUrl);
-    if (parsed) {
-      if (parsed.dbUser) next.dbUser = parsed.dbUser;
-      if (parsed.dbPassword) next.dbPassword = parsed.dbPassword;
-      if (parsed.dbName) next.dbName = parsed.dbName;
-      next.databaseUrl = parsed.databaseUrl;
-    }
-  }
-
-  if (existing.PGUSER) next.dbUser = existing.PGUSER;
-  if (existing.PGPASSWORD) next.dbPassword = existing.PGPASSWORD;
-  if (existing.PGDATABASE) next.dbName = existing.PGDATABASE;
-
-  if (existing.DB_BACKEND) next.dbBackend = existing.DB_BACKEND;
-  if (existing.SQLITE_DB_PATH) next.sqliteDbPath = existing.SQLITE_DB_PATH;
-
-  if (!next.databaseUrl && next.dbUser && next.dbPassword && next.dbName) {
-    next.databaseUrl = `postgresql://${next.dbUser}:${next.dbPassword}@127.0.0.1:5432/${next.dbName}`;
-  }
-
-  return next;
-}
-
-function hasExistingDbConfig(existing = {}, app = {}) {
-  const databaseUrlEnvKey = getDatabaseUrlEnvKey(app);
-  return Boolean(
-    existing[databaseUrlEnvKey]
-      || (databaseUrlEnvKey !== 'DATABASE_URL' && existing.DATABASE_URL)
-      || existing.PGUSER
-      || existing.PGPASSWORD
-      || existing.PGDATABASE
-      || existing.SQLITE_DB_PATH
-  );
-}
-
-function shouldPreserveExistingEnvValue(key, templateValue, preserveExistingKeys = []) {
-  const template = String(templateValue == null ? '' : templateValue);
-  if (preserveExistingKeys.includes(key)) return true;
-  if (template === '') return true;
-  if (template.includes('{{secret')) return true;
-  if (['DATABASE_URL', 'DB_BACKEND', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'SQLITE_DB_PATH'].includes(key)) return true;
-  if (key === 'DATABASE_URL' && template.includes('{{databaseUrl}}')) return true;
-  if (/(SECRET|TOKEN|PASSWORD|PASSPHRASE|API_KEY|CLIENT_SECRET|CLIENT_ID|AUTH_)/i.test(key)) return true;
-  return false;
-}
-
-function mergeExistingEnvValues({ template, resolved, existing, preserveExistingKeys = [] }) {
-  const next = { ...resolved };
-  for (const [key, templateValue] of Object.entries(template || {})) {
-    const existingValue = existing[key];
-    if (!existingValue) continue;
-    if (!shouldPreserveExistingEnvValue(key, templateValue, preserveExistingKeys)) continue;
-    next[key] = existingValue;
-  }
-  for (const [key, existingValue] of Object.entries(existing || {})) {
-    if (!existingValue) continue;
-    if (key in next) continue;
-    if (!shouldPreserveExistingEnvValue(key, '', preserveExistingKeys)) continue;
-    next[key] = existingValue;
-  }
-  return next;
 }
 
 function resolveRepositoryUrl(app, config = {}) {
@@ -684,6 +545,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
     port,
     appId: app.id,
     preserveMountPath: app.network.preserveMountPath === true,
+    clientMaxBodySize: /^[1-9][0-9]{0,3}[mM]$/.test(String(app.network.clientMaxBodySize || '')) ? app.network.clientMaxBodySize : null,
   });
 
   const executionSteps = [
@@ -746,6 +608,7 @@ function buildInstallPlan({ appId, state = {}, options = {}, config = {} }) {
   const commands = executionSteps.flatMap((step) => step.run);
 
   const script = `#!/usr/bin/env bash\nset -euo pipefail\n\n# Install ${app.name}\n\n${commands.join('\n')}\n`;
+
 
   return {
     kind: 'install',

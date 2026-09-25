@@ -10,6 +10,11 @@ function boolFromEnv(value, fallback) {
   return !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
 }
 
+function executionModeFromEnv(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return ['legacy-sudo', 'executor'].includes(mode) ? mode : 'plan-only';
+}
+
 function loadConfig() {
   const rootDir = process.cwd();
   const dataDir = process.env.HOME_BASE_DATA_DIR || path.join(rootDir, '.data');
@@ -17,6 +22,13 @@ function loadConfig() {
   const baseInstallDir = process.env.HOME_BASE_INSTALL_DIR || '/opt/sovereign-home/apps';
   const sharedRoot = process.env.HOME_BASE_SHARED_ROOT || path.dirname(baseInstallDir);
   const assetsRoot = process.env.HOME_BASE_ASSETS_ROOT || path.join(sharedRoot, 'assets');
+  const homeBaseExecutionMode = executionModeFromEnv(process.env.HOME_BASE_EXECUTION_MODE);
+  const homeBaseEnablePrivilegedJobs = ['legacy-sudo', 'executor'].includes(homeBaseExecutionMode)
+    && boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, false);
+  // Hosts upgraded from before execution modes existed enabled privileged jobs with this flag alone.
+  // They now fail closed to plan-only; this lets the service say exactly how to opt back in.
+  const homeBaseExecutionModeMissing = !String(process.env.HOME_BASE_EXECUTION_MODE || '').trim()
+    && boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, false);
 
   return {
     appName: 'Home Base',
@@ -24,6 +36,7 @@ function loadConfig() {
     dataDir,
     stateDbPath,
     port: numberFromEnv(process.env.PORT, 3080),
+    bindHost: process.env.HOME_BASE_BIND_HOST || '127.0.0.1',
     serviceUser: process.env.HOME_BASE_SERVICE_USER || 'sovereign',
     baseInstallDir,
     homeBaseSharedRoot: sharedRoot,
@@ -42,8 +55,12 @@ function loadConfig() {
     homeBaseAppDir: process.env.HOME_BASE_APP_DIR || '/opt/sovereign-home/homebase',
     homeBaseStateDir: process.env.HOME_BASE_RUNTIME_STATE_DIR || '/var/lib/sovereign-home/homebase',
     homeBaseEnvFile: process.env.HOME_BASE_ENV_FILE || '/etc/sovereign-home/homebase.env',
-    homeBaseEnablePrivilegedJobs: boolFromEnv(process.env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, true),
-    homeBaseAutoBootstrap: boolFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP, false),
+    homeBaseExecutionMode,
+    homeBaseEnablePrivilegedJobs,
+    homeBaseExecutionModeMissing,
+    homeBaseExecutorSocket: process.env.HOME_BASE_EXECUTOR_SOCKET || '/run/homebase/executor.sock',
+    homeBaseAutoBootstrap: homeBaseEnablePrivilegedJobs
+      && boolFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP, false),
     homeBaseAutoBootstrapMode: process.env.HOME_BASE_AUTO_BOOTSTRAP_MODE || 'execute',
     homeBaseAutoBootstrapDelayMs: numberFromEnv(process.env.HOME_BASE_AUTO_BOOTSTRAP_DELAY_MS, 5000),
     sovereignFontMountPath: process.env.SOVEREIGN_FONT_MOUNT_PATH || '/_sovereign/fonts/',

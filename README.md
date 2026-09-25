@@ -2,6 +2,22 @@
 
 Home Base is the control plane for The Sovereign Home: a Debian-first web application that bootstraps a host, installs family apps, generates config artifacts, and centralizes operations.
 
+**Status: Developer Preview.** Home Base is intentionally plan-first and binds its web control plane to loopback. Its unprivileged web service delegates only explicitly confirmed, typed operations to a separate root executor; it does not use broad sudo or arbitrary shell commands.
+
+## Install on Ubuntu or Debian
+
+The release installer replaces the manual clone-first setup:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/eforbell/homeBase/main/install.sh
+less install.sh
+sudo bash install.sh --version v0.1.0
+```
+
+The installer verifies a tagged release checksum, installs hardened web and executor systemd units, preserves state on safe reruns, and refuses existing Home Base sudoers or legacy-execution configuration. See [`docs/install.md`](docs/install.md) for prerequisites, release packaging, recovery, and the manual equivalent.
+
+For a private-repository or pre-release VM, run the checkout directly with `sudo bash install.sh --source-dir "$PWD" --version v0.1.0`; it packages the clean checked-out commit locally and does not access GitHub Releases.
+
 ## Current slice
 
 This initial slice delivers:
@@ -19,7 +35,7 @@ This initial slice delivers:
   - generated artifact previews (`.env`, systemd units, nginx snippets)
   - SQLite-backed local state tracking for planned installs and jobs
 
-This prototype is intentionally **plan-first**. It does not auto-run privileged host changes yet; instead it produces deterministic plans and executable shell scripts so the install flow can be reviewed and applied safely.
+The service does not auto-run host changes. It produces deterministic plans and executes only explicit, admin-confirmed typed jobs through the separate executor. Legacy broad-sudo execution is not supported by the installer.
 
 ## Run
 
@@ -29,11 +45,19 @@ npm start
 
 Open `http://localhost:3080` by default.
 
-### Founder/private-repo mode
+### Private repositories
 
-For public-community installs, Home Base now defaults to HTTPS GitHub clone URLs.
+Home Base defaults to HTTPS GitHub clone URLs.
 
-If you want founder/private-repo SSH-key auth instead, run Home Base with:
+**Installer-built hosts (executor mode):** give the executor one read-only deploy key. It is stored root-only and never readable by app code:
+
+```bash
+sudo bash install.sh --source-dir <checkout> --repair --git-ssh-key /path/to/deploy_key
+```
+
+The executor fetches as root into a root-owned mirror with pinned GitHub host keys; apps clone from that local mirror. See `SECURITY.md`.
+
+**Legacy sudo-mode hosts only:** run Home Base with:
 
 ```bash
 export HOME_BASE_GIT_TRANSPORT=ssh-key
@@ -42,7 +66,7 @@ export HOME_BASE_GIT_SSH_KNOWN_HOSTS_PATH=/opt/sovereign-home/.ssh/known_hosts
 PORT=3080 npm start
 ```
 
-The SSH key path must be readable by the managed service user because app clone/fetch commands run as that user.
+In legacy mode the SSH key path must be readable by the managed service user, because app clone/fetch commands run as that user. Do not use this layout on executor-mode hosts.
 
 ## Test
 
@@ -60,3 +84,8 @@ npm test
 - `docs/vm-next-steps.md`
 - `docs/next-phase-roadmap.md`
 - `docs/homebase-service-runtime-plan.md`
+- `docs/install.md`
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

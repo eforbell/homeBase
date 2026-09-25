@@ -138,7 +138,9 @@ async function rotateAdmin(req, res, body, stateStore) {
   return { statusCode: 200, payload: { ok: true } };
 }
 
-async function requireAdminForExecute(req, stateStore) {
+const EXECUTION_MODE_UPGRADE_HINT = 'HOME_BASE_ENABLE_PRIVILEGED_JOBS is set but HOME_BASE_EXECUTION_MODE is not in this process\'s environment. Home Base reads only the environment systemd provides (it does not read a .env file): add HOME_BASE_EXECUTION_MODE=legacy-sudo to the file named by EnvironmentFile= in `systemctl cat homebase`, then restart the service.';
+
+async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false } = {}) {
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const sessionTokenHash = token ? hashToken(token) : null;
   const status = await getAdminStatus(req, stateStore);
@@ -148,10 +150,25 @@ async function requireAdminForExecute(req, stateStore) {
   if (!status.unlocked) {
     return { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' }, sessionTokenHash };
   }
+  if (!privilegedJobsEnabled) {
+    return {
+      ok: false,
+      statusCode: 409,
+      payload: {
+        error: executionModeMissing
+          ? `Home Base is running in plan-only mode. ${EXECUTION_MODE_UPGRADE_HINT}`
+          : 'Home Base is running in plan-only mode. Generate and review the plan, then execute it from an operator shell.',
+        code: 'PRIVILEGED_EXECUTION_DISABLED',
+        executionMode: 'plan-only',
+      },
+      sessionTokenHash,
+    };
+  }
   return { ok: true, sessionTokenHash };
 }
 
 module.exports = {
+  EXECUTION_MODE_UPGRADE_HINT,
   getAdminStatus,
   setupAdmin,
   unlockAdmin,

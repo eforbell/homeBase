@@ -7,8 +7,10 @@ const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
+const { buildExecutorInstallAction } = require('./services/executor-install');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
+const { BACKUP_ROOT } = require('./operations/paths');
 const { buildRestorePlan } = require('./services/restore-planner');
 const { buildUninstallPlan } = require('./services/uninstall-planner');
 const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planner');
@@ -28,6 +30,8 @@ const { HealthMonitor } = require('./services/health-monitor');
 const { HealthAlertNotifier } = require('./services/notifications');
 const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
+const { getExecutorCapabilities, canExecuteMutations } = require('./executor/capabilities');
+const { hostStatus: requestExecutorHostStatus, planAction: requestExecutorPlan } = require('./executor/client');
 const {
   getAdminStatus,
   setupAdmin,
@@ -35,6 +39,7 @@ const {
   lockAdmin,
   rotateAdmin,
   requireAdminForExecute,
+  EXECUTION_MODE_UPGRADE_HINT,
 } = require('./admin-auth');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -196,8 +201,56 @@ function parseBody(req) {
   });
 }
 
+// Routes that still build legacy sudo/shell plans must never execute in executor mode. Refuse explicitly
+// rather than relying on which preflight checks happen to be absent there.
+function rejectLegacyExecution(res) {
+  return sendJson(res, 409, {
+    error: 'This operation has not been converted to the typed executor yet, so it cannot run in executor mode. Dry-run plans remain available.',
+    code: 'TYPED_EXECUTION_NOT_SUPPORTED',
+  });
+}
+
+// Resolves the restore archive by name only: the web process never reads backup directories (they
+// belong to sovereign and may not be listable by homebase). The executor verifies the archive exists.
+function resolveRestoreBackupId({ appId, backupDir, stateStore }) {
+  const pattern = /^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$/;
+  if (backupDir) {
+    const requested = String(backupDir);
+    const name = path.posix.basename(requested);
+    if (!pattern.test(name)) return null;
+    if (requested.includes('/') && path.posix.normalize(requested) !== `${BACKUP_ROOT}/${appId}/${name}`) return null;
+    return name;
+  }
+  const names = stateStore.listBackups(appId).map((record) => path.posix.basename(record.archiveDir)).filter((name) => pattern.test(name)).sort();
+  return names.at(-1) || null;
+}
+
+// Dry-runs in executor mode preview the plan the executor would actually run (never the legacy sudo plan).
+async function startExecutorPreview({ res, effectiveConfig, appId, kind, action, jobRunner }) {
+  let capabilities;
+  try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch {
+    return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
+  }
+  if (!capabilities?.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor does not manage ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+  const jobId = jobRunner.startTypedPreviewJob({ kind, target: appId, action });
+  return sendJson(res, 202, { ok: true, jobId, appId, dryRun: true });
+}
+
+// Starts an executor lifecycle job after the same capability checks installs use.
+async function startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction, auth, start }) {
+  let capabilities;
+  try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch {
+    return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
+  }
+  if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+  if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor does not manage ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+  const jobId = start();
+  recordAdminAudit(stateStore, { action: auditAction, target: appId, dryRun: false, outcome: 'queued', jobId, sessionTokenHash: auth?.sessionTokenHash });
+  return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
+}
+
 function missingCheckIds(preflight, ids) {
-  return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok));
+  return ids.filter((id) => !preflight.checks.find((check) => check.id === id && check.ok === true));
 }
 
 function trimTrailingSlash(value) {
@@ -249,13 +302,28 @@ function getHomeBaseStatus(config) {
   const envFile = config.homeBaseEnvFile || '/etc/sovereign-home/homebase.env';
   const stateDbPath = config.stateDbPath || `${stateDir}/home-base.sqlite3`;
   const serviceFile = '/etc/systemd/system/homebase.service';
-  const sudoersFile = '/etc/sudoers.d/homebase';
+  const sudoersFile = config.homeBaseSudoersFile || '/etc/sudoers.d/homebase';
   const sharedAssetsRoot = config.homeBaseAssetsRoot || '/opt/sovereign-home/assets';
   const fontDir = path.join(sharedAssetsRoot, 'fonts');
   const sansCssPath = path.join(fontDir, 'source-sans-3.css');
   const monoCssPath = path.join(fontDir, 'jetbrains-mono.css');
   const configuredSource = String(process.env.SOVEREIGN_FONT_SOURCE || 'auto').trim().toLowerCase();
   const mountPath = String(config.sovereignFontMountPath || '/_sovereign/fonts/');
+  const sudoersFileExists = fs.existsSync(sudoersFile);
+  let sudoersPolicyStatus = sudoersFileExists ? 'unknown' : 'absent';
+  if (sudoersFileExists) {
+    try {
+      const escapedRuntimeUser = runtimeUser.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const legacyBroadPattern = new RegExp(`^[\\t ]*${escapedRuntimeUser}[\\t ]+.*NOPASSWD:[\\t ]*ALL(?:[\\t ]|$)`, 'm');
+      sudoersPolicyStatus = legacyBroadPattern.test(fs.readFileSync(sudoersFile, 'utf8'))
+        ? 'legacy-broad'
+        : 'present';
+    } catch (_error) {
+      sudoersPolicyStatus = 'unknown';
+    }
+  }
+  const legacyBroadSudoersDetected = sudoersPolicyStatus === 'legacy-broad';
+  const privilegedJobsEnabled = config.homeBaseEnablePrivilegedJobs === true;
   const status = {
     runtimeUser,
     appDir,
@@ -263,7 +331,11 @@ function getHomeBaseStatus(config) {
     stateDbPath,
     envFile,
     serviceName: 'homebase',
-    privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs !== false,
+    bindHost: config.bindHost || '127.0.0.1',
+    executionMode: config.homeBaseExecutionMode || 'plan-only',
+    privilegedJobsEnabled,
+    legacyBroadSudoersDetected,
+    sudoersPolicyStatus,
     sovereignFonts: {
       configuredSource,
       mountPath,
@@ -283,7 +355,7 @@ function getHomeBaseStatus(config) {
       stateDbExists: fs.existsSync(stateDbPath),
       envFileExists: fs.existsSync(envFile),
       serviceFileExists: fs.existsSync(serviceFile),
-      sudoersFileExists: fs.existsSync(sudoersFile),
+      sudoersFileExists,
     },
   };
 
@@ -355,12 +427,20 @@ function recordAdminAudit(stateStore, record = {}) {
   }
 }
 
+function executionBlockOutcome(auth) {
+  return auth?.payload?.code === 'PRIVILEGED_EXECUTION_DISABLED'
+    ? 'blocked-execution-mode'
+    : 'blocked-auth';
+}
+
 function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   stateStore.init();
-  const jobRunner = new JobRunner(stateStore);
+  const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
   try {
     jobRunner.reconcileStaleUpdateJobs();
+    // Typed jobs that were in flight when Home Base stopped: the executor's journal has the outcome.
+    if (config.homeBaseExecutionMode === 'executor') jobRunner.reconcileTypedJobs();
   } catch (error) {
     console.warn(`[homebase] stale update reconciliation failed: ${error.message}`);
   }
@@ -412,6 +492,9 @@ function createApp(config) {
     gitSshStrictHostKeyChecking: initialEffectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
     checkIntervalMs: config.appUpdateCheckIntervalMs,
     staleAfterMs: config.appUpdateStatusTtlMs,
+    executionMode: initialEffectiveConfig.homeBaseExecutionMode,
+    executorSocket: initialEffectiveConfig.homeBaseExecutorSocket,
+    baseInstallDir: initialEffectiveConfig.baseInstallDir,
   });
   appUpdateMonitor.schedule({
     installationsProvider: () => Object.values(stateStore.loadState().installations || {}),
@@ -424,9 +507,25 @@ function createApp(config) {
         gitSshKeyPath: effective.gitSshKeyPath || '',
         gitSshKnownHostsPath: effective.gitSshKnownHostsPath || '',
         gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
+        executionMode: effective.homeBaseExecutionMode,
+        executorSocket: effective.homeBaseExecutorSocket,
+        baseInstallDir: effective.baseInstallDir,
       };
     },
   });
+
+  function updateGitConfig(effective) {
+    return {
+      serviceUser: effective.serviceUser || 'sovereign',
+      gitTransport: effective.gitTransport || 'https',
+      gitSshKeyPath: effective.gitSshKeyPath || '',
+      gitSshKnownHostsPath: effective.gitSshKnownHostsPath || '',
+      gitSshStrictHostKeyChecking: effective.gitSshStrictHostKeyChecking || 'accept-new',
+      executionMode: effective.homeBaseExecutionMode,
+      executorSocket: effective.homeBaseExecutorSocket,
+      baseInstallDir: effective.baseInstallDir,
+    };
+  }
 
   function getTailscaleReadiness(effectiveConfig, { force = false } = {}) {
     const now = Date.now();
@@ -481,7 +580,40 @@ function createApp(config) {
     return value;
   }
 
-  function getPreflight(effectiveConfig, { force = false } = {}) {
+  // The web service cannot inspect protected host state itself; the executor answers a fixed set of
+  // read-only questions. Refreshed asynchronously so synchronous preflight gates use the latest facts.
+  const executorStatusCache = { value: null, expiresAt: 0, inFlight: null };
+  function refreshExecutorStatus(effectiveConfig, { force = false } = {}) {
+    if (effectiveConfig.homeBaseExecutionMode !== 'executor') return Promise.resolve(null);
+    if (!force && executorStatusCache.value && executorStatusCache.expiresAt > Date.now()) return Promise.resolve(executorStatusCache.value);
+    // Concurrent callers share one probe instead of each opening a socket.
+    if (!executorStatusCache.inFlight) {
+      executorStatusCache.inFlight = probeExecutorStatus(effectiveConfig).finally(() => { executorStatusCache.inFlight = null; });
+    }
+    return executorStatusCache.inFlight;
+  }
+
+  async function probeExecutorStatus(effectiveConfig) {
+    const socket = effectiveConfig.homeBaseExecutorSocket;
+    let value;
+    try {
+      const capabilities = await getExecutorCapabilities(socket, { timeoutMs: 3000 });
+      let host = null;
+      try { host = await requestExecutorHostStatus(socket, { timeoutMs: 8000 }); } catch { host = null; }
+      value = { reachable: true, capabilities, host };
+    } catch (error) {
+      value = { reachable: false, error: error.code === 'ENOENT' ? 'Executor socket is missing.' : (error.message || 'Executor unavailable.') };
+    }
+    executorStatusCache.value = value;
+    executorStatusCache.expiresAt = Date.now() + 30_000;
+    return value;
+  }
+
+  async function getPreflight(effectiveConfig, { force = false } = {}) {
+    const previousExecutorStatus = executorStatusCache.value;
+    const executorStatus = await refreshExecutorStatus(effectiveConfig, { force });
+    // New executor facts invalidate the host-check cache even when the caller did not force.
+    if (executorStatus !== previousExecutorStatus) force = true;
     const now = Date.now();
     const cacheKey = JSON.stringify({
       gitTransport: effectiveConfig.gitTransport || 'https',
@@ -491,7 +623,7 @@ function createApp(config) {
     if (!force && preflightCache.value && preflightCache.key === cacheKey && preflightCache.expiresAt > now) {
       return preflightCache.value;
     }
-    const value = runPreflightChecks(effectiveConfig);
+    const value = runPreflightChecks(effectiveConfig, { executorStatus });
     preflightCache.key = cacheKey;
     preflightCache.value = value;
     preflightCache.expiresAt = now + 30_000;
@@ -564,6 +696,9 @@ function createApp(config) {
             gitSshKeyPath: effectiveConfig.gitSshKeyPath || '',
             gitSshKnownHostsPath: effectiveConfig.gitSshKnownHostsPath || '',
             gitSshStrictHostKeyChecking: effectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
+            executionMode: effectiveConfig.homeBaseExecutionMode,
+            executorSocket: effectiveConfig.homeBaseExecutorSocket,
+            baseInstallDir: effectiveConfig.baseInstallDir,
           },
         });
         return sendJson(res, 200, {
@@ -579,9 +714,7 @@ function createApp(config) {
         }
       }
       if (method === 'GET' && pathname === '/api/preflight') {
-        return sendJson(res, 200, getPreflight(effectiveConfig, {
-          force: url.searchParams.get('refresh') === '1',
-        }));
+        return sendJson(res, 200, await getPreflight(effectiveConfig, { force: url.searchParams.get('refresh') === '1' }));
       }
       if (method === 'GET' && pathname === '/api/network/tailscale') {
         return sendJson(res, 200, getTailscaleReadiness(effectiveConfig, {
@@ -706,14 +839,17 @@ function createApp(config) {
           });
           return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
         }
+        // The legacy self-update chowns the checkout to the runtime user, which would undo the root
+        // ownership the executor's own code depends on. Executor hosts update via install.sh --repair.
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-update-self',
               target: 'homebase',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -752,13 +888,13 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-install-self',
               target: 'homebase',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -766,7 +902,8 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd', 'node']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -834,21 +971,29 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'bootstrap-execute',
               target: 'local-host',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
+          try {
+            const capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket);
+            if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+          } catch { return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' }); }
+          const jobId = jobRunner.startTypedBootstrapJob();
+          return sendJson(res, 202, { ok: true, jobId, dryRun: false });
+        }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -931,20 +1076,21 @@ function createApp(config) {
         }
 
         if (!dryRun) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'tailscale-publish-execute',
               target: 'svc:home',
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
 
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['tailscale', 'nginx', 'nginx-config', 'nginx-snippets-include']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -986,23 +1132,63 @@ function createApp(config) {
         const appId = appActionsMatch[1];
         if (!getAppById(appId)) return notFound(res);
         const installation = (state.installations || {})[appId] || null;
+        const planned = installation?.status === 'planned';
         return sendJson(res, 200, {
           appId,
           actions: {
             install: true,
             backup: true,
             restore: true,
-            update: Boolean(installation),
-            restart: Boolean(installation),
-            uninstall: Boolean(installation),
+            update: Boolean(installation) && !planned,
+            restart: Boolean(installation) && !planned,
+            uninstall: Boolean(installation) && !planned,
+            discardPlan: planned,
           },
-          note: 'Update currently runs through install execute (same deployment pipeline).',
+          note: planned
+            ? 'This is a saved dry-run. Run a real install or discard the plan metadata; no app files were created by the dry-run.'
+            : 'Update currently runs through install execute (same deployment pipeline).',
         });
+      }
+
+      const discardPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/discard-plan$/);
+      if (method === 'POST' && discardPlanMatch) {
+        const body = await parseBody(req);
+        const appId = discardPlanMatch[1];
+        const installation = (state.installations || {})[appId] || null;
+        if (!getAppById(appId)) return notFound(res);
+        if (!installation || installation.status !== 'planned') {
+          return sendJson(res, 409, { error: `App ${appId} does not have a discardable plan.` });
+        }
+        // Defense in depth: a "planned" record whose install root exists belongs to a real install.
+        if (installation.installRoot && fs.existsSync(installation.installRoot)) {
+          return sendJson(res, 409, { error: `App ${appId} has files at ${installation.installRoot}; uninstall it instead of discarding the plan.`, code: 'INSTALL_PRESENT' });
+        }
+        if (body.confirm !== 'DISCARD') {
+          return sendJson(res, 400, { error: 'Discarding a saved plan requires confirm=DISCARD.' });
+        }
+        const adminStatus = await getAdminStatus(req, stateStore);
+        if (!adminStatus.configured) return sendJson(res, 409, { error: 'Admin setup is required before discarding a saved plan.' });
+        if (!adminStatus.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required before discarding a saved plan.' });
+        stateStore.deleteInstallation(appId);
+        recordAdminAudit(stateStore, {
+          action: 'app-plan-discard', target: appId, dryRun: false, outcome: 'completed', reason: 'planned-metadata-only',
+        });
+        return sendJson(res, 200, { ok: true, appId, discarded: true });
       }
 
       const installPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/install-plan$/);
       if (method === 'POST' && installPlanMatch) {
         const body = await parseBody(req);
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          const action = buildExecutorInstallAction({ appId: installPlanMatch[1], ref: body.ref, config: effectiveConfig });
+          if (!action) return notFound(res);
+          if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+          try {
+            return sendJson(res, 200, { kind: 'executor-plan', action, ...(await requestExecutorPlan(effectiveConfig.homeBaseExecutorSocket, action)) });
+          } catch (error) {
+            return sendJson(res, error.code === 'ENOENT' ? 503 : 409, { error: error.message, code: error.code || 'EXECUTOR_UNAVAILABLE' });
+          }
+        }
         const plan = buildInstallPlan({ appId: installPlanMatch[1], state, options: body, config: effectiveConfig });
         return sendJson(res, 200, plan);
       }
@@ -1011,6 +1197,10 @@ function createApp(config) {
       if (method === 'POST' && installMatch) {
         const body = await parseBody(req);
         const appId = installMatch[1];
+        // Saving a "planned" record from the legacy plan has no executor meaning; preview with a dry-run.
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          return sendJson(res, 409, { error: 'In executor mode, preview an install with a dry-run (POST /api/apps/:id/execute with dryRun: true).', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+        }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const app = getAppById(appId);
         stateStore.upsertInstallation({
@@ -1037,25 +1227,25 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-install-execute',
               target: executeInstallMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
-        if (body.dryRun === false) {
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode !== 'executor') {
           const app = getAppById(executeInstallMatch[1]);
           const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
           if (app?.runtime?.kind === 'node') required.push('node');
           if (app?.runtime?.kind === 'python') required.push('python3');
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, required);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1074,6 +1264,53 @@ function createApp(config) {
         }
 
         const appId = executeInstallMatch[1];
+        if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') {
+          let capabilities;
+          try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch (error) {
+            return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
+          }
+          if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+          if (!capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot install ${appId} yet.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
+          // Executor units, snippets, and env use the catalog's preferred port. Only a *different* app holding
+          // it is a conflict; a reinstall keeps the port it already has.
+          const catalogPort = getAppById(appId).network.preferredPort;
+          const conflict = Object.values(state.installations || {}).find((entry) => entry.appId !== appId && entry.port === catalogPort);
+          if (conflict) return sendJson(res, 409, { error: `Port ${catalogPort} is already assigned to ${conflict.appId}; executor installs use catalog ports.`, code: 'PORT_CONFLICT' });
+          // Used only for Home Base's own installation record; the executor builds the real plan from the
+          // catalog. Only the ref comes from the request so the record matches what the executor installs
+          // (catalog mount path and port, standard install root), never caller-edited values.
+          const action = buildExecutorInstallAction({ appId, ref: body.ref, config: effectiveConfig });
+          if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+          const { transport } = action;
+          if (transport === 'ssh' && capabilities.gitDeployKey !== 'present') {
+            return sendJson(res, 409, {
+              error: capabilities.gitDeployKey === 'insecure'
+                ? 'The executor deploy key must be a root-owned regular file with mode 0600. Re-run: sudo bash install.sh --repair --git-ssh-key <path>'
+                : 'SSH git transport needs a deploy key. On the host run: sudo bash install.sh --repair --git-ssh-key <path-to-private-key>',
+              code: 'GIT_DEPLOY_KEY_REQUIRED',
+            });
+          }
+          // Database credentials are generated inside the executor; a caller-supplied dbPassword is ignored here.
+          const jobId = jobRunner.startTypedInstallJob({
+            appId,
+            ref: action.ref,
+            transport,
+            // Non-secret site values the executor renders into the app env (hostname-derived URLs, timezone).
+            site: action.site,
+            onComplete: () => {
+              const installed = (stateStore.loadState().installations || {})[appId];
+              if (installed) void appUpdateMonitor.refreshInstalledApps([installed], { force: true, gitConfig: updateGitConfig(effectiveConfig) });
+            },
+          });
+          return sendJson(res, 202, { ok: true, jobId, appId, dryRun: false });
+        }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          // Preview only: the executor compiles the plan it would run. No legacy plan, .env, or record.
+          const action = buildExecutorInstallAction({ appId, ref: body.ref, config: effectiveConfig });
+          if (!action) return notFound(res);
+          if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'install', action, jobRunner });
+        }
         const plan = buildInstallPlan({ appId, state, options: body, config: effectiveConfig });
         const jobId = jobRunner.startInstallJob(plan, {
           dryRun: body.dryRun !== false,
@@ -1124,13 +1361,13 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restart-execute',
               target: restartExecuteMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1156,7 +1393,10 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restart-execute', auth, start: () => jobRunner.startTypedRestartJob({ appId }) });
+          }
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'systemd']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1172,6 +1412,9 @@ function createApp(config) {
               missing,
             });
           }
+        }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'restart', action: { action: 'restart', appId }, jobRunner });
         }
         const plan = buildRestartPlan({ app, install });
         const jobId = jobRunner.startRestartJob(plan, {
@@ -1235,13 +1478,13 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-backup-execute',
               target: backupExecuteMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1249,7 +1492,11 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            const appId = backupExecuteMatch[1];
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-backup-execute', auth, start: () => jobRunner.startTypedBackupJob({ appId }) });
+          }
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1265,6 +1512,10 @@ function createApp(config) {
               missing,
             });
           }
+        }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          const appId = backupExecuteMatch[1];
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'backup', action: { action: 'backup', appId }, jobRunner });
         }
         const plan = buildBackupPlan({ appId: backupExecuteMatch[1], state, config: effectiveConfig });
         const jobId = jobRunner.startBackupJob(plan, {
@@ -1333,13 +1584,13 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-uninstall-execute',
               target: appId,
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1351,7 +1602,10 @@ function createApp(config) {
           if (app.database?.engine && app.database.engine.includes('postgres')) {
             required.push('psql', 'postgres-service');
           }
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-uninstall-execute', auth, start: () => jobRunner.startTypedUninstallJob({ appId, keepBackups: body.keepBackups !== false }) });
+          }
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, required);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1367,6 +1621,9 @@ function createApp(config) {
               missing,
             });
           }
+        }
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'uninstall', action: { action: 'uninstall', appId, keepBackups: body.keepBackups !== false }, jobRunner });
         }
         const plan = buildUninstallPlan({
           appId,
@@ -1413,13 +1670,13 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore);
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restore-execute',
               target: restoreExecuteMatch[1],
               dryRun: false,
-              outcome: 'blocked-auth',
+              outcome: executionBlockOutcome(auth),
               reason: auth.payload?.error,
               sessionTokenHash: auth.sessionTokenHash,
             });
@@ -1427,7 +1684,13 @@ function createApp(config) {
           }
         }
         if (body.dryRun === false) {
-          const preflight = getPreflight(effectiveConfig, { force: true });
+          if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+            const appId = restoreExecuteMatch[1];
+            const backupId = resolveRestoreBackupId({ appId, backupDir: body.backupDir, stateStore });
+            if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
+            return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restore-execute', auth, start: () => jobRunner.startTypedRestoreJob({ appId, backupId }) });
+          }
+          const preflight = await getPreflight(effectiveConfig, { force: true });
           const missing = missingCheckIds(preflight, ['os', 'sudo', 'psql']);
           if (missing.length) {
             recordAdminAudit(stateStore, {
@@ -1445,6 +1708,12 @@ function createApp(config) {
           }
         }
 
+        if (effectiveConfig.homeBaseExecutionMode === 'executor') {
+          const appId = restoreExecuteMatch[1];
+          const backupId = resolveRestoreBackupId({ appId, backupDir: body.backupDir, stateStore });
+          if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
+          return startExecutorPreview({ res, effectiveConfig, appId, kind: 'restore', action: { action: 'restore', appId, backupId }, jobRunner });
+        }
         const plan = buildRestorePlan({
           appId: restoreExecuteMatch[1],
           backupDir: body.backupDir,
@@ -1486,6 +1755,16 @@ function createApp(config) {
         APP_NOT_INSTALLED: 409,
         INVALID_GIT_REF: 400,
         GIT_SSH_KEY_PATH_REQUIRED: 400,
+        INVALID_RUNTIME_USER: 400,
+        INVALID_RUNTIME_PATH: 400,
+        INVALID_RUNTIME_VALUE: 400,
+        INVALID_RUNTIME_PORT: 400,
+        INVALID_BIND_HOST: 400,
+        INVALID_GIT_TRANSPORT: 400,
+        INVALID_AUTO_BOOTSTRAP_MODE: 400,
+        INVALID_AUTO_BOOTSTRAP_DELAY: 400,
+        UNSAFE_PRIVILEGED_CONFIGURATION: 409,
+        UNSAFE_AUTO_BOOTSTRAP_CONFIGURATION: 409,
       };
       return sendJson(res, statusByCode[error.code] || 500, {
         error: error.message || 'Unexpected error',
@@ -1495,9 +1774,14 @@ function createApp(config) {
 
   return {
     server,
-    listen() {
-      server.listen(config.port, () => {
-        console.log(`Home Base listening on http://127.0.0.1:${config.port}`);
+    listen(callback) {
+      const bindHost = config.bindHost || '127.0.0.1';
+      server.listen(config.port, bindHost, () => {
+        const address = server.address();
+        const activePort = address && typeof address === 'object' ? address.port : config.port;
+        console.log(`Home Base listening on http://${bindHost}:${activePort}`);
+        if (config.homeBaseExecutionModeMissing) console.warn(`[homebase] ${EXECUTION_MODE_UPGRADE_HINT}`);
+        if (typeof callback === 'function') callback();
       });
     },
   };
