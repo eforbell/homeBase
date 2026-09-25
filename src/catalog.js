@@ -75,6 +75,8 @@ const catalog = [
       {
         name: 'family-pulse-mcp',
         description: 'Family Pulse MCP Server',
+        // Reserved so executor installs render MCP_PORT deterministically (legacy allocates port + 1).
+        port: 3004,
         execStart: 'node mcp/server.js',
         env: {
           NODE_ENV: 'production',
@@ -447,6 +449,8 @@ const catalog = [
     runtime: {
       kind: 'python',
       installCommand: '.venv/bin/python -m pip install -e .',
+      // Typed form of installCommand for the executor. Unpinned until the repo ships a lockfile.
+      python: { editable: true },
       startCommand: '.venv/bin/uvicorn web.app:create_app --factory --host 127.0.0.1 --port {{port}}',
       pythonVenv: '.venv',
     },
@@ -461,15 +465,17 @@ const catalog = [
         readinessPath: '/api/ready',
       },
       notes: [
-        'Reverse proxy must strip the external subpath before proxying upstream.',
+        'HomeBase preserves the /bitcoin-accounting/ mount path; the app sets FastAPI root_path from BITCOIN_ACCOUNTING_WEB_BASE_PATH.',
       ],
     },
     database: {
-      engine: 'postgres-or-sqlite',
+      engine: 'postgres',
       bootstrap: 'schema-file',
       databaseName: 'bitcoin_accounting',
       databaseUser: 'bitcoin_accountant',
       schemaCommand: 'psql -d {{dbName}} -f src/sql/tables.sql',
+      // Executor: run once, as the app role, only on an empty database (so the app role owns its tables).
+      schemaFile: 'src/sql/tables.sql',
       migrationCommand: '.venv/bin/bitcoin-accounting-web-init',
       seedPolicy: 'never',
     },
@@ -529,6 +535,8 @@ const catalog = [
     runtime: {
       kind: 'python',
       installCommand: 'install -d -m 0700 .secrets && .venv/bin/python -m pip install -r requirements.lock && .venv/bin/python -m pip install -e . --no-deps',
+      // Typed form of installCommand for the executor (.secrets comes from storage.paths).
+      python: { requirements: 'requirements.lock', editable: true, editableNoDeps: true },
       startCommand: '.venv/bin/uvicorn schwab_helm.web.app:create_app --factory --host 127.0.0.1 --port {{port}}',
       pythonVenv: '.venv',
     },
@@ -826,6 +834,7 @@ const catalog = [
       {
         name: 'bug-base-mcp',
         description: 'Bug Base MCP Server',
+        port: 3006,
         execStart: 'node mcp/server.js',
         env: {
           NODE_ENV: 'production',
@@ -961,8 +970,14 @@ function getAppById(id) {
   return catalog.find((entry) => entry.id === id) || null;
 }
 
+// Every port an app binds: the main service plus sidecar ports reserved in the catalog.
+function catalogPorts(app) {
+  return [app?.network?.preferredPort, ...(app?.sidecars || []).map((sidecar) => sidecar.port)].filter((port) => port != null);
+}
+
 module.exports = {
   catalog,
   getCatalog,
   getAppById,
+  catalogPorts,
 };

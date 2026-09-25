@@ -79,8 +79,8 @@ function buildAppRestorePlan({ appId, backupId, generatedAt = new Date().toISOSt
   return planEnvelope({ kind: 'app-restore', target: layout.app.id, policyProfile: 'app-restore-v1', operations, generatedAt, catalogRevision });
 }
 
-// Removes the checkout, units, nginx snippet, git mirror, and database. External storage
-// (storage.absoluteRoot) is kept: it holds user data that a reinstall should find again.
+// Removes the checkout (with any in-checkout storage), units, nginx snippet, git mirror, and database.
+// External storage (storage.absoluteRoot) is kept: it holds user data that a reinstall should find again.
 function buildAppUninstallPlan({ appId, keepBackups = true, generatedAt = new Date().toISOString(), catalogRevision } = {}) {
   const layout = layoutFor(appId);
   const { operations, add } = sequence();
@@ -90,7 +90,9 @@ function buildAppUninstallPlan({ appId, keepBackups = true, generatedAt = new Da
   add({ id: 'reload-systemd', type: 'systemd.daemon-reload', title: 'Reload systemd units' });
   add({ id: 'reload-nginx', type: 'nginx.validate-and-reload', title: 'Validate and reload nginx' });
   if (layout.database) add({ id: 'drop-database', type: 'postgres.drop-database', title: `Drop ${layout.app.name} database and role`, risk: 'destructive', database: layout.database.name, owner: layout.database.user });
-  add({ id: 'remove-checkout', type: 'filesystem.remove-checkout', title: `Remove ${layout.app.name} install directory`, risk: 'destructive' });
+  // In-checkout storage goes with the checkout (the safety backup above holds it); say so on the plan.
+  const inCheckout = layout.storage?.inCheckout ? ` and its ${layout.storage.subpaths.join(', ')} storage` : '';
+  add({ id: 'remove-checkout', type: 'filesystem.remove-checkout', title: `Remove ${layout.app.name} install directory${inCheckout}`, risk: 'destructive' });
   if (!keepBackups) add({ id: 'remove-backups', type: 'backup.remove-all', title: `Remove ${layout.app.name} backups`, risk: 'destructive' });
   return planEnvelope({ kind: 'app-uninstall', target: layout.app.id, policyProfile: 'app-uninstall-v1', operations, generatedAt, catalogRevision });
 }

@@ -139,18 +139,18 @@ const GOOGLE_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBr
 
 // Render context equivalent to the legacy planner's for the same inputs (see test/env-parity.test.js).
 // Secrets are fresh candidates only: the shared reinstall contract keeps any existing secret values.
-function buildEnvContext({ layout, site, databaseUrl, fsImpl = fs, randomHex = () => crypto.randomBytes(32).toString('hex') }) {
-  const { app } = layout;
+function buildEnvContext({ layout, site, databaseUrl, dbPassword, fsImpl = fs, randomHex = () => crypto.randomBytes(32).toString('hex') }) {
   const publicBase = `https://${site.hostname}.${site.domain}`;
   const localFonts = fsImpl.existsSync(`${FONT_ASSETS_DIR}/source-sans-3.css`) && fsImpl.existsSync(`${FONT_ASSETS_DIR}/jetbrains-mono.css`);
-  // Legacy allocates sidecar ports sequentially after the app port.
-  const sidecarPorts = Object.fromEntries((app.sidecars || []).map((sidecar, index) => [sidecar.name, layout.port + index + 1]));
+  // Sidecar ports are reserved in the catalog (app-layout.js); legacy's port + 1 allocation lands on the same values.
+  const sidecarPorts = Object.fromEntries(layout.sidecars.filter((sidecar) => sidecar.port != null).map((sidecar) => [sidecar.name, sidecar.port]));
   return {
     port: layout.port,
     mountPath: layout.mountPath,
     externalUrl: `${publicBase}${layout.mountPath}`,
     publicUrl: `${publicBase}${layout.mountPath}`,
     databaseUrl,
+    dbPassword,
     dbUser: layout.database?.user,
     dbName: layout.database?.name,
     secret1: randomHex(),
@@ -166,15 +166,17 @@ function buildEnvContext({ layout, site, databaseUrl, fsImpl = fs, randomHex = (
   };
 }
 
-// The shared reinstall contract (src/operations/env.js), rendered strictly. Executor-written units set
-// no Environment=, so the runtime environment (NODE_ENV) is authoritative in .env.
+// The shared reinstall contract (src/operations/env.js), rendered strictly. NODE_ENV is written into
+// .env because the app reads it after dotenv loads; interpreter-level settings (TZ, PYTHONUNBUFFERED)
+// must exist before the process starts, so those live in the unit instead (renderServiceUnit).
 function renderAppEnvFile({ layout, password = null, site, existingContent = '', fsImpl = fs }) {
   const { app } = layout;
   const existing = existingContent ? parseDotEnv(existingContent) : null;
+  const dbPassword = layout.database ? assertDatabasePassword(password) : undefined;
   const databaseUrl = layout.database
-    ? `postgresql://${layout.database.user}:${encodeURIComponent(assertDatabasePassword(password))}@127.0.0.1:5432/${layout.database.name}`
+    ? `postgresql://${layout.database.user}:${encodeURIComponent(dbPassword)}@127.0.0.1:5432/${layout.database.name}`
     : undefined;
-  const ctx = buildEnvContext({ layout, site, databaseUrl, fsImpl });
+  const ctx = buildEnvContext({ layout, site, databaseUrl, dbPassword, fsImpl });
   let env;
   try {
     ({ env } = renderAppEnv({ app, ctx, existing, strict: true }));
@@ -182,7 +184,7 @@ function renderAppEnvFile({ layout, password = null, site, existingContent = '',
     if (error.code === 'ENV_TEMPLATE_UNRESOLVED') deny(error.message);
     throw error;
   }
-  return renderEnv({ ...env, NODE_ENV: app.runtime.nodeEnv || 'production' });
+  return renderEnv(layout.runtime.kind === 'node' ? { ...env, NODE_ENV: layout.runtime.nodeEnv } : env);
 }
 
 // The database password this install must use. Existing database wiring is kept verbatim by the
@@ -213,9 +215,15 @@ function unitText(value) {
   return String(value).replace(/[^\x20-\x7e]|\\/g, '').replaceAll('%', '%%').slice(0, 120);
 }
 
+const TIMEZONE = /^[A-Za-z_]+\/[A-Za-z_/-]+$/;
+
 // No EnvironmentFile=: systemd would read the sovereign-owned .env as root before dropping to User=,
 // letting a planted symlink expose root-only files. Apps load .env themselves (see the runbook).
-function renderServiceUnit({ layout, description, argv, environment = [], oneshot = false }) {
+// Environment= carries only fixed values: the household TZ (validated), PYTHONUNBUFFERED for Python
+// apps, and the catalog's simple sidecar values.
+function renderServiceUnit({ layout, description, argv, timezone, environment = [], oneshot = false }) {
+  if (!TIMEZONE.test(timezone || '') || timezone.length > 64) deny('Service units need a valid household timezone.');
+  const runtimeEnvironment = [['TZ', timezone], ...(layout.runtime.kind === 'python' ? [['PYTHONUNBUFFERED', '1']] : [])];
   return [
     '[Unit]',
     `Description=${unitText(description)}`,
@@ -225,7 +233,7 @@ function renderServiceUnit({ layout, description, argv, environment = [], onesho
     `Type=${oneshot ? 'oneshot' : 'simple'}`,
     'User=sovereign',
     `WorkingDirectory=${layout.checkout}`,
-    ...environment.map(([key, value]) => `Environment=${key}=${value}`),
+    ...[...runtimeEnvironment, ...environment].map(([key, value]) => `Environment=${key}=${value}`),
     `ExecStart=${argv.join(' ')}`,
     ...(oneshot ? [] : ['Restart=on-failure', 'RestartSec=5']),
     'UMask=0077',
@@ -255,21 +263,33 @@ function renderTimerUnit({ timer }) {
   ].join('\n');
 }
 
-function renderNginxSnippet({ layout }) {
-  const base = layout.mountPath.replace(/\/$/, '');
+function nginxLocation({ mountPath, upstream, clientMaxBodySize = null }) {
+  const base = mountPath.replace(/\/$/, '');
   return [
-    `# ${layout.app.id}`,
     `location = ${base} {`,
-    `    return 301 ${layout.mountPath};`,
+    `    return 301 ${mountPath};`,
     '}',
-    `location ${layout.mountPath} {`,
-    ...(layout.clientMaxBodySize ? [`    client_max_body_size ${layout.clientMaxBodySize};`] : []),
-    `    proxy_pass http://127.0.0.1:${layout.port}/;`,
+    `location ${mountPath} {`,
+    ...(clientMaxBodySize ? [`    client_max_body_size ${clientMaxBodySize};`] : []),
+    `    proxy_pass ${upstream};`,
     '    proxy_set_header Host $host;',
     '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
     '    proxy_set_header X-Forwarded-Proto $scheme;',
     `    proxy_set_header X-Forwarded-Prefix ${base};`,
     '}',
+  ];
+}
+
+// preserveMountPath passes /mount/... through unchanged (proxy_pass without a URI); otherwise nginx
+// strips the mount path. Published sidecars get their own, longer (so more specific) location.
+function renderNginxSnippet({ layout }) {
+  return [
+    `# ${layout.app.id}`,
+    ...nginxLocation({ mountPath: layout.mountPath, upstream: `http://127.0.0.1:${layout.port}${layout.preserveMountPath ? '' : '/'}`, clientMaxBodySize: layout.clientMaxBodySize }),
+    ...layout.sidecars.filter((sidecar) => sidecar.nginx).flatMap((sidecar) => [
+      `# ${sidecar.name}`,
+      ...nginxLocation({ mountPath: sidecar.nginx.mountPath, upstream: `http://127.0.0.1:${sidecar.port}${sidecar.nginx.upstreamPath}` }),
+    ]),
     '',
   ].join('\n');
 }
@@ -285,16 +305,16 @@ function renderManagedFile(operation, { secretBindings = {}, layout } = {}) {
       };
     case 'app-service-v1':
       if (operation.unit !== layout.service.unit) break;
-      return { path: unitPath(operation.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: layout.service.description, argv: layout.service.argv }) };
+      return { path: unitPath(operation.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: layout.service.description, argv: layout.service.argv, timezone: operation.timezone }) };
     case 'app-sidecar-service-v1': {
       const sidecar = layout.sidecars.find((entry) => entry.unit === operation.unit);
       if (!sidecar) break;
-      return { path: unitPath(sidecar.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: sidecar.description, argv: sidecar.argv, environment: sidecar.environment }) };
+      return { path: unitPath(sidecar.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: sidecar.description, argv: sidecar.argv, timezone: operation.timezone, environment: sidecar.environment }) };
     }
     case 'app-timer-service-v1': {
       const timer = layout.timers.find((entry) => entry.serviceUnit === operation.unit);
       if (!timer) break;
-      return { path: unitPath(timer.serviceUnit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: timer.description, argv: timer.argv, oneshot: true }) };
+      return { path: unitPath(timer.serviceUnit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: timer.description, argv: timer.argv, timezone: operation.timezone, oneshot: true }) };
     }
     case 'app-timer-v1': {
       const timer = layout.timers.find((entry) => entry.timerUnit === operation.unit);
@@ -424,18 +444,61 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       requireLayout(layout);
       const sovereign = lookupUser('sovereign');
       if (!sovereign) deny('The sovereign identity must exist before running app tasks.');
-      // Both argv shapes are fixed by the catalog layout; the plan only names the task.
-      const argv = operation.task === 'install-dependencies' ? ['/usr/bin/npm', 'ci', '--omit=dev']
-        : operation.task === 'migrate' ? layout.migrationArgv : null;
-      if (!argv) deny('Unsupported app task.');
-      const [binary, ...args] = argv;
       // libuv chdirs before dropping to sovereign, and sovereign owns the parent directory: refuse a
       // checkout that is not a real sovereign-owned directory right before spawning.
       const checkoutStat = lstatOrNull(fsImpl, layout.checkout);
       if (!checkoutStat || checkoutStat.isSymbolicLink() || !checkoutStat.isDirectory() || checkoutStat.uid !== sovereign.uid) deny(`${layout.app.name} checkout is not a sovereign-owned directory.`);
-      const result = await run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, NODE_ENV: layout.app.runtime.nodeEnv || 'production', LANG: 'C' } });
+      const env = { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, LANG: 'C', ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) };
+      // Every argv is fixed by the catalog layout; the plan only names the task.
+      const runApp = ([binary, ...args], extra = {}) => run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env, ...extra });
+      const venvPython = `${layout.checkout}/.venv/bin/python`;
+      const outputs = [];
+      const collect = (result) => { const text = String(result.stdout || '').trim(); if (text) outputs.push(text); };
+
+      if (operation.task === 'ensure-venv') {
+        if (layout.runtime.kind !== 'python') deny('Only Python apps have a virtualenv.');
+        const current = String((await runApp(['/usr/bin/python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'])).stdout || '').trim();
+        const existing = asUser(sovereign, () => {
+          const cfg = lstatOrNull(fsImpl, `${layout.checkout}/.venv/pyvenv.cfg`);
+          return {
+            config: cfg && cfg.isFile() ? fsImpl.readFileSync(`${layout.checkout}/.venv/pyvenv.cfg`, 'utf8') : null,
+            python: Boolean(lstatOrNull(fsImpl, venvPython)),
+          };
+        });
+        const version = existing.config ? (/^version(?:_info)?\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)/m.exec(existing.config) || [])[1] : null;
+        if (version === current && existing.python) return `virtualenv ready (Python ${current})`;
+        // A venv is bound to the interpreter that built it: rebuild it rather than repair it in place.
+        await runApp(['/usr/bin/python3', '-m', 'venv', ...(existing.config ? ['--clear'] : []), '.venv']);
+        return existing.config ? `rebuilt virtualenv for Python ${current} (was ${version || 'unknown'})` : `created virtualenv (Python ${current})`;
+      }
+      if (operation.task === 'install-dependencies') {
+        if (layout.runtime.kind === 'node') collect(await runApp(['/usr/bin/npm', 'ci', '--omit=dev']));
+        else {
+          const { requirements, editable, editableNoDeps } = layout.runtime.python;
+          const pip = [venvPython, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
+          if (requirements) collect(await runApp([...pip, '-r', requirements]));
+          if (editable) collect(await runApp([...pip, ...(editableNoDeps ? ['--no-deps'] : []), '-e', '.']));
+        }
+      } else if (operation.task === 'migrate') {
+        if (!layout.migrationArgv) deny('This app declares no migrations.');
+        collect(await runApp(layout.migrationArgv));
+      } else if (operation.task === 'bootstrap-schema') {
+        if (!layout.database?.schemaFile) deny('This app declares no schema file.');
+        // As the app role (so it owns its tables), only while the database is empty (the schema file is
+        // not idempotent), and all-or-nothing.
+        const password = readExistingDatabasePassword({ layout, fsImpl, lookupUser, asUser });
+        if (!password) deny(`${layout.app.name} has no database wiring in its .env.`);
+        const pgEnv = { ...env, PGHOST: '127.0.0.1', PGPORT: '5432', PGUSER: layout.database.user, PGDATABASE: layout.database.name, PGPASSWORD: password };
+        const psql = (args) => runApp(['/usr/bin/psql', '--no-password', '-v', 'ON_ERROR_STOP=1', ...args], { env: pgEnv, secrets: [password] });
+        const count = String((await psql(['-tA', '-c', "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S')"])).stdout || '').trim();
+        if (count !== '0') return `database already has ${count} objects; schema file not re-run`;
+        await psql(['-1', '-q', '-f', layout.database.schemaFile]);
+        return `created tables from ${layout.database.schemaFile}`;
+      } else {
+        deny('Unsupported app task.');
+      }
       // Keep success output well under the protocol's 64 KiB event line limit.
-      const output = String(result.stdout || '').trim();
+      const output = outputs.join('\n');
       return output ? output.slice(-8 * 1024) : `completed ${operation.task}`;
     },
     'postgres.ensure-role': async (operation, { secretBindings = {}, layout } = {}) => {
@@ -496,6 +559,21 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       return 'validated and reloaded nginx';
     },
     'filesystem.ensure-directory': async (operation, { layout } = {}) => {
+      if (operation.purpose === 'app-checkout-storage') {
+        const storage = requireLayout(layout).storage;
+        if (!storage?.inCheckout || !storage.subpaths.includes(operation.subpath)) deny('Storage subpath is not declared by this app.');
+        const sovereign = lookupUser('sovereign');
+        if (!sovereign) deny('The sovereign identity must exist before creating app storage.');
+        const target = `${layout.checkout}/${operation.subpath}`;
+        // Inside the sovereign-owned checkout, so created as sovereign: root never resolves a path there.
+        asUser(sovereign, () => {
+          const existing = lstatOrNull(fsImpl, target);
+          if (existing && (existing.isSymbolicLink() || !existing.isDirectory())) deny(`${target} is not a real directory.`);
+          if (!existing) fsImpl.mkdirSync(target, { mode: 0o700 });
+          fsImpl.chmodSync(target, 0o700);
+        });
+        return `ensured ${operation.subpath} storage`;
+      }
       const directory = directoryFor(operation, layout);
       const parent = path.dirname(directory);
       // Missing ancestors (e.g. /var/lib/sovereign-home) are created root-owned; they are never sovereign-controlled.

@@ -320,12 +320,13 @@
                 "nginx-snippets",
                 "nginx-apps",
                 "app-storage-root",
-                "app-storage"
+                "app-storage",
+                "app-checkout-storage"
               ]
             },
             "subpath": {
               "type": "string",
-              "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+              "pattern": "^\\.?[a-z0-9][a-z0-9_-]{0,62}$"
             },
             "id": true,
             "title": true,
@@ -514,7 +515,12 @@
             "idempotencyKey": true,
             "dependsOn": true,
             "preconditions": true,
-            "secretRefs": true
+            "secretRefs": true,
+            "timezone": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[A-Za-z_]+/[A-Za-z_/-]+$"
+            }
           },
           "required": [
             "purpose",
@@ -538,7 +544,9 @@
             "task": {
               "enum": [
                 "install-dependencies",
-                "migrate"
+                "migrate",
+                "ensure-venv",
+                "bootstrap-schema"
               ]
             },
             "id": true,
