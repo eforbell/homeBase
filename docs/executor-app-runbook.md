@@ -186,7 +186,26 @@ For each new or changed handler:
 - **Restore order:** `backup.verify` (archive exists, database-backed apps have a dump, `pg_restore --list` and `tar -tzf` integrity reads), then a safety backup, then stop, restore, start, and readiness. Nothing stops until the source is proven usable. A dump-less archive is refused, never partially restored.
 - **Backup records** are written the moment each `backup.create` step completes, so a safety backup stays in the inventory even if the rest of the action fails. Uninstall keeps records when it keeps backups.
 - **Reconciliation:** the executor journals every accepted action (`/var/lib/homebase-executor/jobs/<jobId>.json`, root-only, last 200). If Home Base loses the connection after acceptance, or restarts mid-job, it asks `action-status` for the real outcome and settles the job through the same code path as a live job. An executor restart marks in-flight entries `interrupted`, and the job fails with re-run guidance (steps are idempotent).
-- **Operator recovery** when a job looks wrong: `sudo cat /var/lib/homebase-executor/jobs/<jobId>.json` shows the accepted plan, completed steps, and error. `journalctl -u homebase-executor` has the step output. Re-running the same action is safe.
+- **Operator recovery** when a job looks wrong: `sudo cat /var/lib/homebase-executor/jobs/<jobId>.json` shows the accepted plan, completed steps, and error. `journalctl -u homebase-executor` has the step output.
+- **Re-running after an interruption:**
+  - **Install, restart, backup:** re-run; every step is idempotent.
+  - **Restore:** re-run. It verifies the source again, takes a new safety backup of the current (possibly half-restored) state, and restores again. The earlier safety backup stays in the inventory.
+  - **Uninstall:** re-run. Its safety backup covers *what remains*: it checks whether the database still exists (and dumps it if so) and backs up whatever `.env` and storage are left, so an uninstall interrupted after dropping the database or removing the checkout completes on the next run. Every removal step tolerates already-removed parts.
+  - The executor refuses a new job only while another is running (`EXECUTOR_BUSY`) or a repair holds the maintenance flag (`EXECUTOR_MAINTENANCE`); Home Base waits and retries both.
+
+## Architecture roadmap (from the independent architecture review, 2026-09-25)
+
+The design was approved with conditions; the conditions (early-disconnect reconciliation, atomic repair quiescing, resumable uninstall, the production upgrade step) are met. These are the agreed follow-ups, in priority order:
+
+1. **Retire legacy-sudo mode.** Freeze it (fixes only). Add a typed `adopt` action that takes over an existing legacy install (re-own the checkout, rewrite units without `EnvironmentFile=`, reuse `.env` through `env.js`). Migrate production app by app once Python compiles (helm is on production), then delete the legacy planners, sudo routes, and `runCommand`. Target: one release after Python support.
+2. **Backup authenticity.** Every app shares the `sovereign` user, so any compromised app can rewrite any app's backups. Record each archive's sha256 in the root-owned journal when it is created, and check it in `backup.verify`. Longer term: one uid per app. `lookupUser('sovereign')` is the seam to plan for before Python apps arrive.
+3. **Borrowed identity.** `runAsUser` changes the whole process's euid, and it is safe only because everything inside it is synchronous. Move sovereign-side file work into a small helper process spawned with a uid, so the kernel enforces the identity.
+4. **Bind previews to runs** for destructive actions: pass the previewed plan's digest (minus timestamps) and refuse a mismatch. Set `catalogRevision` from the release version.
+5. **Durability details.** Replay protection that survives an executor restart (check the journal's requestId before running). Distinguish "pruned" from "never started". Serialize typed jobs in the web process instead of retrying `EXECUTOR_BUSY`. Show the journal entry (via `action-status`) on the job page instead of telling operators to `sudo cat` it.
+6. **Structure.** Split `executor/handlers.js` into pure renderers (`render/`) and domain handlers. Extract `executor/fs-safety.js` (`runAsUser`, `writeFileAtomic`, `lstatOrNull`, `deny`). Add per-runtime modules (`runtime/node.js`, `runtime/python.js`) so new shapes stop growing `appLayout()`.
+7. **Operability.** A typed self-update action (or at least a UI banner with the exact `install.sh --repair` command), since executor hosts cannot update from the UI.
+
+Catalog strain, in expected order: sidecar ports (keep them reserved in the catalog), storage inside the install root, Python.
 
 ## Known gaps
 

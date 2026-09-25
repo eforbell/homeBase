@@ -12,6 +12,7 @@ REPAIR=0
 REPAIR_EXECUTOR=0
 SOURCE_DIR=''
 GIT_SSH_KEY_SOURCE=''
+FORCE=0
 TEST_MODE="${HOMEBASE_TEST_MODE:-0}"
 
 INSTALL_DIR="${HOMEBASE_INSTALL_DIR:-/opt/sovereign-home/homebase}"
@@ -44,6 +45,8 @@ Options:
   --repair             Restore managed code and service assets without replacing state or environment
   --repair-executor    Restore the executor's code (executor/, src/, schemas/, dependencies),
                        group, socket, and units without touching config or state
+  --force              With --repair/--repair-executor: proceed even if the executor's state
+                       cannot be confirmed (it did not answer); never skips a busy check
   --git-ssh-key <path> Install an unencrypted SSH deploy key for private app repositories
                        (stored root-only at /etc/sovereign-home/git/deploy_key) and
                        switch Home Base to SSH git transport
@@ -135,6 +138,10 @@ while [ "$#" -gt 0 ]; do
       REPAIR_EXECUTOR=1
       shift
       ;;
+    --force)
+      FORCE=1
+      shift
+      ;;
     --git-ssh-key)
       [ "$#" -ge 2 ] || die '--git-ssh-key requires a path'
       GIT_SSH_KEY_SOURCE="$2"
@@ -203,29 +210,66 @@ if [ "$TEST_MODE" != '1' ]; then
   [ "$(id -u)" -eq 0 ] || die 'run this installer through sudo or as root'
 fi
 
-# True when a live executor reports a plan in flight. Repairs refuse then: interrupting a restore or
-# uninstall midway is worse than running stale code a little longer.
-executor_plan_active() {
-  [ "$TEST_MODE" != '1' ] && [ -S "$EXECUTOR_SOCKET_PATH" ] && command -v node >/dev/null 2>&1 \
-    && id -u "$RUNTIME_USER" >/dev/null 2>&1 || return 1
+# Asks a live executor whether a plan is in flight. Exit status: 0 = a plan is running, 1 = confirmed
+# idle (or no executor socket at all), 2 = could not tell. Repairs proceed only on a confirmed answer:
+# interrupting a restore or uninstall midway is worse than running stale code a little longer.
+executor_plan_state() {
+  if [ "$TEST_MODE" = '1' ] || [ ! -S "$EXECUTOR_SOCKET_PATH" ]; then return 1; fi
+  command -v node >/dev/null 2>&1 && id -u "$RUNTIME_USER" >/dev/null 2>&1 || return 2
   runuser -u "$RUNTIME_USER" -- node - "$EXECUTOR_SOCKET_PATH" <<'NODE'
 const net = require('net');
 const socket = net.createConnection(process.argv[2]);
 let response = '';
-const timer = setTimeout(() => { socket.destroy(); process.exit(1); }, 5000);
+const timer = setTimeout(() => { socket.destroy(); process.exit(2); }, 10000);
 socket.setEncoding('utf8');
 socket.on('connect', () => socket.write(`${JSON.stringify({ protocolVersion: 2, requestId: require('crypto').randomUUID(), type: 'hello' })}\n`));
 socket.on('data', (chunk) => { response += chunk; });
-socket.on('error', () => { clearTimeout(timer); process.exit(1); });
+socket.on('error', () => { clearTimeout(timer); process.exit(2); });
 socket.on('end', () => {
   clearTimeout(timer);
-  try { process.exit(JSON.parse(response.trim()).result?.activePlan === true ? 0 : 1); } catch { process.exit(1); }
+  try {
+    const active = JSON.parse(response.trim()).result?.activePlan;
+    process.exit(active === true ? 0 : active === false ? 1 : 2);
+  } catch { process.exit(2); }
 });
 NODE
 }
 
-if [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ]; then
-  executor_plan_active && die 'the executor is running a plan right now; retry the repair when it finishes (journalctl -u homebase-executor)'
+# Proceeds only when the executor positively reports no plan in flight (or --force for "could not tell").
+require_executor_idle() {
+  local state=0
+  executor_plan_state || state=$?
+  case "$state" in
+    1) return 0 ;;
+    0) release_maintenance; die 'the executor is running a plan right now; retry the repair when it finishes (journalctl -u homebase-executor)' ;;
+    *)
+      if [ "$FORCE" -eq 1 ]; then
+        log 'WARNING: could not confirm the executor is idle; continuing because --force was given'
+        return 0
+      fi
+      release_maintenance
+      die 'could not confirm the executor is idle (it did not answer); check journalctl -u homebase-executor, or re-run with --force'
+      ;;
+  esac
+}
+
+# Repairs quiesce the executor atomically: the flag is created *before* checking for active work, and
+# the executor refuses new jobs while it exists (checked in the same step that claims its lock). So no
+# job can start after the check, during the copy, or before the service is stopped. Released on exit.
+MAINTENANCE_FLAG="$(dirname "$EXECUTOR_SOCKET_PATH")/executor.maintenance"
+MAINTENANCE_HELD=0
+release_maintenance() {
+  if [ "$MAINTENANCE_HELD" -eq 1 ]; then
+    rm -f "$MAINTENANCE_FLAG"
+    MAINTENANCE_HELD=0
+  fi
+}
+trap release_maintenance EXIT
+if { [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ]; } && [ "$TEST_MODE" != '1' ] && [ -d "$(dirname "$EXECUTOR_SOCKET_PATH")" ]; then
+  install -m 0644 -o root -g root /dev/null "$MAINTENANCE_FLAG"
+  MAINTENANCE_HELD=1
+  require_executor_idle
+  log 'executor quiesced for repair; new jobs wait until it finishes'
 fi
 
 OS_ID="${HOMEBASE_OS_ID:-}"
@@ -304,6 +348,7 @@ NODE_BIN="$(command -v node)"
 TMP_DIR="$(mktemp -d)"
 cleanup() {
   rm -rf "$TMP_DIR"
+  release_maintenance
 }
 trap cleanup EXIT
 
@@ -578,7 +623,8 @@ if [ "$TEST_MODE" != '1' ]; then
     if [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ]; then
       # Code was refreshed: stop the running executor so the next connection loads it, but never
       # interrupt a plan in flight (a half-finished restore or uninstall is worse than stale code).
-      executor_plan_active && die 'the executor is running a plan right now; retry the repair when it finishes (journalctl -u homebase-executor)'
+      # Defense in depth: the maintenance flag already prevents new plans, so this should never fire.
+      require_executor_idle
       systemctl stop homebase-executor.service 2>/dev/null || true
     fi
     systemctl restart homebase-executor.socket

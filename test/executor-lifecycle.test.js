@@ -218,3 +218,38 @@ test('verify failures keep archive listings out of job logs', async () => {
   const handlers = createLifecycleHandlers({ fsImpl, asUser: (user, fn) => fn(), lookupUser: () => SOVEREIGN, run: async () => { throw Object.assign(new Error('exit 1'), { code: 'OPERATION_FAILED', output: { stdout: 'TABLE public secret_table_name', stderr: 'pg_restore: error: corrupt' } }); } });
   await assert.rejects(() => handlers['backup.verify'](op('backup.verify', { risk: 'read', archiveName: '20260924T101010Z' }), { layout: SOURCE }), (error) => error.output.stdout === '' && /corrupt/.test(error.output.stderr));
 });
+
+test('an uninstall re-run after the database was dropped backs up what remains instead of failing', async () => {
+  const pgAnswers = { exists: '' };
+  const { fsImpl, calls, handlers } = (() => {
+    const h = harness();
+    const handlers = createLifecycleHandlers({
+      fsImpl: h.fsImpl, asUser: (user, fn) => fn(), now: () => new Date('2026-09-24T10:10:10.000Z'),
+      lookupUser: (name) => (name === 'postgres' ? { uid: 999, gid: 999 } : SOVEREIGN),
+      run: async (input) => { h.calls.push(input); return { stdout: input.binary === '/usr/bin/psql' ? pgAnswers.exists : '' }; },
+    });
+    return { ...h, handlers };
+  })();
+  const output = await handlers['backup.create'](op('backup.create', { archiveName: '20260924T101010Z', whatRemains: true }), { layout: SOURCE });
+  assert.equal(calls.some((call) => call.binary === '/usr/bin/pg_dump'), false, 'no dump of a database that no longer exists');
+  assert.match(output, /\.env\.backup/);
+  assert.equal(fsImpl.existsSync(`${ARCHIVE}/database.dump`), false);
+
+  pgAnswers.exists = '1\n';
+  const withDb = harness();
+  const strict = createLifecycleHandlers({
+    fsImpl: withDb.fsImpl, asUser: (user, fn) => fn(),
+    lookupUser: (name) => (name === 'postgres' ? { uid: 999, gid: 999 } : SOVEREIGN),
+    run: async (input) => { withDb.calls.push(input); if (input.binary === '/usr/bin/pg_dump') throw Object.assign(new Error('dump failed'), { code: 'OPERATION_FAILED' }); return { stdout: input.binary === '/usr/bin/psql' ? '1\n' : '' }; },
+  });
+  await assert.rejects(() => strict['backup.create'](op('backup.create', { archiveName: '20260924T101010Z', whatRemains: true }), { layout: SOURCE }), /dump failed/, 'an existing database must still dump successfully');
+});
+
+test('only uninstall may take a "what remains" backup', () => {
+  const restore = buildAppRestorePlan({ appId: 'home-source', backupId: '20260101T000000Z' });
+  restore.operations.find((entry) => entry.id === 'safety-backup').whatRemains = true;
+  assert.throws(() => validateOperationPolicy(restore), /Only uninstall safety backups/);
+  const uninstall = buildAppUninstallPlan({ appId: 'home-source', keepBackups: true });
+  assert.equal(uninstall.operations[0].whatRemains, true);
+  assert.equal(validateOperationPolicy(uninstall), uninstall);
+});

@@ -9,6 +9,7 @@ const { compileAction } = require('./actions');
 const { createLifecycleHandlers } = require('./lifecycle-handlers');
 const { createJournal } = require('./journal');
 const { createRunAction } = require('./run-action');
+const { maintenanceActive } = require('./maintenance');
 
 function encodeLine(payload) {
   const line = JSON.stringify(payload);
@@ -16,7 +17,7 @@ function encodeLine(payload) {
   return `${line}\n`;
 }
 
-function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runAction = null, planAction = (spec) => compileAction(spec), mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, checkAppUpdateStatus = null, actionStatus = null } = {}) {
+function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runAction = null, planAction = (spec) => compileAction(spec), mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, checkAppUpdateStatus = null, actionStatus = null, maintenance = () => false } = {}) {
   // Replay protection for run-action only (a retried request must not run a plan twice). Read-only
   // requests are cheap to answer again and are not cached; the map is bounded either way.
   const completed = new Map();
@@ -71,6 +72,9 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
         clearTimeout(acceptDeadline);
         if (completed.has(request.requestId)) return finish(null, completed.get(request.requestId));
         if (request.type === 'run-action') {
+          // Checked in the same synchronous step that claims the lock: once install.sh has created the
+          // flag, no new plan can start, and hello's activePlan reflects every plan that already did.
+          if (maintenance()) throw new ProtocolError('EXECUTOR_MAINTENANCE', 'The executor is being repaired; retry shortly.');
           if (activeMutation) throw new ProtocolError('EXECUTOR_BUSY', 'Another mutation plan is active.');
           if (!runAction) throw new ProtocolError('POLICY_DENIED', 'Executor mutations are not enabled.');
           activeMutation = true;
@@ -87,6 +91,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
         if (request.type === 'app-update-status') {
           if (!checkAppUpdateStatus) throw new ProtocolError('POLICY_DENIED', 'App update status is not enabled.');
           // Shares the mutation lock: it refreshes the same git mirrors an install plan writes.
+          if (maintenance()) throw new ProtocolError('EXECUTOR_MAINTENANCE', 'The executor is being repaired; retry shortly.');
           if (activeMutation) throw new ProtocolError('EXECUTOR_BUSY', 'Another mutation plan is active.');
           activeMutation = true;
           ownsMutation = true;
@@ -105,7 +110,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
           return finish(null, result({ requestId: request.requestId, ok: true, result: await collectHostStatus() }));
         }
         const response = request.type === 'hello'
-          ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled, gitDeployKey: probeDeployKey() }), activePlan: activeMutation } })
+          ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled, gitDeployKey: probeDeployKey() }), activePlan: activeMutation, maintenance: maintenance() } })
           : result({ requestId: request.requestId, ok: true, result: planAction(request.actionSpec) });
         writeAudit(logger, `accepted request type=${request.type} requestId=${request.requestId}`);
         finish(null, response);
@@ -119,7 +124,7 @@ function listenSystemd({ logger = console } = {}) {
   const journal = createJournal();
   journal.markInterrupted();
   const runAction = createRunAction({ handlers, journal });
-  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker(), actionStatus: (jobId, actionRequestId) => journal.status(jobId, actionRequestId) });
+  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker(), actionStatus: (jobId, actionRequestId) => journal.status(jobId, actionRequestId), maintenance: () => maintenanceActive() });
   if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
   server.listen({ fd: 3 });
   return server;

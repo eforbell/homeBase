@@ -29,6 +29,12 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
     return password;
   };
   const asSovereign = (sovereign, spec) => run({ ...spec, uid: sovereign.uid, gid: sovereign.gid });
+  const databaseExists = async (layout) => {
+    const postgres = lookupUser('postgres') || deny('The postgres identity does not exist.');
+    // The name is a validated, non-reserved identifier (app-layout.js).
+    const result = await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres', '-tA'], uid: postgres.uid, gid: postgres.gid, stdin: `SELECT 1 FROM pg_database WHERE datname = '${layout.database.name}';\n`, timeoutMs: 30000, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+    return String(result.stdout || '').trim() === '1';
+  };
   // Integrity reads list archive members (file and table names); keep those out of web-visible job logs.
   const verifyAsSovereign = async (sovereign, spec) => {
     try { return await asSovereign(sovereign, spec); } catch (error) {
@@ -44,7 +50,11 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
     'backup.create': async (operation, { layout } = {}) => {
       requireLayout(layout);
       const sovereign = sovereignOrDeny();
-      const password = layout.database ? databasePassword(layout) : null;
+      // A normal backup requires the database. An uninstall's "what remains" backup asks PostgreSQL
+      // (read-only, as postgres) whether the database still exists: if it does, the dump must succeed;
+      // if an interrupted uninstall already dropped it, there is nothing to dump.
+      const dumpDatabase = Boolean(layout.database) && (!operation.whatRemains || await databaseExists(layout));
+      const password = dumpDatabase ? databasePassword(layout) : null;
       const appDir = `${BACKUP_ROOT}/${layout.app.id}`;
       const archiveDir = archiveDirFor(layout, operation.archiveName);
       const included = [];
@@ -62,7 +72,7 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
           included.push('.env.backup');
         }
       });
-      if (layout.database) {
+      if (dumpDatabase) {
         createPrivateFile(sovereign, `${archiveDir}/database.dump`);
         await asSovereign(sovereign, { binary: '/usr/bin/pg_dump', args: ['--no-password', '-Fc', '-f', `${archiveDir}/database.dump`], timeoutMs: operation.timeoutMs, env: pgEnvironment(layout, password), secrets: [password] });
         included.push('database.dump');

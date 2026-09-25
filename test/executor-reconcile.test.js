@@ -135,7 +135,7 @@ test('startup reconciliation settles jobs that finished while Home Base was down
   const store = memoryStore();
   const installAction = { action: 'install', appId: 'home-source', ref: 'main', transport: 'https', site: { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' } };
   store.createJob({ kind: 'install', target: 'home-source', status: 'running', dryRun: false, planJson: JSON.stringify({ action: installAction, requestId: 'nonce-1' }) });
-  store.createJob({ kind: 'backup', target: 'home-source', status: 'queued', dryRun: false, planJson: JSON.stringify({ action: { action: 'backup', appId: 'home-source' }, requestId: 'nonce-2' }) });
+  store.createJob({ kind: 'backup', target: 'home-source', status: 'running', dryRun: false, planJson: JSON.stringify({ action: { action: 'backup', appId: 'home-source' }, requestId: 'nonce-2', operationPlan: plan }) });
   store.createJob({ kind: 'install', target: 'x', status: 'running', dryRun: false, planJson: JSON.stringify({ steps: [] }) });
   const runner = new JobRunner(store, {
     reconcile: { intervalMs: 5, maxWaitMs: 500 },
@@ -143,7 +143,7 @@ test('startup reconciliation settles jobs that finished while Home Base was down
     executorActionStatus: async (socket, jobId, requestId) => (String(jobId) === '1' && requestId === 'nonce-1' ? { status: 'completed', plan: { operations: [] }, completedOperationIds: [] } : { status: 'unknown' }),
   });
   assert.deepEqual(runner.reconcileTypedJobs(), [1, 2], 'legacy (untyped) jobs are left alone');
-  for (let i = 0; i < 100 && (store.jobs[1].status === 'running' || store.jobs[2].status === 'queued'); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  for (let i = 0; i < 100 && (store.jobs[1].status === 'running' || store.jobs[2].status === 'running'); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(store.jobs[1].status, 'completed');
   assert.equal(store.installs['home-source'].status, 'installed');
   assert.equal(store.installs['home-source'].installRoot, '/opt/sovereign-home/apps/homeSource');
@@ -199,4 +199,112 @@ test('status polling stops at once when the executor cannot answer the question'
   assert.equal(outcome.status, 'unreachable');
   assert.ok(Date.now() - started < 1000);
   assert.deepEqual(await runner.awaitExecutorOutcome('3', undefined), { status: 'unknown' }, 'jobs without a nonce cannot be matched');
+});
+
+test('while the maintenance flag exists the executor starts no new work; hello reports it', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-maint-'));
+  const socketPath = path.join(dir, 's.sock');
+  let inMaintenance = true;
+  let ran = 0;
+  const server = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, maintenance: () => inMaintenance, runAction: async () => { ran += 1; return {}; }, checkAppUpdateStatus: async () => { ran += 1; return {}; } });
+  await new Promise((resolve) => server.listen(socketPath, resolve));
+  const { hello, runAction, appUpdateStatus } = require('../src/executor/client');
+  try {
+    assert.equal((await hello(socketPath)).maintenance, true);
+    await assert.rejects(() => runAction(socketPath, { jobId: 1, action: 'bootstrap' }), (error) => error.code === 'EXECUTOR_MAINTENANCE');
+    await assert.rejects(() => appUpdateStatus(socketPath, { appId: 'family-dinner', transport: 'https', ref: 'main' }), (error) => error.code === 'EXECUTOR_MAINTENANCE');
+    assert.equal(ran, 0);
+    inMaintenance = false;
+    await runAction(socketPath, { jobId: 2, action: 'bootstrap' });
+    assert.equal(ran, 1);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test('only a root-owned regular file counts as the maintenance flag', () => {
+  const { maintenanceActive } = require('../executor/maintenance');
+  assert.equal(maintenanceActive({ fsImpl: createFakeFs({ '/run/homebase/executor.maintenance': { kind: 'file', content: '', uid: 0 } }), flag: '/run/homebase/executor.maintenance' }), true);
+  assert.equal(maintenanceActive({ fsImpl: createFakeFs({ '/run/homebase/executor.maintenance': { kind: 'file', content: '', uid: 999 } }), flag: '/run/homebase/executor.maintenance' }), false);
+  assert.equal(maintenanceActive({ fsImpl: createFakeFs(), flag: '/run/homebase/executor.maintenance' }), false);
+});
+
+test('a job submitted during a repair waits for maintenance to end, then runs', async () => {
+  const store = memoryStore();
+  let calls = 0;
+  const runner = new JobRunner(store, {
+    maintenanceRetry: { delayMs: 5, maxWaitMs: 5000 },
+    runExecutorAction: async (socket, fields, { onEvent }) => {
+      calls += 1;
+      if (calls < 4) throw Object.assign(new Error('The executor is being repaired; retry shortly.'), { code: 'EXECUTOR_MAINTENANCE' });
+      onEvent({ eventType: 'plan.accepted', planDigest: 'd', plan });
+      return { completedOperationIds: ['a', 'b'] };
+    },
+  });
+  const id = runner.startTypedBootstrapJob();
+  for (let i = 0; i < 100 && store.jobs[id].status !== 'completed'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(store.jobs[id].status, 'completed');
+  assert.equal(calls, 4);
+  assert.match(store.jobs[id].log, /maintenance in progress/);
+});
+
+test('a disconnect before plan.accepted still asks the executor; delivered work is not reported as failed', async () => {
+  const store = memoryStore();
+  const statuses = [];
+  const runner = new JobRunner(store, {
+    reconcile: { intervalMs: 5, maxWaitMs: 2000, unknownGraceMs: 50 },
+    runExecutorAction: async () => { throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }); },
+    executorActionStatus: async (socket, jobId, requestId) => { statuses.push(requestId); return { status: 'completed', plan, completedOperationIds: ['a', 'b'] }; },
+  });
+  const id = runner.startTypedBackupJob({ appId: 'home-source' });
+  for (let i = 0; i < 100 && !['completed', 'failed'].includes(store.jobs[id].status); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(store.jobs[id].status, 'completed', store.jobs[id].errorText);
+  assert.deepEqual(statuses, [JSON.parse(store.jobs[id].planJson).requestId], 'queried with the persisted token');
+  assert.equal(store.backups.length, 1, 'backups come from the journal plan');
+});
+
+test('an unknown answer is final only after the grace window; undelivered requests fail at once', async () => {
+  const store = memoryStore();
+  let polls = 0;
+  const started = Date.now();
+  const runner = new JobRunner(store, {
+    reconcile: { intervalMs: 5, maxWaitMs: 5000, unknownGraceMs: 100 },
+    runExecutorAction: async () => { throw new Error('Executor request timed out.'); },
+    executorActionStatus: async () => { polls += 1; return { status: 'unknown' }; },
+  });
+  const id = runner.startTypedBootstrapJob();
+  for (let i = 0; i < 200 && store.jobs[id].status !== 'failed'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(store.jobs[id].status, 'failed');
+  assert.match(store.jobs[id].errorText, /never started \(nothing ran\)/);
+  assert.ok(polls > 1 && Date.now() - started >= 100, 'kept asking through the grace window');
+
+  let statusCalls = 0;
+  const offline = new JobRunner(store, {
+    runExecutorAction: async () => { throw Object.assign(new Error('connect ENOENT /run/homebase/executor.sock'), { code: 'ENOENT' }); },
+    executorActionStatus: async () => { statusCalls += 1; return { status: 'unknown' }; },
+  });
+  const offlineId = offline.startTypedBootstrapJob();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(store.jobs[offlineId].status, 'failed');
+  assert.equal(statusCalls, 0, 'nothing was delivered, so there is nothing to ask about');
+});
+
+test('after a restart, a job that never reached the executor is submitted instead of failed', async () => {
+  const store = memoryStore();
+  store.createJob({ kind: 'restart', target: 'home-source', status: 'running', dryRun: false, planJson: JSON.stringify({ action: { action: 'restart', appId: 'home-source' }, requestId: 'nonce-w' }) });
+  store.createJob({ kind: 'backup', target: 'home-source', status: 'running', dryRun: false, planJson: JSON.stringify({ action: { action: 'backup', appId: 'home-source' }, requestId: 'nonce-a', operationPlan: plan }) });
+  const submitted = [];
+  const runner = new JobRunner(store, {
+    reconcile: { intervalMs: 5, maxWaitMs: 500, unknownGraceMs: 10 },
+    readinessOptions: { attempts: 1, fetchImpl: async () => ({ ok: true, status: 200 }) },
+    executorActionStatus: async () => ({ status: 'unknown' }),
+    runExecutorAction: async (socket, fields, { onEvent }) => {
+      submitted.push([fields.jobId, fields.requestId]);
+      onEvent({ eventType: 'plan.accepted', planDigest: 'd', plan: { operations: [] } });
+      return { completedOperationIds: [] };
+    },
+  });
+  runner.reconcileTypedJobs();
+  for (let i = 0; i < 100 && ['queued', 'running'].includes(store.jobs[1].status) || ['queued', 'running'].includes(store.jobs[2].status); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(submitted, [[1, 'nonce-w']], 'resubmitted with its original token');
+  assert.equal(store.jobs[1].status, 'completed');
+  assert.equal(store.jobs[2].status, 'failed', 'an accepted job the executor lost is never resubmitted blindly');
 });

@@ -37,9 +37,15 @@ async function waitForAppReadiness({ app, fetchImpl = global.fetch, attempts = 3
   throw error;
 }
 
-// Connection-level failures, as opposed to a terminal error the executor reported with a code.
-function isTransportError(error) {
-  return !error.code || ['ECONNRESET', 'EPIPE', 'ECONNREFUSED', 'ENOENT'].includes(error.code);
+// No connection was ever made, so the request cannot have been delivered: nothing ran.
+function isNotDelivered(error) {
+  return ['ENOENT', 'ECONNREFUSED'].includes(error.code);
+}
+
+// A connection existed and was lost (timeout, reset, no terminal line), as opposed to a terminal error
+// the executor reported with a code. The request may have been delivered and may be running.
+function isLostConnection(error) {
+  return !error.code || ['ECONNRESET', 'EPIPE'].includes(error.code);
 }
 
 function parsePlanJson(planJson) {
@@ -47,13 +53,14 @@ function parsePlanJson(planJson) {
 }
 
 class JobRunner {
-  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, planExecutorAction = planAction, executorActionStatus = actionStatus, busyRetry = { attempts: 6, delayMs: 10_000 }, reconcile = { intervalMs: 15_000, maxWaitMs: 3 * 60 * 60 * 1000 }, readinessOptions = {} } = {}) {
+  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, planExecutorAction = planAction, executorActionStatus = actionStatus, busyRetry = { attempts: 6, delayMs: 10_000 }, reconcile = { intervalMs: 15_000, maxWaitMs: 3 * 60 * 60 * 1000, unknownGraceMs: 10_000 }, maintenanceRetry = { delayMs: 15_000, maxWaitMs: 20 * 60 * 1000 }, readinessOptions = {} } = {}) {
     this.stateStore = stateStore;
     this.executorSocket = executorSocket;
     this.runExecutorAction = runExecutorAction;
     this.planExecutorAction = planExecutorAction;
     this.executorActionStatus = executorActionStatus;
-    this.reconcile = reconcile;
+    this.reconcile = { unknownGraceMs: 10_000, ...reconcile };
+    this.maintenanceRetry = maintenanceRetry;
     this.readinessOptions = readinessOptions;
     this.busyRetry = busyRetry;
   }
@@ -149,18 +156,25 @@ class JobRunner {
       ? event.plan.operations.reduce((total, operation) => total + (operation.timeoutMs || 0), 0) + 5 * 60 * 1000
       : null);
     let outcome = null;
+    let firstMaintenance = null;
+    const maintenanceSince = () => (firstMaintenance ??= Date.now());
     for (let attempt = 1; !outcome; attempt += 1) {
       try {
         // The same nonce is reused across busy retries: a rejected attempt never ran.
         const result = await this.runExecutorAction(this.executorSocket, { jobId, requestId, ...action }, { timeoutMs: 30 * 60 * 1000, onEvent, deadlineFromEvent: planDeadline });
         outcome = { status: 'completed', plan: acceptedPlan, result };
       } catch (error) {
-        // Accepted, then the connection was lost (timeout, reset, restart): the executor keeps going,
-        // so ask it for the real outcome instead of guessing. Only the executor call is classified
-        // here; errors while applying the outcome below are never mistaken for a lost connection.
-        if (acceptedPlan && isTransportError(error)) {
-          this.stateStore.appendJobLog(jobId, `[executor] lost contact after the plan was accepted (${error.message}); asking the executor for the outcome\n`);
+        // The connection was lost after the request may have been delivered (timeout, reset, executor
+        // restart), whether or not plan.accepted arrived: the executor journals before its first event,
+        // so ask it for the real outcome using this job's token instead of guessing. Only the executor
+        // call is classified here; errors while applying the outcome are never mistaken for this.
+        if (isLostConnection(error) && !isNotDelivered(error)) {
+          this.stateStore.appendJobLog(jobId, `[executor] lost contact${acceptedPlan ? ' after the plan was accepted' : ''} (${error.message}); asking the executor for the outcome\n`);
           outcome = await this.awaitExecutorOutcome(jobId, requestId);
+        } else if (error.code === 'EXECUTOR_MAINTENANCE' && Date.now() - maintenanceSince() < this.maintenanceRetry.maxWaitMs) {
+          // A repair is refreshing the executor; the job was refused before anything ran and resumes after.
+          if (attempt === 1 || attempt % 4 === 0) this.stateStore.appendJobLog(jobId, '[executor] maintenance in progress (install.sh repair); waiting to start\n');
+          await new Promise((resolve) => setTimeout(resolve, this.maintenanceRetry.delayMs));
         } else if (error.code === 'EXECUTOR_BUSY' && attempt < this.busyRetry.attempts) {
           // A background update check briefly holds the executor; nothing ran yet, so waiting is safe.
           this.stateStore.appendJobLog(jobId, `[executor] busy; retrying (${attempt}/${this.busyRetry.attempts - 1})\n`);
@@ -175,13 +189,22 @@ class JobRunner {
 
   // Polls the executor's journal until the job leaves "running". Transient socket failures (the
   // executor restarting) are retried within the budget; the budget covers the longest plan.
-  async awaitExecutorOutcome(jobId, requestId, { intervalMs = this.reconcile.intervalMs, maxWaitMs = this.reconcile.maxWaitMs } = {}) {
+  async awaitExecutorOutcome(jobId, requestId, { intervalMs = this.reconcile.intervalMs, maxWaitMs = this.reconcile.maxWaitMs, unknownGraceMs = this.reconcile.unknownGraceMs } = {}) {
     if (!requestId) return { status: 'unknown' };
-    const deadline = Date.now() + maxWaitMs;
+    const started = Date.now();
+    const deadline = started + maxWaitMs;
     let lastError = null;
+    let lastUnknown = null;
     while (Date.now() < deadline) {
       try {
         const entry = await this.executorActionStatus(this.executorSocket, jobId, requestId, { timeoutMs: 10_000 });
+        if (entry.status === 'unknown') lastUnknown = entry;
+        // A request delivered just as the connection dropped is journaled a moment later; "unknown"
+        // is final (never started) only once that window has passed.
+        if (entry.status === 'unknown' && Date.now() - started < unknownGraceMs) {
+          await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, 1000)));
+          continue;
+        }
         if (entry.status !== 'running') return entry;
       } catch (error) {
         // An executor that cannot answer this question at all (older protocol, refused) will not start to.
@@ -190,6 +213,8 @@ class JobRunner {
       }
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
+    // The executor answered "unknown" and nothing better arrived: the job never started.
+    if (lastUnknown) return lastUnknown;
     return { status: 'unreachable', error: lastError?.message || 'The executor still reports the job as running.' };
   }
 
@@ -201,7 +226,7 @@ class JobRunner {
       const reason = {
         failed: `The executor reported failure${outcome.failedOperationId ? ` at ${outcome.failedOperationId}` : ''}: ${outcome.error || 'unknown error'}`,
         interrupted: `The executor restarted during this plan (completed: ${(outcome.completedOperationIds || []).join(', ') || 'none'}). Steps are idempotent; re-run the action.`,
-        unknown: 'The executor has no record of this job; it never started. Re-run the action.',
+        unknown: 'The executor has no record of this job, so it never started (nothing ran). Re-run the action.',
         unreachable: `Could not learn the outcome from the executor: ${outcome.error}. Check journalctl -u homebase-executor, then re-run if needed.`,
       }[outcome.status] || `Unexpected executor status: ${outcome.status}`;
       this.failTypedJob(jobId, reason);
@@ -232,10 +257,18 @@ class JobRunner {
     const unfinished = typeof this.stateStore.listUnfinishedJobs === 'function' ? this.stateStore.listUnfinishedJobs() : [];
     const typed = unfinished.filter((job) => !job.dryRun && parsePlanJson(job.planJson)?.action);
     for (const job of typed) {
-      const { action, requestId } = parsePlanJson(job.planJson);
+      const { action, requestId, operationPlan } = parsePlanJson(job.planJson);
       this.stateStore.appendJobLog(job.id, '[executor] Home Base restarted while this job was in flight; reconciling with the executor\n');
       this.awaitExecutorOutcome(job.id, requestId)
-        .then((outcome) => this.settleTypedJob(job.id, action, outcome))
+        .then((outcome) => {
+          // Never accepted and unknown to the executor: it was still waiting (e.g. on a repair's
+          // maintenance window, which itself restarts Home Base). Nothing ran, so submit it now.
+          if (outcome.status === 'unknown' && !operationPlan && requestId) {
+            this.stateStore.appendJobLog(job.id, '[executor] the job had not reached the executor yet; submitting it now\n');
+            return this.runTypedActionJob(job.id, action, null, requestId);
+          }
+          return this.settleTypedJob(job.id, action, outcome);
+        })
         .catch((error) => this.failTypedJob(job.id, `Reconciliation failed: ${error.message}`));
     }
     return typed.map((job) => job.id);

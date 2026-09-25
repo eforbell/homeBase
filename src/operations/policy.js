@@ -51,7 +51,7 @@ function templateUnits(layout, template) {
   }
 }
 
-function checkInstallOperation(operation, layout) {
+function checkInstallOperation(operation, layout, plan) {
   switch (operation.type) {
     case 'package.ensure':
       if (operation.packages.some((pkg) => !layout.packages.includes(pkg))) deny('Package is not declared by this app.');
@@ -82,6 +82,10 @@ function checkInstallOperation(operation, layout) {
       if (needsSite && !isValidSite(operation.site)) deny('Managed file site values are invalid.');
       break;
     }
+    case 'backup.create':
+      // Only uninstall may back up "what remains"; a restore's safety backup must be complete.
+      if (operation.whatRemains && plan.policyProfile !== 'app-uninstall-v1') deny('Only uninstall safety backups may skip already-removed parts.');
+      break;
     case 'runtime.run-app-task':
       if (operation.task === 'migrate' && !layout.migrationArgv) deny('This app declares no migrations.');
       break;
@@ -116,7 +120,7 @@ function validateOperationPolicy(plan) {
     if (destructive !== (operation.risk === 'destructive')) deny(`Operation ${operation.id} must declare risk "destructive" exactly when it is destructive.`);
     if (destructive && !DESTRUCTIVE_PROFILES.has(plan.policyProfile)) deny(`Destructive operations are not allowed by ${plan.policyProfile}.`);
     if (bootstrap) checkBootstrapOperation(operation);
-    else checkInstallOperation(operation, layout);
+    else checkInstallOperation(operation, layout, plan);
   }
   return plan;
 }

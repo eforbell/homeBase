@@ -733,7 +733,10 @@
             "idempotencyKey": true,
             "dependsOn": true,
             "preconditions": true,
-            "secretRefs": true
+            "secretRefs": true,
+            "whatRemains": {
+              "const": true
+            }
           },
           "required": [
             "archiveName"

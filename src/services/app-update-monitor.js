@@ -162,7 +162,7 @@ class AppUpdateMonitor {
     try {
       result = await this.executorAppUpdateStatus(gitConfig.executorSocket, { appId, transport, ref: trackedRef }, { timeoutMs: 120_000 });
     } catch (error) {
-      if (error.code === 'EXECUTOR_BUSY') {
+      if (error.code === 'EXECUTOR_BUSY' || error.code === 'EXECUTOR_MAINTENANCE') {
         // An install or update is running; keep the last known answer rather than flapping to failed.
         const previous = this.buildSnapshotByApp()[appId];
         if (previous) return previous;

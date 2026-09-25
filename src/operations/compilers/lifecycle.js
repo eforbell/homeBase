@@ -43,8 +43,10 @@ function waitReady(layout, add) {
   add({ id: 'wait-ready', type: 'http.wait-ready', title: `Wait for ${layout.app.name} readiness`, risk: 'read', timeoutMs: 60000, executor: 'homebase', port: layout.port, path: layout.readinessPath });
 }
 
-function backupOperation(layout, archiveName, id = 'create-backup', title = `Back up ${layout.app.name}`) {
-  return { id, type: 'backup.create', title, timeoutMs: 900000, archiveName };
+// whatRemains: back up whatever still exists (used by uninstall, so a re-run after an interruption
+// that already dropped the database or removed the checkout is not blocked by its own safety backup).
+function backupOperation(layout, archiveName, id = 'create-backup', title = `Back up ${layout.app.name}`, { whatRemains = false } = {}) {
+  return { id, type: 'backup.create', title, timeoutMs: 900000, archiveName, ...(whatRemains ? { whatRemains: true } : {}) };
 }
 
 function buildAppRestartPlan({ appId, generatedAt = new Date().toISOString(), catalogRevision } = {}) {
@@ -82,7 +84,7 @@ function buildAppRestorePlan({ appId, backupId, generatedAt = new Date().toISOSt
 function buildAppUninstallPlan({ appId, keepBackups = true, generatedAt = new Date().toISOString(), catalogRevision } = {}) {
   const layout = layoutFor(appId);
   const { operations, add } = sequence();
-  if (keepBackups) add(backupOperation(layout, archiveNameFor(generatedAt), 'safety-backup', `Back up ${layout.app.name} before uninstalling`));
+  if (keepBackups) add(backupOperation(layout, archiveNameFor(generatedAt), 'safety-backup', `Back up what remains of ${layout.app.name} before uninstalling`, { whatRemains: true }));
   stopUnits(layout, add, 'disable-now');
   add({ id: 'remove-artifacts', type: 'filesystem.remove-app-artifacts', title: `Remove ${layout.app.name} units, nginx snippet, and git mirror`, risk: 'destructive' });
   add({ id: 'reload-systemd', type: 'systemd.daemon-reload', title: 'Reload systemd units' });
