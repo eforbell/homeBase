@@ -10,9 +10,13 @@ Execution modes are now explicit and fail closed. Before this release, `HOME_BAS
 
 Before updating, while still on the old release:
 
-1. Add this line to the Home Base environment file (usually `/etc/sovereign-home/homebase.env`). The old release ignores it, so it is safe to add now:
+1. Add this line to the Home Base environment file. The old release ignores it, so it is safe to add now:
    ```
    HOME_BASE_EXECUTION_MODE=legacy-sudo
+   ```
+   Home Base does **not** read a `.env` file in its checkout; it sees only what systemd passes it. Find the right file with `systemctl cat homebase | grep -E 'EnvironmentFile|Environment='` (often `/etc/sovereign-home/homebase.env`). After restarting, confirm the running process has it:
+   ```bash
+   sudo tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value homebase)/environ | grep '^HOME_BASE_E'
    ```
 2. Confirm the file still contains `HOME_BASE_ENABLE_PRIVILEGED_JOBS=1`.
 3. Only if something reaches Home Base on `:3080` **without** `tailscale serve`, also add `HOME_BASE_BIND_HOST=0.0.0.0`. The service now binds to `127.0.0.1` by default. `tailscale serve` already proxies to 127.0.0.1:3080, so the normal path is unaffected.
@@ -23,6 +27,8 @@ Update as usual (Home Base update in the UI, or `git pull` + `npm ci --omit=dev`
 5. Open Status: preflight should be green apart from anything genuinely missing.
 
 If you skip step 1, the service logs, and every refused action returns, the exact line to add.
+
+Legacy hosts do not get a `homebase-executor` service, and a UI bootstrap will not create one: only `sudo bash install.sh` installs the root executor, so the web process can never create its own root service. Legacy mode does not use it.
 
 What changes for legacy hosts:
 

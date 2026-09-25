@@ -138,7 +138,7 @@ async function rotateAdmin(req, res, body, stateStore) {
   return { statusCode: 200, payload: { ok: true } };
 }
 
-const EXECUTION_MODE_UPGRADE_HINT = 'HOME_BASE_ENABLE_PRIVILEGED_JOBS is set but HOME_BASE_EXECUTION_MODE is not. To keep sudo-based execution, add HOME_BASE_EXECUTION_MODE=legacy-sudo to the Home Base environment file and restart the service.';
+const EXECUTION_MODE_UPGRADE_HINT = 'HOME_BASE_ENABLE_PRIVILEGED_JOBS is set but HOME_BASE_EXECUTION_MODE is not in this process\'s environment. Home Base reads only the environment systemd provides (it does not read a .env file): add HOME_BASE_EXECUTION_MODE=legacy-sudo to the file named by EnvironmentFile= in `systemctl cat homebase`, then restart the service.';
 
 async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false } = {}) {
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
