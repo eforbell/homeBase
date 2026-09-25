@@ -53,10 +53,11 @@ Run through these on every change. Each one has already been violated once and c
 | Sidecars without nginx | yes | extra `.service` with catalog `Environment=` values (simple tokens only) |
 | Timers (`onCalendar`, `onBootSec`, `onUnitActiveSec`, `randomizedDelaySec`) | yes | oneshot service + timer |
 | Upload limit (`network.clientMaxBodySize`, e.g. `55M`) | yes | rendered as `client_max_body_size` |
-| Storage inside the install root (`storage.paths` without `absoluteRoot`) | **no** | family-help, home-ops |
+| Storage inside the install root (`storage.paths` without `absoluteRoot`) | **no** | family-help, home-ops, helm (`.secrets`: Schwab OAuth tokens) |
 | Sidecars published through nginx | **no** | bug-base |
 | Env referencing sidecar ports (`{{sidecar.<name>.port}}`) | **no** | family-pulse, bug-base: ports must be reserved in the catalog before the executor allocates them |
-| Python runtime / venv | **no** | helm, bitcoin-accounting |
+| Python runtime / venv | **no** | helm, bitcoin-accounting (see [Python apps and adopting legacy installs](#python-apps-and-adopting-legacy-installs)) |
+| Database bootstrap from a SQL file (`database.bootstrap: schema-file`) | **no** | bitcoin-accounting |
 | Custom nginx proxying (`preserveMountPath`, `upstreamPath`, extra headers) | **no** | the Python apps |
 | SQLite databases | **won't do** | bitcoin-accounting is Postgres-only under Home Base (decision 2026-09-24); drop its SQLite path when Python lands |
 
@@ -193,6 +194,108 @@ For each new or changed handler:
   - **Uninstall:** re-run. Its safety backup covers *what remains*: it checks whether the database still exists (and dumps it if so) and backs up whatever `.env` and storage are left, so an uninstall interrupted after dropping the database or removing the checkout completes on the next run. Every removal step tolerates already-removed parts.
   - The executor refuses a new job only while another is running (`EXECUTOR_BUSY`) or a repair holds the maintenance flag (`EXECUTOR_MAINTENANCE`); Home Base waits and retries both.
 
+## Python apps and adopting legacy installs
+
+This is the next milestone, and it is what retires legacy-sudo mode. **Both production hosts need it:** erebor runs helm and numenor runs bitcoin-accounting, and both are Python. The execution mode is set per host, not per app, so a host moves to the executor only when **every** app on it compiles. For both hosts that means Python support **and** `adopt` must be finished first. Legacy install plans are frozen (fixes only, owner decision 2026-09-25); route any new install-plan work here instead.
+
+Suggested order:
+1. Python runtime support.
+2. Storage inside the install root (helm).
+3. Schema-file bootstrap (bitcoin-accounting).
+4. Proxying that keeps the mount path.
+5. `adopt`: test it in the container harness against a host built with legacy mode from `main`, then adopt erebor, then numenor.
+
+### Python runtime (`runtime/python.js`)
+
+Legacy behavior (`src/services/install-planner.js`), which is what production has today:
+- `python3 -m venv .venv`, then `pip install --upgrade pip`, then the catalog `runtime.installCommand`, all as `sovereign` through `sudo -u`.
+- Units run `runtime.startCommand` with `.venv/bin/...` expanded against the install root. They set `EnvironmentFile=<installRoot>/.env`, and `PYTHONUNBUFFERED=1` comes from the unit.
+
+Executor requirements:
+- **Replace `runtime.installCommand` with typed catalog fields.** A shell string can't be checked by policy. Suggested operations:
+  - `python.ensure-venv` (interpreter: the system `python3`; venv path fixed at `.venv` inside the install root)
+  - `python.pip-install` with either `requirements: <lockfile>` or `editable: true` plus `noDeps`
+  - create in-root storage directories through the storage operations, not a shell `install -d`
+
+  All of these run as `sovereign` through `spawn.js`; add `python3` and the venv's `python` to its allowlist, with the venv path checked against the install root.
+- **`PYTHONUNBUFFERED=1` goes into `.env`,** because executor units set no `Environment=` (see section 4). Both apps call `load_dotenv` (helm in `schwab_helm/config.py`, bitcoin-accounting in `db/__init__.py`). Check that each one finds the install-root `.env` from the unit's `WorkingDirectory`, and for bitcoin-accounting check that the web entry point imports `db` before it reads config.
+- **Installs download from PyPI.** Add a preflight or plan check for outbound HTTPS, with a clear error; don't let pip time out on its own. Pin with lockfiles: helm installs from `requirements.lock`, but bitcoin-accounting runs a bare `pip install -e .`, so a reinstall can pick up different dependency versions. Add a lockfile to bitcoin-accounting (app-side prerequisite, section 3) before its executor install.
+- **Rebuild venvs; never repair them in place.** A venv is tied to the interpreter that created it. After an OS Python upgrade, create a new venv next to the old one, install into it, pass the readiness check, then swap. The same code serves `adopt` and updates.
+
+### Helm (erebor)
+
+- **Storage inside the install root: `.secrets`** holds the Schwab OAuth tokens. Losing it means re-authorizing with Schwab, which has no sandbox. Requirements:
+  - Directory 0700, owned by `sovereign`. The main unit keeps `UMask=0077` (`service.umask`), and timers that write tokens (`helm-token-refresh`) need the same umask.
+  - Backups include it, and restores bring it back at 0700. The legacy backup already archives in-root storage paths (`backup-planner.js`, relative to the install root); keep that archive name (`.secrets.tgz`) so both modes read each other's backups.
+  - Uninstall's safety backup must include it. A removed checkout takes in-root storage with it, unlike `storage.absoluteRoot`. Tell the operator so on the uninstall screen.
+  - Longer term, consider moving it to `storage.absoluteRoot` (`/var/lib/sovereign-home/helm/secrets`). That changes helm's config and needs a one-time move, so do it as its own step, not inside `adopt`.
+- **Five timers, with their calendars carried over exactly:**
+  - `helm-sync` pins `America/New_York`.
+  - `helm-monitor` is `persistent: false` on purpose, so a missed market-hours slot is not run late.
+  - Timer execs are `.venv/bin/helm ...`, which run inside the install root.
+- **Migrations:** `.venv/bin/python migrations/run_migration.py`, run as `sovereign` with the app's DB credentials. They must not need the database owner beyond the app role.
+- **nginx keeps the mount path** (`preserveMountPath: true`, `/helm/`). Helm expects `HELM_WEB_BASE_PATH=/helm`. The Schwab OAuth callback may need a dedicated HTTPS route (see the catalog notes). Record what erebor serves today before changing the nginx renderer.
+
+### bitcoin-accounting (numenor)
+
+- **Postgres only** (decision 2026-09-24). Before adopting, confirm numenor's `.env` points at Postgres. If it has ever used SQLite, migrate that data first. Remove the SQLite option from the catalog (`engine: postgres-or-sqlite` becomes `postgres`) in the same change as Python support.
+- **The schema file is not idempotent, and legacy runs it as `postgres`.** Legacy runs `psql -d bitcoin_accounting -f src/sql/tables.sql` through `sudo -u postgres` on **every** install and update:
+  - The file uses plain `CREATE TABLE` without `ON_ERROR_STOP`, so re-runs print errors and still exit 0.
+  - Its `GRANT` statements give `bitcoin_accountant` only DML on tables it does not own.
+
+  Consequences on a legacy host:
+  - The tables are probably owned by `postgres`. Check on numenor with `\dt` in `psql`.
+  - The executor's restore runs `pg_restore` as the **app role** and can't drop or recreate tables it doesn't own.
+  - `migrations/001_add_soft_delete_columns.sql` says it must run as the table owner, and it is not wired into `migrationCommand`.
+
+  Executor requirements:
+  - Run the schema only on an **empty** database (check with `psql` as `postgres`, read-only, like uninstall's `whatRemains` check), with `ON_ERROR_STOP=1`, as the app role, so the app role owns its tables.
+  - `adopt` needs a typed `postgres.transfer-ownership` step: run as `postgres`, reassign the app database's tables, sequences and views to the app role, and refuse if the database has objects outside `public`.
+  - App side (section 3): make `tables.sql` idempotent, and add 001 (and future migrations) to `migrationCommand` so they run as the app role once it owns the tables.
+- **Mount-path contradiction in the catalog.** `network.preserveMountPath: true`, but the catalog note says "reverse proxy must strip the external subpath". Check what numenor serves today (`/etc/nginx/...snippets/bitcoin-accounting.conf`) and fix the catalog to match before the executor renders it.
+- Readiness is `/api/ready`, liveness `/api/health`. `bitcoin-accounting-web-init` is a startup check (`SELECT 1` plus a backend check), not a migration runner, despite being the `migrationCommand`.
+
+### The `adopt` action
+
+`adopt` takes over an app that legacy-sudo installed, without reinstalling it or changing its data. It is a destructive-profile action (`app-adopt-v1`): it rewrites units and may change database ownership.
+
+What differs on a legacy install:
+
+| Legacy state | Executor state | `adopt` step |
+|---|---|---|
+| Units set `EnvironmentFile=<installRoot>/.env` (read by root-run systemd) | No `EnvironmentFile=`; the app loads `.env` | Rewrite units from the catalog layout. Check the app actually loads `.env` itself first; if not, it's an app-side prerequisite |
+| `.env` written by the legacy planner | Rendered through `env.js` with existing values reused | Re-render through `env.js` in strict mode. The golden snapshots guarantee the same output; any difference is a bug, so refuse and show it |
+| Checkout cloned by `sovereign` from the origin URL | Checkout fetched from the root-owned mirror under `/var/lib/sovereign-home/git-mirrors` | Create the mirror at the checkout's current commit and repoint the checkout's remote. Don't re-clone: the checkout holds in-root storage (helm `.secrets`) |
+| Checkout and venv ownership unchecked | `sovereign` owns the checkout; root never follows links into it | Verify (don't `chown -R` as root) that everything is owned by `sovereign`; refuse on anything else, including symlinks that leave the install root |
+| DB tables may be owned by `postgres` (bitcoin-accounting) | App role owns its objects | `postgres.transfer-ownership` |
+| nginx snippet from the legacy renderer | Managed snippet from the executor renderer | Render, `nginx -t`, reload (existing operations) |
+| Legacy venv, of unknown interpreter version | Venv built by the executor | Build a new venv as `sovereign`, then swap. Keep the old venv until readiness passes |
+
+Plan order:
+1. `backup.create`, the safety backup, covering in-root storage.
+2. Build the new venv and mirror. This is read-only as far as the running app is concerned.
+3. Stop the units.
+4. Rewrite the units and `.env`, then transfer ownership.
+5. `daemon-reload`, then start the units.
+6. Wait for readiness.
+7. Remove the old venv.
+
+**Failure and rollback.** If readiness fails, restore the previous units, `.env` and venv from the safety state and restart. Record in the journal which steps completed, so that re-running `adopt` is safe (as with uninstall's resumability). Ownership transfer is the one step that isn't reversed; it is harmless for legacy mode, because the app role still has its grants.
+
+**Switching the host.** Only after every app on the host has been adopted:
+1. Run `install.sh` to add the executor. This is the trust bootstrap; the UI can't do it.
+2. Set `HOME_BASE_EXECUTION_MODE=executor` in the unit's `EnvironmentFile`. Remember that Home Base does not read a checkout `.env`.
+3. Restart Home Base.
+4. Remove the legacy sudoers entry.
+
+Until the mode is switched, `adopt` runs through the executor on a host that is still in legacy mode. So either allow `adopt` in legacy mode as the only executor action, or run adoption with the host in executor mode for all apps at once. Decide and record which before building it; the first is gentler on production.
+
+**Verification before production:**
+- In the container harness, build a host in legacy mode from the last legacy-capable `main`, with helm and bitcoin-accounting (fake Schwab credentials; a `.secrets` sentinel file).
+- Adopt, then check that `.env` is byte-identical, the `.secrets` sentinel is intact, the timers are listed with the same calendars, and the tables are owned by the app role.
+- Back up, restore and uninstall through the executor.
+- Interrupt `adopt` at each step and re-run it.
+
 ## Architecture roadmap (from the independent architecture review, 2026-09-25)
 
 The design was approved with conditions; the conditions (early-disconnect reconciliation, atomic repair quiescing, resumable uninstall, the production upgrade step) are met. These are the agreed follow-ups, in priority order:
@@ -213,3 +316,4 @@ Catalog strain, in expected order: sidecar ports (keep them reserved in the cata
 - Ports are the catalog's preferred ports (by design); a conflicting app must be moved before an executor install.
 - The shapes marked **no** in the support matrix.
 - Removing bitcoin-accounting's SQLite option from the catalog (Postgres-only decision), done alongside Python support.
+- Python, in-root storage, schema-file bootstrap, mount-path-preserving proxying and `adopt`: see [Python apps and adopting legacy installs](#python-apps-and-adopting-legacy-installs).
