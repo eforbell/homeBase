@@ -18,9 +18,9 @@ const ACTIONS = Object.freeze({
   restore: { fields: ['appId', 'backupId'] },
   uninstall: { fields: ['appId', 'keepBackups'] },
 });
-// Apps whose install the executor can compile today. Grows as catalog shapes are supported.
-// Each entry has passed the runbook (docs/executor-app-runbook.md), including a container run.
-const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source']);
+// Apps the executor manages. Each entry has passed the runbook (docs/executor-app-runbook.md),
+// including a container run; since 2026-09-25 that is the whole catalog.
+const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-plan', 'fast-to-eat', 'family-help', 'home-ops', 'family-pulse', 'bug-base', 'helm', 'bitcoin-accounting']);
 const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }

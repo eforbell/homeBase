@@ -44,7 +44,7 @@ test('executor hello reports protocol v2 actions and stays mutation-disabled by 
     assert.deepEqual(response.capabilities.protocolVersions, [2]);
     assert.equal(response.capabilities.mutationsEnabled, false);
     assert.deepEqual(response.capabilities.actions, ['bootstrap', 'install', 'restart', 'backup', 'restore', 'uninstall']);
-    assert.deepEqual(response.capabilities.installableApps, ['family-dinner', 'home-source']);
+    assert.deepEqual([...response.capabilities.installableApps].sort(), require('../src/catalog').catalog.map((app) => app.id).sort());
   });
 });
 
@@ -98,8 +98,9 @@ test('action fields are validated against the catalog and per-action shape', asy
       const response = await rawRequest(socketPath, line({ type: 'plan-action', ...fields }));
       assert.equal(response.code, 'INVALID_REQUEST', JSON.stringify(fields));
     }
-    const notYet = await rawRequest(socketPath, line({ type: 'plan-action', ...DINNER_INSTALL, appId: 'helm' }));
-    assert.equal(notYet.code, 'POLICY_DENIED');
+    const helm = await rawRequest(socketPath, line({ type: 'plan-action', ...DINNER_INSTALL, appId: 'helm' }));
+    assert.equal(helm.ok, true);
+    assert.equal(helm.result.plan.target, 'helm');
   });
 });
 

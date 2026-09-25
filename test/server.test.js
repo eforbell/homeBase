@@ -2080,10 +2080,6 @@ test('executor mode routes lifecycle actions to the executor and still refuses u
       assert.equal(response.status, 409, route);
       assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', route);
     }
-    for (const action of ['restart', 'backup', 'uninstall']) {
-      const response = await post(`/api/apps/family-help/${action}/execute`);
-      assert.equal(response.body.code, 'TYPED_EXECUTION_NOT_SUPPORTED', `family-help ${action}: ${JSON.stringify(response.body)}`);
-    }
     for (const [action, extra] of [['restart'], ['backup'], ['restore', { backupDir: '20260924T101010Z' }], ['uninstall', { keepBackups: false }]]) {
       const response = await post(`/api/apps/home-source/${action}/execute`, extra);
       assert.equal(response.status, 202, `${action}: ${JSON.stringify(response.body)}`);

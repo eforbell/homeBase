@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeAction, compileAction, generateSecretBindings } = require('../executor/actions');
+const { normalizeAction, compileAction, generateSecretBindings, INSTALLABLE_APPS } = require('../executor/actions');
 const { digestOperationPlan } = require('../src/operations/digest');
 
 const SITE = { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' };
@@ -18,7 +18,9 @@ test('the executor compiles and policy-checks its own plans', () => {
   assert.equal(plan.policyProfile, 'app-install-v1');
   assert.equal(planDigest, digestOperationPlan(plan));
   assert.equal(compileAction({ action: 'bootstrap' }).plan.kind, 'host-bootstrap');
-  assert.throws(() => compileAction({ action: 'install', appId: 'helm', ref: 'main', transport: 'https', site: SITE }), (error) => error.code === 'POLICY_DENIED');
+  // Every catalog app is managed now; the gate still refuses anything outside INSTALLABLE_APPS.
+  assert.deepEqual([...INSTALLABLE_APPS].sort(), require('../src/catalog').catalog.map((app) => app.id).sort());
+  assert.throws(() => compileAction({ action: 'install', appId: 'not-in-catalog', ref: 'main', transport: 'https', site: SITE }), (error) => error.code === 'POLICY_DENIED');
 });
 
 test('secrets are generated inside the executor, fresh per run, and only for known refs', () => {
