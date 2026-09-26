@@ -102,6 +102,14 @@ test('a snippet swap nginx rejects is undone: legacy snippet restored, new one r
   assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-home.d/bug-base.conf'), false);
 });
 
+test('a re-run whose nginx check fails for another reason never deletes the only snippet', async () => {
+  // The first attempt already retired the legacy snippet; now nginx -t fails because of something else.
+  const fsImpl = createFakeFs({ '/etc/nginx/sovereign-home.d/bug-base.conf': '# executor bug-base\n', '/etc/nginx/snippets': { kind: 'dir' } });
+  const reject = async () => { throw Object.assign(new Error('exit 1'), { code: 'OPERATION_FAILED', output: { stderr: 'cannot load certificate "/etc/letsencrypt/live/x/fullchain.pem"' } }); };
+  await assert.rejects(() => createBaseHandlers({ fsImpl, run: reject })['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS }), /nginx -t failed: cannot load certificate/);
+  assert.equal(fsImpl.readFileSync('/etc/nginx/sovereign-home.d/bug-base.conf'), '# executor bug-base\n');
+});
+
 test('ownership transfer runs as postgres in the app database, bound to the catalog role', async () => {
   const calls = [];
   const handlers = createBaseHandlers({ fsImpl: createFakeFs(), lookupUser: () => POSTGRES, run: async (input) => { calls.push(input); return { stdout: '', stderr: 'NOTICE:  transferred 9 objects to bitcoin_accountant\n' }; } });

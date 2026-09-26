@@ -313,7 +313,7 @@ class AppUpdateMonitor {
     }
 
     // Adopted apps on a legacy-sudo host have a mirror-backed checkout too, so the executor answers.
-    if (gitConfig.executionMode === 'executor' || install.managedBy === 'executor') {
+    if (gitConfig.executionMode === 'executor' || ['executor', 'adopting'].includes(install.managedBy)) {
       return this.evaluateViaExecutor(install, gitConfig, { appId, trackedRef, installRoot, checkedAt });
     }
 

@@ -478,6 +478,7 @@ function createApp(config) {
   const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
   try {
     jobRunner.reconcileStaleUpdateJobs();
+    jobRunner.failInterruptedLegacyJobs();
     // Typed jobs that were in flight when Home Base stopped: the executor's journal has the outcome.
     // Legacy-sudo hosts adopting apps run typed jobs for those apps too.
     if (['executor', 'legacy-sudo'].includes(config.homeBaseExecutionMode)) jobRunner.reconcileTypedJobs();
@@ -1245,6 +1246,13 @@ function createApp(config) {
       if (method === 'POST' && installMatch) {
         const body = await parseBody(req);
         const appId = installMatch[1];
+        const existingRecord = (state.installations || {})[appId];
+        if (existingRecord?.managedBy === 'adopting') return sendJson(res, 409, appMutationBlock(stateStore, state, appId));
+        // Only ever saves a plan for an app that is not installed: turning an installed (or adopted) record
+        // back into "planned" would hide it from adopt and from the switch's unadopted-apps check.
+        if (existingRecord && (existingRecord.status !== 'planned' || existingRecord.managedBy)) {
+          return sendJson(res, 409, { error: `${existingRecord.name || appId} is already installed; use install/execute to update it.`, code: 'ALREADY_INSTALLED' });
+        }
         // Saving a "planned" record from the legacy plan has no executor meaning; preview with a dry-run.
         if (executorManagesApp(effectiveConfig, state, appId)) {
           return sendJson(res, 409, { error: 'In executor mode, preview an install with a dry-run (POST /api/apps/:id/execute with dryRun: true).', code: 'TYPED_EXECUTION_NOT_SUPPORTED' });

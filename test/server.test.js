@@ -2205,6 +2205,10 @@ test('legacy-sudo hosts adopt apps one at a time: adopted apps route to the exec
     // While the adopt job is in flight the app is marked "adopting": other real runs refuse.
     assert.equal(store.loadState().installations.helm.managedBy, 'adopting');
     assert.equal((await post('/api/apps/helm/restart/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ADOPT_INCOMPLETE');
+    // The legacy "save plan" route cannot turn a half-adopted app back into a planned legacy record.
+    assert.equal((await post('/api/apps/helm/install', { ref: 'main' })).body.code, 'ADOPT_INCOMPLETE');
+    // Nor can it turn an installed legacy app back into a saved plan (which would hide it from the switch).
+    assert.equal((await post('/api/apps/family-dinner/install', { ref: 'main' })).body.code, 'ALREADY_INSTALLED');
     const helmActions = await (await fetch(`${server.url}/api/apps/helm/actions`, { headers: { cookie } })).json();
     assert.deepEqual([helmActions.managedBy, helmActions.actions.adopt], ['adopting', true], 'adopt stays offered so it can be re-run');
 

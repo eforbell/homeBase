@@ -682,9 +682,13 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       try {
         await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       } catch (error) {
+        const reason = String(error.output?.stderr || error.message).trim().split('\n').slice(-2).join(' ');
+        // Nothing retired in this run (a re-run after an earlier attempt already did): the new snippet is
+        // the app's only route, so leave the files alone and report why nginx refuses.
+        if (!retired.length) deny(`nginx -t failed: ${reason}. Fix the nginx configuration, then re-run adopt.`);
         for (const source of retired) writeFileAtomic(fsImpl, source, fsImpl.readFileSync(`${keep}/${source.split('/').pop()}`, 'utf8'), 0o644);
         if (lstatOrNull(fsImpl, layout.nginxSnippet)) fsImpl.unlinkSync(layout.nginxSnippet);
-        deny(`nginx rejected the adopted snippet, so the legacy snippet was restored: ${String(error.output?.stderr || error.message).trim().split('\n').slice(-2).join(' ')}. Check that "include /etc/nginx/sovereign-home.d/*.conf;" sits inside the server block that serves your apps.`);
+        deny(`nginx rejected the adopted snippet, so the legacy snippet was restored: ${reason}. Check that "include /etc/nginx/sovereign-home.d/*.conf;" sits inside the server block that serves your apps.`);
       }
       return retired.length ? `retired ${retired.join(', ')} (copies kept in ${keep})` : 'no legacy nginx snippets to retire';
     },

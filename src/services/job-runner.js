@@ -84,6 +84,19 @@ class JobRunner {
     }
   }
 
+  // Legacy plan jobs run inside this process, so one still queued or running at startup was cut off by
+  // the restart and can never finish. Left as is, it would block its app (see appMutationBlock) forever.
+  // Typed jobs are reconciled with the executor instead, and self-updates by reconcileStaleUpdateJobs.
+  failInterruptedLegacyJobs() {
+    const unfinished = typeof this.stateStore.listUnfinishedJobs === 'function' ? this.stateStore.listUnfinishedJobs() : [];
+    const interrupted = unfinished.filter((job) => job.kind !== 'homebase-update' && !parsePlanJson(job.planJson)?.action);
+    for (const job of interrupted) {
+      this.stateStore.appendJobLog(job.id, '\n[reconcile] Home Base restarted while this job was running, so it stopped partway. Check the app, then run the action again.\n');
+      this.stateStore.updateJob(job.id, { status: 'failed', finishedAt: new Date().toISOString(), errorText: 'Interrupted by a Home Base restart.' });
+    }
+    return interrupted.map((job) => job.id);
+  }
+
   startBootstrapJob(plan, { dryRun = true } = {}) {
     return this.startPlanJob({
       kind: 'bootstrap',

@@ -122,3 +122,20 @@ test('a completed adopt records the app as executor-managed, only after readines
   assert.equal(upserts.length, 1);
   assert.deepEqual([upserts[0].appId, upserts[0].status, upserts[0].managedBy, upserts[0].externalUrl], ['helm', 'installed', 'executor', 'https://home.example.ts.net/helm/']);
 });
+
+test('legacy jobs cut off by a restart are failed at startup; typed and self-update jobs are left to their reconcilers', () => {
+  const { JobRunner } = require('../src/services/job-runner');
+  const updates = {};
+  const store = {
+    listUnfinishedJobs: () => [
+      { id: 4, kind: 'install', target: 'helm', dryRun: false, planJson: JSON.stringify({ steps: [] }) },
+      { id: 5, kind: 'restart', target: 'helm', dryRun: false, planJson: JSON.stringify({ action: { action: 'restart', appId: 'helm' }, requestId: 'r' }) },
+      { id: 6, kind: 'homebase-update', target: 'homebase', dryRun: false, planJson: '{}' },
+    ],
+    appendJobLog: () => {},
+    updateJob: (id, fields) => { updates[id] = fields; },
+  };
+  assert.deepEqual(new JobRunner(store).failInterruptedLegacyJobs(), [4]);
+  assert.equal(updates[4].status, 'failed');
+  assert.deepEqual(Object.keys(updates), ['4']);
+});

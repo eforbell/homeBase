@@ -368,7 +368,7 @@ test('repair restores drifted executor-mode settings and repair-executor refresh
   assert.equal(fs.readFileSync(envFile, 'utf8'), after, 'repair-executor leaves the environment file alone');
 });
 
-function legacyHost(tempDir, fixture, { adopted = [], legacyApps = [], runningJobs = [] } = {}) {
+function legacyHost(tempDir, fixture, { adopted = [], legacyApps = [], runningJobs = [], adopting = [] } = {}) {
   const env = installerEnv(tempDir, fixture, {
     HOMEBASE_COEXIST_EXECUTOR_DIR: path.join(tempDir, 'opt', 'homebase-executor'),
     HOMEBASE_STATE_DB: path.join(tempDir, 'var', 'homebase', 'home-base.sqlite3'),
@@ -384,14 +384,14 @@ function legacyHost(tempDir, fixture, { adopted = [], legacyApps = [], runningJo
   fs.mkdirSync(path.dirname(env.HOMEBASE_ENV_FILE), { recursive: true });
   fs.writeFileSync(env.HOMEBASE_ENV_FILE, 'PORT=3080\nHOME_BASE_GIT_TRANSPORT=https\nHOME_BASE_EXECUTION_MODE=legacy-sudo\nHOME_BASE_ENABLE_PRIVILEGED_JOBS=1\nHOME_BASE_AUTO_BOOTSTRAP=1\n');
   fs.mkdirSync(path.dirname(env.HOMEBASE_STATE_DB), { recursive: true });
-  const rows = [...adopted.map((id) => [id, 'executor']), ...legacyApps.map((id) => [id, null])];
+  const rows = [...adopted.map((id) => [id, 'executor']), ...legacyApps.map((id) => [id, null]), ...adopting.map((id) => [id, 'adopting'])];
   execFileSync('python3', ['-c', `
 import sqlite3, sys, json
 conn = sqlite3.connect(sys.argv[1])
 conn.execute("CREATE TABLE installations (app_id TEXT PRIMARY KEY, status TEXT NOT NULL, managed_by TEXT)")
 conn.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY, kind TEXT, target TEXT, status TEXT, dry_run INTEGER)")
 for app_id, managed in json.loads(sys.argv[2]):
-    conn.execute("INSERT INTO installations VALUES (?, 'installed', ?)", (app_id, managed))
+    conn.execute("INSERT INTO installations VALUES (?, ?, ?)", (app_id, 'planned' if managed == 'adopting' else 'installed', managed))
 for kind, target in json.loads(sys.argv[3]):
     conn.execute("INSERT INTO jobs (kind, target, status, dry_run) VALUES (?, ?, 'running', 0)", (kind, target))
 conn.commit()
@@ -490,11 +490,18 @@ test('--switch-to-executor resumes after stopping partway, and refuses a state d
   const fixture = createSourceCheckout(tempDir);
   const env = legacyHost(tempDir, fixture, { adopted: ['helm'] });
   assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], env).status, 0);
-  // A previous switch wrote executor mode, then stopped before removing sudoers and the coexistence copy.
+  // A previous switch saved its backup, wrote executor mode, then stopped before removing sudoers and the
+  // coexistence copy.
+  const firstBackup = path.join(path.dirname(env.HOMEBASE_ENV_FILE), 'switch-backup-20260101000000');
+  fs.mkdirSync(firstBackup);
+  fs.copyFileSync(env.HOMEBASE_ENV_FILE, path.join(firstBackup, 'homebase.env'));
   fs.writeFileSync(env.HOMEBASE_ENV_FILE, fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8').replace('HOME_BASE_EXECUTION_MODE=legacy-sudo', 'HOME_BASE_EXECUTION_MODE=executor'));
   const resumed = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor', '--no-start'], env);
   assert.equal(resumed.status, 0, resumed.stderr);
   assert.match(resumed.stdout, /resuming a --switch-to-executor that stopped partway/);
+  // The resume keeps the first backup, the only one that still holds the pre-switch state.
+  const backups = fs.readdirSync(path.dirname(env.HOMEBASE_ENV_FILE)).filter((name) => name.startsWith('switch-backup-'));
+  assert.equal(backups.length, 1);
   assert.equal(fs.existsSync(env.HOMEBASE_LEGACY_SUDOERS_FILE), false);
 
   const outside = legacyHost(fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-statedb-')), createSourceCheckout(fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-statedb-src-'))), { adopted: ['helm'] });
@@ -515,4 +522,14 @@ test('without HOME_BASE_STATE_DB in the env file the switch refuses instead of m
   const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], withoutOverride);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /sets neither HOME_BASE_STATE_DB nor HOME_BASE_DATA_DIR/);
+});
+
+test('an adopt that never finished blocks the switch even if its record no longer says installed', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-adopting-'));
+  const fixture = createSourceCheckout(tempDir);
+  const env = legacyHost(tempDir, fixture, { adopted: ['helm'], adopting: ['bitcoin-accounting'] });
+  assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], env).status, 0);
+  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not adopted yet.*: bitcoin-accounting/);
 });

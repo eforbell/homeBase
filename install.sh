@@ -35,7 +35,9 @@ COEXIST_EXECUTOR_DIR="${HOMEBASE_COEXIST_EXECUTOR_DIR:-/opt/homebase-executor}"
 # The legacy web's state database; resolved from the env file for the legacy-host modes.
 STATE_DB="${HOMEBASE_STATE_DB:-}"
 # Root-owned marker that lets the executor run adopt; exists only between the two legacy-host modes.
-COEXIST_MARKER="${HOMEBASE_COEXIST_MARKER:-/etc/sovereign-home/legacy-coexistence}"
+# Fixed outside test mode: the executor checks this exact path (executor/actions.js).
+COEXIST_MARKER='/etc/sovereign-home/legacy-coexistence'
+if [ "$TEST_MODE" = '1' ] && [ -n "${HOMEBASE_COEXIST_MARKER:-}" ]; then COEXIST_MARKER="$HOMEBASE_COEXIST_MARKER"; fi
 
 usage() {
   cat <<'EOF'
@@ -495,7 +497,8 @@ conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 columns = {row[1] for row in conn.execute("PRAGMA table_info(installations)")}
 managed = "COALESCE(managed_by, '')" if "managed_by" in columns else "''"
 if sys.argv[2] == "unadopted":
-    rows = conn.execute(f"SELECT app_id FROM installations WHERE status = 'installed' AND {managed} != 'executor' ORDER BY app_id").fetchall()
+    # Installed but not adopted, or with an adopt that never finished (whatever its status says).
+    rows = conn.execute(f"SELECT app_id FROM installations WHERE (status = 'installed' AND {managed} != 'executor') OR {managed} = 'adopting' ORDER BY app_id").fetchall()
 else:
     rows = conn.execute("SELECT id || ':' || kind || ':' || target FROM jobs WHERE status IN ('queued', 'running') AND dry_run = 0 ORDER BY id").fetchall()
 print(" ".join(str(row[0]) for row in rows))
@@ -510,7 +513,7 @@ if [ "$ADD_EXECUTOR" -eq 1 ]; then
   [ "$(env_value HOME_BASE_EXECUTION_MODE)" = 'legacy-sudo' ] \
     || die "--add-executor is for legacy-sudo hosts; ${ENV_FILE} does not set HOME_BASE_EXECUTION_MODE=legacy-sudo"
   if resolve_state_db; then
-    RUNNING_JOBS="$(state_query jobs)" || RUNNING_JOBS=''
+    RUNNING_JOBS="$(state_query jobs)" || { RUNNING_JOBS=''; log "WARNING: could not read ${STATE_DB}; not checking for running legacy jobs"; }
     if [ -n "$RUNNING_JOBS" ] && [ "$FORCE" -ne 1 ]; then
       die "legacy jobs are in progress (${RUNNING_JOBS}); adding the executor restarts the web service and would cut them off. Retry when they finish, or pass --force"
     fi
@@ -535,6 +538,7 @@ if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
     "${STATE_DIR}"/*) ;;
     *) die "the Home Base state database ${STATE_DB} is outside ${STATE_DIR}, the only directory the hardened service may write; move it there and set HOME_BASE_STATE_DB first" ;;
   esac
+  printf '%s\n' "$STATE_DB" | grep -Eq '^[A-Za-z0-9/._-]+$' || die "the state database path may only contain letters, digits, '/', '.', '_', and '-': ${STATE_DB}"
   [ -f "$STATE_DB" ] || die "could not find the Home Base state database at ${STATE_DB}"
   # Every installed app must already be executor-managed: after the switch nothing runs legacy plans.
   UNADOPTED="$(state_query unadopted)" || die "could not read Home Base state at ${STATE_DB}"
@@ -577,11 +581,20 @@ NODE_MAJOR="$(node -e 'process.stdout.write(process.versions.node.split(".")[0])
 [ "$NODE_MAJOR" -ge 18 ] || die "Node.js 18 or newer is required; found $(node --version)"
 NODE_BIN="$(command -v node)"
 if [ "$TEST_MODE" != '1' ]; then
-  # The root executor's unit runs this binary: nothing but root may be able to replace it.
+  # The root executor's unit runs this binary: nothing but root may be able to replace it or anything on
+  # the way to it. A symlink's own mode is meaningless; its directory and its target's chain are checked.
   NODE_REAL="$(readlink -f "$NODE_BIN")"
-  for candidate in "$NODE_BIN" "$NODE_REAL" "$(dirname "$NODE_REAL")"; do
-    [ "$(stat -c '%u' "$candidate")" = 0 ] && [ $((0$(stat -c '%a' "$candidate") & 022)) -eq 0 ] \
-      || die "${candidate} must be owned by root and not group- or world-writable; the root executor runs ${NODE_BIN}"
+  NODE_CHAIN="$(dirname "$NODE_BIN")"
+  candidate="$NODE_REAL"
+  while :; do
+    NODE_CHAIN="$NODE_CHAIN $candidate"
+    [ "$candidate" = '/' ] && break
+    candidate="$(dirname "$candidate")"
+  done
+  for candidate in $NODE_CHAIN; do
+    if [ "$(stat -c '%u' "$candidate")" != 0 ] || [ $((0$(stat -c '%a' "$candidate") & 022)) -ne 0 ]; then
+      die "${candidate} must be owned by root and not group- or world-writable; the root executor runs ${NODE_BIN}"
+    fi
   done
 fi
 
@@ -725,12 +738,16 @@ if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
   # Parent root-owned before anything moves, so nobody can plant a symlink where the managed install goes.
   if [ "$TEST_MODE" != '1' ]; then install -d -m 0755 -o root -g root "$(dirname "$INSTALL_DIR")"; fi
   [ ! -L "$INSTALL_DIR" ] || die "${INSTALL_DIR} is a symlink; refusing to install through it"
-  # Everything a manual rollback needs, root-only: the env file and the legacy unit.
-  SWITCH_BACKUP="$(dirname "$ENV_FILE")/switch-backup-$(date +%Y%m%d%H%M%S)"
-  mkdir -p "$SWITCH_BACKUP" && chmod 0700 "$SWITCH_BACKUP"
-  cp -p "$ENV_FILE" "$SWITCH_BACKUP/"
-  if [ -f "$UNIT_FILE" ]; then cp -p "$UNIT_FILE" "$SWITCH_BACKUP/"; fi
-  log "saved the env file and web unit to ${SWITCH_BACKUP} for a manual rollback"
+  # Everything a manual rollback needs, root-only: the env file and the legacy unit. A resumed switch keeps
+  # the first backup, which is the only one that still holds the pre-switch state.
+  SWITCH_BACKUP="$(find "$(dirname "$ENV_FILE")" -maxdepth 1 -type d -name 'switch-backup-*' 2>/dev/null | sort | head -1)"
+  if [ "$SWITCH_RESUMING" -eq 0 ] || [ -z "$SWITCH_BACKUP" ]; then
+    SWITCH_BACKUP="$(dirname "$ENV_FILE")/switch-backup-$(date +%Y%m%d%H%M%S)"
+    mkdir -p "$SWITCH_BACKUP" && chmod 0700 "$SWITCH_BACKUP"
+    cp -p "$ENV_FILE" "$SWITCH_BACKUP/"
+    if [ -f "$UNIT_FILE" ]; then cp -p "$UNIT_FILE" "$SWITCH_BACKUP/"; fi
+  fi
+  log "the pre-switch env file and web unit are in ${SWITCH_BACKUP} for a manual rollback"
 fi
 if [ "$SWITCH_TO_EXECUTOR" -eq 1 ] && [ -e "$INSTALL_DIR" ] && [ ! -f "$VERSION_MARKER" ]; then
   # The legacy web checkout (owned by the runtime user) is kept aside, not deleted.
