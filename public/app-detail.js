@@ -424,7 +424,7 @@
             </div>
             <p class="hb-muted" style="margin:0.45rem 0 0;font-size:0.9rem;">${window.HB.escapeHtml(app.purpose || '')}</p>
             <p class="hb-muted" style="margin:0.35rem 0 0;font-size:0.83rem;">
-              App ID: ${window.HB.escapeHtml(app.id)} · Port: ${window.HB.escapeHtml(port)} · Route: ${window.HB.escapeHtml(mountPath)}${install && actionsPayload.managedBy ? ` · Managed by: ${actionsPayload.managedBy === 'executor' ? 'executor' : 'legacy (sudo)'}` : ''}
+              App ID: ${window.HB.escapeHtml(app.id)} · Port: ${window.HB.escapeHtml(port)} · Route: ${window.HB.escapeHtml(mountPath)}${install && actionsPayload.managedBy ? ` · Managed by: ${({ executor: 'executor', adopting: 'adoption incomplete (re-run adopt)' })[actionsPayload.managedBy] || 'legacy (sudo)'}` : ''}
             </p>
             <div class="hb-actions" style="margin-top:0.75rem;">
               ${install?.externalUrl ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>` : ''}
@@ -486,6 +486,7 @@
           ${actions.adopt ? `
             <section id="adopt" class="hb-card">
               <h2 style="margin-top:0;">Executor adoption</h2>
+              ${actionsPayload.managedBy === 'adopting' ? '<p class="hb-warn" style="margin:0 0 0.75rem;">The last adopt did not finish. Re-run it; it picks up where it stopped. Other actions stay disabled for this app until it completes.</p>' : ''}
               <p class="hb-muted" style="margin:0 0 0.75rem;">This app was installed by legacy (sudo) mode. Adopting hands it to the typed executor in place: same checkout, data, and settings. Adopt apps one at a time; switch the host to executor mode once all of them are adopted.</p>
               <form class="hb-form-grid" data-action="adopt">
                 <label class="hb-label hb-check-row"><input name="dryRun" type="checkbox" checked> Preview the plan only</label>

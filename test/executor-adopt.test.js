@@ -51,7 +51,9 @@ test('adopt-only operations are refused in install plans, and an install cannot 
 test('adopt is a named action with the same fields as install', () => {
   const action = normalizeAction({ action: 'adopt', appId: 'helm', ref: 'main', transport: 'ssh', site: SITE });
   assert.deepEqual(action, { action: 'adopt', appId: 'helm', ref: 'main', transport: 'ssh', site: SITE });
-  assert.equal(compileAction(action).plan.kind, 'app-adopt');
+  assert.equal(compileAction(action, { adoptAllowed: () => true }).plan.kind, 'app-adopt');
+  // Outside a legacy host's move (no root-owned coexistence marker) the executor refuses adopt.
+  assert.throws(() => compileAction(action, { adoptAllowed: () => false }), (error) => error.code === 'POLICY_DENIED' && /--add-executor/.test(error.message));
   assert.throws(() => normalizeAction({ action: 'adopt', appId: 'helm', ref: 'main', transport: 'ssh', site: SITE, keepBackups: true }), (error) => error.code === 'INVALID_REQUEST');
 });
 
@@ -124,7 +126,7 @@ test('adopt never generates database credentials: no existing wiring means nothi
   const finished = [];
   const journal = { begin() {}, progress() {}, finish: (jobId, outcome) => finished.push(outcome) };
   let executed = false;
-  const runAction = createRunAction({ handlers: {}, journal, existingPassword: () => null, execute: async () => { executed = true; return {}; } });
+  const runAction = createRunAction({ handlers: {}, journal, compile: (spec) => compileAction(spec, { adoptAllowed: () => true }), existingPassword: () => null, execute: async () => { executed = true; return {}; } });
   await assert.rejects(() => runAction({ action: 'adopt', appId: 'helm', ref: 'main', transport: 'ssh', site: SITE }, { emit() {}, jobId: '9', requestId: 'r' }), (error) => error.code === 'POLICY_DENIED' && /nothing to adopt/.test(error.message));
   assert.equal(executed, false);
   assert.equal(finished[0].ok, false);
@@ -140,4 +142,15 @@ test('the web client sends exactly the fields the executor accepts for every act
     const fields = match[1].split(',').map((field) => field.trim().replace(/'/g, '')).filter(Boolean);
     assert.deepEqual(fields, spec.fields, name);
   }
+});
+
+test('the coexistence marker counts only as a root-owned regular file that nobody else can write', () => {
+  const { legacyCoexistence, LEGACY_COEXISTENCE_MARKER } = require('../executor/actions');
+  const fake = (entry) => ({ lstatSync: () => { if (!entry) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return { isFile: () => entry.file !== false, uid: entry.uid, mode: entry.mode }; } });
+  assert.equal(LEGACY_COEXISTENCE_MARKER, '/etc/sovereign-home/legacy-coexistence');
+  assert.equal(legacyCoexistence(fake({ uid: 0, mode: 0o100644 })), true);
+  assert.equal(legacyCoexistence(fake(null)), false);
+  assert.equal(legacyCoexistence(fake({ uid: 997, mode: 0o100644 })), false);
+  assert.equal(legacyCoexistence(fake({ uid: 0, mode: 0o100666 })), false);
+  assert.equal(legacyCoexistence(fake({ uid: 0, mode: 0o100644, file: false })), false);
 });

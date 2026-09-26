@@ -2071,9 +2071,12 @@ test('executor mode routes lifecycle actions to the executor and still refuses u
   const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: backupRoot, baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
   try {
     const cookie = await setupAdminCookie(server.url);
+    // Real runs for one app never overlap; settle each job before the next request.
     const post = async (route, extra = {}) => {
       const response = await fetch(`${server.url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ dryRun: false, confirm: 'EXECUTE', ...extra }) });
-      return { status: response.status, body: await response.json() };
+      const body = await response.json();
+      if (body.jobId) store.updateJob(body.jobId, { status: 'completed', finishedAt: new Date().toISOString() });
+      return { status: response.status, body };
     };
     for (const route of ['/api/homebase/install-self', '/api/network/tailscale/publish-execute']) {
       const response = await post(route);
@@ -2162,14 +2165,16 @@ test('legacy-sudo hosts adopt apps one at a time: adopted apps route to the exec
   const socketPath = path.join(tempDir, 'e.sock');
   const received = [];
   const planned = [];
-  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, probeDeployKey: () => 'present', runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; }, planAction: (spec) => { planned.push(spec); return require('../executor/actions').compileAction(spec); } });
+  const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, probeDeployKey: () => 'present', runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; }, planAction: (spec) => { planned.push(spec); return require('../executor/actions').compileAction(spec, { adoptAllowed: () => true }); } });
   await new Promise((resolve) => executor.listen(socketPath, resolve));
   const dbPath = path.join(tempDir, 'state.sqlite3');
   const store = new SqliteStateStore(dbPath);
   store.init();
   const record = (appId, port, extra = {}) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://home.tailnet/x/', installRoot: '/opt/sovereign-home/apps/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z', ...extra });
-  store.upsertInstallation(record('helm', 3011));
+  store.upsertInstallation(record('helm', 3011, { installRoot: '/opt/sovereign-home/apps/helm', mountPath: '/helm/' }));
   store.upsertInstallation(record('home-source', 3008, { managedBy: 'executor' }));
+  // Installed by legacy somewhere other than the catalog layout: adopt refuses it.
+  store.upsertInstallation(record('home-ops', 3009, { installRoot: '/srv/apps/homeOps', mountPath: '/ops/' }));
   store.upsertInstallation(record('family-dinner', 3000));
   // A later legacy-style upsert without managedBy keeps the adopted marker.
   store.upsertInstallation(record('home-source', 3008, { updatedAt: '2026-04-04T00:00:00.000Z' }));
@@ -2196,6 +2201,12 @@ test('legacy-sudo hosts adopt apps one at a time: adopted apps route to the exec
     assert.equal(adopt.status, 202, JSON.stringify(adopt.body));
     assert.equal((await post('/api/apps/home-source/adopt/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ALREADY_ADOPTED');
     assert.equal((await post('/api/apps/bug-base/adopt/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ADOPT_NOT_APPLICABLE');
+    assert.equal((await post('/api/apps/home-ops/adopt/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ADOPT_LAYOUT_MISMATCH');
+    // While the adopt job is in flight the app is marked "adopting": other real runs refuse.
+    assert.equal(store.loadState().installations.helm.managedBy, 'adopting');
+    assert.equal((await post('/api/apps/helm/restart/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ADOPT_INCOMPLETE');
+    const helmActions = await (await fetch(`${server.url}/api/apps/helm/actions`, { headers: { cookie } })).json();
+    assert.deepEqual([helmActions.managedBy, helmActions.actions.adopt], ['adopting', true], 'adopt stays offered so it can be re-run');
 
     // The adopted app's lifecycle goes to the executor; the legacy app's does not.
     const restart = await post('/api/apps/home-source/restart/execute', { dryRun: false, confirm: 'EXECUTE' });
@@ -2274,7 +2285,9 @@ test('executor-mode restore resolves the selected archive by name without readin
     const cookie = await setupAdminCookie(server.url);
     const post = async (body) => {
       const response = await fetch(`${server.url}/api/apps/home-source/restore/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
-      return { status: response.status, body: await response.json() };
+      const payload = await response.json();
+      if (payload.jobId && body.dryRun === false) store.updateJob(payload.jobId, { status: 'completed', finishedAt: new Date().toISOString() });
+      return { status: response.status, body: payload };
     };
     const real = await post({ backupDir: archiveDir, dryRun: false, confirm: 'EXECUTE' });
     assert.equal(real.status, 202, JSON.stringify(real.body));

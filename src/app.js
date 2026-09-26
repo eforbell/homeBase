@@ -10,7 +10,7 @@ const { buildInstallPlan } = require('./services/install-planner');
 const { buildExecutorInstallAction, executorManagesApp } = require('./services/executor-install');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
-const { BACKUP_ROOT } = require('./operations/paths');
+const { APPS_ROOT, BACKUP_ROOT } = require('./operations/paths');
 const { buildRestorePlan } = require('./services/restore-planner');
 const { buildUninstallPlan } = require('./services/uninstall-planner');
 const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planner');
@@ -262,15 +262,30 @@ function executorPortConflict(state, appId) {
   return conflict ? { error: `${conflict.appId} already uses a port ${getAppById(appId).name} needs (${appPorts.join(', ')}); executor installs use catalog ports.`, code: 'PORT_CONFLICT' } : null;
 }
 
-// Why the executor cannot fetch over SSH yet, or null when it can.
-function deployKeyProblem(transport, capabilities) {
+// Why the executor cannot fetch over SSH yet, or null when it can. Legacy-sudo hosts add the key with
+// --add-executor (--repair refuses a host that still has the legacy sudo policy).
+function deployKeyProblem(transport, capabilities, executionMode) {
   if (transport !== 'ssh' || capabilities.gitDeployKey === 'present') return null;
+  const command = executionMode === 'legacy-sudo' ? 'sudo bash install.sh --add-executor --git-ssh-key <path-to-private-key>' : 'sudo bash install.sh --repair --git-ssh-key <path-to-private-key>';
   return {
     error: capabilities.gitDeployKey === 'insecure'
-      ? 'The executor deploy key must be a root-owned regular file with mode 0600. Re-run: sudo bash install.sh --repair --git-ssh-key <path>'
-      : 'SSH git transport needs a deploy key. On the host run: sudo bash install.sh --repair --git-ssh-key <path-to-private-key>',
+      ? `The executor deploy key must be a root-owned regular file with mode 0600. Re-run: ${command}`
+      : `SSH git transport needs a deploy key. On the host run: ${command}`,
     code: 'GIT_DEPLOY_KEY_REQUIRED',
   };
+}
+
+// Real runs for one app never overlap (a legacy update during an adopt would re-create the snippet adopt
+// just retired), and an app whose adopt did not finish accepts only adopt until it does.
+function appMutationBlock(stateStore, state, appId, { adopting = false } = {}) {
+  const install = (state.installations || {})[appId];
+  const name = getAppById(appId)?.name || appId;
+  if (install?.managedBy === 'adopting' && !adopting) {
+    return { error: `${name}'s adopt did not finish. Re-run adopt from its page; other actions are disabled for it until adopt completes.`, code: 'ADOPT_INCOMPLETE' };
+  }
+  const active = (stateStore.listUnfinishedJobs() || []).find((job) => job.target === appId && !job.dryRun);
+  if (active) return { error: `${name} already has job #${active.id} (${active.kind}) in progress; wait for it to finish.`, code: 'APP_BUSY' };
+  return null;
 }
 
 function missingCheckIds(preflight, ids) {
@@ -726,6 +741,7 @@ function createApp(config) {
             gitSshStrictHostKeyChecking: effectiveConfig.gitSshStrictHostKeyChecking || 'accept-new',
             executionMode: effectiveConfig.homeBaseExecutionMode,
             executorSocket: effectiveConfig.homeBaseExecutorSocket,
+            executorGitTransport: effectiveConfig.homeBaseExecutorGitTransport || '',
             baseInstallDir: effectiveConfig.baseInstallDir,
           },
         });
@@ -1173,7 +1189,9 @@ function createApp(config) {
             discardPlan: planned,
             adopt: effectiveConfig.homeBaseExecutionMode === 'legacy-sudo' && installation?.status === 'installed' && installation.managedBy !== 'executor',
           },
-          managedBy: executorManagesApp(effectiveConfig, state, appId) ? 'executor' : (effectiveConfig.homeBaseExecutionMode === 'legacy-sudo' ? 'legacy' : 'plan-only'),
+          managedBy: executorManagesApp(effectiveConfig, state, appId) ? 'executor'
+            : installation?.managedBy === 'adopting' ? 'adopting'
+              : (effectiveConfig.homeBaseExecutionMode === 'legacy-sudo' ? 'legacy' : 'plan-only'),
           note: planned
             ? 'This is a saved dry-run. Run a real install or discard the plan metadata; no app files were created by the dry-run.'
             : 'Update currently runs through install execute (same deployment pipeline).',
@@ -1252,6 +1270,12 @@ function createApp(config) {
         const install = (state.installations || {})[appId];
         if (!install || install.status !== 'installed') return sendJson(res, 409, { error: `${app.name} is not installed, so there is nothing to adopt. Install it instead.`, code: 'ADOPT_NOT_APPLICABLE' });
         if (install.managedBy === 'executor') return sendJson(res, 409, { error: `${app.name} is already managed by the executor.`, code: 'ALREADY_ADOPTED' });
+        // Adopt keeps an install where it is; the executor manages apps only at the catalog's location and
+        // mount path. A legacy install elsewhere would come up empty (or at a different URL) after adopt.
+        const catalogRoot = path.posix.join(APPS_ROOT, app.repoKey);
+        if (install.installRoot !== catalogRoot || install.mountPath !== app.network.preferredMountPath) {
+          return sendJson(res, 409, { error: `${app.name} is installed at ${install.installRoot} (${install.mountPath}); adopt needs the standard ${catalogRoot} (${app.network.preferredMountPath}). Back it up and reinstall it there instead.`, code: 'ADOPT_LAYOUT_MISMATCH' });
+        }
         const dryRun = body.dryRun !== false;
         let auth = null;
         if (!dryRun) {
@@ -1275,10 +1299,15 @@ function createApp(config) {
         // The legacy record's ref, when it is one the executor tracks; otherwise the catalog default.
         const action = buildExecutorInstallAction({ appId, ref: body.ref || (/^(main|[a-f0-9]{40})$/.test(install.ref || '') ? install.ref : undefined), config: effectiveConfig, action: 'adopt' });
         if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
-        const keyProblem = deployKeyProblem(action.transport, capabilities);
+        const keyProblem = deployKeyProblem(action.transport, capabilities, effectiveConfig.homeBaseExecutionMode);
         if (keyProblem) return sendJson(res, 409, keyProblem);
         if (dryRun) return startExecutorPreview({ res, effectiveConfig, appId, kind: 'adopt', action, jobRunner });
         if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
+        const adoptBlock = appMutationBlock(stateStore, state, appId, { adopting: true });
+        if (adoptBlock) return sendJson(res, 409, adoptBlock);
+        // Until the adopt completes (after readiness) the app accepts only adopt: a failed run may already
+        // have rewritten units, .env, and the nginx snippet, which legacy plans must not touch.
+        stateStore.upsertInstallation({ ...install, managedBy: 'adopting', updatedAt: new Date().toISOString() });
         const jobId = jobRunner.startTypedAdoptJob({
           appId, ref: action.ref, transport: action.transport, site: action.site,
           onComplete: () => {
@@ -1320,6 +1349,8 @@ function createApp(config) {
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
+        const installBlock = body.dryRun === false ? appMutationBlock(stateStore, state, executeInstallMatch[1]) : null;
+        if (installBlock) return sendJson(res, 409, installBlock);
         if (body.dryRun === false && !executorManagesApp(effectiveConfig, state, executeInstallMatch[1])) {
           const app = getAppById(executeInstallMatch[1]);
           const required = ['os', 'sudo', 'systemd', 'git', 'psql', 'nginx', 'postgres-service', 'nginx-config'];
@@ -1361,7 +1392,7 @@ function createApp(config) {
           const action = buildExecutorInstallAction({ appId, ref: body.ref, config: effectiveConfig });
           if (!action.ref) return sendJson(res, 409, { error: 'Executor installs track main or a pinned 40-character commit SHA.', code: 'POLICY_DENIED' });
           const { transport } = action;
-          const keyProblem = deployKeyProblem(transport, capabilities);
+          const keyProblem = deployKeyProblem(transport, capabilities, effectiveConfig.homeBaseExecutionMode);
           if (keyProblem) return sendJson(res, 409, keyProblem);
           // Database credentials are generated inside the executor; a caller-supplied dbPassword is ignored here.
           const jobId = jobRunner.startTypedInstallJob({
@@ -1465,6 +1496,8 @@ function createApp(config) {
             error: `App ${appId} must be installed before restart is available.`,
           });
         }
+        const restartBlock = body.dryRun === false ? appMutationBlock(stateStore, state, appId) : null;
+        if (restartBlock) return sendJson(res, 409, restartBlock);
         if (body.dryRun === false) {
           if (executorManagesApp(effectiveConfig, state, appId)) {
             return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restart-execute', auth, start: () => jobRunner.startTypedRestartJob({ appId }) });
@@ -1564,6 +1597,8 @@ function createApp(config) {
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
+        const backupBlock = body.dryRun === false ? appMutationBlock(stateStore, state, backupExecuteMatch[1]) : null;
+        if (backupBlock) return sendJson(res, 409, backupBlock);
         if (body.dryRun === false) {
           if (executorManagesApp(effectiveConfig, state, backupExecuteMatch[1])) {
             const appId = backupExecuteMatch[1];
@@ -1670,6 +1705,8 @@ function createApp(config) {
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
+        const uninstallBlock = body.dryRun === false ? appMutationBlock(stateStore, state, appId) : null;
+        if (uninstallBlock) return sendJson(res, 409, uninstallBlock);
         if (body.dryRun === false) {
           const required = ['os', 'sudo', 'systemd', 'nginx'];
           if (app.database?.engine && app.database.engine.includes('postgres')) {
@@ -1756,6 +1793,8 @@ function createApp(config) {
             return sendJson(res, auth.statusCode, auth.payload);
           }
         }
+        const restoreBlock = body.dryRun === false ? appMutationBlock(stateStore, state, restoreExecuteMatch[1]) : null;
+        if (restoreBlock) return sendJson(res, 409, restoreBlock);
         if (body.dryRun === false) {
           if (executorManagesApp(effectiveConfig, state, restoreExecuteMatch[1])) {
             const appId = restoreExecuteMatch[1];

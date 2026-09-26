@@ -25,6 +25,17 @@ const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-
 const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }
+
+// adopt exists only while a legacy-sudo host is moving to the executor. install.sh --add-executor writes
+// this root-owned marker and --switch-to-executor removes it, so after the switch a compromised web
+// process cannot re-run adopt (which rewrites units and hands database objects around).
+const LEGACY_COEXISTENCE_MARKER = '/etc/sovereign-home/legacy-coexistence';
+function legacyCoexistence(fsImpl = require('fs')) {
+  try {
+    const stat = fsImpl.lstatSync(LEGACY_COEXISTENCE_MARKER);
+    return stat.isFile() && stat.uid === 0 && (stat.mode & 0o022) === 0;
+  } catch { return false; }
+}
 function invalid(message) { throw new ProtocolError('INVALID_REQUEST', message); }
 
 function normalizeAction(request) {
@@ -51,7 +62,7 @@ function normalizeAction(request) {
   return { action: request.action, appId: request.appId, ref: request.ref, transport: request.transport, site };
 }
 
-function compileAction(action, { generatedAt = new Date().toISOString() } = {}) {
+function compileAction(action, { generatedAt = new Date().toISOString(), adoptAllowed = legacyCoexistence } = {}) {
   let plan;
   if (action.action === 'bootstrap') {
     plan = buildHostBootstrapPlan({ generatedAt });
@@ -60,6 +71,7 @@ function compileAction(action, { generatedAt = new Date().toISOString() } = {}) 
   } else if (action.action === 'install') {
     plan = buildAppInstallPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
   } else if (action.action === 'adopt') {
+    if (!adoptAllowed()) deny('adopt is only available while a legacy-sudo host is moving to the executor (install.sh --add-executor).');
     plan = buildAppAdoptPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
   } else if (action.action === 'restart') {
     plan = buildAppRestartPlan({ appId: action.appId, generatedAt });
@@ -94,4 +106,4 @@ function generateSecretBindings(plan, { existing = {} } = {}) {
   return bindings;
 }
 
-module.exports = { ACTIONS, ACTION_FIELDS, INSTALLABLE_APPS, normalizeAction, compileAction, generateSecretBindings };
+module.exports = { ACTIONS, ACTION_FIELDS, INSTALLABLE_APPS, LEGACY_COEXISTENCE_MARKER, legacyCoexistence, normalizeAction, compileAction, generateSecretBindings };
