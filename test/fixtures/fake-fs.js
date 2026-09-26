@@ -107,8 +107,12 @@ function createFakeFs(initial = {}) {
     closeSync: (fd) => { fds.delete(fd); },
     renameSync: (from, to) => {
       calls.push(['rename', from, to]);
-      entries.set(to, entries.get(from));
-      entries.delete(from);
+      // A directory rename carries its whole subtree, as on a real filesystem.
+      for (const key of [...entries.keys()]) {
+        if (key !== from && !key.startsWith(`${from}/`)) continue;
+        entries.set(`${to}${key.slice(from.length)}`, entries.get(key));
+        entries.delete(key);
+      }
     },
     symlinkSync: (target, link) => { put(link, { kind: 'link', target }); },
     readlinkSync: (link) => entries.get(link).target,

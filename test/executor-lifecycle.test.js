@@ -110,7 +110,7 @@ test('uninstall removes only root-owned layout artifacts as root and app files a
   await handlers['postgres.drop-database'](op('postgres.drop-database', { risk: 'destructive', database: 'homesource', owner: 'homesource' }), { layout: SOURCE });
   const drop = calls.at(-1);
   assert.equal(drop.uid, 999);
-  assert.equal(drop.stdin, 'DROP DATABASE IF EXISTS "homesource" WITH (FORCE);\nDROP ROLE IF EXISTS "homesource";\n');
+  assert.equal(drop.stdin, 'SET search_path = pg_catalog, pg_temp;\nDROP DATABASE IF EXISTS "homesource" WITH (FORCE);\nDROP ROLE IF EXISTS "homesource";\n');
   await assert.rejects(() => handlers['postgres.drop-database'](op('postgres.drop-database', { risk: 'destructive', database: 'family_dinner', owner: 'family_dinner' }), { layout: SOURCE }), (error) => error.code === 'POLICY_DENIED');
 
   const planted = harness({ '/var/lib/sovereign-home/git-mirrors/homeSource.git': { kind: 'link', target: '/etc' } });

@@ -141,10 +141,29 @@ test('ensure-venv builds a venv once per interpreter and rebuilds it after a Pyt
   assert.match(kept, /ready/);
   assert.equal(same.calls.length, 1);
 
+  // A patch upgrade keeps the venv: its bin/python links to /usr/bin/python3.
+  const patched = run('3.12.9');
+  assert.match(await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: patched.fn })['runtime.run-app-task'](task, { layout: HELM }), /ready/);
+  assert.equal(patched.calls.length, 1);
+
+  // A minor upgrade rebuilds beside the old venv and swaps; the old one is removed only on success.
+  const upgradedFs = createFakeFs(built);
   const upgraded = run('3.13.1');
-  const rebuilt = await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: upgraded.fn })['runtime.run-app-task'](task, { layout: HELM });
-  assert.deepEqual(upgraded.calls[1].args, ['-m', 'venv', '--clear', '.venv']);
+  const rebuilt = await createBaseHandlers({ fsImpl: upgradedFs, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: upgraded.fn })['runtime.run-app-task'](task, { layout: HELM });
+  assert.deepEqual(upgraded.calls.map((call) => [call.binary.split('/').pop(), ...call.args.slice(0, 3)]), [['python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'], ['python3', '-m', 'venv', '.venv'], ['python', '-m', 'pip', 'install'], ['python', '-m', 'pip', 'install']]);
   assert.match(rebuilt, /rebuilt virtualenv for Python 3\.13\.1 \(was 3\.12\.3\)/);
+  assert.equal(upgradedFs.existsSync(`${HELM_ROOT}/.venv.previous`), false);
+
+  // If pip fails (PyPI down), the previous venv comes back and the task fails.
+  const rollbackFs = createFakeFs(built);
+  const failingPip = async (input) => {
+    if (input.args[0] === '-c') return { stdout: '3.13.1\n' };
+    if (input.args.includes('pip')) throw Object.assign(new Error('pip: connection timed out'), { code: 'OPERATION_FAILED' });
+    return { stdout: '' };
+  };
+  await assert.rejects(() => createBaseHandlers({ fsImpl: rollbackFs, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: failingPip })['runtime.run-app-task'](task, { layout: HELM }), /connection timed out/);
+  assert.equal(rollbackFs.readFileSync(`${HELM_ROOT}/.venv/pyvenv.cfg`), 'home = /usr/bin\nversion = 3.12.3\n', 'the running app keeps its packages');
+  assert.equal(rollbackFs.existsSync(`${HELM_ROOT}/.venv.previous`), false);
   await assert.rejects(() => createBaseHandlers({ fsImpl: fresh, lookupUser: () => SOVEREIGN, run: first.fn })['runtime.run-app-task'](task, { layout: getLayout('family-dinner') }), (error) => error.code === 'POLICY_DENIED');
 });
 

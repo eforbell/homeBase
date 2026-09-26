@@ -303,7 +303,9 @@ test('nginx gateway installs the managed site, enables it, and retires the stock
     '/etc/nginx/sites-available/default': 'server {}',
     '/etc/nginx/sites-enabled/default': { kind: 'link', target: '/etc/nginx/sites-available/default' },
   });
-  const handlers = createBaseHandlers({ fsImpl });
+  // A fresh host: the active config does not include the app snippets yet (nginx -T, run as root).
+  const freshNginx = async () => ({ stdout: 'http {\n  server {\n  }\n}\n', stderr: '' });
+  const handlers = createBaseHandlers({ fsImpl, run: freshNginx });
   await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'), { layout: LAYOUT });
   assert.equal(fsImpl.readFileSync('/etc/nginx/sites-available/sovereign-home'), NGINX_GATEWAY_CONTENT);
   assert.match(NGINX_GATEWAY_CONTENT, /include \/etc\/nginx\/sovereign-home\.d\/\*\.conf;/);
@@ -312,8 +314,11 @@ test('nginx gateway installs the managed site, enables it, and retires the stock
   assert.equal(fsImpl.existsSync('/etc/nginx/sites-available/default'), true);
   await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'), { layout: LAYOUT });
 
-  const customized = createBaseHandlers({ fsImpl: createFakeFs({ '/etc/nginx/sites-available': { kind: 'dir' }, '/etc/nginx/sites-enabled/default': 'server { custom }' }) });
+  const customized = createBaseHandlers({ fsImpl: createFakeFs({ '/etc/nginx/sites-available': { kind: 'dir' }, '/etc/nginx/sites-enabled/default': 'server { custom }' }), run: freshNginx });
   await assert.rejects(() => customized['nginx.ensure-gateway'](base('nginx.ensure-gateway'), { layout: LAYOUT }), /disable it manually/);
+  // An unreadable config refuses instead of installing ours (which would take default_server).
+  const broken = createBaseHandlers({ fsImpl: createFakeFs({ '/etc/nginx/sites-available': { kind: 'dir' } }), run: async () => { throw Object.assign(new Error('nginx: [emerg] unknown directive'), { code: 'OPERATION_FAILED' }); } });
+  await assert.rejects(() => broken['nginx.ensure-gateway'](base('nginx.ensure-gateway'), { layout: LAYOUT }), /Could not read the active nginx configuration/);
 });
 
 test('homeSource: storage lives outside the checkout, sovereign-owned 0750 under a root-owned parent', async () => {

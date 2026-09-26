@@ -77,17 +77,27 @@ test('an operator gateway that includes the app snippets is left alone; otherwis
 
 test('retiring legacy snippets keeps root-only copies and covers nginx-published sidecars', async () => {
   const fsImpl = createFakeFs({ '/etc/nginx/snippets/bug-base.conf': '# bug-base\n', '/etc/nginx/snippets/bug-base-mcp.conf': '# mcp\n', '/etc/nginx/snippets/sovereign-fonts.conf': '# fonts\n' });
-  const handlers = createBaseHandlers({ fsImpl });
+  const nginxRuns = [];
+  const handlers = createBaseHandlers({ fsImpl, run: async (input) => { nginxRuns.push(input.args); return { stdout: '' }; } });
   const result = await handlers['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS });
   assert.match(result, /bug-base\.conf, \/etc\/nginx\/snippets\/bug-base-mcp\.conf/);
   assert.equal(fsImpl.existsSync('/etc/nginx/snippets/bug-base.conf'), false);
   assert.equal(fsImpl.existsSync('/etc/nginx/snippets/sovereign-fonts.conf'), true, 'shared snippets are untouched');
+  assert.deepEqual(nginxRuns[0], ['-t'], 'nginx validates the swap straight away');
   const kept = fsImpl.entries.get('/var/lib/homebase-executor/retired-nginx-snippets/bug-base/bug-base-mcp.conf');
   assert.deepEqual([kept.content, kept.mode], ['# mcp\n', 0o600]);
   // Re-running after a partial adopt is a no-op.
   assert.match(await handlers['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS }), /no legacy nginx snippets/);
   const planted = createFakeFs({ '/etc/nginx/snippets/bug-base.conf': { kind: 'link', target: '/etc/shadow' } });
-  await assert.rejects(() => createBaseHandlers({ fsImpl: planted })['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS }), /not a regular file/);
+  await assert.rejects(() => createBaseHandlers({ fsImpl: planted, run: async () => ({ stdout: '' }) })['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS }), /not a regular file/);
+});
+
+test('a snippet swap nginx rejects is undone: legacy snippet restored, new one removed', async () => {
+  const fsImpl = createFakeFs({ '/etc/nginx/snippets/bug-base.conf': '# legacy bug-base\n', '/etc/nginx/sovereign-home.d/bug-base.conf': '# executor bug-base\n' });
+  const reject = async () => { throw Object.assign(new Error('exit 1'), { code: 'OPERATION_FAILED', output: { stderr: 'nginx: [emerg] "location" directive is not allowed here' } }); };
+  await assert.rejects(() => createBaseHandlers({ fsImpl, run: reject })['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS }), /legacy snippet was restored.*not allowed here.*inside the server block/);
+  assert.equal(fsImpl.readFileSync('/etc/nginx/snippets/bug-base.conf'), '# legacy bug-base\n');
+  assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-home.d/bug-base.conf'), false);
 });
 
 test('ownership transfer runs as postgres in the app database, bound to the catalog role', async () => {
@@ -96,9 +106,16 @@ test('ownership transfer runs as postgres in the app database, bound to the cata
   const result = await handlers['postgres.transfer-ownership'](base('postgres.transfer-ownership', { database: 'bitcoin_accounting', owner: 'bitcoin_accountant' }), { layout: BITCOIN });
   assert.equal(result, 'transferred 9 objects to bitcoin_accountant');
   assert.deepEqual([calls[0].binary, calls[0].args, calls[0].uid], ['/usr/bin/psql', ['-X', '-v', 'ON_ERROR_STOP=1', '-d', 'bitcoin_accounting'], 999]);
-  assert.match(calls[0].stdin, /OWNER TO %I', CASE/);
-  assert.match(calls[0].stdin, /relowner <> 'bitcoin_accountant'::regrole/);
-  assert.match(calls[0].stdin, /deptype IN \('a', 'i'\)/, 'column-owned sequences move with their table');
+  // Runs as superuser in a database the app owns: search_path is pinned and operators are qualified, so
+  // nothing the app planted in public can run (verified against PostgreSQL 14 and 16 with a trap operator).
+  assert.match(calls[0].stdin, /^SET search_path = pg_catalog, pg_temp;\n/);
+  assert.match(calls[0].stdin, /set_config\('search_path', 'pg_catalog, pg_temp', true\)/);
+  assert.match(calls[0].stdin, /c\.relowner OPERATOR\(pg_catalog\.<>\) 'bitcoin_accountant'::pg_catalog\.regrole::pg_catalog\.oid/);
+  const body = calls[0].stdin.replace(/^SET search_path = [^\n]*\n/, '').replace(/OPERATOR\(pg_catalog\.(<>|=|!~~|\+)\)/g, '');
+  assert.doesNotMatch(body, / (<>|=) /, 'no unqualified comparison operators');
+  assert.match(calls[0].stdin, /deptype OPERATOR\(pg_catalog\.=\) ANY \(ARRAY\['a', 'i'\]/, 'column-owned sequences move with their table');
+  assert.match(calls[0].stdin, /ALTER ROUTINE %s OWNER TO %I/);
+  assert.match(calls[0].stdin, /'DOMAIN' ELSE 'TYPE'/);
   await assert.rejects(() => handlers['postgres.transfer-ownership'](base('postgres.transfer-ownership', { database: 'helm', owner: 'helm' }), { layout: BITCOIN }), (error) => error.code === 'POLICY_DENIED');
 });
 
@@ -108,7 +125,7 @@ test('adopt never generates database credentials: no existing wiring means nothi
   const journal = { begin() {}, progress() {}, finish: (jobId, outcome) => finished.push(outcome) };
   let executed = false;
   const runAction = createRunAction({ handlers: {}, journal, existingPassword: () => null, execute: async () => { executed = true; return {}; } });
-  await assert.rejects(() => runAction({ action: 'adopt', appId: 'helm', ref: 'main', transport: 'ssh', site: SITE }, { emit() {}, jobId: '9', requestId: 'r' }), (error) => error.code === 'POLICY_DENIED' && /install it instead of adopting/.test(error.message));
+  await assert.rejects(() => runAction({ action: 'adopt', appId: 'helm', ref: 'main', transport: 'ssh', site: SITE }, { emit() {}, jobId: '9', requestId: 'r' }), (error) => error.code === 'POLICY_DENIED' && /nothing to adopt/.test(error.message));
   assert.equal(executed, false);
   assert.equal(finished[0].ok, false);
 });

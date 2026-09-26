@@ -46,6 +46,10 @@ const NGINX_GATEWAY_SITE = '/etc/nginx/sites-available/sovereign-home';
 const LEGACY_SNIPPET_DIR = '/etc/nginx/snippets';
 // Retired legacy snippets are kept here (root-only) so an adopt can be undone by hand.
 const RETIRED_SNIPPET_ROOT = '/var/lib/homebase-executor/retired-nginx-snippets';
+// Every script the executor runs as the postgres superuser starts here. App roles can create objects in
+// public (they own their database; on PostgreSQL 14 any role may create in public), so an unqualified
+// operator or function could resolve to one an app planted and run it as superuser (CVE-2018-1058 class).
+const SUPERUSER_SQL_PREAMBLE = 'SET search_path = pg_catalog, pg_temp;\n';
 const APP_SNIPPET_INCLUDE = /^[ \t]*include[ \t]+\/etc\/nginx\/sovereign-home\.d\/\*\.conf[ \t]*;/m;
 const NGINX_GATEWAY_LINK = '/etc/nginx/sites-enabled/sovereign-home';
 const NGINX_DEFAULT_LINK = '/etc/nginx/sites-enabled/default';
@@ -412,7 +416,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (error.code !== 'OPERATION_FAILED') throw error;
       stdout = error.output?.stdout || '';
     }
-    const installed = new Set(String(stdout).split('\n').map((line) => line.trim().split(/\s+/)).filter(([, status]) => status === 'ii').map(([name]) => name));
+    const installed = new Set(String(stdout).split('\n').map((line) => line.trim().split(/\s+/)).filter(([, status]) => /^[hi]i$/.test(status || '')).map(([name]) => name));
     // NodeSource's nodejs ships npm itself; apt's npm package would conflict with it.
     if (installed.has('nodejs') && fsImpl.existsSync('/usr/bin/npm')) installed.add('npm');
     return packages.filter((pkg) => !installed.has(pkg));
@@ -510,6 +514,12 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       // Every argv is fixed by the catalog layout; the plan only names the task.
       const runApp = ([binary, ...args], extra = {}) => assertCheckout() ?? run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env, ...extra });
       const venvPython = `${layout.checkout}/.venv/bin/python`;
+      const pipInstall = async (runner, record) => {
+        const { requirements, editable, editableNoDeps } = layout.runtime.python;
+        const pip = [venvPython, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
+        if (requirements) record(await runner([...pip, '-r', requirements]));
+        if (editable) record(await runner([...pip, ...(editableNoDeps ? ['--no-deps'] : []), '-e', '.']));
+      };
       const outputs = [];
       const collect = (result) => { const text = String(result.stdout || '').trim(); if (text) outputs.push(text); };
 
@@ -526,19 +536,38 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
           python: Boolean(lstatOrNull(fsImpl, venvPython)),
         }));
         const version = existing.config ? (/^version(?:_info)?\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)/m.exec(existing.config) || [])[1] : null;
-        if (version === current && existing.python) return `virtualenv ready (Python ${current})`;
-        // A venv is bound to the interpreter that built it: rebuild it rather than repair it in place.
-        await runApp(['/usr/bin/python3', '-m', 'venv', ...(existing.config ? ['--clear'] : []), '.venv']);
-        return existing.config ? `rebuilt virtualenv for Python ${current} (was ${version || 'unknown'})` : `created virtualenv (Python ${current})`;
+        // A venv survives patch upgrades (its bin/python links to /usr/bin/python3); only a new minor
+        // version, or a broken venv, needs a rebuild.
+        const minorOf = (value) => String(value || '').split('.').slice(0, 2).join('.');
+        if (version && minorOf(version) === minorOf(current) && existing.python) return `virtualenv ready (Python ${current})`;
+        if (!existing.config) {
+          await runApp(['/usr/bin/python3', '-m', 'venv', '.venv']);
+          return `created virtualenv (Python ${current})`;
+        }
+        // Rebuild beside the running app and roll back if anything fails, so a PyPI outage never leaves
+        // the app without its packages. Venv scripts embed the .venv path, so the old one is renamed aside
+        // (and back), never copied.
+        const previous = `${layout.checkout}/.venv.previous`;
+        asUser(sovereign, () => {
+          if (lstatOrNull(fsImpl, previous)) fsImpl.rmSync(previous, { recursive: true, force: true });
+          fsImpl.renameSync(`${layout.checkout}/.venv`, previous);
+        });
+        try {
+          await runApp(['/usr/bin/python3', '-m', 'venv', '.venv']);
+          await pipInstall(runApp, collect);
+        } catch (error) {
+          asUser(sovereign, () => {
+            fsImpl.rmSync(`${layout.checkout}/.venv`, { recursive: true, force: true });
+            fsImpl.renameSync(previous, `${layout.checkout}/.venv`);
+          });
+          throw error;
+        }
+        asUser(sovereign, () => fsImpl.rmSync(previous, { recursive: true, force: true }));
+        return `rebuilt virtualenv for Python ${current} (was ${version || 'unknown'})`;
       }
       if (operation.task === 'install-dependencies') {
         if (layout.runtime.kind === 'node') collect(await runApp(['/usr/bin/npm', 'ci', '--omit=dev']));
-        else {
-          const { requirements, editable, editableNoDeps } = layout.runtime.python;
-          const pip = [venvPython, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
-          if (requirements) collect(await runApp([...pip, '-r', requirements]));
-          if (editable) collect(await runApp([...pip, ...(editableNoDeps ? ['--no-deps'] : []), '-e', '.']));
-        }
+        else await pipInstall(runApp, collect);
       } else if (operation.task === 'migrate') {
         if (!layout.migrationArgv) deny('This app declares no migrations.');
         collect(await runApp(layout.migrationArgv));
@@ -572,8 +601,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       // Sent on stdin only. assertDatabasePassword admits no whitespace or control characters, and
       // doubling quotes is sufficient under standard_conforming_strings (the default since PostgreSQL 9.1).
       const literal = `'${password.replaceAll("'", "''")}'`;
-      const stdin = `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN CREATE ROLE "${role}" LOGIN; END IF; END $$;\nSET standard_conforming_strings = on;\nALTER ROLE "${role}" WITH LOGIN PASSWORD ${literal};\n`;
-      await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin, timeoutMs: operation.timeoutMs, secrets: [password, password.replaceAll("'", "''")], env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+      const stdin = `${SUPERUSER_SQL_PREAMBLE}DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN CREATE ROLE "${role}" LOGIN; END IF; END $$;\nSET standard_conforming_strings = on;\nALTER ROLE "${role}" WITH LOGIN PASSWORD ${literal};\n`;
+      await run({ binary: '/usr/bin/psql', args: ['-X', '-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin, timeoutMs: operation.timeoutMs, secrets: [password, password.replaceAll("'", "''")], env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
       return `ensured database role ${role}`;
     },
     'postgres.ensure-database': async (operation, { layout } = {}) => {
@@ -581,8 +610,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const postgres = lookupUser('postgres');
       if (!postgres || !layout.database || operation.database !== layout.database.name || operation.owner !== layout.database.user) deny('PostgreSQL database operation does not match this app.');
       const { name, user } = layout.database; // validated simple identifiers (app-layout.js)
-      const sql = `SELECT 'CREATE DATABASE "${name}" OWNER "${user}"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${name}')\\gexec\nALTER DATABASE "${name}" OWNER TO "${user}";\n`;
-      await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin: sql, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+      const sql = `${SUPERUSER_SQL_PREAMBLE}SELECT 'CREATE DATABASE "${name}" OWNER "${user}"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${name}')\\gexec\nALTER DATABASE "${name}" OWNER TO "${user}";\n`;
+      await run({ binary: '/usr/bin/psql', args: ['-X', '-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin: sql, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
       return `ensured database ${name}`;
     },
     'systemd.daemon-reload': async (operation) => {
@@ -609,8 +638,11 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       // A host whose own server block already includes the app snippets (adopted legacy hosts) keeps
       // its gateway: installing ours would take over default_server on 80/443 from the operator's site.
       if (!lstatOrNull(fsImpl, NGINX_GATEWAY_SITE)) {
-        let operatorGateway = false;
-        try { operatorGateway = await nginxIncludesAppSnippets(operation?.timeoutMs || 30000); } catch { operatorGateway = false; }
+        // Unreadable config: refuse rather than guess, since installing ours takes default_server.
+        let operatorGateway;
+        try { operatorGateway = await nginxIncludesAppSnippets(operation?.timeoutMs || 30000); } catch (error) {
+          deny(`Could not read the active nginx configuration (nginx -T): ${error.message}. Fix nginx, then retry.`);
+        }
         if (operatorGateway) return 'the host nginx configuration already includes /etc/nginx/sovereign-home.d; managed gateway not installed';
       }
       writeFileAtomic(fsImpl, NGINX_GATEWAY_SITE, NGINX_GATEWAY_CONTENT, 0o644);
@@ -644,6 +676,16 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         fsImpl.unlinkSync(source);
         retired.push(source);
       }
+      // The new snippet is in place and the old one gone: prove nginx accepts that before going on.
+      // Otherwise (for example the include sits outside a server block) put the legacy snippet back and
+      // drop the new one, so the on-disk config never stays invalid.
+      try {
+        await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+      } catch (error) {
+        for (const source of retired) writeFileAtomic(fsImpl, source, fsImpl.readFileSync(`${keep}/${source.split('/').pop()}`, 'utf8'), 0o644);
+        if (lstatOrNull(fsImpl, layout.nginxSnippet)) fsImpl.unlinkSync(layout.nginxSnippet);
+        deny(`nginx rejected the adopted snippet, so the legacy snippet was restored: ${String(error.output?.stderr || error.message).trim().split('\n').slice(-2).join(' ')}. Check that "include /etc/nginx/sovereign-home.d/*.conf;" sits inside the server block that serves your apps.`);
+      }
       return retired.length ? `retired ${retired.join(', ')} (copies kept in ${keep})` : 'no legacy nginx snippets to retire';
     },
     'postgres.transfer-ownership': async (operation, { layout } = {}) => {
@@ -653,18 +695,42 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const { name, user } = layout.database; // validated, non-reserved simple identifiers (app-layout.js)
       // Tables, views, and standalone sequences in public; sequences owned by a column move with their
       // table. Refuses databases with other schemas, which this transfer would silently leave behind.
-      const sql = `DO $$
+      // Runs as superuser inside a database the app role owns: search_path is pinned and every operator and
+      // function is schema-qualified, so nothing the app created in public can be picked up.
+      const sql = `${SUPERUSER_SQL_PREAMBLE}DO $$
 DECLARE r record; moved integer := 0;
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname NOT IN ('public', 'information_schema') AND nspname NOT LIKE 'pg\\_%') THEN
+  PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname OPERATOR(pg_catalog.<>) ALL (ARRAY['public', 'information_schema']::pg_catalog.name[]) AND nspname OPERATOR(pg_catalog.!~~) 'pg\\_%') THEN
     RAISE EXCEPTION 'database ${name} has schemas other than public; transfer ownership by hand';
   END IF;
-  FOR r IN SELECT c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') AND c.relowner <> '${user}'::regrole
-      AND NOT (c.relkind = 'S' AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('a', 'i')))
+  FOR r IN SELECT c.relname, c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+    WHERE n.nspname OPERATOR(pg_catalog.=) 'public' AND c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r', 'p', 'v', 'm', 'S', 'f']::pg_catalog."char"[])
+      AND c.relowner OPERATOR(pg_catalog.<>) '${user}'::pg_catalog.regrole::pg_catalog.oid
+      AND NOT (c.relkind OPERATOR(pg_catalog.=) 'S' AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid AND d.objid OPERATOR(pg_catalog.=) c.oid AND d.deptype OPERATOR(pg_catalog.=) ANY (ARRAY['a', 'i']::pg_catalog."char"[])))
   LOOP
-    EXECUTE format('ALTER %s public.%I OWNER TO %I', CASE r.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, r.relname, '${user}');
-    moved := moved + 1;
+    EXECUTE pg_catalog.format('ALTER %s public.%I OWNER TO %I', CASE r.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, r.relname, '${user}');
+    moved := moved OPERATOR(pg_catalog.+) 1;
+  END LOOP;
+  -- Types and routines too: migrations running as the app role alter enums and replace functions.
+  -- regtype/regprocedure render schema-qualified names under the pinned search_path.
+  FOR r IN SELECT t.oid, t.typtype FROM pg_catalog.pg_type t
+    WHERE t.typnamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace::pg_catalog.oid
+      AND t.typowner OPERATOR(pg_catalog.<>) '${user}'::pg_catalog.regrole::pg_catalog.oid
+      AND (t.typtype OPERATOR(pg_catalog.=) ANY (ARRAY['e', 'd', 'r']::pg_catalog."char"[])
+        OR (t.typtype OPERATOR(pg_catalog.=) 'c' AND EXISTS (SELECT 1 FROM pg_catalog.pg_class k WHERE k.oid OPERATOR(pg_catalog.=) t.typrelid AND k.relkind OPERATOR(pg_catalog.=) 'c')))
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.objid OPERATOR(pg_catalog.=) t.oid AND d.deptype OPERATOR(pg_catalog.=) 'e')
+  LOOP
+    EXECUTE pg_catalog.format('ALTER %s %s OWNER TO %I', CASE r.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END, r.oid::pg_catalog.regtype, '${user}');
+    moved := moved OPERATOR(pg_catalog.+) 1;
+  END LOOP;
+  FOR r IN SELECT p.oid FROM pg_catalog.pg_proc p
+    WHERE p.pronamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace::pg_catalog.oid
+      AND p.proowner OPERATOR(pg_catalog.<>) '${user}'::pg_catalog.regrole::pg_catalog.oid
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.objid OPERATOR(pg_catalog.=) p.oid AND d.deptype OPERATOR(pg_catalog.=) 'e')
+  LOOP
+    EXECUTE pg_catalog.format('ALTER ROUTINE %s OWNER TO %I', r.oid::pg_catalog.regprocedure, '${user}');
+    moved := moved OPERATOR(pg_catalog.+) 1;
   END LOOP;
   RAISE NOTICE 'transferred % objects to ${user}', moved;
 END $$;
@@ -758,6 +824,7 @@ module.exports = {
   ROOT_GIT_CONFIG,
   lstatOrNull,
   readSmallFileNoFollow,
+  SUPERUSER_SQL_PREAMBLE,
   writeFileAtomic,
   requireLayout,
   deny,

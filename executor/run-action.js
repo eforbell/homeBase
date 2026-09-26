@@ -23,7 +23,7 @@ function createRunAction({ handlers, journal, compile = compileAction, execute =
       const existing = layout?.database ? { databasePassword: existingPassword(layout) } : {};
       // Adopting keeps the running app's credentials; a missing one means there is nothing to adopt.
       if (plan.kind === 'app-adopt' && layout?.database && !existing.databasePassword) {
-        throw new ProtocolError('POLICY_DENIED', `${layout.app.name} has no database wiring in its .env; install it instead of adopting it.`);
+        throw new ProtocolError('POLICY_DENIED', `${layout.app.name} has no database wiring in its .env; nothing to adopt (adopt keeps an app's existing credentials and never creates them).`);
       }
       const execution = await execute({ plan, secretBindings: generateSecretBindings(plan, { existing }) }, { handlers, emit });
       journal.finish(jobId, { ok: true });
