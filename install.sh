@@ -32,7 +32,10 @@ GIT_DEPLOY_KEY_PATH="${GIT_DEPLOY_KEY_DIR}/deploy_key"
 # --add-executor only: the executor's own root-owned code, kept apart from a legacy host's web checkout
 # (which its runtime user owns, so root must never load code from it).
 COEXIST_EXECUTOR_DIR="${HOMEBASE_COEXIST_EXECUTOR_DIR:-/opt/homebase-executor}"
-STATE_DB="${HOMEBASE_STATE_DB:-${STATE_DIR}/home-base.sqlite3}"
+# The legacy web's state database; resolved from the env file for the legacy-host modes.
+STATE_DB="${HOMEBASE_STATE_DB:-}"
+# Root-owned marker that lets the executor run adopt; exists only between the two legacy-host modes.
+COEXIST_MARKER="${HOMEBASE_COEXIST_MARKER:-/etc/sovereign-home/legacy-coexistence}"
 
 usage() {
   cat <<'EOF'
@@ -198,7 +201,7 @@ if [ -n "$SOURCE_DIR" ]; then
   [ -d "$SOURCE_DIR" ] || die "--source-dir does not exist or is not a directory: $SOURCE_DIR"
 fi
 
-for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_SUDOERS_FILE" "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT" "$EXECUTOR_SOCKET_PATH" "$COEXIST_EXECUTOR_DIR" "$STATE_DB"; do
+for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_SUDOERS_FILE" "$EXECUTOR_SOCKET_UNIT" "$EXECUTOR_SERVICE_UNIT" "$EXECUTOR_SOCKET_PATH" "$COEXIST_EXECUTOR_DIR" "$COEXIST_MARKER"; do
   case "$candidate" in
     /*) ;;
     *) die "installation paths must be absolute: $candidate" ;;
@@ -213,6 +216,10 @@ for candidate in "$INSTALL_DIR" "$STATE_DIR" "$ENV_FILE" "$UNIT_FILE" "$LEGACY_S
   printf '%s\n' "$candidate" | grep -Eq '^[A-Za-z0-9/._-]+$' \
     || die "installation paths may only contain letters, digits, '/', '.', '_', and '-': $candidate"
 done
+
+# The coexistence copy is deleted after a switch; it must never contain (or be inside) the install dir.
+case "${INSTALL_DIR}/" in "${COEXIST_EXECUTOR_DIR}/"*) die "--add-executor's directory may not contain ${INSTALL_DIR}" ;; esac
+case "${COEXIST_EXECUTOR_DIR}/" in "${INSTALL_DIR}/"*) die "--add-executor's directory may not be inside ${INSTALL_DIR}" ;; esac
 
 if [ -n "$GIT_SSH_KEY_SOURCE" ]; then
   case "$GIT_SSH_KEY_SOURCE" in
@@ -351,6 +358,9 @@ ARCHIVE_URL="${HOMEBASE_ARCHIVE_URL:-${RELEASE_BASE}/${ARCHIVE_NAME}}"
 CHECKSUM_URL="${HOMEBASE_CHECKSUM_URL:-${RELEASE_BASE}/${ARCHIVE_NAME}.sha256}"
 
 if [ "$DRY_RUN" -eq 1 ]; then
+  DRY_RUN_MODE='executor'
+  [ "$ADD_EXECUTOR" -eq 0 ] || DRY_RUN_MODE="legacy-sudo kept; executor added beside it at ${COEXIST_EXECUTOR_DIR}"
+  [ "$SWITCH_TO_EXECUTOR" -eq 0 ] || DRY_RUN_MODE='legacy-sudo switched to executor (legacy checkout moved aside, sudoers removed)'
   cat <<EOF
 Home Base install plan
   OS:             ${OS_ID} ${OS_VERSION_ID}
@@ -364,7 +374,7 @@ Home Base install plan
   Executor service unit: ${EXECUTOR_SERVICE_UNIT}
   Executor socket: ${EXECUTOR_SOCKET_PATH}
   Bind address:   127.0.0.1:${PORT}
-  Execution mode: executor
+  Execution mode: ${DRY_RUN_MODE}
   Privileged jobs: disabled
   Auto-bootstrap: disabled
 EOF
@@ -464,27 +474,71 @@ install_git_deploy_key() {
   fi
 }
 
-# The two legacy-host modes run only on legacy-sudo hosts; every other mode refuses a legacy host.
-if [ "$ADD_EXECUTOR" -eq 1 ] || [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
-  [ "$(env_value HOME_BASE_EXECUTION_MODE)" = 'legacy-sudo' ] \
-    || die "--add-executor and --switch-to-executor are for legacy-sudo hosts; ${ENV_FILE} does not set HOME_BASE_EXECUTION_MODE=legacy-sudo"
-fi
-if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
-  [ -f "${COEXIST_EXECUTOR_DIR}/executor/server.js" ] \
-    || die "--switch-to-executor needs the executor added first (install.sh --add-executor) and every app adopted"
-  # Every installed app must already be executor-managed: after the switch nothing runs legacy plans.
-  UNADOPTED="$(python3 - "$STATE_DB" <<'PY'
+# The legacy web's state database, as its env file configures it (config.js falls back to the checkout's
+# .data directory, which the switch moves aside, so that case is refused rather than guessed).
+resolve_state_db() {
+  [ -z "$STATE_DB" ] || return 0
+  STATE_DB="$(env_value HOME_BASE_STATE_DB)"
+  if [ -z "$STATE_DB" ]; then
+    local data_dir
+    data_dir="$(env_value HOME_BASE_DATA_DIR)"
+    [ -z "$data_dir" ] || STATE_DB="${data_dir%/}/home-base.sqlite3"
+  fi
+  [ -n "$STATE_DB" ]
+}
+
+# Counts rows in the legacy state database; prints nothing when it cannot be read.
+state_query() {
+  python3 - "$STATE_DB" "$1" <<'PY' 2>/dev/null
 import sqlite3, sys
 conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 columns = {row[1] for row in conn.execute("PRAGMA table_info(installations)")}
 managed = "COALESCE(managed_by, '')" if "managed_by" in columns else "''"
-rows = conn.execute(f"SELECT app_id FROM installations WHERE status = 'installed' AND {managed} != 'executor' ORDER BY app_id").fetchall()
-print(" ".join(row[0] for row in rows))
+if sys.argv[2] == "unadopted":
+    rows = conn.execute(f"SELECT app_id FROM installations WHERE status = 'installed' AND {managed} != 'executor' ORDER BY app_id").fetchall()
+else:
+    rows = conn.execute("SELECT id || ':' || kind || ':' || target FROM jobs WHERE status IN ('queued', 'running') AND dry_run = 0 ORDER BY id").fetchall()
+print(" ".join(str(row[0]) for row in rows))
 PY
-)" || die "could not read Home Base state at ${STATE_DB}"
-  if [ -n "$UNADOPTED" ] && [ "$FORCE" -ne 1 ]; then
-    die "these installed apps are still legacy-managed; adopt (or uninstall) them first: ${UNADOPTED}"
+}
+
+# The two legacy-host modes run only on legacy-sudo hosts; every other mode refuses a legacy host. A
+# switch that stopped partway (env already says executor, sudoers and the coexistence copy still there)
+# is resumed rather than stranded.
+SWITCH_RESUMING=0
+if [ "$ADD_EXECUTOR" -eq 1 ]; then
+  [ "$(env_value HOME_BASE_EXECUTION_MODE)" = 'legacy-sudo' ] \
+    || die "--add-executor is for legacy-sudo hosts; ${ENV_FILE} does not set HOME_BASE_EXECUTION_MODE=legacy-sudo"
+  if resolve_state_db; then
+    RUNNING_JOBS="$(state_query jobs)" || RUNNING_JOBS=''
+    if [ -n "$RUNNING_JOBS" ] && [ "$FORCE" -ne 1 ]; then
+      die "legacy jobs are in progress (${RUNNING_JOBS}); adding the executor restarts the web service and would cut them off. Retry when they finish, or pass --force"
+    fi
+  else
+    log "WARNING: ${ENV_FILE} sets neither HOME_BASE_STATE_DB nor HOME_BASE_DATA_DIR; not checking for running legacy jobs"
   fi
+fi
+if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
+  MODE_NOW="$(env_value HOME_BASE_EXECUTION_MODE)"
+  if [ "$MODE_NOW" = 'executor' ] && [ -e "$LEGACY_SUDOERS_FILE" ] && [ -f "${COEXIST_EXECUTOR_DIR}/executor/server.js" ]; then
+    SWITCH_RESUMING=1
+    log 'resuming a --switch-to-executor that stopped partway'
+  elif [ "$MODE_NOW" != 'legacy-sudo' ]; then
+    die "--switch-to-executor is for legacy-sudo hosts; ${ENV_FILE} does not set HOME_BASE_EXECUTION_MODE=legacy-sudo"
+  fi
+  [ -f "${COEXIST_EXECUTOR_DIR}/executor/server.js" ] \
+    || die "--switch-to-executor needs the executor added first (install.sh --add-executor) and every app adopted"
+  resolve_state_db \
+    || die "${ENV_FILE} sets neither HOME_BASE_STATE_DB nor HOME_BASE_DATA_DIR, so the legacy web keeps its state inside its checkout, which the switch moves aside. Move the database under ${STATE_DIR}, set HOME_BASE_STATE_DB, restart Home Base, then retry"
+  # The hardened unit can write only STATE_DIR.
+  case "$STATE_DB" in
+    "${STATE_DIR}"/*) ;;
+    *) die "the Home Base state database ${STATE_DB} is outside ${STATE_DIR}, the only directory the hardened service may write; move it there and set HOME_BASE_STATE_DB first" ;;
+  esac
+  [ -f "$STATE_DB" ] || die "could not find the Home Base state database at ${STATE_DB}"
+  # Every installed app must already be executor-managed: after the switch nothing runs legacy plans.
+  UNADOPTED="$(state_query unadopted)" || die "could not read Home Base state at ${STATE_DB}"
+  [ -z "$UNADOPTED" ] || die "these installed apps are not adopted yet; adopt (or uninstall) them first: ${UNADOPTED}"
 fi
 if [ -e "$LEGACY_SUDOERS_FILE" ] && [ "$ADD_EXECUTOR" -eq 0 ] && [ "$SWITCH_TO_EXECUTOR" -eq 0 ]; then
   die "existing Home Base sudoers policy detected at ${LEGACY_SUDOERS_FILE}; inspect and remove it before installing the hardened service (legacy hosts: install.sh --add-executor, adopt every app, then install.sh --switch-to-executor)"
@@ -522,6 +576,14 @@ done
 NODE_MAJOR="$(node -e 'process.stdout.write(process.versions.node.split(".")[0])')"
 [ "$NODE_MAJOR" -ge 18 ] || die "Node.js 18 or newer is required; found $(node --version)"
 NODE_BIN="$(command -v node)"
+if [ "$TEST_MODE" != '1' ]; then
+  # The root executor's unit runs this binary: nothing but root may be able to replace it.
+  NODE_REAL="$(readlink -f "$NODE_BIN")"
+  for candidate in "$NODE_BIN" "$NODE_REAL" "$(dirname "$NODE_REAL")"; do
+    [ "$(stat -c '%u' "$candidate")" = 0 ] && [ $((0$(stat -c '%a' "$candidate") & 022)) -eq 0 ] \
+      || die "${candidate} must be owned by root and not group- or world-writable; the root executor runs ${NODE_BIN}"
+  done
+fi
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
@@ -624,6 +686,9 @@ if [ "$ADD_EXECUTOR" -eq 1 ]; then
   fi
   set_env_value HOME_BASE_EXECUTOR_SOCKET "$EXECUTOR_SOCKET_PATH"
   write_executor_units "$COEXIST_EXECUTOR_DIR"
+  mkdir -p "$(dirname "$COEXIST_MARKER")"
+  printf 'Written by install.sh --add-executor; removed by --switch-to-executor. While it exists the executor accepts adopt.\n' > "$COEXIST_MARKER"
+  if [ "$TEST_MODE" != '1' ]; then chown root:root "$COEXIST_MARKER"; chmod 0644 "$COEXIST_MARKER"; fi
   if [ "$TEST_MODE" != '1' ] && [ "$NO_START" -eq 0 ]; then
     systemctl daemon-reload
     systemctl enable homebase-executor.socket
@@ -638,10 +703,12 @@ if [ "$ADD_EXECUTOR" -eq 1 ]; then
     # The web service picks up its new socket group only when it restarts; wait until it answers again.
     if systemctl try-restart homebase.service; then
       WEB_PORT="$(env_value PORT)"
+      WEB_HEALTHY=0
       for _attempt in $(seq 1 30); do
-        curl --fail --silent "http://127.0.0.1:${WEB_PORT:-$PORT}/api/homebase/health" >/dev/null && break
+        if curl --fail --silent "http://127.0.0.1:${WEB_PORT:-$PORT}/api/homebase/health" >/dev/null; then WEB_HEALTHY=1; break; fi
         sleep 1
       done
+      [ "$WEB_HEALTHY" -eq 1 ] || log 'WARNING: Home Base did not answer its health check within 30s after the restart; inspect journalctl -u homebase'
     else
       log 'homebase.service did not restart; inspect journalctl -u homebase'
     fi
@@ -654,6 +721,17 @@ if [ "$ADD_EXECUTOR" -eq 1 ]; then
 fi
 
 VERSION_MARKER="${INSTALL_DIR}/.homebase-version"
+if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
+  # Parent root-owned before anything moves, so nobody can plant a symlink where the managed install goes.
+  if [ "$TEST_MODE" != '1' ]; then install -d -m 0755 -o root -g root "$(dirname "$INSTALL_DIR")"; fi
+  [ ! -L "$INSTALL_DIR" ] || die "${INSTALL_DIR} is a symlink; refusing to install through it"
+  # Everything a manual rollback needs, root-only: the env file and the legacy unit.
+  SWITCH_BACKUP="$(dirname "$ENV_FILE")/switch-backup-$(date +%Y%m%d%H%M%S)"
+  mkdir -p "$SWITCH_BACKUP" && chmod 0700 "$SWITCH_BACKUP"
+  cp -p "$ENV_FILE" "$SWITCH_BACKUP/"
+  if [ -f "$UNIT_FILE" ]; then cp -p "$UNIT_FILE" "$SWITCH_BACKUP/"; fi
+  log "saved the env file and web unit to ${SWITCH_BACKUP} for a manual rollback"
+fi
 if [ "$SWITCH_TO_EXECUTOR" -eq 1 ] && [ -e "$INSTALL_DIR" ] && [ ! -f "$VERSION_MARKER" ]; then
   # The legacy web checkout (owned by the runtime user) is kept aside, not deleted.
   LEGACY_ASIDE="${INSTALL_DIR}.legacy-$(date +%Y%m%d%H%M%S)"
@@ -752,6 +830,15 @@ fi
 if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
   # Executor mode never auto-runs host plans; the legacy auto-bootstrap setting goes with the sudo policy.
   set_env_value HOME_BASE_AUTO_BOOTSTRAP 0
+  if [ "$TEST_MODE" != '1' ]; then
+    # The web must not be able to rewrite its own mode (root-owned, readable by the runtime user only).
+    chown root:"$RUNTIME_USER" "$ENV_FILE"
+    chmod 0640 "$ENV_FILE"
+    # Before the web restarts: a process keeps the groups it started with.
+    if id -nG "$RUNTIME_USER" 2>/dev/null | tr ' ' '\n' | grep -qx sovereign; then
+      gpasswd -d "$RUNTIME_USER" sovereign >/dev/null || die "could not remove ${RUNTIME_USER} from the sovereign group"
+    fi
+  fi
 fi
 if { [ "$REPAIR" -eq 1 ] || [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; } && [ -f "$ENV_FILE" ]; then
   # These keys define the executor-mode boundary; repair restores them if they drifted.
@@ -851,13 +938,13 @@ if [ "$TEST_MODE" != '1' ]; then
 fi
 
 if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
-  # Only now that the hardened service answers: the legacy sudo policy and extra access go.
-  rm -f "$LEGACY_SUDOERS_FILE"
+  # Only now that the hardened service answers: the legacy sudo policy, adopt, and the coexistence copy go.
+  rm -f "$LEGACY_SUDOERS_FILE" "$COEXIST_MARKER"
   rm -rf "$COEXIST_EXECUTOR_DIR"
-  if [ "$TEST_MODE" != '1' ] && id -nG "$RUNTIME_USER" 2>/dev/null | tr ' ' '\n' | grep -qx sovereign; then
-    gpasswd -d "$RUNTIME_USER" sovereign >/dev/null || log "could not remove ${RUNTIME_USER} from the sovereign group; do it by hand"
+  if [ "$TEST_MODE" != '1' ] && sudo -n -l -U "$RUNTIME_USER" 2>/dev/null | grep -q 'may run the following'; then
+    log "WARNING: ${RUNTIME_USER} still has sudo rules from another file or group; remove them: sudo -l -U ${RUNTIME_USER}"
   fi
-  log "switched to executor mode: removed ${LEGACY_SUDOERS_FILE} and ${COEXIST_EXECUTOR_DIR}; the legacy web checkout is kept at ${LEGACY_ASIDE:-its old path}"
+  log "switched to executor mode: removed ${LEGACY_SUDOERS_FILE} and ${COEXIST_EXECUTOR_DIR}; the legacy web checkout is kept at ${LEGACY_ASIDE:-its old path}; rollback copies in ${SWITCH_BACKUP}"
   log 'Consider deleting any app-readable copy of the git key now that only the executor needs it.'
 fi
 

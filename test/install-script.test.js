@@ -368,11 +368,12 @@ test('repair restores drifted executor-mode settings and repair-executor refresh
   assert.equal(fs.readFileSync(envFile, 'utf8'), after, 'repair-executor leaves the environment file alone');
 });
 
-function legacyHost(tempDir, fixture, { adopted = [], legacyApps = [] } = {}) {
+function legacyHost(tempDir, fixture, { adopted = [], legacyApps = [], runningJobs = [] } = {}) {
   const env = installerEnv(tempDir, fixture, {
     HOMEBASE_COEXIST_EXECUTOR_DIR: path.join(tempDir, 'opt', 'homebase-executor'),
     HOMEBASE_STATE_DB: path.join(tempDir, 'var', 'homebase', 'home-base.sqlite3'),
     HOMEBASE_GIT_DEPLOY_KEY_DIR: path.join(tempDir, 'etc', 'git'),
+    HOMEBASE_COEXIST_MARKER: path.join(tempDir, 'etc', 'legacy-coexistence'),
   });
   // What erebor looks like: a runtime-user-owned web checkout without a version marker, a sudoers
   // policy, and a legacy-sudo env file.
@@ -388,10 +389,13 @@ function legacyHost(tempDir, fixture, { adopted = [], legacyApps = [] } = {}) {
 import sqlite3, sys, json
 conn = sqlite3.connect(sys.argv[1])
 conn.execute("CREATE TABLE installations (app_id TEXT PRIMARY KEY, status TEXT NOT NULL, managed_by TEXT)")
+conn.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY, kind TEXT, target TEXT, status TEXT, dry_run INTEGER)")
 for app_id, managed in json.loads(sys.argv[2]):
     conn.execute("INSERT INTO installations VALUES (?, 'installed', ?)", (app_id, managed))
+for kind, target in json.loads(sys.argv[3]):
+    conn.execute("INSERT INTO jobs (kind, target, status, dry_run) VALUES (?, ?, 'running', 0)", (kind, target))
 conn.commit()
-`, env.HOMEBASE_STATE_DB, JSON.stringify(rows)]);
+`, env.HOMEBASE_STATE_DB, JSON.stringify(rows), JSON.stringify(runningJobs)]);
   return env;
 }
 
@@ -416,6 +420,17 @@ test('--add-executor installs a root-owned executor beside a legacy host without
   assert.ok(fs.existsSync(env.HOMEBASE_LEGACY_SUDOERS_FILE));
   assert.equal(fs.existsSync(env.HOMEBASE_SYSTEMD_UNIT), false);
   assert.match(result.stdout, /include \/etc\/nginx\/sovereign-home\.d\/\*\.conf;/);
+  assert.ok(fs.existsSync(env.HOMEBASE_COEXIST_MARKER), 'adopt is enabled while the host coexists');
+});
+
+test('--add-executor refuses while legacy jobs are running, because it restarts the web service', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-add-busy-'));
+  const fixture = createSourceCheckout(tempDir);
+  const env = legacyHost(tempDir, fixture, { runningJobs: [['install', 'helm']] });
+  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /legacy jobs are in progress \(1:install:helm\)/);
+  assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor', '--force'], env).status, 0);
 });
 
 test('--add-executor and --switch-to-executor refuse hosts that are not in legacy-sudo mode', () => {
@@ -426,7 +441,7 @@ test('--add-executor and --switch-to-executor refuse hosts that are not in legac
   for (const flag of ['--add-executor', '--switch-to-executor']) {
     const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, flag], env);
     assert.notEqual(result.status, 0, flag);
-    assert.match(result.stderr, /are for legacy-sudo hosts/, flag);
+    assert.match(result.stderr, /is for legacy-sudo hosts/, flag);
   }
   const both = runInstaller(['--version', fixture.version, '--add-executor', '--repair'], env);
   assert.match(both.stderr, /mutually exclusive/);
@@ -440,7 +455,9 @@ test('--switch-to-executor refuses while any installed app is still legacy-manag
   assert.equal(added.status, 0, added.stderr);
   const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], env);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /still legacy-managed; adopt \(or uninstall\) them first: family-dinner home-source/);
+  assert.match(result.stderr, /not adopted yet; adopt \(or uninstall\) them first: family-dinner home-source/);
+  // --force does not skip this check.
+  assert.notEqual(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor', '--force'], env).status, 0);
   assert.ok(fs.existsSync(env.HOMEBASE_LEGACY_SUDOERS_FILE));
 });
 
@@ -461,6 +478,41 @@ test('--switch-to-executor replaces the legacy checkout with the managed install
   assert.match(envFile, /^HOME_BASE_BIND_HOST=127\.0\.0\.1$/m);
   assert.equal(fs.existsSync(env.HOMEBASE_LEGACY_SUDOERS_FILE), false);
   assert.equal(fs.existsSync(env.HOMEBASE_COEXIST_EXECUTOR_DIR), false);
+  assert.equal(fs.existsSync(env.HOMEBASE_COEXIST_MARKER), false, 'adopt is gone after the switch');
+  const backup = fs.readdirSync(path.dirname(env.HOMEBASE_ENV_FILE)).find((name) => name.startsWith('switch-backup-'));
+  assert.match(fs.readFileSync(path.join(path.dirname(env.HOMEBASE_ENV_FILE), backup, 'homebase.env'), 'utf8'), /^HOME_BASE_EXECUTION_MODE=legacy-sudo$/m, 'the pre-switch env is kept for rollback');
   assert.match(fs.readFileSync(env.HOMEBASE_EXECUTOR_SERVICE_UNIT, 'utf8'), new RegExp(`${env.HOMEBASE_INSTALL_DIR.replaceAll('/', '\\/')}/executor/server\\.js`));
   assert.match(fs.readFileSync(env.HOMEBASE_SYSTEMD_UNIT, 'utf8'), /^NoNewPrivileges=true$/m);
+});
+
+test('--switch-to-executor resumes after stopping partway, and refuses a state database the hardened unit cannot write', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-resume-'));
+  const fixture = createSourceCheckout(tempDir);
+  const env = legacyHost(tempDir, fixture, { adopted: ['helm'] });
+  assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], env).status, 0);
+  // A previous switch wrote executor mode, then stopped before removing sudoers and the coexistence copy.
+  fs.writeFileSync(env.HOMEBASE_ENV_FILE, fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8').replace('HOME_BASE_EXECUTION_MODE=legacy-sudo', 'HOME_BASE_EXECUTION_MODE=executor'));
+  const resumed = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor', '--no-start'], env);
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /resuming a --switch-to-executor that stopped partway/);
+  assert.equal(fs.existsSync(env.HOMEBASE_LEGACY_SUDOERS_FILE), false);
+
+  const outside = legacyHost(fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-statedb-')), createSourceCheckout(fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-statedb-src-'))), { adopted: ['helm'] });
+  assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], outside).status, 0);
+  const moved = path.join(path.dirname(path.dirname(outside.HOMEBASE_STATE_DB)), 'elsewhere.sqlite3');
+  fs.copyFileSync(outside.HOMEBASE_STATE_DB, moved);
+  const refused = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], { ...outside, HOMEBASE_STATE_DB: moved });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /outside .* the only directory the hardened service may write/);
+});
+
+test('without HOME_BASE_STATE_DB in the env file the switch refuses instead of moving the state aside', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-nostate-'));
+  const fixture = createSourceCheckout(tempDir);
+  const env = legacyHost(tempDir, fixture, { adopted: ['helm'] });
+  assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], env).status, 0);
+  const { HOMEBASE_STATE_DB, ...withoutOverride } = env;
+  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], withoutOverride);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /sets neither HOME_BASE_STATE_DB nor HOME_BASE_DATA_DIR/);
 });

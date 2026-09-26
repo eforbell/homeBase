@@ -271,7 +271,7 @@ Executor requirements:
 | `nginx.assert-app-include` first (`nginx -T` as root) | Legacy hosts serve apps from an operator-managed server block that includes `/etc/nginx/snippets/*.conf` (erebor's `erebor.forbell.com` site, numenor's `nginx.conf`). The executor's snippets live in `/etc/nginx/sovereign-home.d/`, so that block must include it too. Refuses, before changing anything, with the exact line to add |
 | `backup.create` safety backup | Covers in-checkout storage (helm `.secrets`), `.env`, and the database |
 | No managed gateway | `nginx.ensure-gateway` also leaves an operator gateway alone whenever the active config already includes `sovereign-home.d`, so later executor updates never take over `default_server` |
-| `postgres.transfer-ownership` after `ensure-database` | Legacy ran schema files as `postgres`. It hands public tables, views, and standalone sequences to the app role; column-owned sequences move with their table. Refuses databases with other schemas. On numenor this moves 9 objects |
+| `postgres.transfer-ownership` after `ensure-database` | Legacy ran schema files as `postgres`. It hands the app role its public tables, views, standalone sequences (column-owned ones move with their table), enum/domain/range/composite types, and functions and procedures. Refuses databases with other schemas. On numenor this moves 9 objects. It runs as superuser inside a database the app owns, so `search_path` is pinned to `pg_catalog, pg_temp` and every operator and function is schema-qualified; otherwise an operator the app planted in `public` would run as superuser (the CVE-2018-1058 class, reproduced on PostgreSQL 14 and 16 before the fix). Every other script the executor runs as `postgres` starts with the same `SET search_path` |
 | `nginx.retire-legacy-snippets` right after the new snippet is written | Both snippets in one server would be duplicate locations. Removes the app's own `snippets/<app>.conf` and those of its nginx-published sidecars, keeping root-only copies in `/var/lib/homebase-executor/retired-nginx-snippets/<app>/`. Shared snippets (fonts, snakeoil) are untouched |
 | Credentials are never generated | An app without database wiring in its `.env` is refused ("install it instead") |
 
@@ -280,13 +280,32 @@ The rest is the install plan: git sync repoints `origin` at the root-owned mirro
 **Web side.** Installations have a `managed_by` column. On a legacy-sudo host, `executorManagesApp()` sends adopted apps' install/update, restart, backup, restore, uninstall, and update checks to the executor; everything else stays on legacy. `POST /api/apps/:id/adopt/execute` previews by default, and the app page has an "Executor adoption" card. The executor fetches with its own key (`HOME_BASE_EXECUTOR_GIT_TRANSPORT`), while `HOME_BASE_GIT_TRANSPORT` keeps serving legacy apps.
 
 **Moving a legacy host (operator steps):**
-1. `sudo bash install.sh --add-executor --git-ssh-key <key>`. This installs a root-owned executor in `/opt/homebase-executor` beside the legacy service; mode, sudoers, and the web checkout are untouched. The key must be able to read every app repository (erebor's account-level key works). It is copied root-only.
-2. Add `include /etc/nginx/sovereign-home.d/*.conf;` next to `include /etc/nginx/snippets/*.conf;` in the server block that serves the apps, then `sudo nginx -t && sudo systemctl reload nginx`.
-3. Adopt each app from its page: preview, then run. Other apps keep working through legacy meanwhile.
-4. `sudo bash install.sh --switch-to-executor`. It refuses while any installed app is still legacy-managed. It then moves the legacy checkout aside (kept), installs the managed hardened service, sets executor mode, turns auto-bootstrap off, and removes the sudoers policy, the coexistence copy, and `homebase`'s membership of `sovereign`.
+0. Update the legacy web checkout to a release that has adopt (its usual self-update), and check that `/etc/sovereign-home/homebase.env` sets `HOME_BASE_STATE_DB` under `/var/lib/sovereign-home/homebase` (erebor does). Without it, the legacy web keeps state in its own checkout, and the switch refuses.
+1. `sudo bash install.sh --add-executor --git-ssh-key <key>`. This installs a root-owned executor in `/opt/homebase-executor` beside the legacy service and writes the root-owned marker `/etc/sovereign-home/legacy-coexistence`; the executor accepts `adopt` only while it exists. Mode, sudoers, and the web checkout are untouched, but the web service restarts once to join the executor's socket group, so the command refuses while legacy jobs run (`--force` overrides). The key must be able to read every app repository (erebor's account-level key works); it is copied root-only. Re-run `--add-executor` after each web self-update so both run the same code.
+2. Add `include /etc/nginx/sovereign-home.d/*.conf;` next to `include /etc/nginx/snippets/*.conf;` **inside the server block** that serves the apps, then `sudo nginx -t && sudo systemctl reload nginx`.
+3. Adopt each app from its page: preview, then run. Other apps keep working through legacy meanwhile. Adopt refuses an app whose legacy install is not at the catalog's path and mount path.
+4. `sudo bash install.sh --switch-to-executor`. It refuses while any installed app is not adopted (`--force` does not skip this). It saves the env file and web unit to `/etc/sovereign-home/switch-backup-<time>/`, moves the legacy checkout aside (kept), installs the managed hardened service, and sets executor mode with auto-bootstrap off. It also makes the env file root-owned and takes `homebase` out of the `sovereign` group before the web restarts. Only after the service answers does it remove the sudoers policy, the coexistence marker, and the coexistence copy. It warns if `homebase` still has sudo rules from anywhere else.
 5. Delete app-readable copies of the git key (erebor: `/opt/sovereign-home/.ssh/id_founder_homebase`) once nothing legacy remains.
 
-**Rolling back one adopt by hand.** Copy the retired snippet back from `/var/lib/homebase-executor/retired-nginx-snippets/<app>/` into `/etc/nginx/snippets/`, delete `/etc/nginx/sovereign-home.d/<app>.conf`, reload nginx, and run a legacy reinstall of the app, which rewrites its units with `EnvironmentFile=`. Clear `managed_by` in the state database last. The ownership transfer stays; it is harmless for legacy.
+**If an adopt fails.** The app is marked "adoption incomplete". Every action except adopt refuses for it, because the failed run may already have rewritten its units, `.env`, git remote, and nginx snippet (the old processes and nginx config keep running until something reloads them). Fix the cause shown in the job (PyPI, nginx include placement, and so on) and re-run adopt. It is idempotent and picks up where it stopped. A snippet swap that nginx rejects is undone on the spot, and a venv rebuild that fails restores the previous venv.
+
+**Rolling back one adopt by hand** (for example to go back to legacy for an app):
+1. Clear the marker first, or every route keeps sending the app to the executor: `sudo sqlite3 /var/lib/sovereign-home/homebase/home-base.sqlite3 "UPDATE installations SET managed_by = NULL WHERE app_id = '<app>'"`.
+2. Point the checkout back at GitHub. Legacy git runs as sovereign and cannot use the root-owned mirror: `sudo -u sovereign git -C /opt/sovereign-home/apps/<repoKey> remote set-url origin <repository url>`.
+3. Copy the retired snippet back from `/var/lib/homebase-executor/retired-nginx-snippets/<app>/` into `/etc/nginx/snippets/`, delete `/etc/nginx/sovereign-home.d/<app>.conf`, then `sudo nginx -t && sudo systemctl reload nginx`.
+4. Run a legacy reinstall of the app from its page; it rewrites the units with `EnvironmentFile=`. The ownership transfer stays; it is harmless for legacy.
+
+**If `--switch-to-executor` stops partway.** Re-run it: when the env already says `executor` but the sudoers file and `/opt/homebase-executor` are still there, it resumes. To go back to legacy instead:
+1. `sudo systemctl stop homebase`.
+2. Move `/opt/sovereign-home/homebase.legacy-<time>` back to `/opt/sovereign-home/homebase`, after moving any half-installed managed copy out of the way.
+3. Restore `homebase.env` and `homebase.service` from `/etc/sovereign-home/switch-backup-<time>/`.
+4. `sudo usermod -a -G sovereign homebase` if it was removed.
+5. `sudo systemctl daemon-reload && sudo systemctl start homebase`.
+
+**Notes.**
+- Adopt tracks `main` (or the pinned SHA the legacy record has). A legacy install on another branch is fast-forwarded to `main`, so the preview is also an update.
+- Operator edits made directly in a legacy snippet are not carried over; the retired copy keeps them for reference.
+- Downgrading the web below a release that knows `managed_by` would run legacy plans against adopted apps; don't.
 
 ## Architecture roadmap (from the independent architecture review, 2026-09-25)
 
