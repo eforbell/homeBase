@@ -519,7 +519,7 @@ fi
 for command in curl tar python3 node npm ${SOURCE_DIR:+git}; do
   command -v "$command" >/dev/null 2>&1 || die "required command unavailable: $command"
 done
-NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
+NODE_MAJOR="$(node -e 'process.stdout.write(process.versions.node.split(".")[0])')"
 [ "$NODE_MAJOR" -ge 18 ] || die "Node.js 18 or newer is required; found $(node --version)"
 NODE_BIN="$(command -v node)"
 
@@ -635,8 +635,16 @@ if [ "$ADD_EXECUTOR" -eq 1 ]; then
     [ "$(stat -c '%U:%G %a' "$EXECUTOR_SOCKET_PATH")" = "root:${EXECUTOR_GROUP} 660" ] \
       || die "executor socket has unexpected owner or mode: $EXECUTOR_SOCKET_PATH"
     probe_executor || die 'executor hello/capability probe failed; inspect journalctl -u homebase-executor'
-    # The web service picks up its new socket group only when it restarts.
-    systemctl try-restart homebase.service || log 'homebase.service did not restart; inspect journalctl -u homebase'
+    # The web service picks up its new socket group only when it restarts; wait until it answers again.
+    if systemctl try-restart homebase.service; then
+      WEB_PORT="$(env_value PORT)"
+      for _attempt in $(seq 1 30); do
+        curl --fail --silent "http://127.0.0.1:${WEB_PORT:-$PORT}/api/homebase/health" >/dev/null && break
+        sleep 1
+      done
+    else
+      log 'homebase.service did not restart; inspect journalctl -u homebase'
+    fi
   fi
   log 'executor added; this host stays in legacy-sudo mode'
   log 'Next: 1) add "include /etc/nginx/sovereign-home.d/*.conf;" beside "include /etc/nginx/snippets/*.conf;" in your nginx server block, then: sudo nginx -t && sudo systemctl reload nginx'
