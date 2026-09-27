@@ -7,7 +7,7 @@ const { catalog } = require('../src/catalog');
 const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
 const { MIRROR_ROOT } = require('../src/operations/app-layout');
 const { hostSupport } = require('../src/operations/host-support');
-const { appSnippetIncludeProblem, operatorServesAppSnippets } = require('../src/operations/nginx-config');
+const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
@@ -657,11 +657,12 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     'nginx.assert-app-include': async (operation) => {
       // The same server block that serves the legacy routes must serve the executor's snippets; an include
       // anywhere else would pass nginx -t and loopback readiness while the public route disappears.
-      const problem = appSnippetIncludeProblem(await nginxConfigDump(operation.timeoutMs));
+      const { problem, seen } = appSnippetIncludeCheck(await nginxConfigDump(operation.timeoutMs));
       if (problem) {
         deny(`${problem}. Add "include /etc/nginx/sovereign-home.d/*.conf;" right next to "include /etc/nginx/snippets/*.conf;" inside every server block that has it, run "sudo nginx -t && sudo systemctl reload nginx", then adopt again.`);
       }
-      return 'every server block that serves legacy app snippets also includes /etc/nginx/sovereign-home.d/*.conf';
+      // Reported so the operator can confirm the parse matches their config before the retire step.
+      return `${seen}; each also includes /etc/nginx/sovereign-home.d/*.conf`;
     },
     'nginx.retire-legacy-snippets': async (operation, { layout } = {}) => {
       requireLayout(layout);

@@ -2175,6 +2175,7 @@ test('legacy-sudo hosts adopt apps one at a time: adopted apps route to the exec
   store.upsertInstallation(record('home-source', 3008, { managedBy: 'executor' }));
   // Installed by legacy somewhere other than the catalog layout: adopt refuses it.
   store.upsertInstallation(record('home-ops', 3009, { installRoot: '/srv/apps/homeOps', mountPath: '/ops/' }));
+  store.upsertInstallation(record('family-help', 3099, { installRoot: '/opt/sovereign-home/apps/familyHelp', mountPath: '/help/' }));
   store.upsertInstallation(record('family-dinner', 3000));
   // A later legacy-style upsert without managedBy keeps the adopted marker.
   store.upsertInstallation(record('home-source', 3008, { updatedAt: '2026-04-04T00:00:00.000Z' }));
@@ -2210,7 +2211,18 @@ test('legacy-sudo hosts adopt apps one at a time: adopted apps route to the exec
     // Nor can it turn an installed legacy app back into a saved plan (which would hide it from the switch).
     assert.equal((await post('/api/apps/family-dinner/install', { ref: 'main' })).body.code, 'ALREADY_INSTALLED');
     const helmActions = await (await fetch(`${server.url}/api/apps/helm/actions`, { headers: { cookie } })).json();
-    assert.deepEqual([helmActions.managedBy, helmActions.actions.adopt], ['adopting', true], 'adopt stays offered so it can be re-run');
+    assert.deepEqual([helmActions.managedBy, helmActions.actions.adopt, helmActions.abandonAdopt], ['adopting', true, true], 'adopt stays offered so it can be re-run');
+    // A legacy install on a non-catalog port would be moved by adopt: refused.
+    assert.equal((await post('/api/apps/family-help/adopt/execute', { dryRun: false, confirm: 'EXECUTE' })).body.code, 'ADOPT_LAYOUT_MISMATCH');
+    // Abandon: refused while the adopt job is in progress, then returns the app to legacy with next steps.
+    assert.equal((await post('/api/apps/helm/adopt/abandon', { confirm: 'ABANDON' })).body.code, 'APP_BUSY');
+    store.updateJob(adopt.body.jobId, { status: 'failed', finishedAt: new Date().toISOString() });
+    assert.equal((await post('/api/apps/helm/adopt/abandon', {})).status, 400);
+    const abandoned = await post('/api/apps/helm/adopt/abandon', { confirm: 'ABANDON' });
+    assert.equal(abandoned.status, 200, JSON.stringify(abandoned.body));
+    assert.match(abandoned.body.nextSteps[0], /remote set-url origin git@github\.com:eforbell\/helm\.git/);
+    assert.equal(store.loadState().installations.helm.managedBy, '');
+    assert.equal((await post('/api/apps/family-dinner/adopt/abandon', { confirm: 'ABANDON' })).body.code, 'ADOPT_NOT_APPLICABLE');
 
     // The adopted app's lifecycle goes to the executor; the legacy app's does not.
     const restart = await post('/api/apps/home-source/restart/execute', { dryRun: false, confirm: 'EXECUTE' });

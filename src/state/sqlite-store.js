@@ -66,6 +66,10 @@ class SqliteStateStore {
     return runSqliteOp(this.dbPath, 'delete_backups', { appId });
   }
 
+  setManagedBy(appId, managedBy) {
+    return runSqliteOp(this.dbPath, 'set_managed_by', { appId, managedBy });
+  }
+
   deleteInstallation(appId) {
     return runSqliteOp(this.dbPath, 'delete_installation', { appId });
   }

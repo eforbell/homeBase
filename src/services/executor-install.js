@@ -38,9 +38,20 @@ function buildExecutorInstallAction({ appId, ref, config = {}, action = 'install
 // Which path manages an app. A host in executor mode manages every app through the executor. A host in
 // legacy-sudo mode keeps the legacy path for each app until that app is adopted, so apps move over one
 // at a time and the host switches mode only once all of them have.
+// The one place that decides this; every route, the UI label, and update checks ask it.
+//   executor  - the executor runs every action for the app
+//   adopting  - an adopt started and has not completed; only adopt (or abandon) may run
+//   legacy    - legacy-sudo plans run it
+//   plan-only - nothing runs privileged actions on this host
+function appManagement(config = {}, state = {}, appId) {
+  if (config.homeBaseExecutionMode === 'executor') return 'executor';
+  if (config.homeBaseExecutionMode !== 'legacy-sudo') return 'plan-only';
+  const managedBy = state.installations?.[appId]?.managedBy;
+  return managedBy === 'executor' || managedBy === 'adopting' ? managedBy : 'legacy';
+}
+
 function executorManagesApp(config = {}, state = {}, appId) {
-  if (config.homeBaseExecutionMode === 'executor') return true;
-  return config.homeBaseExecutionMode === 'legacy-sudo' && state.installations?.[appId]?.managedBy === 'executor';
+  return appManagement(config, state, appId) === 'executor';
 }
 
 // Home Base's record of an executor install: the executor always installs at the catalog's port and
@@ -68,4 +79,4 @@ function buildExecutorInstallRecord({ appId, ref, config = {} }) {
   };
 }
 
-module.exports = { buildExecutorInstallAction, buildExecutorInstallRecord, executorManagesApp, siteFor, transportFor };
+module.exports = { appManagement, buildExecutorInstallAction, buildExecutorInstallRecord, executorManagesApp, siteFor, transportFor };

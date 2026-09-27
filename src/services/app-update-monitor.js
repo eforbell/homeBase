@@ -1,6 +1,7 @@
 const path = require('path');
 const { spawn } = require('child_process');
 const { appUpdateStatus: requestExecutorAppUpdateStatus } = require('../executor/client');
+const { appManagement } = require('./executor-install');
 const { getAppById } = require('../catalog');
 
 const DEFAULT_CHECK_INTERVAL_MS = 30 * 60 * 1000;
@@ -313,7 +314,7 @@ class AppUpdateMonitor {
     }
 
     // Adopted apps on a legacy-sudo host have a mirror-backed checkout too, so the executor answers.
-    if (gitConfig.executionMode === 'executor' || ['executor', 'adopting'].includes(install.managedBy)) {
+    if (['executor', 'adopting'].includes(appManagement({ homeBaseExecutionMode: gitConfig.executionMode }, { installations: { [appId]: install } }, appId))) {
       return this.evaluateViaExecutor(install, gitConfig, { appId, trackedRef, installRoot, checkedAt });
     }
 

@@ -942,9 +942,12 @@ if [ "$TEST_MODE" != '1' ]; then
     fi
     if [ "$REPAIR_EXECUTOR" -eq 0 ] || [ -n "$GIT_SSH_KEY_SOURCE" ]; then
       systemctl restart homebase.service
+      # The service listens where its env file says (a preserved legacy env may not use the default).
+      SERVICE_PORT="$(env_value PORT)"
+      SERVICE_PORT="${SERVICE_PORT:-$PORT}"
       HEALTHY=0
       for _attempt in $(seq 1 30); do
-        if curl --fail --silent "http://127.0.0.1:${PORT}/api/homebase/health" >/dev/null; then
+        if curl --fail --silent "http://127.0.0.1:${SERVICE_PORT}/api/homebase/health" >/dev/null; then
           HEALTHY=1
           break
         fi
@@ -953,7 +956,7 @@ if [ "$TEST_MODE" != '1' ]; then
       systemctl is-active --quiet homebase.service \
         || die 'homebase.service did not become active; inspect journalctl -u homebase'
       [ "$HEALTHY" -eq 1 ] \
-        || die "homebase.service is active but its loopback health endpoint did not respond on port ${PORT}"
+        || die "homebase.service is active but its loopback health endpoint did not respond on port ${SERVICE_PORT}"
     fi
   fi
 fi

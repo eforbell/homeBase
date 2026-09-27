@@ -519,6 +519,15 @@ elif op == "delete_backups":
     conn.commit()
     emit({"ok": True})
 
+elif op == "set_managed_by":
+    # The upsert only ever keeps or advances managed_by; this is the one explicit way to change it back.
+    conn.execute(
+        "UPDATE installations SET managed_by = ? WHERE app_id = ?",
+        (payload.get("managedBy") or None, payload["appId"]),
+    )
+    conn.commit()
+    emit({"ok": True})
+
 elif op == "delete_installation":
     conn.execute(
         "DELETE FROM installations WHERE app_id = ?",

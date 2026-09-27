@@ -23,7 +23,7 @@ test('both includes in the serving block pass, on either host layout', () => {
 
 test('the executor include in a different server block is refused (it would leave the public route broken)', () => {
   const split = EREBOR(LEGACY, 'server {\n  listen 8443;\n  include /etc/nginx/sovereign-home.d/*.conf;\n}\n');
-  assert.match(appSnippetIncludeProblem(split), /sites-enabled\/erebor\.forbell\.com includes \/etc\/nginx\/snippets\/\*\.conf but not \/etc\/nginx\/sovereign-home\.d\/\*\.conf/);
+  assert.match(appSnippetIncludeProblem(split), /1 of 1 server block\(s\) that include \/etc\/nginx\/snippets\/\*\.conf \(in \/etc\/nginx\/sites-enabled\/erebor\.forbell\.com\) do not include \/etc\/nginx\/sovereign-home\.d\/\*\.conf/);
   const httpLevel = dump([['/etc/nginx/nginx.conf', `http {\n  include /etc/nginx/sovereign-home.d/*.conf;\n  server {\n${LEGACY}\n  }\n}\n`]]);
   assert.ok(appSnippetIncludeProblem(httpLevel), 'an include at http level is not inside the serving block');
 });
@@ -48,4 +48,43 @@ test("operator gateway detection ignores the executor's own gateway site", () =>
   assert.equal(operatorServesAppSnippets(managed, '/etc/nginx/sites-enabled/sovereign-home'), false);
   assert.equal(operatorServesAppSnippets(EREBOR(BOTH), '/etc/nginx/sites-enabled/sovereign-home'), true);
   assert.equal(operatorServesAppSnippets(EREBOR(LEGACY), '/etc/nginx/sites-enabled/sovereign-home'), false);
+});
+
+// Probes from the architecture review: configs the first parser passed although the public route would go.
+test('fails safe: a legacy include reached through an intermediate file is refused', () => {
+  const viaFile = dump([
+    ['/etc/nginx/sites-enabled/a', 'server {\n  server_name erebor.forbell.com;\n  include /etc/nginx/app-routes.inc;\n}\nserver {\n  listen 8443;\n  include /etc/nginx/snippets/*.conf;\n  include /etc/nginx/sovereign-home.d/*.conf;\n}\n'],
+    ['/etc/nginx/app-routes.inc', 'include /etc/nginx/snippets/*.conf;\n'],
+  ]);
+  assert.match(appSnippetIncludeProblem(viaFile), /outside a server block/);
+});
+
+test('fails safe: `#` inside a token is not a comment', () => {
+  const hashInToken = EREBOR(`${LEGACY}\n  location = /x { return 301 /app/#top; }`, 'server {\n  listen 8443;\n  include /etc/nginx/snippets/*.conf;\n  include /etc/nginx/sovereign-home.d/*.conf;\n}\n');
+  assert.match(appSnippetIncludeProblem(hashInToken), /1 of 2 server block\(s\)/);
+});
+
+test('fails safe: braces inside quoted strings do not close blocks', () => {
+  const quoted = EREBOR(`  return 200 "}";\n${LEGACY}`, 'server {\n  listen 8443;\n  include /etc/nginx/snippets/*.conf;\n  include /etc/nginx/sovereign-home.d/*.conf;\n}\n');
+  assert.match(appSnippetIncludeProblem(quoted), /1 of 2 server block\(s\)/);
+  assert.equal(appSnippetIncludeProblem(EREBOR(`  return 200 '{"ok":true}';\n${BOTH}`)), null);
+});
+
+test('fails safe: unbalanced or truncated config is refused rather than partly read', () => {
+  assert.match(appSnippetIncludeProblem(dump([['/etc/nginx/x', `server {\n${BOTH}\n  location / {\n}\n`]])), /could not read the nginx configuration reliably.*never close/);
+  assert.match(appSnippetIncludeProblem(dump([['/etc/nginx/x', `server {\n${BOTH}\n}\n}\n`]])), /closes nothing/);
+  assert.match(appSnippetIncludeProblem(dump([['/etc/nginx/x', 'server {\n  include /etc/nginx/snippets/*.conf\n}\n']])), /missing its ';'/);
+  assert.match(appSnippetIncludeProblem(''), /no nginx server block/);
+  assert.throws(() => operatorServesAppSnippets(dump([['/etc/nginx/x', 'server {\n']]), '/etc/nginx/sites-enabled/sovereign-home'), /never close/);
+});
+
+test('real nginx -T output: the split layout that passes nginx -t is refused; the correct one is accepted', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const read = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', 'nginx', name), 'utf8');
+  const { appSnippetIncludeCheck } = require('../src/operations/nginx-config');
+  const ok = appSnippetIncludeCheck(read('erebor-shaped-ok.nginx-T'));
+  assert.equal(ok.problem, null);
+  assert.match(ok.seen, /1 server block\(s\) serve legacy snippets: \/etc\/nginx\/sites-enabled\/erebor\.forbell\.com/);
+  assert.match(appSnippetIncludeCheck(read('erebor-shaped-split.nginx-T')).problem, /do not include \/etc\/nginx\/sovereign-home\.d/);
 });

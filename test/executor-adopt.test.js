@@ -166,3 +166,12 @@ test('the coexistence marker counts only as a root-owned regular file that nobod
   assert.equal(legacyCoexistence(fake({ uid: 0, mode: 0o100666 })), false);
   assert.equal(legacyCoexistence(fake({ uid: 0, mode: 0o100644, file: false })), false);
 });
+
+test('facts shared between install.sh and the JS side agree', () => {
+  const source = require('fs').readFileSync(require.resolve('../install.sh'), 'utf8');
+  const { LEGACY_COEXISTENCE_MARKER } = require('../executor/actions');
+  const { UBUNTU_CODENAMES, DEBIAN_CODENAMES } = require('../src/operations/host-support');
+  assert.match(source, new RegExp(`^COEXIST_MARKER='${LEGACY_COEXISTENCE_MARKER.replaceAll('/', '\\/')}'$`, 'm'));
+  assert.ok(source.includes(`${Object.keys(UBUNTU_CODENAMES).join('|')}) ;;`), 'Ubuntu base codenames');
+  assert.ok(source.includes(`${Object.keys(DEBIAN_CODENAMES).join('|')}) ;;`), 'Debian base codenames');
+});

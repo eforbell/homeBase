@@ -7,7 +7,7 @@ const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
-const { buildExecutorInstallAction, executorManagesApp } = require('./services/executor-install');
+const { appManagement, buildExecutorInstallAction, executorManagesApp } = require('./services/executor-install');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { APPS_ROOT, BACKUP_ROOT } = require('./operations/paths');
@@ -1190,9 +1190,8 @@ function createApp(config) {
             discardPlan: planned,
             adopt: effectiveConfig.homeBaseExecutionMode === 'legacy-sudo' && installation?.status === 'installed' && installation.managedBy !== 'executor',
           },
-          managedBy: executorManagesApp(effectiveConfig, state, appId) ? 'executor'
-            : installation?.managedBy === 'adopting' ? 'adopting'
-              : (effectiveConfig.homeBaseExecutionMode === 'legacy-sudo' ? 'legacy' : 'plan-only'),
+          managedBy: appManagement(effectiveConfig, state, appId),
+          abandonAdopt: appManagement(effectiveConfig, state, appId) === 'adopting',
           note: planned
             ? 'This is a saved dry-run. Run a real install or discard the plan metadata; no app files were created by the dry-run.'
             : 'Update currently runs through install execute (same deployment pipeline).',
@@ -1266,6 +1265,37 @@ function createApp(config) {
         });
         return sendJson(res, 200, plan);
       }
+      // Abandon an adopt that cannot be finished: the app goes back to legacy routing. The files a failed adopt
+      // may have changed (git remote, units, nginx snippet) are left as they are; the response lists the steps
+      // to restore them before running a legacy reinstall (docs/executor-app-runbook.md).
+      const abandonMatch = pathname.match(/^\/api\/apps\/([^/]+)\/adopt\/abandon$/);
+      if (method === 'POST' && abandonMatch) {
+        const body = await parseBody(req);
+        const appId = abandonMatch[1];
+        const app = getAppById(appId);
+        if (!app) return notFound(res);
+        if (appManagement(effectiveConfig, state, appId) !== 'adopting') return sendJson(res, 409, { error: `${app.name} has no unfinished adopt to abandon.`, code: 'ADOPT_NOT_APPLICABLE' });
+        if (body.confirm !== 'ABANDON') return sendJson(res, 400, { error: 'Abandoning an adopt requires confirm=ABANDON.' });
+        const adminStatus = await getAdminStatus(req, stateStore);
+        if (!adminStatus.configured) return sendJson(res, 409, { error: 'Admin setup is required before abandoning an adopt.' });
+        if (!adminStatus.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required before abandoning an adopt.' });
+        const busy = (stateStore.listUnfinishedJobs() || []).find((job) => job.target === appId && !job.dryRun);
+        if (busy) return sendJson(res, 409, { error: `${app.name} has job #${busy.id} in progress; wait for it to finish.`, code: 'APP_BUSY' });
+        stateStore.setManagedBy(appId, null);
+        recordAdminAudit(stateStore, { action: 'app-adopt-abandon', target: appId, dryRun: false, outcome: 'completed', reason: 'managed-by-cleared' });
+        const checkout = path.posix.join(APPS_ROOT, app.repoKey);
+        return sendJson(res, 200, {
+          ok: true,
+          appId,
+          managedBy: 'legacy',
+          nextSteps: [
+            `sudo -u sovereign git -C ${checkout} remote set-url origin ${app.repository.sshUrl || app.repository.url}`,
+            `If /var/lib/homebase-executor/retired-nginx-snippets/${app.id}/ exists: copy its files back to /etc/nginx/snippets/, delete /etc/nginx/sovereign-home.d/${app.id}.conf, then sudo nginx -t && sudo systemctl reload nginx`,
+            `Run a legacy reinstall of ${app.name} from its page (rewrites its units for legacy mode), or restore the adopt's safety backup.`,
+          ],
+        });
+      }
+
       // Adopt: on a legacy-sudo host, hand one legacy-installed app to the executor in place. Afterwards
       // every action for that app goes through the executor; other apps stay on legacy.
       const adoptMatch = pathname.match(/^\/api\/apps\/([^/]+)\/adopt\/execute$/);
@@ -1281,8 +1311,10 @@ function createApp(config) {
         // Adopt keeps an install where it is; the executor manages apps only at the catalog's location and
         // mount path. A legacy install elsewhere would come up empty (or at a different URL) after adopt.
         const catalogRoot = path.posix.join(APPS_ROOT, app.repoKey);
-        if (install.installRoot !== catalogRoot || install.mountPath !== app.network.preferredMountPath) {
-          return sendJson(res, 409, { error: `${app.name} is installed at ${install.installRoot} (${install.mountPath}); adopt needs the standard ${catalogRoot} (${app.network.preferredMountPath}). Back it up and reinstall it there instead.`, code: 'ADOPT_LAYOUT_MISMATCH' });
+        // The port too: adopt would move the app to the catalog port, breaking anything outside Home Base that
+        // points at the old one (Tailscale serve rules, OAuth callbacks).
+        if (install.installRoot !== catalogRoot || install.mountPath !== app.network.preferredMountPath || Number(install.port) !== app.network.preferredPort) {
+          return sendJson(res, 409, { error: `${app.name} is installed at ${install.installRoot} (${install.mountPath}, port ${install.port}); adopt needs the catalog layout ${catalogRoot} (${app.network.preferredMountPath}, port ${app.network.preferredPort}). Back it up and reinstall it there instead.`, code: 'ADOPT_LAYOUT_MISMATCH' });
         }
         const dryRun = body.dryRun !== false;
         let auth = null;

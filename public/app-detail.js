@@ -235,6 +235,21 @@
     }
   }
 
+  async function handleAbandonAdopt(form) {
+    const resultNode = form.querySelector('[data-result]');
+    try {
+      await window.HB.confirmInline(resultNode, 'Abandoning returns this app to legacy routing. Files the adopt already changed stay as they are; the next steps to restore them are shown here.');
+    } catch (_error) {
+      return;
+    }
+    try {
+      const response = await window.HB.postJson(`/api/apps/${appId}/adopt/abandon`, { confirm: 'ABANDON' });
+      resultNode.innerHTML = `Back to legacy. Next:<ol>${(response.nextSteps || []).map((step) => `<li><code>${window.HB.escapeHtml(step)}</code></li>`).join('')}</ol>`;
+    } catch (error) {
+      resultNode.textContent = error.message;
+    }
+  }
+
   async function handleAdopt(form) {
     if (form.dataset.submitting === 'true') return;
     const dryRun = form.elements.dryRun.checked;
@@ -364,6 +379,12 @@
         handleUninstall(uninstallForm);
         return;
       }
+      const abandonForm = event.target.closest('form[data-action="abandon-adopt"]');
+      if (abandonForm) {
+        event.preventDefault();
+        handleAbandonAdopt(abandonForm);
+        return;
+      }
       const adoptForm = event.target.closest('form[data-action="adopt"]');
       if (adoptForm) {
         event.preventDefault();
@@ -486,7 +507,12 @@
           ${actions.adopt ? `
             <section id="adopt" class="hb-card">
               <h2 style="margin-top:0;">Executor adoption</h2>
-              ${actionsPayload.managedBy === 'adopting' ? '<p class="hb-warn" style="margin:0 0 0.75rem;">The last adopt did not finish. Re-run it; it picks up where it stopped. Other actions stay disabled for this app until it completes.</p>' : ''}
+              ${actionsPayload.managedBy === 'adopting' ? `
+                <p class="hb-warn" style="margin:0 0 0.75rem;">The last adopt did not finish. Re-run it; it picks up where it stopped. Other actions stay disabled for this app until it completes, or until you abandon it.</p>
+                <form class="hb-form-grid" data-action="abandon-adopt" style="margin:0 0 0.75rem;">
+                  <div><button class="hb-btn" type="submit" style="border-color:rgba(248,113,113,0.35);color:var(--red);">Abandon adopt (back to legacy)</button></div>
+                  <p class="hb-muted" data-result style="margin:0;"></p>
+                </form>` : ''}
               <p class="hb-muted" style="margin:0 0 0.75rem;">This app was installed by legacy (sudo) mode. Adopting hands it to the typed executor in place: same checkout, data, and settings. Adopt apps one at a time; switch the host to executor mode once all of them are adopted.</p>
               <form class="hb-form-grid" data-action="adopt">
                 <label class="hb-label hb-check-row"><input name="dryRun" type="checkbox" checked> Preview the plan only</label>
