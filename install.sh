@@ -199,6 +199,8 @@ case "$PORT" in
 esac
 [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die 'port must be between 1 and 65535'
 
+# A trailing slash would defeat git's safe.directory match below.
+[ "$SOURCE_DIR" = '/' ] || SOURCE_DIR="${SOURCE_DIR%/}"
 if [ -n "$SOURCE_DIR" ]; then
   case "$SOURCE_DIR" in
     /*) ;;
@@ -631,8 +633,10 @@ else
   if [ "$TEST_MODE" = '1' ] || [ "${HOMEBASE_TEST_ALLOW_FILE_URLS:-0}" = '1' ]; then
     CURL_PROTOCOLS='=https,file'
   fi
-  curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$ARCHIVE_URL" --output "$ARCHIVE_PATH"
-  curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$CHECKSUM_URL" --output "$CHECKSUM_PATH"
+  curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$ARCHIVE_URL" --output "$ARCHIVE_PATH" \
+    || die "could not download Home Base ${RELEASE_VERSION} (${ARCHIVE_URL}). If no release is published yet, clone the repository as root and pass --source-dir, e.g.: sudo git clone --branch main git@github.com:eforbell/homeBase.git /root/homebase-src && sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src ..."
+  curl --fail --silent --show-error --location --proto "$CURL_PROTOCOLS" "$CHECKSUM_URL" --output "$CHECKSUM_PATH" \
+    || die "could not download the checksum for Home Base ${RELEASE_VERSION} (${CHECKSUM_URL})"
 fi
 
 EXPECTED_SHA256="$(awk 'NF { print $1; exit }' "$CHECKSUM_PATH")"
