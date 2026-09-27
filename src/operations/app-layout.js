@@ -62,7 +62,10 @@ function pythonInstall(app) {
   const requirements = spec.requirements == null ? null : String(spec.requirements);
   if (requirements && (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}\.(lock|txt)$/.test(requirements))) unsupported(app, 'runtime.python.requirements must be a file name in the checkout root');
   if (!requirements && spec.editable !== true) unsupported(app, 'runtime.python needs requirements, editable, or both');
-  return { requirements, editable: spec.editable === true, editableNoDeps: spec.editableNoDeps === true };
+  // The app's requires-python floor, checked against the host interpreter before building the venv.
+  const minVersion = spec.minVersion == null ? null : String(spec.minVersion);
+  if (minVersion && !/^3\.[0-9]{1,2}$/.test(minVersion)) unsupported(app, 'runtime.python.minVersion must look like 3.11');
+  return { requirements, editable: spec.editable === true, editableNoDeps: spec.editableNoDeps === true, minVersion };
 }
 
 function runtimeLayout(app) {

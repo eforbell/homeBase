@@ -98,3 +98,44 @@ test('typed jobs wait out a briefly busy executor, then run; persistent busy sti
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(jobs[busyId].status, 'failed');
 });
+
+test('a completed adopt records the app as executor-managed, only after readiness', async () => {
+  const { JobRunner } = require('../src/services/job-runner');
+  const jobs = {};
+  const upserts = [];
+  const store = {
+    createJob: (job) => { const id = Object.keys(jobs).length + 1; jobs[id] = { ...job, log: '' }; return { id }; },
+    updateJob: (id, fields) => Object.assign(jobs[id], fields),
+    appendJobLog: (id, text) => { jobs[id].log += text; },
+    upsertInstallation: (record) => upserts.push(record),
+  };
+  const probes = [];
+  const runner = new JobRunner(store, {
+    runExecutorAction: async () => ({ planDigest: 'sha256:x', completedOperationIds: [] }),
+    readinessOptions: { attempts: 1, fetchImpl: async (url) => { probes.push(url); return { ok: true, status: 200 }; } },
+  });
+  const site = { hostname: 'home', domain: 'example.ts.net', householdTimezone: 'America/New_York' };
+  const id = runner.startTypedAdoptJob({ appId: 'helm', ref: 'main', transport: 'ssh', site });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(jobs[id].status, 'completed');
+  assert.deepEqual(probes, ['http://127.0.0.1:3011/health']);
+  assert.equal(upserts.length, 1);
+  assert.deepEqual([upserts[0].appId, upserts[0].status, upserts[0].managedBy, upserts[0].externalUrl], ['helm', 'installed', 'executor', 'https://home.example.ts.net/helm/']);
+});
+
+test('legacy jobs cut off by a restart are failed at startup; typed and self-update jobs are left to their reconcilers', () => {
+  const { JobRunner } = require('../src/services/job-runner');
+  const updates = {};
+  const store = {
+    listUnfinishedJobs: () => [
+      { id: 4, kind: 'install', target: 'helm', dryRun: false, planJson: JSON.stringify({ steps: [] }) },
+      { id: 5, kind: 'restart', target: 'helm', dryRun: false, planJson: JSON.stringify({ action: { action: 'restart', appId: 'helm' }, requestId: 'r' }) },
+      { id: 6, kind: 'homebase-update', target: 'homebase', dryRun: false, planJson: '{}' },
+    ],
+    appendJobLog: () => {},
+    updateJob: (id, fields) => { updates[id] = fields; },
+  };
+  assert.deepEqual(new JobRunner(store).failInterruptedLegacyJobs(), [4]);
+  assert.equal(updates[4].status, 'failed');
+  assert.deepEqual(Object.keys(updates), ['4']);
+});

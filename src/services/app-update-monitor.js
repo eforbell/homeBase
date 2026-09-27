@@ -1,6 +1,7 @@
 const path = require('path');
 const { spawn } = require('child_process');
 const { appUpdateStatus: requestExecutorAppUpdateStatus } = require('../executor/client');
+const { appManagement } = require('./executor-install');
 const { getAppById } = require('../catalog');
 
 const DEFAULT_CHECK_INTERVAL_MS = 30 * 60 * 1000;
@@ -108,6 +109,7 @@ class AppUpdateMonitor {
     gitTimeoutMs = DEFAULT_GIT_TIMEOUT_MS,
     executionMode = 'plan-only',
     executorSocket = '',
+    executorGitTransport = '',
     baseInstallDir = '/opt/sovereign-home/apps',
     executorAppUpdateStatus = requestExecutorAppUpdateStatus,
   } = {}) {
@@ -122,6 +124,7 @@ class AppUpdateMonitor {
       gitSshStrictHostKeyChecking: String(gitSshStrictHostKeyChecking || 'accept-new').trim() || 'accept-new',
       executionMode: String(executionMode || 'plan-only'),
       executorSocket: String(executorSocket || ''),
+      executorGitTransport: String(executorGitTransport || ''),
       baseInstallDir: String(baseInstallDir || '/opt/sovereign-home/apps'),
     };
     this.checkIntervalMs = Number.isFinite(checkIntervalMs) ? Math.max(10_000, checkIntervalMs) : DEFAULT_CHECK_INTERVAL_MS;
@@ -141,6 +144,7 @@ class AppUpdateMonitor {
       gitSshStrictHostKeyChecking: String(overrides.gitSshStrictHostKeyChecking ?? this.defaultGitConfig.gitSshStrictHostKeyChecking).trim() || 'accept-new',
       executionMode: String(overrides.executionMode ?? this.defaultGitConfig.executionMode),
       executorSocket: String(overrides.executorSocket ?? this.defaultGitConfig.executorSocket),
+      executorGitTransport: String(overrides.executorGitTransport ?? this.defaultGitConfig.executorGitTransport),
       baseInstallDir: String(overrides.baseInstallDir ?? this.defaultGitConfig.baseInstallDir),
     };
   }
@@ -157,7 +161,8 @@ class AppUpdateMonitor {
     const expectedRoot = path.join(gitConfig.baseInstallDir, app.repoKey);
     if (path.resolve(installRoot) !== expectedRoot) return failed(`Update checks in executor mode require the standard install root ${expectedRoot}.`);
     if (!/^(main|[a-f0-9]{40})$/.test(trackedRef)) return failed(`Executor update checks track main or a pinned commit, not ${trackedRef}.`);
-    const transport = gitConfig.gitTransport === 'ssh' || gitConfig.gitTransport === 'ssh-key' ? 'ssh' : 'https';
+    const transport = ['ssh', 'https'].includes(gitConfig.executorGitTransport) ? gitConfig.executorGitTransport
+      : gitConfig.gitTransport === 'ssh' || gitConfig.gitTransport === 'ssh-key' ? 'ssh' : 'https';
     let result;
     try {
       result = await this.executorAppUpdateStatus(gitConfig.executorSocket, { appId, transport, ref: trackedRef }, { timeoutMs: 120_000 });
@@ -308,7 +313,8 @@ class AppUpdateMonitor {
       };
     }
 
-    if (gitConfig.executionMode === 'executor') {
+    // Adopted apps on a legacy-sudo host have a mirror-backed checkout too, so the executor answers.
+    if (['executor', 'adopting'].includes(appManagement({ homeBaseExecutionMode: gitConfig.executionMode }, { installations: { [appId]: install } }, appId))) {
       return this.evaluateViaExecutor(install, gitConfig, { appId, trackedRef, installRoot, checkedAt });
     }
 

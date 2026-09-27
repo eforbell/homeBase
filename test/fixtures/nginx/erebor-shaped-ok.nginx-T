@@ -1,0 +1,24 @@
+# configuration file /etc/nginx/nginx.conf:
+events {}
+stream {
+  server { listen 50002; proxy_pass 127.0.0.1:50001; }
+}
+http {
+  include /etc/nginx/sites-enabled/*;
+}
+
+# configuration file /etc/nginx/sites-enabled/erebor.forbell.com:
+server {
+    listen 8080;
+    server_name erebor.forbell.com; # the operator's site
+    include /etc/nginx/snippets/*.conf;
+    include /etc/nginx/sovereign-home.d/*.conf;
+}
+server { listen 8081; return 301 https://$host$request_uri; }
+
+# configuration file /etc/nginx/snippets/helm.conf:
+location /helm/ { proxy_pass http://127.0.0.1:3011; }
+
+# configuration file /etc/nginx/sovereign-home.d/bug-base.conf:
+location /bugs/ { proxy_pass http://127.0.0.1:3005/; }
+

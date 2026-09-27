@@ -2,7 +2,7 @@ const fs = require('fs');
 const { runApproved } = require('./spawn');
 const {
   SOVEREIGN_HOME, lookupSystemUser, runAsUser, readExistingDatabasePassword,
-  lstatOrNull, readSmallFileNoFollow, writeFileAtomic, requireLayout, deny,
+  lstatOrNull, readSmallFileNoFollow, SUPERUSER_SQL_PREAMBLE, writeFileAtomic, requireLayout, deny,
 } = require('./handlers');
 const { parseDotEnv, renderEnv } = require('../src/operations/env');
 
@@ -32,7 +32,7 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
   const databaseExists = async (layout) => {
     const postgres = lookupUser('postgres') || deny('The postgres identity does not exist.');
     // The name is a validated, non-reserved identifier (app-layout.js).
-    const result = await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres', '-tA'], uid: postgres.uid, gid: postgres.gid, stdin: `SELECT 1 FROM pg_database WHERE datname = '${layout.database.name}';\n`, timeoutMs: 30000, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+    const result = await run({ binary: '/usr/bin/psql', args: ['-X', '-v', 'ON_ERROR_STOP=1', '-d', 'postgres', '-tA'], uid: postgres.uid, gid: postgres.gid, stdin: `${SUPERUSER_SQL_PREAMBLE}SELECT 1 FROM pg_database WHERE datname = '${layout.database.name}';\n`, timeoutMs: 30000, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
     return String(result.stdout || '').trim() === '1';
   };
   // Integrity reads list archive members (file and table names); keep those out of web-visible job logs.
@@ -200,8 +200,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       const postgres = lookupUser('postgres');
       if (!postgres || !layout.database || operation.database !== layout.database.name || operation.owner !== layout.database.user) deny('Database drop does not match this app.');
       const { name, user } = layout.database; // validated, non-reserved simple identifiers (app-layout.js)
-      const sql = `DROP DATABASE IF EXISTS "${name}" WITH (FORCE);\nDROP ROLE IF EXISTS "${user}";\n`;
-      await run({ binary: '/usr/bin/psql', args: ['-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin: sql, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
+      const sql = `${SUPERUSER_SQL_PREAMBLE}DROP DATABASE IF EXISTS "${name}" WITH (FORCE);\nDROP ROLE IF EXISTS "${user}";\n`;
+      await run({ binary: '/usr/bin/psql', args: ['-X', '-v', 'ON_ERROR_STOP=1', '-d', 'postgres'], uid: postgres.uid, gid: postgres.gid, stdin: sql, timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', HOME: '/var/lib/postgresql', LANG: 'C' } });
       return `dropped database ${name} and role ${user}`;
     },
   };

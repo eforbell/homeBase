@@ -262,44 +262,50 @@ Executor requirements:
 
 ### The `adopt` action
 
-`adopt` takes over an app that legacy-sudo installed, without reinstalling it or changing its data. It is a destructive-profile action (`app-adopt-v1`): it rewrites units and may change database ownership.
+**Status (2026-09-26): built**, with option 1: the host stays in legacy-sudo mode while its apps move to the executor one at a time. Verified in two harnesses. One recreates erebor: Ubuntu 24.04, NodeSource Node 22, a legacy web checkout owned by `homebase`, NOPASSWD sudoers, and five legacy-installed apps. The other recreates numenor: Linux Mint 21.3 (jammy), NodeSource Node 20, PostgreSQL 14, Python 3.10, and bitcoin-accounting tables owned by `postgres`.
 
-What differs on a legacy install:
+`adopt` takes over an app that legacy-sudo installed, in place: same checkout, data, and `.env` values. It compiles from the install plan (`buildAppAdoptPlan`, profile `app-adopt-v1`, destructive) with these differences:
 
-| Legacy state | Executor state | `adopt` step |
-|---|---|---|
-| Units set `EnvironmentFile=<installRoot>/.env` (read by root-run systemd) | No `EnvironmentFile=`; the app loads `.env` | Rewrite units from the catalog layout. Check the app actually loads `.env` itself first; if not, it's an app-side prerequisite |
-| `.env` written by the legacy planner | Rendered through `env.js` with existing values reused | Re-render through `env.js` in strict mode. The golden snapshots guarantee the same output; any difference is a bug, so refuse and show it |
-| Checkout cloned by `sovereign` from the origin URL | Checkout fetched from the root-owned mirror under `/var/lib/sovereign-home/git-mirrors` | Create the mirror at the checkout's current commit and repoint the checkout's remote. Don't re-clone: the checkout holds in-root storage (helm `.secrets`) |
-| Checkout and venv ownership unchecked | `sovereign` owns the checkout; root never follows links into it | Verify (don't `chown -R` as root) that everything is owned by `sovereign`; refuse on anything else, including symlinks that leave the install root |
-| DB tables may be owned by `postgres` (bitcoin-accounting) | App role owns its objects | `postgres.transfer-ownership` |
-| nginx snippet from the legacy renderer | Managed snippet from the executor renderer | Render, `nginx -t`, reload (existing operations) |
-| Legacy venv, of unknown interpreter version | Venv built by the executor | Build a new venv as `sovereign`, then swap. Keep the old venv until readiness passes |
+| Step | Why |
+|---|---|
+| `nginx.assert-app-include` first (`nginx -T` as root, parsed by `src/operations/nginx-config.js`) | Legacy hosts serve apps from an operator-managed server block that includes `/etc/nginx/snippets/*.conf` (erebor's `erebor.forbell.com` site, numenor's `nginx.conf`). The executor's snippets live in `/etc/nginx/sovereign-home.d/`, so **that same block** must include it too, in every block that serves legacy snippets. Refuses, before changing anything, with the exact line to add |
+| `backup.create` safety backup | Covers in-checkout storage (helm `.secrets`), `.env`, and the database |
+| No managed gateway | `nginx.ensure-gateway` also leaves an operator gateway alone whenever the active config already includes `sovereign-home.d`, so later executor updates never take over `default_server` |
+| `postgres.transfer-ownership` after `ensure-database` | Legacy ran schema files as `postgres`. It hands the app role its public tables, views, standalone sequences (column-owned ones move with their table), enum/domain/range/composite types, and functions and procedures. Refuses databases with other schemas. On numenor this moves 9 objects. It runs as superuser inside a database the app owns, so `search_path` is pinned to `pg_catalog, pg_temp` and every operator and function is schema-qualified; otherwise an operator the app planted in `public` would run as superuser (the CVE-2018-1058 class, reproduced on PostgreSQL 14 and 16 before the fix). Every other script the executor runs as `postgres` starts with the same `SET search_path` |
+| `nginx.retire-legacy-snippets` right after the new snippet is written | Both snippets in one server would be duplicate locations. Removes the app's own `snippets/<app>.conf` and those of its nginx-published sidecars, keeping root-only copies in `/var/lib/homebase-executor/retired-nginx-snippets/<app>/`. Shared snippets (fonts, snakeoil) are untouched |
+| Credentials are never generated | An app without database wiring in its `.env` is refused ("install it instead") |
 
-Plan order:
-1. `backup.create`, the safety backup, covering in-root storage.
-2. Build the new venv and mirror. This is read-only as far as the running app is concerned.
-3. Stop the units.
-4. Rewrite the units and `.env`, then transfer ownership.
-5. `daemon-reload`, then start the units.
-6. Wait for readiness.
-7. Remove the old venv.
+The rest is the install plan: git sync repoints `origin` at the root-owned mirror and fast-forwards (no re-clone; untracked files such as helm's `.cache/` never block). The venv is reused when the interpreter matches. `.env` is re-rendered through the reinstall contract, so secrets and operator keys come through byte-identical, now `sovereign` 0640. Units are rewritten without `EnvironmentFile=` and with `TZ=`, timers keep their calendars exactly, and the plan ends with a readiness check.
 
-**Failure and rollback.** If readiness fails, restore the previous units, `.env` and venv from the safety state and restart. Record in the journal which steps completed, so that re-running `adopt` is safe (as with uninstall's resumability). Ownership transfer is the one step that isn't reversed; it is harmless for legacy mode, because the app role still has its grants.
+**Web side.** Installations have a `managed_by` column. On a legacy-sudo host, `executorManagesApp()` sends adopted apps' install/update, restart, backup, restore, uninstall, and update checks to the executor; everything else stays on legacy. `POST /api/apps/:id/adopt/execute` previews by default, and the app page has an "Executor adoption" card. The executor fetches with its own key (`HOME_BASE_EXECUTOR_GIT_TRANSPORT`), while `HOME_BASE_GIT_TRANSPORT` keeps serving legacy apps.
 
-**Switching the host.** Only after every app on the host has been adopted:
-1. Run `install.sh` to add the executor. This is the trust bootstrap; the UI can't do it.
-2. Set `HOME_BASE_EXECUTION_MODE=executor` in the unit's `EnvironmentFile`. Remember that Home Base does not read a checkout `.env`.
-3. Restart Home Base.
-4. Remove the legacy sudoers entry.
+**Moving a legacy host (operator steps):**
+0. Update the legacy web checkout to a release that has adopt (its usual self-update), and check that `/etc/sovereign-home/homebase.env` sets `HOME_BASE_STATE_DB` under `/var/lib/sovereign-home/homebase` (erebor does). Without it, the legacy web keeps state in its own checkout, and the switch refuses.
+1. `sudo bash install.sh --add-executor --git-ssh-key <key>`. This installs a root-owned executor in `/opt/homebase-executor` beside the legacy service and writes the root-owned marker `/etc/sovereign-home/legacy-coexistence`; the executor accepts `adopt` only while it exists. Mode, sudoers, and the web checkout are untouched, but the web service restarts once to join the executor's socket group, so the command refuses while legacy jobs run (`--force` overrides). The key must be able to read every app repository (erebor's account-level key works); it is copied root-only. Re-run `--add-executor` after each web self-update so both run the same code.
+2. Add `include /etc/nginx/sovereign-home.d/*.conf;` right next to `include /etc/nginx/snippets/*.conf;`, **inside every server block that has that line** (erebor: the `erebor.forbell.com` site; numenor: the `http` server in `nginx.conf`). Then `sudo nginx -t && sudo systemctl reload nginx`. Adopt reads `nginx -T` and refuses unless each server block serving legacy snippets also has the new include. An include in another block or at `http` level would still pass `nginx -t` while the public route disappears.
+3. Adopt each app from its page: preview, then run. Other apps keep working through legacy meanwhile. Adopt refuses an app whose legacy install is not at the catalog's path, mount path, and port. Moving it would break whatever outside Home Base points at the old one. The first step reports which server blocks it found serving legacy snippets; check that this matches your config. An app newly installed during coexistence installs the legacy way and must be adopted too before the switch.
+4. `sudo bash install.sh --switch-to-executor`. It refuses while any installed app is not adopted (`--force` does not skip this), and it refuses `--no-start`, because it removes the sudo policy only after the new service has started and answered. It saves the env file and web unit to `/etc/sovereign-home/switch-backup-<time>/`, moves the legacy checkout aside (kept), installs the managed hardened service, and sets executor mode with auto-bootstrap off. It also makes the env file root-owned and takes `homebase` out of the `sovereign` group before the web restarts. Only after the service answers does it remove the sudoers policy, the coexistence marker, and the coexistence copy. It warns if `homebase` still has sudo rules from anywhere else.
+5. Delete app-readable copies of the git key (erebor: `/opt/sovereign-home/.ssh/id_founder_homebase`) once nothing legacy remains.
 
-Until the mode is switched, `adopt` runs through the executor on a host that is still in legacy mode. So either allow `adopt` in legacy mode as the only executor action, or run adoption with the host in executor mode for all apps at once. Decide and record which before building it; the first is gentler on production.
+**If an adopt fails.** The app is marked "adoption incomplete". Every action except adopt refuses for it, because the failed run may already have rewritten its units, `.env`, git remote, and nginx snippet (the old processes and nginx config keep running until something reloads them). Fix the cause shown in the job (PyPI, nginx include placement, and so on) and re-run adopt. It is idempotent and picks up where it stopped. A snippet swap that nginx rejects is undone on the spot, and a venv rebuild that fails restores the previous venv.
 
-**Verification before production:**
-- In the container harness, build a host in legacy mode from the last legacy-capable `main`, with helm and bitcoin-accounting (fake Schwab credentials; a `.secrets` sentinel file).
-- Adopt, then check that `.env` is byte-identical, the `.secrets` sentinel is intact, the timers are listed with the same calendars, and the tables are owned by the app role.
-- Back up, restore and uninstall through the executor.
-- Interrupt `adopt` at each step and re-run it.
+**Rolling back one adopt by hand** (for example to go back to legacy for an app):
+1. Return the app to legacy routing first. For an adopt that did not finish, use **Abandon adopt** on its page (`POST /api/apps/<app>/adopt/abandon` with `confirm: "ABANDON"`, admin only, refused while a job runs). The response lists the remaining steps. For a completed adopt: `sudo sqlite3 /var/lib/sovereign-home/homebase/home-base.sqlite3 "UPDATE installations SET managed_by = NULL WHERE app_id = '<app>'"`.
+2. Point the checkout back at GitHub. Legacy git runs as sovereign and cannot use the root-owned mirror: `sudo -u sovereign git -C /opt/sovereign-home/apps/<repoKey> remote set-url origin <repository url>`.
+3. Copy the retired snippet back from `/var/lib/homebase-executor/retired-nginx-snippets/<app>/` into `/etc/nginx/snippets/`, delete `/etc/nginx/sovereign-home.d/<app>.conf`, then `sudo nginx -t && sudo systemctl reload nginx`.
+4. Run a legacy reinstall of the app from its page; it rewrites the units with `EnvironmentFile=`. The ownership transfer stays; it is harmless for legacy.
+
+**If `--switch-to-executor` stops partway.** Re-run it: when the env already says `executor` but the sudoers file and `/opt/homebase-executor` are still there, it resumes. To go back to legacy instead:
+1. `sudo systemctl stop homebase`.
+2. Move `/opt/sovereign-home/homebase.legacy-<time>` back to `/opt/sovereign-home/homebase`, after moving any half-installed managed copy out of the way.
+3. Restore `homebase.env` and `homebase.service` from `/etc/sovereign-home/switch-backup-<time>/`.
+4. `sudo usermod -a -G sovereign homebase` if it was removed.
+5. `sudo systemctl daemon-reload && sudo systemctl start homebase`.
+
+**Notes.**
+- Adopt tracks `main` (or the pinned SHA the legacy record has). A legacy install on another branch is fast-forwarded to `main`, so the preview is also an update.
+- Operator edits made directly in a legacy snippet are not carried over; the retired copy keeps them for reference.
+- Downgrading the web below a release that knows `managed_by` would run legacy plans against adopted apps; don't.
 
 ## Architecture roadmap (from the independent architecture review, 2026-09-25)
 
@@ -320,6 +326,5 @@ Catalog strain, in expected order: sidecar ports (keep them reserved in the cata
 - Tailscale installation is not a typed operation.
 - Ports are the catalog's preferred ports (by design); a conflicting app must be moved before an executor install.
 - The shapes marked **no** in the support matrix.
-- `adopt` (taking over legacy installs in place): see [The `adopt` action](#the-adopt-action). Until it exists, a legacy host moves to executor mode only by reinstalling its apps.
 - bitcoin-accounting installs unpinned Python dependencies (no lockfile in its repo yet).
 - bitcoin-accounting's `migrations/001_add_soft_delete_columns.sql` is not wired into `migrationCommand`. Fresh installs don't need it (`tables.sql` already has the columns); a database created from an older `tables.sql` (possibly numenor's) does, so check during `adopt`.

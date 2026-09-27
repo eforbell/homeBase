@@ -84,6 +84,19 @@ class JobRunner {
     }
   }
 
+  // Legacy plan jobs run inside this process, so one still queued or running at startup was cut off by
+  // the restart and can never finish. Left as is, it would block its app (see appMutationBlock) forever.
+  // Typed jobs are reconciled with the executor instead, and self-updates by reconcileStaleUpdateJobs.
+  failInterruptedLegacyJobs() {
+    const unfinished = typeof this.stateStore.listUnfinishedJobs === 'function' ? this.stateStore.listUnfinishedJobs() : [];
+    const interrupted = unfinished.filter((job) => job.kind !== 'homebase-update' && !parsePlanJson(job.planJson)?.action);
+    for (const job of interrupted) {
+      this.stateStore.appendJobLog(job.id, '\n[reconcile] Home Base restarted while this job was running, so it stopped partway. Check the app, then run the action again.\n');
+      this.stateStore.updateJob(job.id, { status: 'failed', finishedAt: new Date().toISOString(), errorText: 'Interrupted by a Home Base restart.' });
+    }
+    return interrupted.map((job) => job.id);
+  }
+
   startBootstrapJob(plan, { dryRun = true } = {}) {
     return this.startPlanJob({
       kind: 'bootstrap',
@@ -233,12 +246,12 @@ class JobRunner {
       return;
     }
     const app = action.appId ? getAppById(action.appId) : null;
-    if (['install', 'restart', 'restore'].includes(action.action)) {
+    if (['install', 'adopt', 'restart', 'restore'].includes(action.action)) {
       // Installed/restored only after the app answers readiness, never merely because systemd started it.
       this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
       await waitForAppReadiness({ app, ...this.readinessOptions });
     }
-    if (action.action === 'install') {
+    if (action.action === 'install' || action.action === 'adopt') {
       const { stateRecord } = buildExecutorInstallRecord({ appId: action.appId, ref: action.ref, config: { defaultHostname: action.site.hostname, defaultDomain: action.site.domain, householdTimezone: action.site.householdTimezone } });
       this.stateStore.upsertInstallation({ ...stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
     }
@@ -298,6 +311,12 @@ class JobRunner {
   startTypedInstallJob({ appId, ref, transport, site, onComplete = null }) {
     if (!getAppById(appId)) throw new Error(`Unknown catalog app: ${appId}`);
     return this.startTypedActionJob({ kind: 'install', target: appId, action: { action: 'install', appId, ref, transport, site }, onComplete });
+  }
+
+  // Takes over a legacy install in place; on success the app is recorded as executor-managed.
+  startTypedAdoptJob({ appId, ref, transport, site, onComplete = null }) {
+    if (!getAppById(appId)) throw new Error(`Unknown catalog app: ${appId}`);
+    return this.startTypedActionJob({ kind: 'adopt', target: appId, action: { action: 'adopt', appId, ref, transport, site }, onComplete });
   }
 
   startTypedRestartJob({ appId }) {

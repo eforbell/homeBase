@@ -448,13 +448,13 @@ const catalog = [
     repository: {
       url: 'https://github.com/eforbell/bitcoinAccounting.git',
       sshUrl: 'git@github.com:eforbell/bitcoinAccounting.git',
-      defaultRef: 'master',
+      defaultRef: 'main',
     },
     runtime: {
       kind: 'python',
       installCommand: '.venv/bin/python -m pip install -e .',
       // Typed form of installCommand for the executor. Unpinned until the repo ships a lockfile.
-      python: { editable: true },
+      python: { editable: true, minVersion: '3.10' },
       startCommand: '.venv/bin/uvicorn web.app:create_app --factory --host 127.0.0.1 --port {{port}}',
       pythonVenv: '.venv',
     },
@@ -542,7 +542,7 @@ const catalog = [
       kind: 'python',
       installCommand: 'install -d -m 0700 .secrets && .venv/bin/python -m pip install -r requirements.lock && .venv/bin/python -m pip install -e . --no-deps',
       // Typed form of installCommand for the executor (.secrets comes from storage.paths).
-      python: { requirements: 'requirements.lock', editable: true, editableNoDeps: true },
+      python: { requirements: 'requirements.lock', editable: true, editableNoDeps: true, minVersion: '3.11' },
       startCommand: '.venv/bin/uvicorn schwab_helm.web.app:create_app --factory --host 127.0.0.1 --port {{port}}',
       pythonVenv: '.venv',
     },

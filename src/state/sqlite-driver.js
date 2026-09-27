@@ -132,6 +132,9 @@ if op == "init":
         conn.execute("ALTER TABLE homebase_config ADD COLUMN health_alerts_webhook_url TEXT")
     if "tailscale_managed_service_id" not in columns:
         conn.execute("ALTER TABLE homebase_config ADD COLUMN tailscale_managed_service_id TEXT")
+    installation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(installations)")}
+    if "managed_by" not in installation_columns:
+        conn.execute("ALTER TABLE installations ADD COLUMN managed_by TEXT")
     conn.commit()
     emit({"ok": True})
 
@@ -175,6 +178,7 @@ elif op == "load_state":
             "status": record["status"],
             "plannedAt": record["planned_at"],
             "updatedAt": record["updated_at"],
+            "managedBy": record.get("managed_by") or "",
             "updateStatus": update_status,
         }
     def serialize_job(row):
@@ -245,8 +249,8 @@ elif op == "upsert_installation":
         """
         INSERT INTO installations (
           app_id, name, purpose, port, mount_path, external_url,
-          install_root, service_name, git_ref, status, planned_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          install_root, service_name, git_ref, status, planned_at, updated_at, managed_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(app_id) DO UPDATE SET
           name=excluded.name,
           purpose=excluded.purpose,
@@ -258,7 +262,8 @@ elif op == "upsert_installation":
           git_ref=excluded.git_ref,
           status=excluded.status,
           planned_at=excluded.planned_at,
-          updated_at=excluded.updated_at
+          updated_at=excluded.updated_at,
+          managed_by=COALESCE(excluded.managed_by, installations.managed_by)
         """,
         (
             record["appId"],
@@ -273,6 +278,7 @@ elif op == "upsert_installation":
             record["status"],
             record["plannedAt"],
             record["updatedAt"],
+            record.get("managedBy") or None,
         ),
     )
     conn.commit()
@@ -509,6 +515,15 @@ elif op == "delete_backups":
     conn.execute(
         "DELETE FROM backup_records WHERE app_id = ?",
         (payload["appId"],),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "set_managed_by":
+    # The upsert only ever keeps or advances managed_by; this is the one explicit way to change it back.
+    conn.execute(
+        "UPDATE installations SET managed_by = ? WHERE app_id = ?",
+        (payload.get("managedBy") or None, payload["appId"]),
     )
     conn.commit()
     emit({"ok": True})

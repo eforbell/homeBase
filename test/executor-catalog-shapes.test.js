@@ -141,10 +141,29 @@ test('ensure-venv builds a venv once per interpreter and rebuilds it after a Pyt
   assert.match(kept, /ready/);
   assert.equal(same.calls.length, 1);
 
+  // A patch upgrade keeps the venv: its bin/python links to /usr/bin/python3.
+  const patched = run('3.12.9');
+  assert.match(await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: patched.fn })['runtime.run-app-task'](task, { layout: HELM }), /ready/);
+  assert.equal(patched.calls.length, 1);
+
+  // A minor upgrade rebuilds beside the old venv and swaps; the old one is removed only on success.
+  const upgradedFs = createFakeFs(built);
   const upgraded = run('3.13.1');
-  const rebuilt = await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: upgraded.fn })['runtime.run-app-task'](task, { layout: HELM });
-  assert.deepEqual(upgraded.calls[1].args, ['-m', 'venv', '--clear', '.venv']);
+  const rebuilt = await createBaseHandlers({ fsImpl: upgradedFs, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: upgraded.fn })['runtime.run-app-task'](task, { layout: HELM });
+  assert.deepEqual(upgraded.calls.map((call) => [call.binary.split('/').pop(), ...call.args.slice(0, 3)]), [['python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'], ['python3', '-m', 'venv', '.venv'], ['python', '-m', 'pip', 'install'], ['python', '-m', 'pip', 'install']]);
   assert.match(rebuilt, /rebuilt virtualenv for Python 3\.13\.1 \(was 3\.12\.3\)/);
+  assert.equal(upgradedFs.existsSync(`${HELM_ROOT}/.venv.previous`), false);
+
+  // If pip fails (PyPI down), the previous venv comes back and the task fails.
+  const rollbackFs = createFakeFs(built);
+  const failingPip = async (input) => {
+    if (input.args[0] === '-c') return { stdout: '3.13.1\n' };
+    if (input.args.includes('pip')) throw Object.assign(new Error('pip: connection timed out'), { code: 'OPERATION_FAILED' });
+    return { stdout: '' };
+  };
+  await assert.rejects(() => createBaseHandlers({ fsImpl: rollbackFs, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: failingPip })['runtime.run-app-task'](task, { layout: HELM }), /connection timed out/);
+  assert.equal(rollbackFs.readFileSync(`${HELM_ROOT}/.venv/pyvenv.cfg`), 'home = /usr/bin\nversion = 3.12.3\n', 'the running app keeps its packages');
+  assert.equal(rollbackFs.existsSync(`${HELM_ROOT}/.venv.previous`), false);
   await assert.rejects(() => createBaseHandlers({ fsImpl: fresh, lookupUser: () => SOVEREIGN, run: first.fn })['runtime.run-app-task'](task, { layout: getLayout('family-dinner') }), (error) => error.code === 'POLICY_DENIED');
 });
 
@@ -241,4 +260,34 @@ test('app tasks re-check the checkout before every spawn, and refuse unexpected 
   assert.equal(spawns, 1);
   const noisy = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: async () => ({ stdout: 'x'.repeat(70000) }) });
   await assert.rejects(() => noisy['runtime.run-app-task'](base('runtime.run-app-task', { task: 'ensure-venv' }), { layout: HELM }), /system Python version/);
+});
+
+test('supported hosts: Ubuntu 22.04+, Debian 12+, and derivatives by their base codename', () => {
+  const { hostSupport } = require('../src/operations/host-support');
+  const os = (fields) => Object.entries(fields).map(([key, value]) => `${key}="${value}"`).join('\n');
+  // numenor: Linux Mint 21.3 on Ubuntu 22.04 (jammy).
+  assert.deepEqual(hostSupport(os({ ID: 'linuxmint', ID_LIKE: 'ubuntu debian', VERSION_ID: '21.3', UBUNTU_CODENAME: 'jammy', PRETTY_NAME: 'Linux Mint 21.3' })), { supported: true, base: 'ubuntu 22.04', name: 'Linux Mint 21.3' });
+  assert.equal(hostSupport(os({ ID: 'ubuntu', VERSION_ID: '24.04' })).supported, true);
+  assert.equal(hostSupport(os({ ID: 'ubuntu', VERSION_ID: '22.04' })).supported, true);
+  assert.equal(hostSupport(os({ ID: 'ubuntu', VERSION_ID: '20.04' })).supported, false);
+  assert.equal(hostSupport(os({ ID: 'debian', VERSION_ID: '12' })).supported, true);
+  assert.equal(hostSupport(os({ ID: 'debian', VERSION_ID: '11' })).supported, false);
+  assert.equal(hostSupport(os({ ID: 'linuxmint', ID_LIKE: 'ubuntu debian', UBUNTU_CODENAME: 'focal' })).supported, false);
+  assert.equal(hostSupport(os({ ID: 'fedora', VERSION_ID: '40' })).supported, false);
+});
+
+test('git sync ignores untracked files when deciding whether a checkout is dirty', async () => {
+  const calls = [];
+  const fsImpl = createFakeFs({ [`${HELM_ROOT}/.git`]: { kind: 'dir', uid: 1001 }, '/etc/sovereign-home': { kind: 'dir' }, [HELM.mirror]: { kind: 'dir' } });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: async (input) => { calls.push(input); return { stdout: '' }; } });
+  await handlers['git.sync'](base('git.sync', { repository: HELM.repositories.https, ref: 'main' }), { layout: HELM });
+  assert.ok(calls.some((call) => call.args.join(' ') === `-C ${HELM_ROOT} status --porcelain --untracked-files=no`));
+});
+
+test('ensure-venv refuses a host Python older than the app requires, before building anything', async () => {
+  const calls = [];
+  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: async (input) => { calls.push(input); return { stdout: '3.10.12\n' }; } });
+  await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'ensure-venv' }), { layout: HELM }), /Helm needs Python 3\.11 or newer; this host has 3\.10\.12/);
+  assert.equal(calls.length, 1, 'only the version probe ran');
+  assert.equal(BITCOIN.runtime.python.minVersion, '3.10');
 });

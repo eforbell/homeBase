@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const { redactText } = require('../src/operations/redact');
 
 const ALLOWED_BINARIES = new Set([
-  '/usr/bin/apt-get', '/usr/sbin/useradd', '/usr/bin/git', '/usr/bin/npm', '/usr/bin/node', '/usr/bin/pg_dump', '/usr/bin/pg_restore', '/usr/bin/tar', '/usr/bin/psql', '/usr/bin/systemctl', '/usr/sbin/nginx', '/usr/bin/id',
+  '/usr/bin/apt-get', '/usr/bin/dpkg-query', '/usr/sbin/useradd', '/usr/bin/git', '/usr/bin/npm', '/usr/bin/node', '/usr/bin/pg_dump', '/usr/bin/pg_restore', '/usr/bin/tar', '/usr/bin/psql', '/usr/bin/systemctl', '/usr/sbin/nginx', '/usr/bin/id',
 ]);
 // App-controlled interpreters: the system python3 (to build a venv) and tools inside an app's venv.
 // They run app code, so they are refused for root.

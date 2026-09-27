@@ -70,6 +70,7 @@ function appUpdateStatus(socketPath, { appId, transport, ref }, options) {
 const ACTION_FIELD_NAMES = {
   bootstrap: [],
   install: ['appId', 'ref', 'transport', 'site'],
+  adopt: ['appId', 'ref', 'transport', 'site'],
   restart: ['appId'],
   backup: ['appId'],
   restore: ['appId', 'backupId'],

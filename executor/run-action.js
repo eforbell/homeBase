@@ -1,4 +1,5 @@
 const { compileAction, generateSecretBindings } = require('./actions');
+const { ProtocolError } = require('./protocol-error');
 const { executePlan } = require('./execute');
 const { readExistingDatabasePassword } = require('./handlers');
 const { appLayout } = require('../src/operations/app-layout');
@@ -17,9 +18,13 @@ function createRunAction({ handlers, journal, compile = compileAction, execute =
     // The accepted plan is streamed first so Home Base records exactly what ran (it holds no secrets).
     emit({ eventType: 'plan.accepted', planDigest, plan });
     try {
-      // Only installs bind secrets; lifecycle handlers read live wiring themselves when they need it.
-      const layout = plan.kind === 'app-install' ? appLayout(getAppById(plan.target)) : null;
+      // Only installs and adopts bind secrets; lifecycle handlers read live wiring themselves.
+      const layout = ['app-install', 'app-adopt'].includes(plan.kind) ? appLayout(getAppById(plan.target)) : null;
       const existing = layout?.database ? { databasePassword: existingPassword(layout) } : {};
+      // Adopting keeps the running app's credentials; a missing one means there is nothing to adopt.
+      if (plan.kind === 'app-adopt' && layout?.database && !existing.databasePassword) {
+        throw new ProtocolError('POLICY_DENIED', `${layout.app.name} has no database wiring in its .env; nothing to adopt (adopt keeps an app's existing credentials and never creates them).`);
+      }
       const execution = await execute({ plan, secretBindings: generateSecretBindings(plan, { existing }) }, { handlers, emit });
       journal.finish(jobId, { ok: true });
       return { planDigest, ...execution };

@@ -5,10 +5,7 @@ const { operation, planEnvelope } = require('./common');
 // Restart, backup, restore, and uninstall compile from the same catalog layout as install.
 // Destructive plans (restore, uninstall) take a safety backup before changing anything.
 
-// Same archive naming as the legacy backup planner, so both modes read each other's backups.
-function archiveNameFor(generatedAt) {
-  return generatedAt.replaceAll(':', '').replaceAll('-', '').replace('.000', '').replace('.', '');
-}
+const { archiveNameFor } = require('./archive-name');
 
 function layoutFor(appId) {
   const app = getAppById(appId);

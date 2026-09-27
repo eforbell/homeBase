@@ -1,6 +1,7 @@
 const { getAppById } = require('../../catalog');
 const { appLayout } = require('../app-layout');
 const { operation, planEnvelope } = require('./common');
+const { archiveNameFor } = require('./archive-name');
 
 const DEFAULT_SITE = Object.freeze({ hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' });
 const DATABASE_PASSWORD_REF = 'databasePassword';
@@ -16,7 +17,7 @@ function repositoryForTransport(layout, gitTransport) {
 
 // Compiles an app install from its catalog shape (app-layout.js). Operations run in order; each
 // depends on the previous one so a failure stops the plan at a precise, resumable point.
-function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site = DEFAULT_SITE, generatedAt, catalogRevision } = {}) {
+function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site = DEFAULT_SITE, generatedAt, catalogRevision, adopt = false } = {}) {
   const app = getAppById(appId);
   if (!app) throw Object.assign(new Error(`Unknown catalog app: ${appId}`), { code: 'POLICY_DENIED' });
   if (!/^(main|[a-f0-9]{40})$/.test(ref)) throw Object.assign(new Error('Executor installs permit only main or a 40-character commit SHA.'), { code: 'POLICY_DENIED' });
@@ -27,6 +28,12 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
     operations.push(operation({ dependsOn: previous ? [previous.id] : [], ...fields }));
   };
   const name = app.name;
+
+  if (adopt) {
+    // Refuse before touching anything unless the host's nginx serves the executor's snippet directory.
+    add({ id: 'check-nginx-include', type: 'nginx.assert-app-include', title: 'Check that nginx includes /etc/nginx/sovereign-home.d', risk: 'read', timeoutMs: 30000 });
+    add({ id: 'safety-backup', type: 'backup.create', title: `Back up ${name} before adopting it`, timeoutMs: 900000, archiveName: archiveNameFor(generatedAt || new Date().toISOString()) });
+  }
 
   add({ id: 'ensure-sovereign-root', type: 'filesystem.ensure-directory', title: 'Ensure root-owned Sovereign Home directory', purpose: 'sovereign-root' });
   add({ id: 'ensure-app-root', type: 'filesystem.ensure-directory', title: 'Ensure managed apps directory', purpose: 'app-root' });
@@ -47,6 +54,8 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
   if (layout.database) {
     add({ id: 'ensure-db-role', type: 'postgres.ensure-role', title: `Ensure ${name} database role`, preconditions: ['postgres-ready'], secretRefs: [DATABASE_PASSWORD_REF], role: layout.database.user, passwordSecretRef: DATABASE_PASSWORD_REF });
     add({ id: 'ensure-database', type: 'postgres.ensure-database', title: `Ensure ${name} database`, database: layout.database.name, owner: layout.database.user });
+    // Legacy ran schema files as postgres, so some tables may belong to it; the executor restores as the app role.
+    if (adopt) add({ id: 'transfer-ownership', type: 'postgres.transfer-ownership', title: `Hand ${name} database objects to the ${layout.database.user} role`, database: layout.database.name, owner: layout.database.user });
   }
   add({
     id: 'write-environment', type: 'filesystem.write-managed-file', title: `Write ${name} environment`,
@@ -63,6 +72,8 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
   });
   add({ id: 'ensure-nginx-apps', type: 'filesystem.ensure-directory', title: 'Ensure managed nginx app directory', purpose: 'nginx-apps' });
   add({ id: 'write-nginx', type: 'filesystem.write-managed-file', title: `Write ${name} nginx snippet`, purpose: 'nginx-snippet', template: 'app-nginx-v1' });
+  // Both snippets in the same server would be duplicate locations; the legacy one is kept aside, not deleted.
+  if (adopt) add({ id: 'retire-legacy-snippets', type: 'nginx.retire-legacy-snippets', title: `Retire the legacy ${name} nginx snippet`, risk: 'destructive' });
   if (layout.runtime.kind === 'python') {
     add({ id: 'ensure-venv', type: 'runtime.run-app-task', title: `Ensure ${name} Python virtualenv`, timeoutMs: 300000, preconditions: ['app-checkout'], task: 'ensure-venv' });
   }
@@ -77,11 +88,18 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
   add({ id: 'start-service', type: 'systemd.ensure-service', title: `Enable and restart ${name}`, unit: layout.service.unit, action: 'enable-and-restart' });
   layout.sidecars.forEach((sidecar, index) => add({ id: `start-sidecar-${index + 1}`, type: 'systemd.ensure-service', title: `Enable and restart ${sidecar.name}`, unit: sidecar.unit, action: 'enable-and-restart' }));
   layout.timers.forEach((timer, index) => add({ id: `start-timer-${index + 1}`, type: 'systemd.ensure-service', title: `Enable and restart ${timer.timerUnit}`, unit: timer.timerUnit, action: 'enable-and-restart' }));
-  add({ id: 'ensure-gateway', type: 'nginx.ensure-gateway', title: 'Ensure the managed nginx gateway site' });
+  if (!adopt) add({ id: 'ensure-gateway', type: 'nginx.ensure-gateway', title: 'Ensure the managed nginx gateway site' });
   add({ id: 'reload-nginx', type: 'nginx.validate-and-reload', title: 'Validate and reload nginx', preconditions: ['nginx-configured'] });
   add({ id: 'wait-ready', type: 'http.wait-ready', title: `Wait for ${name} readiness`, risk: 'read', timeoutMs: 60000, executor: 'homebase', port: layout.port, path: layout.readinessPath });
 
-  return planEnvelope({ kind: 'app-install', target: app.id, policyProfile: 'app-install-v1', operations, generatedAt, catalogRevision });
+  return adopt
+    ? planEnvelope({ kind: 'app-adopt', target: app.id, policyProfile: 'app-adopt-v1', operations, generatedAt, catalogRevision })
+    : planEnvelope({ kind: 'app-install', target: app.id, policyProfile: 'app-install-v1', operations, generatedAt, catalogRevision });
 }
 
-module.exports = { buildAppInstallPlan, repositoryForTransport, DATABASE_PASSWORD_REF, DEFAULT_SITE };
+// Takes over an app that legacy-sudo mode installed, in place: same checkout, data, and .env values.
+function buildAppAdoptPlan(options = {}) {
+  return buildAppInstallPlan({ ...options, adopt: true });
+}
+
+module.exports = { buildAppInstallPlan, buildAppAdoptPlan, repositoryForTransport, DATABASE_PASSWORD_REF, DEFAULT_SITE };

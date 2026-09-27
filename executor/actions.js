@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { ProtocolError } = require('./protocol-error');
 const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
-const { buildAppInstallPlan } = require('../src/operations/compilers/install');
+const { buildAppInstallPlan, buildAppAdoptPlan } = require('../src/operations/compilers/install');
 const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan } = require('../src/operations/compilers/lifecycle');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const { digestOperationPlan } = require('../src/operations/digest');
@@ -13,6 +13,7 @@ const { isValidSite } = require('../src/homebase-config');
 const ACTIONS = Object.freeze({
   bootstrap: { fields: [] },
   install: { fields: ['appId', 'ref', 'transport', 'site'] },
+  adopt: { fields: ['appId', 'ref', 'transport', 'site'] },
   restart: { fields: ['appId'] },
   backup: { fields: ['appId'] },
   restore: { fields: ['appId', 'backupId'] },
@@ -24,6 +25,17 @@ const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-
 const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }
+
+// adopt exists only while a legacy-sudo host is moving to the executor. install.sh --add-executor writes
+// this root-owned marker and --switch-to-executor removes it, so after the switch a compromised web
+// process cannot re-run adopt (which rewrites units and hands database objects around).
+const LEGACY_COEXISTENCE_MARKER = '/etc/sovereign-home/legacy-coexistence';
+function legacyCoexistence(fsImpl = require('fs')) {
+  try {
+    const stat = fsImpl.lstatSync(LEGACY_COEXISTENCE_MARKER);
+    return stat.isFile() && stat.uid === 0 && (stat.mode & 0o022) === 0;
+  } catch { return false; }
+}
 function invalid(message) { throw new ProtocolError('INVALID_REQUEST', message); }
 
 function normalizeAction(request) {
@@ -47,10 +59,10 @@ function normalizeAction(request) {
   if (!['https', 'ssh'].includes(request.transport)) invalid('transport must be https or ssh.');
   if (!isValidSite(request.site)) invalid('site must be exactly { hostname, domain, householdTimezone } with valid values.');
   const site = { hostname: request.site.hostname, domain: request.site.domain, householdTimezone: request.site.householdTimezone };
-  return { action: 'install', appId: request.appId, ref: request.ref, transport: request.transport, site };
+  return { action: request.action, appId: request.appId, ref: request.ref, transport: request.transport, site };
 }
 
-function compileAction(action, { generatedAt = new Date().toISOString() } = {}) {
+function compileAction(action, { generatedAt = new Date().toISOString(), adoptAllowed = legacyCoexistence } = {}) {
   let plan;
   if (action.action === 'bootstrap') {
     plan = buildHostBootstrapPlan({ generatedAt });
@@ -58,6 +70,9 @@ function compileAction(action, { generatedAt = new Date().toISOString() } = {}) 
     deny(`The executor does not manage ${action.appId} yet.`);
   } else if (action.action === 'install') {
     plan = buildAppInstallPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
+  } else if (action.action === 'adopt') {
+    if (!adoptAllowed()) deny('adopt is only available while a legacy-sudo host is moving to the executor (install.sh --add-executor).');
+    plan = buildAppAdoptPlan({ appId: action.appId, ref: action.ref, gitTransport: action.transport, site: action.site, generatedAt });
   } else if (action.action === 'restart') {
     plan = buildAppRestartPlan({ appId: action.appId, generatedAt });
   } else if (action.action === 'backup') {
@@ -91,4 +106,4 @@ function generateSecretBindings(plan, { existing = {} } = {}) {
   return bindings;
 }
 
-module.exports = { ACTIONS, ACTION_FIELDS, INSTALLABLE_APPS, normalizeAction, compileAction, generateSecretBindings };
+module.exports = { ACTIONS, ACTION_FIELDS, INSTALLABLE_APPS, LEGACY_COEXISTENCE_MARKER, legacyCoexistence, normalizeAction, compileAction, generateSecretBindings };
