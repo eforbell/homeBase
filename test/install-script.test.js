@@ -466,7 +466,7 @@ test('--switch-to-executor replaces the legacy checkout with the managed install
   const fixture = createSourceCheckout(tempDir);
   const env = legacyHost(tempDir, fixture, { adopted: ['helm', 'family-dinner'] });
   assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], env).status, 0);
-  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor', '--no-start'], env);
+  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], env);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, '.homebase-version'), 'utf8').trim(), fixture.version);
   const aside = fs.readdirSync(path.dirname(env.HOMEBASE_INSTALL_DIR)).find((name) => name.startsWith('homebase.legacy-'));
@@ -496,7 +496,7 @@ test('--switch-to-executor resumes after stopping partway, and refuses a state d
   fs.mkdirSync(firstBackup);
   fs.copyFileSync(env.HOMEBASE_ENV_FILE, path.join(firstBackup, 'homebase.env'));
   fs.writeFileSync(env.HOMEBASE_ENV_FILE, fs.readFileSync(env.HOMEBASE_ENV_FILE, 'utf8').replace('HOME_BASE_EXECUTION_MODE=legacy-sudo', 'HOME_BASE_EXECUTION_MODE=executor'));
-  const resumed = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor', '--no-start'], env);
+  const resumed = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], env);
   assert.equal(resumed.status, 0, resumed.stderr);
   assert.match(resumed.stdout, /resuming a --switch-to-executor that stopped partway/);
   // The resume keeps the first backup, the only one that still holds the pre-switch state.
@@ -532,4 +532,17 @@ test('an adopt that never finished blocks the switch even if its record no longe
   const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor'], env);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /not adopted yet.*: bitcoin-accounting/);
+});
+
+test('--switch-to-executor refuses --no-start, since cleanup must follow a verified start', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-nostart-'));
+  const fixture = createSourceCheckout(tempDir);
+  const env = legacyHost(tempDir, fixture, { adopted: ['helm'] });
+  assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--add-executor'], env).status, 0);
+  const result = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--switch-to-executor', '--no-start'], env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot be combined with --no-start/);
+  assert.ok(fs.existsSync(env.HOMEBASE_LEGACY_SUDOERS_FILE), 'nothing was removed');
+  assert.ok(fs.existsSync(env.HOMEBASE_COEXIST_MARKER));
+  assert.ok(fs.existsSync(env.HOMEBASE_COEXIST_EXECUTOR_DIR));
 });

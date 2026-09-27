@@ -7,6 +7,7 @@ const { catalog } = require('../src/catalog');
 const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
 const { MIRROR_ROOT } = require('../src/operations/app-layout');
 const { hostSupport } = require('../src/operations/host-support');
+const { appSnippetIncludeProblem, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
@@ -50,7 +51,6 @@ const RETIRED_SNIPPET_ROOT = '/var/lib/homebase-executor/retired-nginx-snippets'
 // public (they own their database; on PostgreSQL 14 any role may create in public), so an unqualified
 // operator or function could resolve to one an app planted and run it as superuser (CVE-2018-1058 class).
 const SUPERUSER_SQL_PREAMBLE = 'SET search_path = pg_catalog, pg_temp;\n';
-const APP_SNIPPET_INCLUDE = /^[ \t]*include[ \t]+\/etc\/nginx\/sovereign-home\.d\/\*\.conf[ \t]*;/m;
 const NGINX_GATEWAY_LINK = '/etc/nginx/sites-enabled/sovereign-home';
 const NGINX_DEFAULT_LINK = '/etc/nginx/sites-enabled/default';
 const NGINX_GATEWAY_CONTENT = [
@@ -402,12 +402,12 @@ function directoryFor(operation, layout) {
 
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
-  // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
-  // Whether the active nginx configuration (nginx -T, as root) includes the executor's snippet directory.
-  const nginxIncludesAppSnippets = async (timeoutMs) => {
+  // The active nginx configuration, every file, as root (nginx -T).
+  const nginxConfigDump = async (timeoutMs) => {
     const result = await run({ binary: '/usr/sbin/nginx', args: ['-T'], ...rootIdentity, timeoutMs, env: ROOT_ENV, outputLimit: 8 * 1024 * 1024 });
-    return APP_SNIPPET_INCLUDE.test(`${result.stdout || ''}\n${result.stderr || ''}`);
+    return `${result.stdout || ''}\n${result.stderr || ''}`;
   };
+  // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
   const missingPackages = async (packages, timeoutMs) => {
     let stdout = '';
     try {
@@ -640,7 +640,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (!lstatOrNull(fsImpl, NGINX_GATEWAY_SITE)) {
         // Unreadable config: refuse rather than guess, since installing ours takes default_server.
         let operatorGateway;
-        try { operatorGateway = await nginxIncludesAppSnippets(operation?.timeoutMs || 30000); } catch (error) {
+        try { operatorGateway = operatorServesAppSnippets(await nginxConfigDump(operation?.timeoutMs || 30000), NGINX_GATEWAY_LINK); } catch (error) {
           deny(`Could not read the active nginx configuration (nginx -T): ${error.message}. Fix nginx, then retry.`);
         }
         if (operatorGateway) return 'the host nginx configuration already includes /etc/nginx/sovereign-home.d; managed gateway not installed';
@@ -655,10 +655,13 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       return 'installed managed nginx gateway site';
     },
     'nginx.assert-app-include': async (operation) => {
-      if (!await nginxIncludesAppSnippets(operation.timeoutMs)) {
-        deny('nginx does not include /etc/nginx/sovereign-home.d/*.conf. Add "include /etc/nginx/sovereign-home.d/*.conf;" next to the existing "include /etc/nginx/snippets/*.conf;" in the server block that serves your apps, run "sudo nginx -t && sudo systemctl reload nginx", then adopt again.');
+      // The same server block that serves the legacy routes must serve the executor's snippets; an include
+      // anywhere else would pass nginx -t and loopback readiness while the public route disappears.
+      const problem = appSnippetIncludeProblem(await nginxConfigDump(operation.timeoutMs));
+      if (problem) {
+        deny(`${problem}. Add "include /etc/nginx/sovereign-home.d/*.conf;" right next to "include /etc/nginx/snippets/*.conf;" inside every server block that has it, run "sudo nginx -t && sudo systemctl reload nginx", then adopt again.`);
       }
-      return 'nginx includes /etc/nginx/sovereign-home.d/*.conf';
+      return 'every server block that serves legacy app snippets also includes /etc/nginx/sovereign-home.d/*.conf';
     },
     'nginx.retire-legacy-snippets': async (operation, { layout } = {}) => {
       requireLayout(layout);

@@ -186,6 +186,10 @@ done
 [ "$CHANNEL" = 'preview' ] || die "unsupported channel: $CHANNEL"
 [ $((REPAIR + REPAIR_EXECUTOR + ADD_EXECUTOR + SWITCH_TO_EXECUTOR)) -le 1 ] \
   || die '--repair, --repair-executor, --add-executor, and --switch-to-executor are mutually exclusive'
+# The switch removes the sudoers policy, the adopt marker, and the coexistence copy only after the hardened
+# service has started and answered; without a start there is nothing to verify, so there is no --no-start.
+[ "$SWITCH_TO_EXECUTOR" -eq 0 ] || [ "$NO_START" -eq 0 ] \
+  || die '--switch-to-executor cannot be combined with --no-start: it removes the legacy sudo policy only after the new service is running and healthy'
 printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   || die "version must be a tag such as v0.1.0"
 printf '%s\n' "$RUNTIME_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$' \

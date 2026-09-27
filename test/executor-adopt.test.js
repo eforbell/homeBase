@@ -21,6 +21,8 @@ function base(type, fields = {}) {
 }
 const NGINX_WITH_INCLUDE = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n      include /etc/nginx/snippets/*.conf;\n      include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
 const NGINX_WITHOUT = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n      include /etc/nginx/snippets/*.conf;\n      # include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
+// The reproduced false positive: the executor include lives in another server block than the legacy route.
+const NGINX_SPLIT = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n      server_name erebor.forbell.com;\n      include /etc/nginx/snippets/*.conf;\n  }\n  server {\n      listen 8443;\n      include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
 const nginxRun = (config, calls = []) => async (input) => { calls.push(input); return { stdout: input.binary === '/usr/sbin/nginx' ? config : '', stderr: '' }; };
 
 test('adopt compiles from the install plan: checks nginx and backs up first, never installs a gateway', () => {
@@ -62,6 +64,8 @@ test('the nginx include check refuses with operator guidance until the host serv
   assert.match(await withInclude['nginx.assert-app-include'](base('nginx.assert-app-include', { risk: 'read' })), /includes/);
   const without = createBaseHandlers({ fsImpl: createFakeFs(), run: nginxRun(NGINX_WITHOUT) });
   await assert.rejects(() => without['nginx.assert-app-include'](base('nginx.assert-app-include', { risk: 'read' })), (error) => error.code === 'POLICY_DENIED' && /include \/etc\/nginx\/sovereign-home\.d\/\*\.conf;/.test(error.message));
+  const split = createBaseHandlers({ fsImpl: createFakeFs(), run: nginxRun(NGINX_SPLIT) });
+  await assert.rejects(() => split['nginx.assert-app-include'](base('nginx.assert-app-include', { risk: 'read' })), (error) => error.code === 'POLICY_DENIED' && /inside every server block/.test(error.message));
 });
 
 test('an operator gateway that includes the app snippets is left alone; otherwise the managed one is installed', async () => {
