@@ -444,12 +444,14 @@ test('homebase status reports executor mode without calling it legacy sudo', asy
   const server = await startServer({
     appName: 'Home Base', stateDbPath: path.join(tempDir, 'state.sqlite3'), port: 0,
     serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet',
-    homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true,
+    homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseAppDir: tempDir,
   });
+  fs.writeFileSync(path.join(tempDir, '.homebase-source-commit'), 'e834341aaaabbbbccccddddeeeeffff000011112\n');
   try {
     const payload = await (await fetch(`${server.url}/api/homebase/status`)).json();
     assert.equal(payload.executionMode, 'executor');
     assert.equal(payload.privilegedJobsEnabled, true);
+    assert.equal(payload.sourceCommit, 'e834341aaaabbbbccccddddeeeeffff000011112', 'the running commit install.sh recorded');
   } finally {
     await server.close();
   }

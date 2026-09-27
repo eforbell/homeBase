@@ -557,3 +557,18 @@ test('a trailing slash on --source-dir works, and a missing release points to --
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /If no release is published yet, clone the repository as root and pass --source-dir/);
 });
+
+test('installs from --source-dir record the running commit; a repair updates it', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-commit-'));
+  const fixture = createSourceCheckout(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  const head = () => execFileSync('git', ['-C', fixture.releaseRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const recorded = () => fs.readFileSync(path.join(env.HOMEBASE_INSTALL_DIR, '.homebase-source-commit'), 'utf8').trim();
+  assert.equal(runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--no-start'], env).status, 0);
+  assert.equal(recorded(), head());
+  fs.appendFileSync(path.join(fixture.releaseRoot, 'server.js'), '// next\n');
+  execFileSync('git', ['-C', fixture.releaseRoot, 'commit', '--quiet', '-am', 'next']);
+  const repaired = runInstaller(['--version', fixture.version, '--source-dir', fixture.releaseRoot, '--repair', '--no-start'], env);
+  assert.equal(repaired.status, 0, repaired.stderr);
+  assert.equal(recorded(), head());
+});

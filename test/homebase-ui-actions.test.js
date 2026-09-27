@@ -41,6 +41,12 @@ test('control-plane UI keeps operational actions available after the settings sp
   assert.match(source, /\/api\/bootstrap\/execute/);
   assert.match(source, /Update Home Base/);
   assert.match(source, /Run Home Base update/);
+  // Executor mode: no self-update button (the web cannot update root-owned code) and no legacy git
+  // settings; the operator gets the install.sh --repair command and the running commit instead.
+  assert.match(source, /const executorMode = status\?\.executionMode === 'executor';/);
+  assert.match(source, /install\.sh --source-dir \/root\/homebase-src --repair/);
+  assert.match(source, /status\?\.sourceCommit/);
+  assert.match(source, /The legacy transport and key-path settings no longer apply/);
   assert.match(source, /class="hb-table-wrap"/);
   assert.match(source, /waitForJobCompletion/);
   assert.match(source, /form\?\.dataset\.submitting/);
