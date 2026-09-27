@@ -969,8 +969,10 @@ if [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; then
   # Only now that the hardened service answers: the legacy sudo policy, adopt, and the coexistence copy go.
   rm -f "$LEGACY_SUDOERS_FILE" "$COEXIST_MARKER"
   rm -rf "$COEXIST_EXECUTOR_DIR"
-  if [ "$TEST_MODE" != '1' ] && sudo -n -l -U "$RUNTIME_USER" 2>/dev/null | grep -q 'may run the following'; then
-    log "WARNING: ${RUNTIME_USER} still has sudo rules from another file or group; remove them: sudo -l -U ${RUNTIME_USER}"
+  # Only broad grants matter: distributions add fixed-command rules for every user (Linux Mint's
+  # /etc/sudoers.d/mintupdate), and the hardened unit's NoNewPrivileges keeps the service from sudo anyway.
+  if [ "$TEST_MODE" != '1' ] && sudo -n -l -U "$RUNTIME_USER" 2>/dev/null | grep -Eq '\)[[:space:]]*(NOPASSWD:[[:space:]]*)?ALL[[:space:]]*$'; then
+    log "WARNING: ${RUNTIME_USER} can still run any command through sudo (another sudoers file or group); remove that rule: sudo -l -U ${RUNTIME_USER}"
   fi
   log "switched to executor mode: removed ${LEGACY_SUDOERS_FILE} and ${COEXIST_EXECUTOR_DIR}; the legacy web checkout is kept at ${LEGACY_ASIDE:-its old path}; rollback copies in ${SWITCH_BACKUP}"
   log 'Consider deleting any app-readable copy of the git key now that only the executor needs it.'
