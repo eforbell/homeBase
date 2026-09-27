@@ -6,6 +6,12 @@
 
 const LEGACY_SNIPPETS = '/etc/nginx/snippets/*.conf';
 const APP_SNIPPETS = '/etc/nginx/sovereign-home.d/*.conf';
+// Files in /etc/nginx/snippets that are not app routes: shipped by Debian/Ubuntu nginx, or the shared fonts.
+const SHARED_SNIPPETS = new Set(['/etc/nginx/snippets/snakeoil.conf', '/etc/nginx/snippets/fastcgi-php.conf', '/etc/nginx/snippets/sovereign-fonts.conf']);
+// Any include of legacy app routes: the glob legacy writes, or one app's snippet included by name.
+function servesLegacyRoutes(target) {
+  return target === LEGACY_SNIPPETS || (target.startsWith('/etc/nginx/snippets/') && !SHARED_SNIPPETS.has(target));
+}
 
 class NginxParseError extends Error {}
 
@@ -86,7 +92,7 @@ function parseNginxDump(nginxT) {
           const target = normalizeInclude(words[1]);
           const server = [...stack].reverse().find((entry) => entry.server)?.server;
           if (server) server.includes.push(target);
-          else if (target === LEGACY_SNIPPETS) strayLegacyIncludes.push(file);
+          else if (servesLegacyRoutes(target)) strayLegacyIncludes.push(file);
         }
         words = [];
         continue;
@@ -110,7 +116,7 @@ function appSnippetIncludeCheck(nginxT) {
   try { parsed = parseNginxDump(nginxT); } catch (error) {
     return { problem: `could not read the nginx configuration reliably (${error.message}), so adopt cannot tell which server block serves the apps`, seen: '' };
   }
-  const legacy = parsed.servers.filter((server) => server.includes.includes(LEGACY_SNIPPETS));
+  const legacy = parsed.servers.filter((server) => server.includes.some(servesLegacyRoutes));
   const seen = `${legacy.length} server block(s) serve legacy snippets: ${legacy.map((server) => server.file).join(', ') || 'none'}`;
   if (parsed.strayLegacyIncludes.length) {
     return { problem: `${[...new Set(parsed.strayLegacyIncludes)].join(', ')} include(s) ${LEGACY_SNIPPETS} outside a server block (for example through an intermediate file), so adopt cannot tell which server block serves the apps; put both includes directly in the serving server block`, seen };

@@ -402,10 +402,12 @@ function directoryFor(operation, layout) {
 
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
-  // The active nginx configuration, every file, as root (nginx -T).
+  // The active nginx configuration, every file, as root (nginx -T). stdout only: on success nginx also
+  // writes "syntax is ok" / "test is successful" to stderr, which is not configuration (and a failure
+  // already throws, since run() rejects a non-zero exit).
   const nginxConfigDump = async (timeoutMs) => {
     const result = await run({ binary: '/usr/sbin/nginx', args: ['-T'], ...rootIdentity, timeoutMs, env: ROOT_ENV, outputLimit: 8 * 1024 * 1024 });
-    return `${result.stdout || ''}\n${result.stderr || ''}`;
+    return String(result.stdout || '');
   };
   // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
   const missingPackages = async (packages, timeoutMs) => {

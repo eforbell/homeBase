@@ -304,7 +304,7 @@ test('nginx gateway installs the managed site, enables it, and retires the stock
     '/etc/nginx/sites-enabled/default': { kind: 'link', target: '/etc/nginx/sites-available/default' },
   });
   // A fresh host: the active config does not include the app snippets yet (nginx -T, run as root).
-  const freshNginx = async () => ({ stdout: 'http {\n  server {\n  }\n}\n', stderr: '' });
+  const freshNginx = async () => ({ stdout: '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n  }\n}\n', stderr: 'nginx: the configuration file /etc/nginx/nginx.conf syntax is ok\nnginx: configuration file /etc/nginx/nginx.conf test is successful\n' });
   const handlers = createBaseHandlers({ fsImpl, run: freshNginx });
   await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'), { layout: LAYOUT });
   assert.equal(fsImpl.readFileSync('/etc/nginx/sites-available/sovereign-home'), NGINX_GATEWAY_CONTENT);

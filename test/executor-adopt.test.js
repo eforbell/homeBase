@@ -23,7 +23,9 @@ const NGINX_WITH_INCLUDE = '# configuration file /etc/nginx/nginx.conf:\nhttp {\
 const NGINX_WITHOUT = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n      include /etc/nginx/snippets/*.conf;\n      # include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
 // The reproduced false positive: the executor include lives in another server block than the legacy route.
 const NGINX_SPLIT = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n      server_name erebor.forbell.com;\n      include /etc/nginx/snippets/*.conf;\n  }\n  server {\n      listen 8443;\n      include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
-const nginxRun = (config, calls = []) => async (input) => { calls.push(input); return { stdout: input.binary === '/usr/sbin/nginx' ? config : '', stderr: '' }; };
+// As real nginx -T answers: the dump on stdout, and on success its status lines on stderr.
+const NGINX_T_STDERR = require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'nginx', 'nginx-T.stderr'), 'utf8');
+const nginxRun = (config, calls = []) => async (input) => { calls.push(input); return input.binary === '/usr/sbin/nginx' ? { stdout: config, stderr: NGINX_T_STDERR } : { stdout: '', stderr: '' }; };
 
 test('adopt compiles from the install plan: checks nginx and backs up first, never installs a gateway', () => {
   const plan = buildAppAdoptPlan({ appId: 'bitcoin-accounting', site: SITE, generatedAt: '2026-09-26T12:00:00.000Z' });
@@ -174,4 +176,29 @@ test('facts shared between install.sh and the JS side agree', () => {
   assert.match(source, new RegExp(`^COEXIST_MARKER='${LEGACY_COEXISTENCE_MARKER.replaceAll('/', '\\/')}'$`, 'm'));
   assert.ok(source.includes(`${Object.keys(UBUNTU_CODENAMES).join('|')}) ;;`), 'Ubuntu base codenames');
   assert.ok(source.includes(`${Object.keys(DEBIAN_CODENAMES).join('|')}) ;;`), 'Debian base codenames');
+});
+
+test('handlers read real nginx -T output: config on stdout, status lines on stderr', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  const fixture = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', 'nginx', name), 'utf8');
+  assert.match(NGINX_T_STDERR, /syntax is ok/);
+  const real = (stdout) => async () => ({ stdout, stderr: NGINX_T_STDERR });
+  // Adopt's precondition on the correct layout passes and reports what it saw.
+  const ok = await createBaseHandlers({ fsImpl: createFakeFs(), run: real(fixture('erebor-shaped-ok.nginx-T')) })['nginx.assert-app-include'](base('nginx.assert-app-include', { risk: 'read' }));
+  assert.match(ok, /1 server block\(s\) serve legacy snippets: \/etc\/nginx\/sites-enabled\/erebor\.forbell\.com/);
+  await assert.rejects(() => createBaseHandlers({ fsImpl: createFakeFs(), run: real(fixture('erebor-shaped-split.nginx-T')) })['nginx.assert-app-include'](base('nginx.assert-app-include', { risk: 'read' })), /do not include/);
+  // A fresh host's bootstrap and first install still install the managed gateway.
+  const fresh = createFakeFs({ '/etc/nginx/sites-available': { kind: 'dir' }, '/etc/nginx/sites-enabled': { kind: 'dir' } });
+  await createBaseHandlers({ fsImpl: fresh, run: real('# configuration file /etc/nginx/nginx.conf:\nevents {}\nhttp {\n  include /etc/nginx/sites-enabled/*;\n}\n') })['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.equal(fresh.existsSync('/etc/nginx/sites-available/sovereign-home'), true);
+});
+
+test('a single app snippet included by name counts as a legacy route too', () => {
+  const { appSnippetIncludeProblem } = require('../src/operations/nginx-config');
+  const perFile = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n    include /etc/nginx/snippets/helm.conf;\n    include /etc/nginx/snippets/snakeoil.conf;\n  }\n  server {\n    include /etc/nginx/snippets/*.conf;\n    include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
+  assert.match(appSnippetIncludeProblem(perFile), /1 of 2 server block/);
+  // Shared snippets (snakeoil, fastcgi, fonts) are not app routes.
+  const sharedOnly = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n    include snippets/snakeoil.conf;\n  }\n  server {\n    include /etc/nginx/snippets/*.conf;\n    include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
+  assert.equal(appSnippetIncludeProblem(sharedOnly), null);
 });
