@@ -49,3 +49,22 @@ test('host status explains a missing nginx instead of a raw spawn error', async 
   const { checks } = await collect();
   assert.equal(checks['nginx-config'].summary, 'nginx is not installed yet; run host bootstrap.');
 });
+
+test('an adopted host whose own server block includes the app snippets counts as a working gateway', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  const erebor = fs.readFileSync(path.join(__dirname, 'fixtures', 'nginx', 'erebor-shaped-ok.nginx-T'), 'utf8');
+  const split = fs.readFileSync(path.join(__dirname, 'fixtures', 'nginx', 'erebor-shaped-split.nginx-T'), 'utf8');
+  const status = (dump) => createHostStatusCollector({
+    fsImpl: createFakeFs(),
+    run: async (input) => ({ stdout: input.args[0] === '-T' ? dump : '', stderr: 'nginx: configuration file /etc/nginx/nginx.conf test is successful\n' }),
+  })();
+  const ok = (await status(erebor)).checks['nginx-gateway'];
+  assert.equal(ok.ok, true);
+  assert.match(ok.summary, /host's own server block \(\/etc\/nginx\/sites-enabled\/erebor\.forbell\.com\)/);
+  assert.equal('managedSiteMissing' in ok, false);
+  // The split layout has a block with the executor include too, so apps are still reachable there.
+  assert.equal((await status(split)).checks['nginx-gateway'].ok, true);
+  const bare = (await status('# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n    listen 80;\n  }\n}\n')).checks['nginx-gateway'];
+  assert.deepEqual([bare.ok, bare.summary], [false, 'The managed nginx gateway site is not enabled.']);
+});
