@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { runApproved } = require('./spawn');
 const { deployKeyStatus } = require('./handlers');
+const { parseNginxDump, APP_SNIPPETS } = require('../src/operations/nginx-config');
 
 const NGINX_GATEWAY_SITE = '/etc/nginx/sites-available/sovereign-home';
 const NGINX_GATEWAY_LINK = '/etc/nginx/sites-enabled/sovereign-home';
@@ -38,7 +39,17 @@ function createHostStatusCollector({ run = runApproved, fsImpl = fs, now = () =>
         ? { ok: true, summary: `${NGINX_GATEWAY_LINK} is enabled` }
         : { ok: false, summary: linked ? 'The stock default site is still enabled alongside the managed gateway.' : `${NGINX_GATEWAY_LINK} does not point at the managed gateway site.` };
     } catch {
-      checks['nginx-gateway'] = { ok: false, summary: 'The managed nginx gateway site is not enabled.' };
+      checks['nginx-gateway'] = { ok: false, summary: 'The managed nginx gateway site is not enabled.', managedSiteMissing: true };
+    }
+    // Adopted legacy hosts keep the operator's own server block (for example erebor.forbell.com), which
+    // includes the executor's snippets; the managed gateway is deliberately not installed beside it.
+    if (checks['nginx-gateway'].managedSiteMissing) {
+      delete checks['nginx-gateway'].managedSiteMissing;
+      try {
+        const dump = await run({ binary: '/usr/sbin/nginx', args: ['-T'], uid: 0, gid: 0, timeoutMs: 5000, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' }, outputLimit: 8 * 1024 * 1024 });
+        const serving = parseNginxDump(dump.stdout).servers.filter((server) => server.file !== NGINX_GATEWAY_LINK && server.includes.includes(APP_SNIPPETS));
+        if (serving.length) checks['nginx-gateway'] = { ok: true, summary: `Apps are served by the host's own server block (${[...new Set(serving.map((server) => server.file))].join(', ')}), which includes ${APP_SNIPPETS}.` };
+      } catch { /* unreadable config: keep the warning */ }
     }
 
     const key = deployKeyStatus(fsImpl);
