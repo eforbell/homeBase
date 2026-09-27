@@ -92,7 +92,7 @@ function parseNginxDump(nginxT) {
           const target = normalizeInclude(words[1]);
           const server = [...stack].reverse().find((entry) => entry.server)?.server;
           if (server) server.includes.push(target);
-          else if (servesLegacyRoutes(target)) strayLegacyIncludes.push(file);
+          else if (servesLegacyRoutes(target)) strayLegacyIncludes.push(`${file} (include ${target})`);
         }
         words = [];
         continue;
@@ -117,14 +117,16 @@ function appSnippetIncludeCheck(nginxT) {
     return { problem: `could not read the nginx configuration reliably (${error.message}), so adopt cannot tell which server block serves the apps`, seen: '' };
   }
   const legacy = parsed.servers.filter((server) => server.includes.some(servesLegacyRoutes));
-  const seen = `${legacy.length} server block(s) serve legacy snippets: ${legacy.map((server) => server.file).join(', ') || 'none'}`;
+  // Name the includes actually found, so the operator looks for the right line.
+  const legacyIncludes = (server) => server.includes.filter(servesLegacyRoutes).join(', ');
+  const seen = `${legacy.length} server block(s) serve legacy snippets: ${legacy.map((server) => `${server.file} (include ${legacyIncludes(server)})`).join('; ') || 'none'}`;
   if (parsed.strayLegacyIncludes.length) {
-    return { problem: `${[...new Set(parsed.strayLegacyIncludes)].join(', ')} include(s) ${LEGACY_SNIPPETS} outside a server block (for example through an intermediate file), so adopt cannot tell which server block serves the apps; put both includes directly in the serving server block`, seen };
+    return { problem: `${[...new Set(parsed.strayLegacyIncludes)].join(', ')} sits outside a server block (for example through an intermediate file), so adopt cannot tell which server block serves the apps; put both includes directly in the serving server block`, seen };
   }
   if (!legacy.length) return { problem: `no nginx server block includes ${LEGACY_SNIPPETS}, so there is no legacy app route to take over`, seen };
   const missing = legacy.filter((server) => !server.includes.includes(APP_SNIPPETS));
   if (missing.length) {
-    return { problem: `${missing.length} of ${legacy.length} server block(s) that include ${LEGACY_SNIPPETS} (in ${[...new Set(missing.map((server) => server.file))].join(', ')}) do not include ${APP_SNIPPETS}`, seen };
+    return { problem: `${missing.length} of ${legacy.length} server block(s) that serve legacy snippets (${missing.map((server) => `${server.file}: include ${legacyIncludes(server)}`).join('; ')}) do not include ${APP_SNIPPETS}`, seen };
   }
   return { problem: null, seen };
 }

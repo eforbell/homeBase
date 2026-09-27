@@ -23,7 +23,7 @@ test('both includes in the serving block pass, on either host layout', () => {
 
 test('the executor include in a different server block is refused (it would leave the public route broken)', () => {
   const split = EREBOR(LEGACY, 'server {\n  listen 8443;\n  include /etc/nginx/sovereign-home.d/*.conf;\n}\n');
-  assert.match(appSnippetIncludeProblem(split), /1 of 1 server block\(s\) that include \/etc\/nginx\/snippets\/\*\.conf \(in \/etc\/nginx\/sites-enabled\/erebor\.forbell\.com\) do not include \/etc\/nginx\/sovereign-home\.d\/\*\.conf/);
+  assert.match(appSnippetIncludeProblem(split), /1 of 1 server block\(s\) that serve legacy snippets \(\/etc\/nginx\/sites-enabled\/erebor\.forbell\.com: include \/etc\/nginx\/snippets\/\*\.conf\) do not include \/etc\/nginx\/sovereign-home\.d\/\*\.conf/);
   const httpLevel = dump([['/etc/nginx/nginx.conf', `http {\n  include /etc/nginx/sovereign-home.d/*.conf;\n  server {\n${LEGACY}\n  }\n}\n`]]);
   assert.ok(appSnippetIncludeProblem(httpLevel), 'an include at http level is not inside the serving block');
 });

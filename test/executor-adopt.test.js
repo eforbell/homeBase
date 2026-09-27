@@ -198,6 +198,7 @@ test('a single app snippet included by name counts as a legacy route too', () =>
   const { appSnippetIncludeProblem } = require('../src/operations/nginx-config');
   const perFile = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n    include /etc/nginx/snippets/helm.conf;\n    include /etc/nginx/snippets/snakeoil.conf;\n  }\n  server {\n    include /etc/nginx/snippets/*.conf;\n    include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
   assert.match(appSnippetIncludeProblem(perFile), /1 of 2 server block/);
+  assert.match(appSnippetIncludeProblem(perFile), /include \/etc\/nginx\/snippets\/helm\.conf\)/, 'names the include that is actually there');
   // Shared snippets (snakeoil, fastcgi, fonts) are not app routes.
   const sharedOnly = '# configuration file /etc/nginx/nginx.conf:\nhttp {\n  server {\n    include snippets/snakeoil.conf;\n  }\n  server {\n    include /etc/nginx/snippets/*.conf;\n    include /etc/nginx/sovereign-home.d/*.conf;\n  }\n}\n';
   assert.equal(appSnippetIncludeProblem(sharedOnly), null);
