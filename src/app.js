@@ -262,11 +262,15 @@ function executorPortConflict(state, appId) {
   return conflict ? { error: `${conflict.appId} already uses a port ${getAppById(appId).name} needs (${appPorts.join(', ')}); executor installs use catalog ports.`, code: 'PORT_CONFLICT' } : null;
 }
 
+// No Home Base release is published yet, so legacy hosts add the executor from a root-owned clone (never
+// from the legacy web checkout, which the runtime user owns).
+const ADD_EXECUTOR_COMMAND = 'sudo git clone --branch main git@github.com:eforbell/homeBase.git /root/homebase-src && sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src --add-executor --git-ssh-key <path-to-private-key>';
+
 // Why the executor cannot fetch over SSH yet, or null when it can. Legacy-sudo hosts add the key with
 // --add-executor (--repair refuses a host that still has the legacy sudo policy).
 function deployKeyProblem(transport, capabilities, executionMode) {
   if (transport !== 'ssh' || capabilities.gitDeployKey === 'present') return null;
-  const command = executionMode === 'legacy-sudo' ? 'sudo bash install.sh --add-executor --git-ssh-key <path-to-private-key>' : 'sudo bash install.sh --repair --git-ssh-key <path-to-private-key>';
+  const command = executionMode === 'legacy-sudo' ? ADD_EXECUTOR_COMMAND : 'sudo bash install.sh --repair --git-ssh-key <path-to-private-key>';
   return {
     error: capabilities.gitDeployKey === 'insecure'
       ? `The executor deploy key must be a root-owned regular file with mode 0600. Re-run: ${command}`
@@ -1331,7 +1335,7 @@ function createApp(config) {
         }
         let capabilities;
         try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch {
-          return sendJson(res, 503, { error: 'The Home Base executor is not installed or not reachable. Add it with: sudo bash install.sh --add-executor --git-ssh-key <key>', code: 'EXECUTOR_UNAVAILABLE' });
+          return sendJson(res, 503, { error: `The Home Base executor is not installed or not reachable. Add it (from a root-owned clone of homeBase) with: ${ADD_EXECUTOR_COMMAND}`, code: 'EXECUTOR_UNAVAILABLE' });
         }
         if (!capabilities.actions?.includes('adopt') || !capabilities.installableApps?.includes(appId)) return sendJson(res, 409, { error: `The executor cannot adopt ${app.name}; update it with install.sh --add-executor.`, code: 'TYPED_EXECUTION_NOT_SUPPORTED' });
         const conflict = executorPortConflict(state, appId);

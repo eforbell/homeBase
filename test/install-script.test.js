@@ -546,3 +546,14 @@ test('--switch-to-executor refuses --no-start, since cleanup must follow a verif
   assert.ok(fs.existsSync(env.HOMEBASE_COEXIST_MARKER));
   assert.ok(fs.existsSync(env.HOMEBASE_COEXIST_EXECUTOR_DIR));
 });
+
+test('a trailing slash on --source-dir works, and a missing release points to --source-dir', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-slash-'));
+  const fixture = createSourceCheckout(tempDir);
+  const env = installerEnv(tempDir, fixture);
+  const slashed = runInstaller(['--version', fixture.version, '--source-dir', `${fixture.releaseRoot}/`, '--no-start'], env);
+  assert.equal(slashed.status, 0, slashed.stderr);
+  const missing = runInstaller(['--version', fixture.version, '--no-start'], installerEnv(fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-404-')), fixture, { HOMEBASE_ARCHIVE_URL: pathToFileURL(path.join(tempDir, 'nope.tar.gz')).href }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /If no release is published yet, clone the repository as root and pass --source-dir/);
+});
