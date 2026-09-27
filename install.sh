@@ -798,6 +798,10 @@ else
   fi
   printf '%s\n' "$RELEASE_VERSION" > "$VERSION_MARKER"
 fi
+# Which commit is running, for the Config page ("is this host behind?"). Only when code was copied just now.
+if [ -n "${SOURCE_COMMIT:-}" ] && { [ ! -f "${INSTALL_DIR}/.homebase-source-commit" ] || [ "$REPAIR" -eq 1 ] || [ "$REPAIR_EXECUTOR" -eq 1 ] || [ "$SWITCH_TO_EXECUTOR" -eq 1 ]; }; then
+  printf '%s\n' "$SOURCE_COMMIT" > "${INSTALL_DIR}/.homebase-source-commit"
+fi
 if [ "$TEST_MODE" != '1' ]; then
   (cd "$INSTALL_DIR" && npm ci --omit=dev --ignore-scripts)
   chown -R root:root "$INSTALL_DIR"

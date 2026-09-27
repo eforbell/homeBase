@@ -366,9 +366,16 @@ function getHomeBaseStatus(config) {
     }
   }
   const legacyBroadSudoersDetected = sudoersPolicyStatus === 'legacy-broad';
+  // Written by install.sh when it installs from a --source-dir checkout.
+  let sourceCommit = null;
+  try {
+    const recorded = fs.readFileSync(path.join(appDir, '.homebase-source-commit'), 'utf8').trim();
+    if (/^[0-9a-f]{40}$/.test(recorded)) sourceCommit = recorded;
+  } catch (_error) { /* not recorded (release install or legacy checkout) */ }
   const privilegedJobsEnabled = config.homeBaseEnablePrivilegedJobs === true;
   const status = {
     runtimeUser,
+    sourceCommit,
     appDir,
     stateDir,
     stateDbPath,

@@ -313,6 +313,8 @@
   }
 
   function renderConfigPage(config, status) {
+    // The self-update button and the legacy git settings only work in legacy-sudo mode.
+    const executorMode = status?.executionMode === 'executor';
     return `
       <div class="hb-stack">
         ${renderOverviewCard({
@@ -325,6 +327,11 @@
           <form class="hb-form-grid" data-action="config">
             <label class="hb-label">Hostname <input class="hb-input" name="hostname" value="${window.HB.escapeHtml(config.hostname)}" required></label>
             <label class="hb-label">Domain <input class="hb-input" name="domain" value="${window.HB.escapeHtml(config.domain)}" required></label>
+            ${executorMode ? `
+            <p class="hb-muted" style="margin:0;">Git access: the executor fetches app repositories with its own root-only key (<code>/etc/sovereign-home/git/deploy_key</code>, set with <code>install.sh --git-ssh-key</code>). The legacy transport and key-path settings no longer apply.</p>
+            <input type="hidden" name="gitTransport" value="${window.HB.escapeHtml(config.gitTransport || 'https')}">
+            <input type="hidden" name="gitSshKeyPath" value="${window.HB.escapeHtml(config.gitSshKeyPath || '')}">
+            ` : `
             <label class="hb-label">
               Git transport
               <select class="hb-select" name="gitTransport">
@@ -335,7 +342,7 @@
             </label>
             <label class="hb-label">SSH key path (for ssh-key transport)
               <input class="hb-input" name="gitSshKeyPath" value="${window.HB.escapeHtml(config.gitSshKeyPath || '')}">
-            </label>
+            </label>`}
             <label class="hb-label hb-check-row">
               <input type="checkbox" name="healthAlertsEnabled" ${config.healthAlertsEnabled ? 'checked' : ''}>
               Enable critical health alerts
@@ -364,12 +371,20 @@
         <section class="hb-grid hb-grid-2">
           <article class="hb-card">
             <h2 style="margin-top:0;">Update Home Base</h2>
+            ${executorMode ? `
+            <p class="hb-muted" style="margin:0 0 0.6rem;">Home Base runs as root-owned code in executor mode, so it updates from a shell on this host, not from here.</p>
+            <p style="margin:0 0 0.6rem;">Running commit: <code>${window.HB.escapeHtml(status?.sourceCommit ? status.sourceCommit.slice(0, 12) : 'not recorded')}</code></p>
+            <p class="hb-muted" style="margin:0 0 0.35rem;">On the host, as root:</p>
+            <pre class="hb-code" style="white-space:pre-wrap;overflow-wrap:anywhere;margin:0;">cd /root/homebase-src &amp;&amp; git pull --ff-only
+bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre>
+            <p class="hb-muted" style="margin:0.6rem 0 0;">It waits for any running job, refreshes the web service and the executor, and keeps config and state. No clone yet? <code>git clone --branch main git@github.com:eforbell/homeBase.git /root/homebase-src</code> first.</p>
+            ` : `
             <form class="hb-form-grid" data-action="update-self">
               <label class="hb-label">Git ref <input class="hb-input" name="ref" value="main"></label>
               <label class="hb-label hb-check-row"><input type="checkbox" name="dryRun" checked> Dry-run only</label>
               <button class="hb-btn" type="submit">Run Home Base update</button>
               <p class="hb-muted" data-result style="margin:0;"></p>
-            </form>
+            </form>`}
           </article>
           <article class="hb-card">
             <h2 style="margin-top:0;">Health alerts</h2>
