@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const {
   createBaseHandlers, renderManagedFile, deployKeyStatus,
   GIT_DEPLOY_KEY_PATH, GIT_KNOWN_HOSTS_PATH, GITHUB_KNOWN_HOSTS, NGINX_GATEWAY_CONTENT,
@@ -140,20 +144,77 @@ test('git handler fetches as root into a mirror and clones from it as sovereign'
   await assert.rejects(() => handlers['git.sync'](base('git.sync', { repository: 'https://evil.example/app.git', ref: 'main' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
 });
 
-test('git sync on main leaves a detached SHA pin, keeps the ff-only guard, and reports the commit', async () => {
+test('git sync on main reports the commit, switches to an existing local main, and keeps the ff-only guard', async () => {
   const fsImpl = createFakeFs({ [`${DINNER}/.git`]: { kind: 'dir' }, [MIRROR]: { kind: 'dir' }, '/etc/sovereign-home': { kind: 'dir' } });
   const calls = [];
-  const respond = (input) => ({ stdout: input.args.includes('rev-parse') ? '1c8dfbef57d7\n' : '' });
+  const respond = (input) => {
+    if (input.args.includes('rev-parse')) return { stdout: '1c8dfbef57d7\n' };
+    if (input.args.includes('for-each-ref')) return { stdout: 'refs/heads/main\n' };
+    return { stdout: '' };
+  };
   const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: recordingRun(calls, respond) });
   const output = await handlers['git.sync'](base('git.sync', { repository: HTTPS_REPO, ref: 'main' }), { layout: LAYOUT });
   const gitArgs = calls.filter((call) => call.uid === 1001).map((call) => call.args.join(' '));
-  assert.ok(gitArgs.indexOf(`-C ${DINNER} checkout main`) !== -1, 'switches off a detached HEAD');
+  assert.ok(gitArgs.indexOf(`-C ${DINNER} checkout main`) !== -1);
   assert.ok(gitArgs.indexOf(`-C ${DINNER} checkout main`) < gitArgs.indexOf(`-C ${DINNER} merge --ff-only origin/main`), 'switches before fast-forwarding');
   assert.ok(!gitArgs.some((args) => /checkout -B|reset/.test(args)), 'never force-resets local main');
   assert.match(output, /repository at 1c8dfbef57d7 over https/);
 
-  const diverged = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: recordingRun([], (input) => { if (input.args.includes('merge')) throw new Error('fatal: Not possible to fast-forward, aborting.'); return { stdout: '' }; }) });
+  const diverged = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: recordingRun([], (input) => { if (input.args.includes('merge')) throw new Error('fatal: Not possible to fast-forward, aborting.'); return respond(input); }) });
   await assert.rejects(() => diverged['git.sync'](base('git.sync', { repository: HTTPS_REPO, ref: 'main' }), { layout: LAYOUT }), /fast-forward/);
+});
+
+// Real git against temp repositories: the mocked tests above only prove which commands run.
+function realGitSyncFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-gitsync-'));
+  const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' }).trim();
+  const mirror = path.join(root, 'mirror.git');
+  const work = path.join(root, 'work');
+  const checkout = path.join(root, 'checkout');
+  sh(root, 'init', '-q', '-b', 'main', work);
+  sh(work, 'commit', '-q', '--allow-empty', '-m', 'base');
+  sh(root, 'clone', '-q', '--mirror', work, mirror);
+  sh(root, 'clone', '-q', '--origin', 'origin', mirror, checkout);
+  const publish = (message) => { sh(work, 'commit', '-q', '--allow-empty', '-m', message); sh(work, 'push', '-q', mirror, 'main'); return sh(work, 'rev-parse', 'HEAD'); };
+  const layout = { ...LAYOUT, checkout, mirror };
+  const fsImpl = createFakeFs({ [`${checkout}/.git`]: { kind: 'dir' }, [mirror]: { kind: 'dir' }, '/etc/sovereign-home': { kind: 'dir' } });
+  // Root's network fetch is replaced by the fixture's own publish(); sovereign's git runs for real.
+  const run = async (input) => (input.uid === 0 ? { stdout: '' } : { stdout: execFileSync('git', input.args, { cwd: root, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }) });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run });
+  const sync = (ref = 'main') => handlers['git.sync'](base('git.sync', { repository: HTTPS_REPO, ref }), { layout });
+  return { sh, work, checkout, publish, sync, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test('git sync on main returns a detached SHA-pinned checkout to the main branch (real git)', async () => {
+  const fx = realGitSyncFixture();
+  try {
+    const pinned = fx.sh(fx.checkout, 'rev-parse', 'HEAD');
+    const next = fx.publish('hotfix');
+    await fx.sync(next);                       // pin to a commit, detached
+    assert.equal(fx.sh(fx.checkout, 'rev-parse', 'HEAD'), next);
+    assert.throws(() => fx.sh(fx.checkout, 'symbolic-ref', '-q', 'HEAD'), 'checkout is detached');
+    // main moves back to the commit the pin descends from (as after a deleted hotfix branch)
+    fx.sh(fx.work, 'reset', '-q', '--hard', pinned);
+    execFileSync('git', ['push', '-q', '--force', path.join(path.dirname(fx.checkout), 'mirror.git'), 'main'], { cwd: fx.work });
+    const output = await fx.sync('main');
+    assert.equal(fx.sh(fx.checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main');
+    assert.equal(fx.sh(fx.checkout, 'rev-parse', 'HEAD'), pinned);
+    assert.match(output, new RegExp(`repository at ${pinned.slice(0, 12)} over`));
+  } finally { fx.cleanup(); }
+});
+
+test('git sync on main still leaves the branch even when a tag named main points at the pin (real git)', async () => {
+  const fx = realGitSyncFixture();
+  try {
+    const next = fx.publish('pin');
+    await fx.sync(next);                       // detached at the pin
+    fx.sh(fx.checkout, 'branch', '-D', 'main');
+    fx.sh(fx.checkout, 'tag', 'main', next);   // ambiguous name: tag, no local branch
+    await fx.sync('main');
+    assert.equal(fx.sh(fx.checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main', 'not left detached on the tag');
+    assert.equal(fx.sh(fx.checkout, 'rev-parse', 'HEAD'), next);
+    assert.equal(fx.sh(fx.checkout, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', 'main@{upstream}'), 'origin/main');
+  } finally { fx.cleanup(); }
 });
 
 test('git handler refreshes the mirror, fast-forwards an existing checkout, and refuses dirty or foreign trees', async () => {
@@ -167,7 +228,8 @@ test('git handler refreshes the mirror, fast-forwards an existing checkout, and 
     [1001, ['-C', DINNER, 'status', '--porcelain', '--untracked-files=no']],
     [1001, ['-C', DINNER, 'remote', 'set-url', 'origin', MIRROR]],
     [1001, ['-C', DINNER, 'fetch', 'origin']],
-    [1001, ['-C', DINNER, 'checkout', 'main']],
+    [1001, ['-C', DINNER, 'for-each-ref', '--format=%(refname)', 'refs/heads/main']],
+    [1001, ['-C', DINNER, 'checkout', '-b', 'main', '--track', 'refs/remotes/origin/main']],
     [1001, ['-C', DINNER, 'merge', '--ff-only', 'origin/main']],
     [1001, ['-C', DINNER, 'rev-parse', '--short=12', 'HEAD']],
   ]);

@@ -496,10 +496,13 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         // First install has no local branch yet; later runs fast-forward and refuse divergent history.
         if (!existingCheckout) await git(['-C', destination, 'checkout', '-B', 'main', 'origin/main']);
         else {
-          // A checkout pinned to a SHA (or another ref) is detached. Switch back to the local main branch
-          // first, or the fast-forward below is a no-op against whatever commit HEAD sits on. Git creates
-          // main from origin/main if it is missing; a diverged local main still fails the --ff-only.
-          await git(['-C', destination, 'checkout', 'main']);
+          // A checkout pinned to a SHA (or another ref) is detached. Get back onto the local main branch
+          // first, or the fast-forward below is a no-op against whatever commit HEAD sits on. Check for the
+          // branch explicitly: a bare 'checkout main' with no local branch could resolve to a tag named main
+          // and stay detached. A diverged local main still fails the --ff-only.
+          const branches = await git(['-C', destination, 'for-each-ref', '--format=%(refname)', 'refs/heads/main']);
+          if (String(branches.stdout || '').trim() === 'refs/heads/main') await git(['-C', destination, 'checkout', 'main']);
+          else await git(['-C', destination, 'checkout', '-b', 'main', '--track', 'refs/remotes/origin/main']);
           await git(['-C', destination, 'merge', '--ff-only', 'origin/main']);
         }
       } else {
