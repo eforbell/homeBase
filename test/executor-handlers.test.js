@@ -125,6 +125,7 @@ test('git handler fetches as root into a mirror and clones from it as sovereign'
     [0, [...ROOT_GIT, 'clone', '--mirror', HTTPS_REPO, MIRROR]],
     [1001, ['clone', '--origin', 'origin', '--no-checkout', MIRROR, DINNER]],
     [1001, ['-C', DINNER, 'checkout', '-B', 'main', 'origin/main']],
+    [1001, ['-C', DINNER, 'rev-parse', '--short=12', 'HEAD']],
   ]);
   for (const call of calls) {
     assert.equal(call.env.GIT_TERMINAL_PROMPT, '0');
@@ -139,6 +140,22 @@ test('git handler fetches as root into a mirror and clones from it as sovereign'
   await assert.rejects(() => handlers['git.sync'](base('git.sync', { repository: 'https://evil.example/app.git', ref: 'main' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
 });
 
+test('git sync on main leaves a detached SHA pin, keeps the ff-only guard, and reports the commit', async () => {
+  const fsImpl = createFakeFs({ [`${DINNER}/.git`]: { kind: 'dir' }, [MIRROR]: { kind: 'dir' }, '/etc/sovereign-home': { kind: 'dir' } });
+  const calls = [];
+  const respond = (input) => ({ stdout: input.args.includes('rev-parse') ? '1c8dfbef57d7\n' : '' });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: recordingRun(calls, respond) });
+  const output = await handlers['git.sync'](base('git.sync', { repository: HTTPS_REPO, ref: 'main' }), { layout: LAYOUT });
+  const gitArgs = calls.filter((call) => call.uid === 1001).map((call) => call.args.join(' '));
+  assert.ok(gitArgs.indexOf(`-C ${DINNER} checkout main`) !== -1, 'switches off a detached HEAD');
+  assert.ok(gitArgs.indexOf(`-C ${DINNER} checkout main`) < gitArgs.indexOf(`-C ${DINNER} merge --ff-only origin/main`), 'switches before fast-forwarding');
+  assert.ok(!gitArgs.some((args) => /checkout -B|reset/.test(args)), 'never force-resets local main');
+  assert.match(output, /repository at 1c8dfbef57d7 over https/);
+
+  const diverged = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: recordingRun([], (input) => { if (input.args.includes('merge')) throw new Error('fatal: Not possible to fast-forward, aborting.'); return { stdout: '' }; }) });
+  await assert.rejects(() => diverged['git.sync'](base('git.sync', { repository: HTTPS_REPO, ref: 'main' }), { layout: LAYOUT }), /fast-forward/);
+});
+
 test('git handler refreshes the mirror, fast-forwards an existing checkout, and refuses dirty or foreign trees', async () => {
   const calls = [];
   const fsImpl = createFakeFs({ [`${DINNER}/.git`]: { kind: 'dir' }, [MIRROR]: { kind: 'dir' }, '/etc/sovereign-home': { kind: 'dir' } });
@@ -150,7 +167,9 @@ test('git handler refreshes the mirror, fast-forwards an existing checkout, and 
     [1001, ['-C', DINNER, 'status', '--porcelain', '--untracked-files=no']],
     [1001, ['-C', DINNER, 'remote', 'set-url', 'origin', MIRROR]],
     [1001, ['-C', DINNER, 'fetch', 'origin']],
+    [1001, ['-C', DINNER, 'checkout', 'main']],
     [1001, ['-C', DINNER, 'merge', '--ff-only', 'origin/main']],
+    [1001, ['-C', DINNER, 'rev-parse', '--short=12', 'HEAD']],
   ]);
 
   const dirty = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: recordingRun([], (input) => ({ stdout: input.args.includes('status') ? ' M server.js\n' : '' })) });

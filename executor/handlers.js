@@ -495,11 +495,18 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (operation.ref === 'main') {
         // First install has no local branch yet; later runs fast-forward and refuse divergent history.
         if (!existingCheckout) await git(['-C', destination, 'checkout', '-B', 'main', 'origin/main']);
-        else await git(['-C', destination, 'merge', '--ff-only', 'origin/main']);
+        else {
+          // A checkout pinned to a SHA (or another ref) is detached. Switch back to the local main branch
+          // first, or the fast-forward below is a no-op against whatever commit HEAD sits on. Git creates
+          // main from origin/main if it is missing; a diverged local main still fails the --ff-only.
+          await git(['-C', destination, 'checkout', 'main']);
+          await git(['-C', destination, 'merge', '--ff-only', 'origin/main']);
+        }
       } else {
         await git(['-C', destination, 'checkout', '--detach', operation.ref]);
       }
-      return `synchronized ${label} repository over ${transport}`;
+      const head = String((await git(['-C', destination, 'rev-parse', '--short=12', 'HEAD'])).stdout || '').trim();
+      return `synchronized ${label} repository${/^[a-f0-9]{7,40}$/.test(head) ? ` at ${head}` : ''} over ${transport}`;
     },
     'runtime.run-app-task': async (operation, { layout } = {}) => {
       requireLayout(layout);
