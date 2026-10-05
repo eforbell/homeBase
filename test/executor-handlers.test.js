@@ -167,22 +167,30 @@ test('git sync on main reports the commit, switches to an existing local main, a
 // Real git against temp repositories: the mocked tests above only prove which commands run.
 function realGitSyncFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-gitsync-'));
-  const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' }).trim();
-  const mirror = path.join(root, 'mirror.git');
-  const work = path.join(root, 'work');
-  const checkout = path.join(root, 'checkout');
-  sh(root, 'init', '-q', '-b', 'main', work);
-  sh(work, 'commit', '-q', '--allow-empty', '-m', 'base');
-  sh(root, 'clone', '-q', '--mirror', work, mirror);
-  sh(root, 'clone', '-q', '--origin', 'origin', mirror, checkout);
-  const publish = (message) => { sh(work, 'commit', '-q', '--allow-empty', '-m', message); sh(work, 'push', '-q', mirror, 'main'); return sh(work, 'rev-parse', 'HEAD'); };
-  const layout = { ...LAYOUT, checkout, mirror };
-  const fsImpl = createFakeFs({ [`${checkout}/.git`]: { kind: 'dir' }, [mirror]: { kind: 'dir' }, '/etc/sovereign-home': { kind: 'dir' } });
-  // Root's network fetch is replaced by the fixture's own publish(); sovereign's git runs for real.
-  const run = async (input) => (input.uid === 0 ? { stdout: '' } : { stdout: execFileSync('git', input.args, { cwd: root, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }) });
-  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run });
-  const sync = (ref = 'main') => handlers['git.sync'](base('git.sync', { repository: HTTPS_REPO, ref }), { layout });
-  return { sh, work, checkout, publish, sync, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  try {
+    // Isolated from the developer's or CI runner's git config (commit signing, hooks, aliases, safe.directory).
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+    const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8', env });
+    const sh = (cwd, ...args) => git(cwd, ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args]).trim();
+    const mirror = path.join(root, 'mirror.git');
+    const work = path.join(root, 'work');
+    const checkout = path.join(root, 'checkout');
+    sh(root, 'init', '-q', '-b', 'main', work);
+    sh(work, 'commit', '-q', '--allow-empty', '-m', 'base');
+    sh(root, 'clone', '-q', '--mirror', work, mirror);
+    sh(root, 'clone', '-q', '--origin', 'origin', mirror, checkout);
+    const publish = (message) => { sh(work, 'commit', '-q', '--allow-empty', '-m', message); sh(work, 'push', '-q', mirror, 'main'); return sh(work, 'rev-parse', 'HEAD'); };
+    const layout = { ...LAYOUT, checkout, mirror };
+    const fsImpl = createFakeFs({ [`${checkout}/.git`]: { kind: 'dir' }, [mirror]: { kind: 'dir' }, '/etc/sovereign-home': { kind: 'dir' } });
+    // Root's network fetch is replaced by the fixture's own publish(); sovereign's git runs for real.
+    const run = async (input) => (input.uid === 0 ? { stdout: '' } : { stdout: git(root, input.args) });
+    const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run });
+    const sync = (ref = 'main') => handlers['git.sync'](base('git.sync', { repository: HTTPS_REPO, ref }), { layout });
+    return { sh, work, mirror, checkout, publish, sync, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  } catch (error) {
+    fs.rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 test('git sync on main returns a detached SHA-pinned checkout to the main branch (real git)', async () => {
@@ -195,7 +203,7 @@ test('git sync on main returns a detached SHA-pinned checkout to the main branch
     assert.throws(() => fx.sh(fx.checkout, 'symbolic-ref', '-q', 'HEAD'), 'checkout is detached');
     // main moves back to the commit the pin descends from (as after a deleted hotfix branch)
     fx.sh(fx.work, 'reset', '-q', '--hard', pinned);
-    execFileSync('git', ['push', '-q', '--force', path.join(path.dirname(fx.checkout), 'mirror.git'), 'main'], { cwd: fx.work });
+    fx.sh(fx.work, 'push', '-q', '--force', fx.mirror, 'main');
     const output = await fx.sync('main');
     assert.equal(fx.sh(fx.checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main');
     assert.equal(fx.sh(fx.checkout, 'rev-parse', 'HEAD'), pinned);
