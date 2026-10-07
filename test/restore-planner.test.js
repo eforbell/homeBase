@@ -80,3 +80,22 @@ test('restore plan uses Helm database URL env key and preserves it across env re
   assert.match(plan.script, /pg_restore --clean --if-exists -d "\$HELM_DATABASE_URL"/);
   assert.match(plan.script, /curl --fail --silent --show-error http:\/\/127\.0\.0\.1:3011\/health/);
 });
+
+test('restore plan re-applies catalog storage env keys so old backups keep pointing at the archived root', () => {
+  const { backupRoot, archiveDir } = makeBackupDir('family-pulse');
+  const plan = buildRestorePlan({
+    appId: 'family-pulse',
+    backupDir: archiveDir,
+    state: baseState('family-pulse', '/opt/sovereign-home/apps/familyPulse', 'family-pulse', 3003),
+    config: { baseBackupDir: backupRoot, serviceUser: 'sovereign' },
+  });
+  assert.match(plan.script, /FP_TRANSACTION_FILES_DIR=\/var\/lib\/sovereign-home\/family-pulse\/data\/transaction-files/);
+  const help = makeBackupDir('family-help');
+  const other = buildRestorePlan({
+    appId: 'family-help',
+    backupDir: help.archiveDir,
+    state: baseState('family-help', '/opt/sovereign-home/apps/familyHelp', 'family-help', 3002),
+    config: { baseBackupDir: help.backupRoot, serviceUser: 'sovereign' },
+  });
+  assert.doesNotMatch(other.script, /FP_TRANSACTION_FILES_DIR/);
+});

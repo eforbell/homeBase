@@ -4,7 +4,7 @@ const {
   SOVEREIGN_HOME, lookupSystemUser, runAsUser, readExistingDatabasePassword,
   lstatOrNull, readSmallFileNoFollow, SUPERUSER_SQL_PREAMBLE, writeFileAtomic, requireLayout, deny,
 } = require('./handlers');
-const { parseDotEnv, renderEnv } = require('../src/operations/env');
+const { parseDotEnv, renderEnv, storageEnvOverrides } = require('../src/operations/env');
 
 // Backup, restore, and uninstall primitives. Anything inside app-owned directories (the checkout,
 // .env, backups, storage) is read, written, or removed as sovereign; root only touches root-owned
@@ -139,6 +139,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
             delete restoredEnv[key];
             restoredEnv[key] = current[key];
           }
+          // A backup taken before the catalog declared its storage env key must not point the app away from the archived root.
+          Object.assign(restoredEnv, storageEnvOverrides(layout.app));
           writeFileAtomic(fsImpl, layout.envPath, renderEnv(restoredEnv), 0o640);
         });
         restored.push('.env');

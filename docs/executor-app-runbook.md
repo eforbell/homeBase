@@ -106,6 +106,11 @@ Reinstall contract (verbatim from the module header). An existing non-empty valu
 
 Everything else is **re-derived on every install**, so hostname, port, mount and timezone changes propagate.
 
+Storage paths (`storage.absoluteRoot`):
+- An env key whose catalog default points inside `storage.absoluteRoot` (family-pulse's `FP_TRANSACTION_FILES_DIR`, home-source's `STORAGE_PATH`) is re-derived on reinstall like any other default, **not** preserved. Backups archive the catalog root, so a custom value would leave backups and the app pointing at different directories.
+- Moving an existing install to the catalog path is a manual migration: stop the service, move the directory to `<absoluteRoot>/<subpath>` owned by `sovereign:sovereign` (mode 0750), set the key in `.env`, start the service, then run a backup and confirm `<subpath>.tgz` is in it.
+- Restore re-applies these keys after writing `.env.backup` (`storageEnvOverrides` in `src/operations/env.js`, used by both restore paths), so a backup taken before the key existed still points the app at the archived root.
+
 Executor-specific rules:
 - Render with `strict: true`. An unresolved placeholder refuses the install (`ENV_TEMPLATE_UNRESOLVED`); it never writes `''`.
 - The context must provide every placeholder the app uses. Site values (`hostname`, `domain`, `householdTimezone`) arrive in the action and ride inside the plan's `app-env` step, where policy validates them (`isValidSite`).
