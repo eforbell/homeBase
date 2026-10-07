@@ -102,13 +102,16 @@ const catalog = [
         MCP_AUTH_TOKEN: '',
         LOG_LEVEL: 'info',
         BOOTSTRAP_SECRET: '',
+        FP_TRANSACTION_FILES_DIR: '/var/lib/sovereign-home/family-pulse/data/transaction-files',
       },
     },
     storage: {
-      paths: [],
+      absoluteRoot: '/var/lib/sovereign-home/family-pulse/data',
+      paths: ['transaction-files'],
     },
     updateNotes: [
       'Main app is a singleton because cron jobs run in-process.',
+      'Transaction attachments live on disk, not in the database; FP_TRANSACTION_FILES_DIR must match storage.absoluteRoot + transaction-files so backups capture them.',
       'Use dedicated review for Plaid callback exposure before enabling production linking.',
     ],
   },
