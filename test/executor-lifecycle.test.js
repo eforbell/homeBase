@@ -159,6 +159,21 @@ test('executePlan hands every app plan kind its catalog layout, and bootstrap no
   assert.ok(seen.filter(([type]) => type === 'host.assert-debian-family').every(([, app]) => app === null));
 });
 
+test('restoring a backup that predates the storage env key re-points the app at the archived storage root', async () => {
+  const PULSE = appLayout(getAppById('family-pulse'));
+  const pulseEnv = '/opt/sovereign-home/apps/familyPulse/.env';
+  const archive = '/var/lib/sovereign-home/backups/family-pulse/20260924T101010Z';
+  const { fsImpl, handlers } = harness({
+    [pulseEnv]: { kind: 'file', content: 'DATABASE_URL=postgresql://familypulse:Live-pass-123@127.0.0.1:5432/familypulse\nFP_TRANSACTION_FILES_DIR=/var/lib/sovereign-home/family-pulse/data/transaction-files\n', uid: 1001 },
+    [`${archive}/.env.backup`]: { kind: 'file', content: 'DATABASE_URL=postgresql://familypulse:Old-pass-999@127.0.0.1:5432/familypulse\nPORT=3003\n', uid: 1001 },
+    [`${archive}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 },
+  });
+  await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: PULSE });
+  const env = fsImpl.readFileSync(pulseEnv);
+  assert.match(env, /^FP_TRANSACTION_FILES_DIR=\/var\/lib\/sovereign-home\/family-pulse\/data\/transaction-files$/m);
+  assert.match(env, /^PORT=3003$/m, 'other restored values are kept');
+});
+
 test('restore sources are verified before anything stops, and incomplete or corrupt archives are refused', async () => {
   const incomplete = harness({ [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: 'X=1\n', uid: 1001 } });
   await assert.rejects(() => incomplete.handlers['backup.verify'](op('backup.verify', { risk: 'read', archiveName: '20260924T101010Z' }), { layout: SOURCE }), /no database dump/);

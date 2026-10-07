@@ -3,6 +3,7 @@ const path = require('path');
 const { getAppById } = require('../catalog');
 const { listBackupsFromDisk } = require('./backup-inventory');
 const { storageBaseDir } = require('./backup-planner');
+const { storageEnvOverrides, quoteEnvValue } = require('../operations/env');
 
 function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
@@ -28,7 +29,7 @@ const PRESERVED_DB_ENV_KEYS = [
   'SQLITE_DB_PATH',
 ];
 
-function renderRestoreEnvCommand({ installRoot, archiveDir }) {
+function renderRestoreEnvCommand({ installRoot, archiveDir, app }) {
   const envPath = shellSingleQuote(`${installRoot}/.env`);
   const backupEnvPath = shellSingleQuote(`${archiveDir}/.env.backup`);
   const regex = shellSingleQuote(`^(${PRESERVED_DB_ENV_KEYS.join('|')})=`);
@@ -45,6 +46,11 @@ function renderRestoreEnvCommand({ installRoot, archiveDir }) {
     '    done < "$tmp_env";',
     `    sudo rm -f ${envPath}.bak;`,
     '  fi;',
+    ...Object.entries(storageEnvOverrides(app)).flatMap(([key, value]) => [
+      `  sudo sed -i.bak '/^${key}=/d' ${envPath};`,
+      `  printf '%s\\n' ${shellSingleQuote(`${key}=${quoteEnvValue(value)}`)} | sudo tee -a ${envPath} >/dev/null;`,
+      `  sudo rm -f ${envPath}.bak;`,
+    ]),
     '  rm -f "$tmp_env";',
     'fi',
   ].join(' ');
@@ -76,7 +82,7 @@ function buildRestorePlan({ appId, backupDir, state = {}, config = {} }) {
   const serviceUser = config.serviceUser || 'sovereign';
   const commands = [
     `sudo test -d ${archiveDir}`,
-    renderRestoreEnvCommand({ installRoot, archiveDir }),
+    renderRestoreEnvCommand({ installRoot, archiveDir, app }),
   ];
 
   const databaseUrlEnvKey = app.database?.urlEnvKey || 'DATABASE_URL';

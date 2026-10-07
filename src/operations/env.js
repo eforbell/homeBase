@@ -206,8 +206,24 @@ function renderAppEnv({ app, ctx, existing = null, strict = false }) {
   return { env, content: renderEnv(env) };
 }
 
+// Catalog env keys whose literal default points inside the app's external storage root (e.g.
+// FP_TRANSACTION_FILES_DIR). Backups archive that root, so a restore must keep the app pointed at it
+// even when the restored .env predates the key.
+function storageEnvOverrides(app) {
+  const root = String(app?.storage?.absoluteRoot || '').replace(/\/+$/, '');
+  if (!root) return {};
+  const overrides = {};
+  for (const [key, value] of Object.entries(app.config?.env || {})) {
+    const text = String(value == null ? '' : value);
+    if (text.includes('{{')) continue;
+    if (text === root || text.startsWith(`${root}/`)) overrides[key] = text;
+  }
+  return overrides;
+}
+
 module.exports = {
   EnvTemplateError,
+  storageEnvOverrides,
   DATABASE_KEYS,
   quoteEnvValue,
   renderEnv,
