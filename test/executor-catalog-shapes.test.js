@@ -8,6 +8,7 @@ const { getAppById } = require('../src/catalog');
 const { buildAppInstallPlan } = require('../src/operations/compilers/install');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const env = require('../src/operations/env');
+const { compileAction, generateSecretBindings } = require('../executor/actions');
 
 // Catalog shapes beyond the first two apps: Python runtimes, in-checkout storage, reserved sidecar
 // ports, sidecars published through nginx, mount-path-preserving proxying, schema-file bootstrap,
@@ -290,4 +291,53 @@ test('ensure-venv refuses a host Python older than the app requires, before buil
   await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'ensure-venv' }), { layout: HELM }), /Helm needs Python 3\.11 or newer; this host has 3\.10\.12/);
   assert.equal(calls.length, 1, 'only the version probe ran');
   assert.equal(BITCOIN.runtime.python.minVersion, '3.10');
+});
+
+test("home-drop: engine 'none' compiles to an install with no PostgreSQL steps, no database secret, and backed-up storage", () => {
+  const DROP = getLayout('home-drop');
+  assert.equal(DROP.database, null);
+  assert.equal(DROP.migrationArgv, null);
+  assert.deepEqual(DROP.storage, { root: '/opt/sovereign-home/apps/homeDrop', subpaths: ['shares'], inCheckout: true });
+  const { plan } = compileAction({ action: 'install', appId: 'home-drop', ref: 'main', transport: 'https', site: SITE });
+  const types = plan.operations.map((operation) => operation.type);
+  assert.equal(types.some((type) => type.startsWith('postgres.')), false, types.join(', '));
+  assert.deepEqual(generateSecretBindings(plan), {});
+  assert.doesNotMatch(unit(DROP, 'app-service-v1', 'home-drop.service'), /postgresql\.service/);
+  assert.match(snippet(DROP), /client_max_body_size 101M;/, 'room for multipart framing over MAX_UPLOAD_MB');
+
+  const rendered = env.parseDotEnv(renderAppEnvFile({ layout: DROP, password: null, site: SITE, fsImpl: createFakeFs() }));
+  assert.equal(rendered.SHARE_BASE_URL, '', 'links follow the publishing host unless the operator sets a base');
+  assert.match(rendered.PUBLISH_TOKEN, /^[0-9a-f]{64}$/);
+  assert.equal(rendered.DATABASE_URL, undefined);
+});
+
+test("engine 'none' refuses database names, migrations, or another bootstrap", () => {
+  const app = getAppById('home-drop');
+  for (const database of [
+    { engine: 'none', bootstrap: 'migrations' },
+    { engine: 'none', bootstrap: 'none', databaseName: 'drop' },
+    { engine: 'none', bootstrap: 'none', migrationCommand: 'node db/migrate.js' },
+    { engine: 'none', bootstrap: 'none', schemaFile: 'db/schema.sql' },
+  ]) {
+    assert.throws(() => appLayout({ ...app, database }), /engine 'none'/);
+  }
+});
+
+test('home-drop reinstall keeps the token, an operator link base and expiry, and re-derives the port and upload cap', () => {
+  const DROP = getLayout('home-drop');
+  const existingContent = [
+    'PUBLISH_TOKEN=my own long passphrase',
+    'SHARE_BASE_URL=https://host.example.ts.net:8443/',
+    'DEFAULT_EXPIRY_DAYS=7',
+    'MAX_UPLOAD_MB=500',
+    'PORT=9999',
+    'SHARE_SANDBOX=off',
+  ].join('\n');
+  const rendered = env.parseDotEnv(renderAppEnvFile({ layout: DROP, password: null, site: SITE, existingContent, fsImpl: createFakeFs() }));
+  assert.equal(rendered.PUBLISH_TOKEN, 'my own long passphrase');
+  assert.equal(rendered.SHARE_BASE_URL, 'https://host.example.ts.net:8443/');
+  assert.equal(rendered.DEFAULT_EXPIRY_DAYS, '7');
+  assert.equal(rendered.MAX_UPLOAD_MB, '100', 'tied to the nginx body limit');
+  assert.equal(rendered.PORT, '3012');
+  assert.equal(rendered.SHARE_SANDBOX, 'off', 'an operator-added key is kept');
 });

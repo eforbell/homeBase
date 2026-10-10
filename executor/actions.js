@@ -21,7 +21,7 @@ const ACTIONS = Object.freeze({
 });
 // Apps the executor manages. Each entry has passed the runbook (docs/executor-app-runbook.md),
 // including a container run; since 2026-09-25 that is the whole catalog.
-const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-plan', 'fast-to-eat', 'family-help', 'home-ops', 'family-pulse', 'bug-base', 'helm', 'bitcoin-accounting']);
+const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-plan', 'fast-to-eat', 'family-help', 'home-ops', 'family-pulse', 'bug-base', 'helm', 'bitcoin-accounting', 'home-drop']);
 const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }

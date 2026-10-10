@@ -12,6 +12,8 @@ const { parseDotEnv, renderEnv, storageEnvOverrides } = require('../src/operatio
 
 const { BACKUP_ROOT } = require('../src/operations/paths');
 // Legacy restore semantics: the backup's .env comes back, but live database wiring is kept.
+// backup.create writes this last; an archive without it was interrupted (also what the inventory dates by).
+const COMPLETION_MARKER = 'backup-generated-at.txt';
 const PRESERVED_DB_ENV_KEYS = ['DATABASE_URL', 'HELM_DATABASE_URL', 'DB_BACKEND', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'SQLITE_DB_PATH'];
 
 function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, now = () => new Date() } = {}) {
@@ -85,22 +87,25 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
         await asSovereign(sovereign, { binary: '/usr/bin/tar', args: ['-C', layout.storage.root, '-czf', `${archiveDir}/${subpath}.tgz`, subpath], timeoutMs: operation.timeoutMs, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
         included.push(`${subpath}.tgz`);
       }
-      asUser(sovereign, () => writeFileAtomic(fsImpl, `${archiveDir}/backup-generated-at.txt`, `${now().toISOString()}\n`, 0o644));
+      // Written last: its presence is what marks the archive complete (verify and restore require it).
+      asUser(sovereign, () => writeFileAtomic(fsImpl, `${archiveDir}/${COMPLETION_MARKER}`, `${now().toISOString()}\n`, 0o644));
       return `created backup ${operation.archiveName} (${included.join(', ') || 'no files'})`;
     },
 
-    // Proves a restore source is usable before a restore plan stops anything: the archive exists, a
-    // database-backed app has its dump, and every archive present passes an integrity read.
+    // Proves a restore source is usable before a restore plan stops anything: the archive exists and was
+    // finished, a database-backed app has its dump, and every archive present passes an integrity read.
     'backup.verify': async (operation, { layout } = {}) => {
       requireLayout(layout);
       const sovereign = sovereignOrDeny();
       const archiveDir = archiveDirFor(layout, operation.archiveName);
       const present = asUser(sovereign, () => ({
         archive: isRealDir(archiveDir),
+        complete: isRealFile(`${archiveDir}/${COMPLETION_MARKER}`),
         dump: isRealFile(`${archiveDir}/database.dump`),
         storage: (layout.storage?.subpaths || []).filter((subpath) => isRealFile(`${archiveDir}/${subpath}.tgz`)),
       }));
       if (!present.archive) deny(`Backup ${operation.archiveName} does not exist for ${layout.app.name}.`);
+      if (!present.complete) deny(`Backup ${operation.archiveName} never finished; refusing to restore ${layout.app.name} from an incomplete backup.`);
       if (layout.database && !present.dump) deny(`Backup ${operation.archiveName} has no database dump; refusing to restore ${layout.app.name} from an incomplete backup.`);
       const checked = [];
       if (layout.database) {
@@ -122,11 +127,15 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       const archiveDir = archiveDirFor(layout, operation.archiveName);
       const present = asUser(sovereign, () => ({
         archive: isRealDir(archiveDir),
+        complete: isRealFile(`${archiveDir}/${COMPLETION_MARKER}`),
         env: isRealFile(`${archiveDir}/.env.backup`),
         dump: isRealFile(`${archiveDir}/database.dump`),
         storage: (layout.storage?.subpaths || []).filter((subpath) => isRealFile(`${archiveDir}/${subpath}.tgz`)),
       }));
       if (!present.archive) deny(`Backup ${operation.archiveName} does not exist for ${layout.app.name}.`);
+      // An archive without the marker was interrupted mid-write: its storage may simply be missing, which
+      // would otherwise read as "not in this backup, kept as-is" (the only check a database-free app gets).
+      if (!present.complete) deny(`Backup ${operation.archiveName} never finished; refusing a partial restore of ${layout.app.name}.`);
       // Never report success for a database-backed app without restoring its database.
       if (layout.database && !present.dump) deny(`Backup ${operation.archiveName} has no database dump; refusing a partial restore of ${layout.app.name}.`);
       const restored = [];

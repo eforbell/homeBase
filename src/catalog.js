@@ -969,6 +969,73 @@ const catalog = [
       'OPENAI_API_KEY is optional — MagicMaintenance and photo analysis degrade gracefully without it.',
     ],
   },
+  {
+    id: 'home-drop',
+    repoKey: 'homeDrop',
+    name: 'Home Drop',
+    icon: '📮',
+    purpose: 'Publish a file or folder to a short, expiring link anyone on the home network can open.',
+    repository: {
+      url: 'https://github.com/eforbell/homeDrop.git',
+      sshUrl: 'git@github.com:eforbell/homeDrop.git',
+      defaultRef: 'main',
+    },
+    runtime: {
+      kind: 'node',
+      installCommand: 'npm ci --omit=dev',
+      startCommand: 'node server.js',
+      nodeEnv: 'production',
+    },
+    network: {
+      preferredMountPath: '/drop/',
+      preferredPort: 3012,
+      upstreamBind: '127.0.0.1',
+      // A publish is one multipart request for the whole folder: MAX_UPLOAD_MB (100) of files plus framing,
+      // which the app allows up to 1 MiB over.
+      clientMaxBodySize: '101M',
+      health: {
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/health',
+      },
+      notes: [
+        'Viewing a share is open to anyone who can reach the host; publishing, listing and take-down need PUBLISH_TOKEN.',
+        'Every share response but a PDF is CSP-sandboxed (opaque origin), isolating shared pages from the other apps on this host.',
+      ],
+    },
+    // No database: shares and their metadata are files under storage.paths.
+    database: {
+      engine: 'none',
+      bootstrap: 'none',
+    },
+    service: {
+      name: 'home-drop',
+      description: 'Home Drop App',
+      envFile: '.env',
+    },
+    config: {
+      env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
+        PORT: '{{port}}',
+        PUBLISH_TOKEN: '{{secret1}}',
+        // Empty: links follow the host and mount path they were published from. Operator-supplied (kept on
+        // reinstall) only to point links at a dedicated origin, e.g. a tailscale serve port.
+        SHARE_BASE_URL: '',
+        DEFAULT_EXPIRY_DAYS: '30',
+        // Re-derived, not preserved: nginx's clientMaxBodySize above is fixed at 101M.
+        MAX_UPLOAD_MB: '100',
+      },
+      preserveExistingKeys: ['DEFAULT_EXPIRY_DAYS'],
+    },
+    storage: {
+      paths: ['shares'],
+    },
+    updateNotes: [
+      'No migrations. Shares live in shares/ inside the checkout and are included in backups.',
+      'Read the generated PUBLISH_TOKEN from the app .env once; replacing it with your own passphrase survives reinstalls.',
+      'Executor hosts only: the legacy-sudo backup planner always runs pg_dump.',
+    ],
+  },
 ];
 
 function getCatalog() {
