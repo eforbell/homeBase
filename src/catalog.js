@@ -999,7 +999,7 @@ const catalog = [
       },
       notes: [
         'Viewing a share is open to anyone who can reach the host; publishing, listing and take-down need PUBLISH_TOKEN.',
-        'Shared HTML runs under a CSP sandbox, so it cannot read the cookies or storage of apps on the same host.',
+        'Every share response but a PDF is CSP-sandboxed (opaque origin), isolating shared pages from the other apps on this host.',
       ],
     },
     // No database: shares and their metadata are files under storage.paths.
@@ -1017,13 +1017,14 @@ const catalog = [
         ...SOVEREIGN_FONT_ENV_TEMPLATE,
         PORT: '{{port}}',
         PUBLISH_TOKEN: '{{secret1}}',
-        SHARE_BASE_URL: '{{externalUrl}}',
+        // Empty: links follow the host and mount path they were published from. Operator-supplied (kept on
+        // reinstall) only to point links at a dedicated origin, e.g. a tailscale serve port.
+        SHARE_BASE_URL: '',
         DEFAULT_EXPIRY_DAYS: '30',
+        // Re-derived, not preserved: nginx's clientMaxBodySize above is fixed at 100M.
         MAX_UPLOAD_MB: '100',
-        SHARE_SANDBOX: 'on',
       },
-      // The operator may point links at a dedicated origin (e.g. a tailscale serve port); keep that edit.
-      preserveExistingKeys: ['SHARE_BASE_URL', 'DEFAULT_EXPIRY_DAYS', 'MAX_UPLOAD_MB', 'SHARE_SANDBOX'],
+      preserveExistingKeys: ['DEFAULT_EXPIRY_DAYS'],
     },
     storage: {
       paths: ['shares'],

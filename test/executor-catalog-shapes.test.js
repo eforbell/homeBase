@@ -306,7 +306,7 @@ test("home-drop: engine 'none' compiles to an install with no PostgreSQL steps, 
   assert.match(snippet(DROP), /client_max_body_size 100M;/);
 
   const rendered = env.parseDotEnv(renderAppEnvFile({ layout: DROP, password: null, site: SITE, fsImpl: createFakeFs() }));
-  assert.equal(rendered.SHARE_BASE_URL, 'https://homebase.tailnet/drop/');
+  assert.equal(rendered.SHARE_BASE_URL, '', 'links follow the publishing host unless the operator sets a base');
   assert.match(rendered.PUBLISH_TOKEN, /^[0-9a-f]{64}$/);
   assert.equal(rendered.DATABASE_URL, undefined);
 });
