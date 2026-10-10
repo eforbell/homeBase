@@ -8,6 +8,7 @@ const { getAppById } = require('../src/catalog');
 const { buildAppInstallPlan } = require('../src/operations/compilers/install');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const env = require('../src/operations/env');
+const { compileAction, generateSecretBindings } = require('../executor/actions');
 
 // Catalog shapes beyond the first two apps: Python runtimes, in-checkout storage, reserved sidecar
 // ports, sidecars published through nginx, mount-path-preserving proxying, schema-file bootstrap,
@@ -290,4 +291,33 @@ test('ensure-venv refuses a host Python older than the app requires, before buil
   await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'ensure-venv' }), { layout: HELM }), /Helm needs Python 3\.11 or newer; this host has 3\.10\.12/);
   assert.equal(calls.length, 1, 'only the version probe ran');
   assert.equal(BITCOIN.runtime.python.minVersion, '3.10');
+});
+
+test("home-drop: engine 'none' compiles to an install with no PostgreSQL steps, no database secret, and backed-up storage", () => {
+  const DROP = getLayout('home-drop');
+  assert.equal(DROP.database, null);
+  assert.equal(DROP.migrationArgv, null);
+  assert.deepEqual(DROP.storage, { root: '/opt/sovereign-home/apps/homeDrop', subpaths: ['shares'], inCheckout: true });
+  const { plan } = compileAction({ action: 'install', appId: 'home-drop', ref: 'main', transport: 'https', site: SITE });
+  const types = plan.operations.map((operation) => operation.type);
+  assert.equal(types.some((type) => type.startsWith('postgres.')), false, types.join(', '));
+  assert.deepEqual(generateSecretBindings(plan), {});
+  assert.doesNotMatch(unit(DROP, 'app-service-v1', 'home-drop.service'), /postgresql\.service/);
+  assert.match(snippet(DROP), /client_max_body_size 100M;/);
+
+  const rendered = env.parseDotEnv(renderAppEnvFile({ layout: DROP, password: null, site: SITE, fsImpl: createFakeFs() }));
+  assert.equal(rendered.SHARE_BASE_URL, 'https://homebase.tailnet/drop/');
+  assert.match(rendered.PUBLISH_TOKEN, /^[0-9a-f]{64}$/);
+  assert.equal(rendered.DATABASE_URL, undefined);
+});
+
+test("engine 'none' refuses database names, migrations, or another bootstrap", () => {
+  const app = getAppById('home-drop');
+  for (const database of [
+    { engine: 'none', bootstrap: 'migrations' },
+    { engine: 'none', bootstrap: 'none', databaseName: 'drop' },
+    { engine: 'none', bootstrap: 'none', migrationCommand: 'node db/migrate.js' },
+  ]) {
+    assert.throws(() => appLayout({ ...app, database }), /engine 'none'/);
+  }
 });

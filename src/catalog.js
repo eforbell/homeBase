@@ -969,6 +969,71 @@ const catalog = [
       'OPENAI_API_KEY is optional — MagicMaintenance and photo analysis degrade gracefully without it.',
     ],
   },
+  {
+    id: 'home-drop',
+    repoKey: 'homeDrop',
+    name: 'Home Drop',
+    icon: '📮',
+    purpose: 'Publish a file or folder to a short, expiring link anyone on the home network can open.',
+    repository: {
+      url: 'https://github.com/eforbell/homeDrop.git',
+      sshUrl: 'git@github.com:eforbell/homeDrop.git',
+      defaultRef: 'main',
+    },
+    runtime: {
+      kind: 'node',
+      installCommand: 'npm ci --omit=dev',
+      startCommand: 'node server.js',
+      nodeEnv: 'production',
+    },
+    network: {
+      preferredMountPath: '/drop/',
+      preferredPort: 3012,
+      upstreamBind: '127.0.0.1',
+      // Matches the app's MAX_UPLOAD_MB default; a publish is one multipart request for the whole folder.
+      clientMaxBodySize: '100M',
+      health: {
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/health',
+      },
+      notes: [
+        'Viewing a share is open to anyone who can reach the host; publishing, listing and take-down need PUBLISH_TOKEN.',
+        'Shared HTML runs under a CSP sandbox, so it cannot read the cookies or storage of apps on the same host.',
+      ],
+    },
+    // No database: shares and their metadata are files under storage.paths.
+    database: {
+      engine: 'none',
+      bootstrap: 'none',
+    },
+    service: {
+      name: 'home-drop',
+      description: 'Home Drop App',
+      envFile: '.env',
+    },
+    config: {
+      env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
+        PORT: '{{port}}',
+        PUBLISH_TOKEN: '{{secret1}}',
+        SHARE_BASE_URL: '{{externalUrl}}',
+        DEFAULT_EXPIRY_DAYS: '30',
+        MAX_UPLOAD_MB: '100',
+        SHARE_SANDBOX: 'on',
+      },
+      // The operator may point links at a dedicated origin (e.g. a tailscale serve port); keep that edit.
+      preserveExistingKeys: ['SHARE_BASE_URL', 'DEFAULT_EXPIRY_DAYS', 'MAX_UPLOAD_MB', 'SHARE_SANDBOX'],
+    },
+    storage: {
+      paths: ['shares'],
+    },
+    updateNotes: [
+      'No migrations. Shares live in shares/ inside the checkout and are included in backups.',
+      'Read the generated PUBLISH_TOKEN from the app .env once; replacing it with your own passphrase survives reinstalls.',
+      'Executor hosts only: the legacy-sudo backup planner always runs pg_dump.',
+    ],
+  },
 ];
 
 function getCatalog() {

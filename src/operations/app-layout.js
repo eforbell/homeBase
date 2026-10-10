@@ -152,7 +152,12 @@ function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
     name: app.database.databaseName,
     user: app.database.databaseUser,
   } : null;
-  if (app.database && !database) unsupported(app, `database engine ${app.database.engine} is not supported yet`);
+  // engine 'none' declares an app that keeps its data in storage.paths only (the manifest requires the block).
+  const noDatabase = app.database?.engine === 'none';
+  if (noDatabase && (app.database.bootstrap !== 'none' || app.database.migrationCommand || app.database.databaseName || app.database.databaseUser)) {
+    unsupported(app, "database engine 'none' takes bootstrap 'none' and no database names or migrations");
+  }
+  if (app.database && !database && !noDatabase) unsupported(app, `database engine ${app.database.engine} is not supported yet`);
   if (database && (!DB_IDENTIFIER.test(database.name || '') || !DB_IDENTIFIER.test(database.user || ''))) unsupported(app, 'database names must be simple identifiers');
   if (database && (RESERVED_DB.test(database.name) || RESERVED_DB.test(database.user))) unsupported(app, 'database names are reserved by PostgreSQL');
   if (database && otherApps.some((other) => other.database && [other.database.databaseName, other.database.databaseUser].some((value) => value === database.name || value === database.user))) {
