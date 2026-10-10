@@ -990,8 +990,9 @@ const catalog = [
       preferredMountPath: '/drop/',
       preferredPort: 3012,
       upstreamBind: '127.0.0.1',
-      // Matches the app's MAX_UPLOAD_MB default; a publish is one multipart request for the whole folder.
-      clientMaxBodySize: '100M',
+      // A publish is one multipart request for the whole folder: MAX_UPLOAD_MB (100) of files plus framing,
+      // which the app allows up to 1 MiB over.
+      clientMaxBodySize: '101M',
       health: {
         type: 'http',
         livenessPath: '/api/health',
@@ -1021,7 +1022,7 @@ const catalog = [
         // reinstall) only to point links at a dedicated origin, e.g. a tailscale serve port.
         SHARE_BASE_URL: '',
         DEFAULT_EXPIRY_DAYS: '30',
-        // Re-derived, not preserved: nginx's clientMaxBodySize above is fixed at 100M.
+        // Re-derived, not preserved: nginx's clientMaxBodySize above is fixed at 101M.
         MAX_UPLOAD_MB: '100',
       },
       preserveExistingKeys: ['DEFAULT_EXPIRY_DAYS'],

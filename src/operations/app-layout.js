@@ -154,8 +154,8 @@ function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
   } : null;
   // engine 'none' declares an app that keeps its data in storage.paths only (the manifest requires the block).
   const noDatabase = app.database?.engine === 'none';
-  if (noDatabase && (app.database.bootstrap !== 'none' || app.database.migrationCommand || app.database.databaseName || app.database.databaseUser)) {
-    unsupported(app, "database engine 'none' takes bootstrap 'none' and no database names or migrations");
+  if (noDatabase && (app.database.bootstrap !== 'none' || ['migrationCommand', 'databaseName', 'databaseUser', 'urlEnvKey', 'schemaFile', 'schemaCommand'].some((key) => app.database[key] != null))) {
+    unsupported(app, "database engine 'none' takes bootstrap 'none' and no database names, schema, or migrations");
   }
   if (app.database && !database && !noDatabase) unsupported(app, `database engine ${app.database.engine} is not supported yet`);
   if (database && (!DB_IDENTIFIER.test(database.name || '') || !DB_IDENTIFIER.test(database.user || ''))) unsupported(app, 'database names must be simple identifiers');
