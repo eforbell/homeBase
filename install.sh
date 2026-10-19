@@ -16,6 +16,16 @@ SOURCE_DIR=''
 GIT_SSH_KEY_SOURCE=''
 FORCE=0
 TEST_MODE="${HOMEBASE_TEST_MODE:-0}"
+# Node.js floor for Home Base and every Node-managed app, and the line provisioned when Node is absent.
+NODE_MIN_MAJOR=22
+NODE_PROVISION_MAJOR=24
+# NodeSource's repository signing key (fingerprint 6F71 F525 2828 41EE DAF8 51B4 2F59 B5F9 9B1B E0B4),
+# pinned by content so a minimal host needs no gpg to trust it.
+NODESOURCE_KEY_URL='https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key'
+NODESOURCE_KEY_SHA256='b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d'
+NODESOURCE_KEYRING='/etc/apt/keyrings/nodesource.asc'
+NODESOURCE_LIST='/etc/apt/sources.list.d/nodesource.list'
+NODESOURCE_PIN='/etc/apt/preferences.d/nodesource'
 
 INSTALL_DIR="${HOMEBASE_INSTALL_DIR:-/opt/sovereign-home/homebase}"
 STATE_DIR="${HOMEBASE_STATE_DIR:-/var/lib/sovereign-home/homebase}"
@@ -560,16 +570,36 @@ if [ -f "$ENV_FILE" ] && [ "$ADD_EXECUTOR" -eq 0 ] && [ "$SWITCH_TO_EXECUTOR" -e
   fi
 fi
 
+# Distribution nodejs packages lag the supported Node.js lines (Ubuntu 24.04 and Debian 12 ship 18), so a
+# missing Node comes from NodeSource's signed repository for the provisioned major, which then owns updates.
+provision_nodesource_node() {
+  local key
+  log "installing Node.js ${NODE_PROVISION_MAJOR}.x from NodeSource"
+  key="$(mktemp)"
+  curl -fsSL --proto '=https' --tlsv1.2 "$NODESOURCE_KEY_URL" -o "$key" || { rm -f "$key"; die "could not download the NodeSource signing key"; }
+  if ! printf '%s  %s\n' "$NODESOURCE_KEY_SHA256" "$key" | sha256sum -c --status; then
+    rm -f "$key"
+    die "the NodeSource signing key does not match the pinned checksum; refusing to trust it"
+  fi
+  install -d -m 0755 -o root -g root /etc/apt/keyrings
+  install -m 0644 -o root -g root "$key" "$NODESOURCE_KEYRING"
+  rm -f "$key"
+  printf 'deb [signed-by=%s] https://deb.nodesource.com/node_%s.x nodistro main\n' "$NODESOURCE_KEYRING" "$NODE_PROVISION_MAJOR" > "$NODESOURCE_LIST"
+  # Prefer NodeSource's nodejs over the distribution's older package of the same name.
+  printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' > "$NODESOURCE_PIN"
+  chmod 0644 "$NODESOURCE_LIST" "$NODESOURCE_PIN"
+  apt-get update
+  apt-get install -y --no-install-recommends nodejs
+}
+
 if [ "$TEST_MODE" != '1' ]; then
   export DEBIAN_FRONTEND=noninteractive
-  # Only what is missing: NodeSource's nodejs already bundles npm (apt's npm package conflicts with it),
-  # and an existing Node 18+ from any source is kept.
+  # Only what is missing. An existing Node.js from any source is kept and checked against the floor below:
+  # replacing it would change the runtime under services that already use it.
   MISSING_PACKAGES=''
   for package in ca-certificates curl tar python3 ${SOURCE_DIR:+git}; do
     dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii' || MISSING_PACKAGES="$MISSING_PACKAGES $package"
   done
-  command -v node >/dev/null 2>&1 || MISSING_PACKAGES="$MISSING_PACKAGES nodejs"
-  command -v npm >/dev/null 2>&1 || MISSING_PACKAGES="$MISSING_PACKAGES npm"
   if [ -n "$MISSING_PACKAGES" ]; then
     log "installing runtime prerequisites:${MISSING_PACKAGES}"
     apt-get update
@@ -578,13 +608,20 @@ if [ "$TEST_MODE" != '1' ]; then
   else
     log 'runtime prerequisites already installed'
   fi
+  if ! command -v node >/dev/null 2>&1; then
+    provision_nodesource_node
+  elif ! command -v npm >/dev/null 2>&1; then
+    # NodeSource's nodejs bundles npm (apt's npm package conflicts with it); other sources may not.
+    log 'installing runtime prerequisite: npm'
+    apt-get install -y --no-install-recommends npm
+  fi
 fi
 
 for command in curl tar python3 node npm ${SOURCE_DIR:+git}; do
   command -v "$command" >/dev/null 2>&1 || die "required command unavailable: $command"
 done
 NODE_MAJOR="$(node -e 'process.stdout.write(process.versions.node.split(".")[0])')"
-[ "$NODE_MAJOR" -ge 18 ] || die "Node.js 18 or newer is required; found $(node --version)"
+[ "$NODE_MAJOR" -ge "$NODE_MIN_MAJOR" ] || die "Node.js ${NODE_MIN_MAJOR} or newer is required; found $(node --version). Upgrade the host's Node.js first (for example NodeSource node_${NODE_PROVISION_MAJOR}.x), then re-run; Home Base does not replace a Node.js that existing services use."
 NODE_BIN="$(command -v node)"
 if [ "$TEST_MODE" != '1' ]; then
   # The root executor's unit runs this binary: nothing but root may be able to replace it or anything on

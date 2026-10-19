@@ -10,7 +10,14 @@ Home Base installs as a loopback-only control-plane service plus a narrow, socke
 - systemd
 - a home-lab operator comfortable reading `systemctl` and `journalctl` output
 
-The installer supplies the minimum runtime packages through `apt`: CA certificates, curl, tar, Python 3, and Node.js. Node.js 18 or newer is required. npm is installed later by the host bootstrap when managed Node applications need it; Home Base itself has no runtime package dependencies.
+The installer supplies the minimum runtime packages through `apt`: CA certificates, curl, tar, and Python 3.
+
+Node.js 22 or newer is required, for Home Base and for every Node-managed app.
+- **No Node.js on the host:** the installer adds NodeSource's signed repository for Node.js 24 (the current LTS line) and installs `nodejs`, which includes npm. The repository key is checked against a SHA-256 pinned in `install.sh` before apt trusts it. Fingerprint: `6F71 F525 2828 41EE DAF8 51B4 2F59 B5F9 9B1B E0B4`. Later Node.js updates come through apt as usual.
+- **An existing Node.js 22 or newer**, from any source: it is kept.
+- **An older Node.js:** the installer stops rather than replacing the runtime under services that already use it. Upgrade it first, then re-run the installer. Distribution packages are too old here: Ubuntu 24.04 and Debian 12 ship Node.js 18.
+
+Home Base itself has no other runtime package dependencies.
 
 ## Install a tagged release
 
@@ -48,7 +55,7 @@ sudo bash install.sh --source-dir "$PWD" --version v0.1.0
 
 ## What the installer does
 
-1. Verifies the supported OS and Node.js baseline.
+1. Verifies the supported OS, provisions Node.js 24 from NodeSource if Node.js is absent, and enforces the Node.js 22 floor.
 2. Downloads `homebase-<version>.tar.gz` and its `.sha256` file from the matching GitHub release, or packages the selected clean local checkout with `--source-dir`.
 3. Rejects unsafe archive paths, links, device entries, checksum mismatches, and unmanaged existing install directories.
 4. Installs root-owned application code at `/opt/sovereign-home/homebase`.

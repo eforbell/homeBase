@@ -270,6 +270,22 @@ test('installer fails closed on checksum mismatch', () => {
   assert.match(result.stderr, /checksum verification failed/i);
 });
 
+test('installer refuses a Node.js below the floor instead of replacing it', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-node-'));
+  const fixture = createReleaseFixture(tempDir);
+  const stubDir = path.join(tempDir, 'bin');
+  fs.mkdirSync(stubDir);
+  const stub = path.join(__dirname, 'fixtures', 'node-version-stub.js');
+  fs.writeFileSync(path.join(stubDir, 'node'), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo v18.19.1; exit 0; fi\nNODE_STUB_VERSION=18.19.1 exec "${process.execPath}" --require "${stub}" "$@"\n`, { mode: 0o755 });
+  const env = installerEnv(tempDir, fixture, { PATH: `${stubDir}:${process.env.PATH}` });
+  const result = runInstaller(['--version', fixture.version, '--no-start'], env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Node\.js 22 or newer is required; found v18\.19\.1/);
+  assert.match(result.stderr, /does not replace a Node\.js that existing services use/);
+  assert.equal(fs.existsSync(path.join(env.HOMEBASE_INSTALL_DIR, 'server.js')), false);
+});
+
 test('installer refuses any pre-existing Home Base sudoers policy', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-sudoers-'));
   const fixture = createReleaseFixture(tempDir);

@@ -1,4 +1,5 @@
 const { spawnSync } = require('child_process');
+const { NODE_MIN_MAJOR, NODE_PROVISION_MAJOR } = require('../node-runtime');
 
 const CRITICAL_CHECK_IDS = new Set(['os', 'sudo', 'systemd', 'nginx-config', 'postgres-service', 'executor']);
 
@@ -108,7 +109,7 @@ function runPreflightChecks(config = {}, { runCommand = runShell, executorStatus
     ...(executorMode ? [] : [buildCheck('sudo', 'sudo available', 'command -v sudo', 'Install and configure sudo or run Home Base in a root context.', runCommand, config)]),
     buildCheck('systemd', 'systemd available', 'command -v systemctl', 'This host must support systemd-managed services.', runCommand, config),
     buildCheck('git', 'git installed', 'command -v git && git --version', 'Install git before attempting app installs.', runCommand, config),
-    buildCheck('node', 'Node.js installed', 'command -v node && node --version', 'Install Node.js 18+ for Home Base and Node-managed apps.', runCommand, config),
+    buildCheck('node', `Node.js ${NODE_MIN_MAJOR}+ installed`, `command -v node && node --version && node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= ${NODE_MIN_MAJOR} ? 0 : 1)'`, `Install Node.js ${NODE_MIN_MAJOR}+ (Home Base's installer provisions ${NODE_PROVISION_MAJOR}.x from NodeSource when Node.js is absent).`, runCommand, config),
     buildCheck('python3', 'Python 3 installed', 'command -v python3 && python3 --version', 'Install Python 3 for Bitcoin Accounting and SQLite state support.', runCommand, config),
     buildCheck('psql', 'PostgreSQL client installed', 'command -v psql && psql --version', 'Install postgresql-client so Home Base can run schema and backup commands.', runCommand, config),
     buildCheck('nginx', 'nginx installed', 'command -v nginx && nginx -v', 'Install nginx before enabling routed apps.', runCommand, config),
