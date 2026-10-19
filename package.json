@@ -6,7 +6,7 @@
   "description": "Home Base control plane prototype for The Sovereign Home",
   "type": "commonjs",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node server.js",

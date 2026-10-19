@@ -1,5 +1,15 @@
 # Upgrading Home Base
 
+## Node.js 22 floor
+
+Home Base and its Node-managed apps now require Node.js 22 or newer. Node.js 18 and 20 are past end-of-life, and current app dependencies need at least 20. For example, Home Source's WebAuthn library needs `globalThis.crypto`, which Node.js 18 does not provide.
+
+Check with `node --version` on the host.
+- **Already on 22 or newer:** nothing changes.
+- **On 18 or 20:** upgrade before updating Home Base. For example, using NodeSource's Node.js 24 repository as `install.sh` does: add the repository, `apt-get install nodejs`, then restart `homebase`, `homebase-executor`, and every app service.
+
+The installer refuses an older Node.js instead of replacing it. Home Base's preflight reports it as a failed **Node.js 22+ installed** check.
+
 ## To the root-executor release (branch `feature/root-executor-protocol`)
 
 This release adds the typed root executor for installer-built hosts. **Existing hosts that run Home Base with sudo (legacy mode) keep working, but need one environment change first.**
