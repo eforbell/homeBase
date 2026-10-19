@@ -588,11 +588,24 @@ provision_nodesource_node() {
   # Prefer NodeSource's nodejs over the distribution's older package of the same name.
   printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' > "$NODESOURCE_PIN"
   chmod 0644 "$NODESOURCE_LIST" "$NODESOURCE_PIN"
+  # Always refresh here: the NodeSource source was just added.
   apt-get update
+  APT_UPDATED=1
   apt-get install -y --no-install-recommends nodejs
 }
 
-if [ "$TEST_MODE" != '1' ]; then
+# Refresh package metadata before the run's first install: a host's apt lists may be empty or stale.
+APT_UPDATED=0
+apt_install() {
+  if [ "$APT_UPDATED" -eq 0 ]; then
+    apt-get update
+    APT_UPDATED=1
+  fi
+  apt-get install -y --no-install-recommends "$@"
+}
+
+# Test mode skips apt unless a test supplies stub apt-get and dpkg-query on PATH (HOMEBASE_TEST_APT=1).
+if [ "$TEST_MODE" != '1' ] || [ "${HOMEBASE_TEST_APT:-0}" = '1' ]; then
   export DEBIAN_FRONTEND=noninteractive
   # Only what is missing. An existing Node.js from any source is kept and checked against the floor below:
   # replacing it would change the runtime under services that already use it.
@@ -602,9 +615,8 @@ if [ "$TEST_MODE" != '1' ]; then
   done
   if [ -n "$MISSING_PACKAGES" ]; then
     log "installing runtime prerequisites:${MISSING_PACKAGES}"
-    apt-get update
     # shellcheck disable=SC2086
-    apt-get install -y --no-install-recommends $MISSING_PACKAGES
+    apt_install $MISSING_PACKAGES
   else
     log 'runtime prerequisites already installed'
   fi
@@ -613,7 +625,7 @@ if [ "$TEST_MODE" != '1' ]; then
   elif ! command -v npm >/dev/null 2>&1; then
     # NodeSource's nodejs bundles npm (apt's npm package conflicts with it); other sources may not.
     log 'installing runtime prerequisite: npm'
-    apt-get install -y --no-install-recommends npm
+    apt_install npm
   fi
 fi
 

@@ -286,6 +286,65 @@ test('installer refuses a Node.js below the floor instead of replacing it', () =
   assert.equal(fs.existsSync(path.join(env.HOMEBASE_INSTALL_DIR, 'server.js')), false);
 });
 
+// A host with supported Node.js but no npm: stub apt-get/dpkg-query record calls and, like a host with
+// empty apt lists, cannot locate npm until package metadata has been refreshed.
+function aptHost(tempDir, { missing = [] } = {}) {
+  const bin = path.join(tempDir, 'bin');
+  const lists = path.join(tempDir, 'apt-lists-ready');
+  const log = path.join(tempDir, 'apt.log');
+  fs.mkdirSync(bin);
+  const realNpm = path.join(path.dirname(process.execPath), 'npm');
+  fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'dpkg-query'), [
+    '#!/bin/sh',
+    'for pkg do :; done',
+    `case " ${missing.join(' ')} " in *" $pkg "*) exit 1;; esac`,
+    'printf ii',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'apt-get'), [
+    '#!/bin/sh',
+    `echo "$*" >> "${log}"`,
+    `if [ "$1" = update ]; then touch "${lists}"; exit 0; fi`,
+    `for pkg do :; done; [ -f "${lists}" ] || { echo "E: Unable to locate package $pkg" >&2; exit 100; }`,
+    `case " $* " in *" npm "*) printf '#!/bin/sh\\nexec "${realNpm}" "$@"\\n' > "${bin}/npm"; chmod 755 "${bin}/npm";; esac`,
+    'exit 0',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  return { bin, log, path: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, realNpm };
+}
+
+test('installer refreshes apt metadata before installing a missing npm', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-npm-'));
+  const host = aptHost(tempDir);
+  if (!fs.existsSync(host.realNpm)) return t.skip('npm is not installed beside this Node.js');
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture, { PATH: host.path, HOMEBASE_TEST_APT: '1' });
+  const result = runInstaller(['--version', fixture.version, '--no-start'], env);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(fs.readFileSync(host.log, 'utf8').trim().split('\n'), [
+    'update',
+    'install -y --no-install-recommends npm',
+  ]);
+});
+
+test('installer refreshes apt metadata once for missing prerequisites and npm', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-prereq-'));
+  const host = aptHost(tempDir, { missing: ['curl'] });
+  if (!fs.existsSync(host.realNpm)) return t.skip('npm is not installed beside this Node.js');
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture, { PATH: host.path, HOMEBASE_TEST_APT: '1' });
+  const result = runInstaller(['--version', fixture.version, '--no-start'], env);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(fs.readFileSync(host.log, 'utf8').trim().split('\n'), [
+    'update',
+    'install -y --no-install-recommends curl',
+    'install -y --no-install-recommends npm',
+  ]);
+});
+
 test('installer refuses any pre-existing Home Base sudoers policy', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-sudoers-'));
   const fixture = createReleaseFixture(tempDir);
