@@ -57,6 +57,10 @@ function hostStatus(socketPath, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'host-status' }, options);
 }
 
+function foundationStatus(socketPath, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'foundation-status' }, options);
+}
+
 function actionStatus(socketPath, jobId, actionRequestId, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', jobId: String(jobId), actionRequestId }, options);
 }
@@ -92,4 +96,4 @@ function planAction(socketPath, fields, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'plan-action', ...actionFields(fields) }, options);
 }
 
-module.exports = { sendRequest, hello, hostStatus, appUpdateStatus, actionStatus, runAction, planAction };
+module.exports = { sendRequest, hello, hostStatus, foundationStatus, appUpdateStatus, actionStatus, runAction, planAction };

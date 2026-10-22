@@ -38,6 +38,11 @@ function createFakeFs(initial = {}) {
       if (!entries.has(target)) throw enoent(target);
       return stat(entries.get(target));
     },
+    statSync: (target) => {
+      const entry = entries.get(target);
+      if (!entry) throw enoent(target);
+      return { ...stat(entry), mtimeMs: entry.mtimeMs ?? 0 };
+    },
     realpathSync: (target) => {
       const entry = entries.get(target);
       if (!entry) throw enoent(target);

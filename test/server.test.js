@@ -2381,3 +2381,32 @@ test('executor-mode install previews and records carry no generated credentials,
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('patch posture comes from the executor, is cached, and explains itself without one', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-foundation-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  let collections = 0;
+  const executor = createExecutorServer({ logger: { info() {} }, collectFoundationStatus: async () => { collections += 1; return { checks: { 'node-runtime': { ok: true, level: 'ok', summary: 'Node.js 24.22.1' } }, lifecycleReviewedAt: '2026-10-22', collectedAt: '2026-10-22T00:00:00.000Z' }; } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const base = { appName: 'Home Base', port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet' };
+  const server = await startServer({ ...base, stateDbPath: path.join(tempDir, 'state.sqlite3'), homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  const planOnly = await startServer({ ...base, stateDbPath: path.join(tempDir, 'plan.sqlite3') });
+  try {
+    const first = await (await fetch(`${server.url}/api/homebase/foundation`)).json();
+    assert.equal(first.available, true);
+    assert.equal(first.checks['node-runtime'].level, 'ok');
+    await fetch(`${server.url}/api/homebase/foundation`);
+    assert.equal(collections, 1, 'the web service caches the executor answer');
+    await fetch(`${server.url}/api/homebase/foundation?refresh=1`);
+    assert.equal(collections, 2, 'refresh asks the executor again');
+
+    const unavailable = await (await fetch(`${planOnly.url}/api/homebase/foundation`)).json();
+    assert.equal(unavailable.available, false);
+    assert.match(unavailable.error, /executor mode/);
+  } finally {
+    await server.close();
+    await planOnly.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});

@@ -3,7 +3,7 @@ const { getAppById } = require('../src/catalog');
 const { PROTOCOL_VERSION } = require('./protocol-version');
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
-const REQUEST_TYPES = new Set(['hello', 'host-status', 'app-update-status', 'action-status', 'plan-action', 'run-action']);
+const REQUEST_TYPES = new Set(['hello', 'host-status', 'foundation-status', 'app-update-status', 'action-status', 'plan-action', 'run-action']);
 
 const { ProtocolError } = require('./protocol-error');
 const { normalizeAction, ACTION_FIELDS } = require('./actions');
@@ -20,7 +20,7 @@ function validateRequest(request) {
   if (request.protocolVersion !== PROTOCOL_VERSION) throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported executor protocol version.');
   if (typeof request.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.requestId)) throw new ProtocolError('INVALID_REQUEST', 'requestId must be a UUID.');
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');
-  if (request.type === 'hello' || request.type === 'host-status') {
+  if (request.type === 'hello' || request.type === 'host-status' || request.type === 'foundation-status') {
     requireExactKeys(request, new Set(BASE_KEYS));
     return request;
   }

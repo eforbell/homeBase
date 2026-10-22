@@ -4,6 +4,7 @@ const { executorCapabilities } = require('./context');
 const { writeAudit } = require('./audit');
 const { createBaseHandlers, deployKeyStatus } = require('./handlers');
 const { createHostStatusCollector } = require('./host-status');
+const { createFoundationStatusCollector } = require('./foundation-status');
 const { createAppUpdateStatusChecker } = require('./app-status');
 const { compileAction } = require('./actions');
 const { createLifecycleHandlers } = require('./lifecycle-handlers');
@@ -17,7 +18,7 @@ function encodeLine(payload) {
   return `${line}\n`;
 }
 
-function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runAction = null, planAction = (spec) => compileAction(spec), mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, checkAppUpdateStatus = null, actionStatus = null, maintenance = () => false } = {}) {
+function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runAction = null, planAction = (spec) => compileAction(spec), mutationsEnabled = false, probeDeployKey = () => 'missing', collectHostStatus = null, collectFoundationStatus = null, checkAppUpdateStatus = null, actionStatus = null, maintenance = () => false } = {}) {
   // Replay protection for run-action only (a retried request must not run a plan twice). Read-only
   // requests are cheap to answer again and are not cached; the map is bounded either way.
   const completed = new Map();
@@ -109,6 +110,10 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
           if (!collectHostStatus) throw new ProtocolError('POLICY_DENIED', 'Host status is not enabled.');
           return finish(null, result({ requestId: request.requestId, ok: true, result: await collectHostStatus() }));
         }
+        if (request.type === 'foundation-status') {
+          if (!collectFoundationStatus) throw new ProtocolError('POLICY_DENIED', 'Foundation status is not enabled.');
+          return finish(null, result({ requestId: request.requestId, ok: true, result: await collectFoundationStatus() }));
+        }
         const response = request.type === 'hello'
           ? result({ requestId: request.requestId, ok: true, result: { capabilities: executorCapabilities({ mutationsEnabled, gitDeployKey: probeDeployKey() }), activePlan: activeMutation, maintenance: maintenance() } })
           : result({ requestId: request.requestId, ok: true, result: planAction(request.actionSpec) });
@@ -124,7 +129,7 @@ function listenSystemd({ logger = console } = {}) {
   const journal = createJournal();
   journal.markInterrupted();
   const runAction = createRunAction({ handlers, journal });
-  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker(), actionStatus: (jobId, actionRequestId) => journal.status(jobId, actionRequestId), maintenance: () => maintenanceActive() });
+  const server = createExecutorServer({ logger, runAction, mutationsEnabled: true, probeDeployKey: () => deployKeyStatus(), collectHostStatus: createHostStatusCollector(), collectFoundationStatus: createFoundationStatusCollector(), checkAppUpdateStatus: createAppUpdateStatusChecker(), actionStatus: (jobId, actionRequestId) => journal.status(jobId, actionRequestId), maintenance: () => maintenanceActive() });
   if (Number.parseInt(process.env.LISTEN_FDS || '0', 10) < 1) throw new Error('homebase-executor requires a systemd-passed listening socket.');
   server.listen({ fd: 3 });
   return server;
