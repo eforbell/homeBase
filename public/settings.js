@@ -102,6 +102,7 @@
     const checks = foundation.checks || {};
     const rows = FOUNDATION_CHECKS.filter(([id]) => checks[id]);
     const attention = rows.filter(([id]) => checks[id].level !== 'ok').length;
+    const locked = foundation.detailsRequireAdmin === true;
     return `
       <p style="margin:0 0 0.75rem;">${attention ? `<span class="hb-warn">${window.HB.escapeHtml(attention)} of ${window.HB.escapeHtml(rows.length)} checks need attention.</span>` : '<span class="hb-ok">Runtimes and OS packages are current.</span>'}
         <span class="hb-muted">Checked ${window.HB.escapeHtml(window.HB.formatTimestamp(foundation.collectedAt))} · support dates reviewed ${window.HB.escapeHtml(foundation.lifecycleReviewedAt || 'unknown')}</span></p>
@@ -109,12 +110,12 @@
         ${rows.map(([id, title]) => `
           <li style="border-top:1px solid var(--border);padding-top:0.6rem;">
             <div class="hb-row" style="justify-content:space-between;"><strong>${window.HB.escapeHtml(title)}</strong>${renderFoundationLevel(checks[id].level)}</div>
-            <p class="hb-muted" style="margin:0.25rem 0 0;">${window.HB.escapeHtml(checks[id].summary || '')}</p>
+            ${checks[id].summary ? `<p class="hb-muted" style="margin:0.25rem 0 0;">${window.HB.escapeHtml(checks[id].summary)}</p>` : ''}
             ${checks[id].hint ? `<p style="margin:0.35rem 0 0;">${renderFoundationHint(checks[id].hint)}</p>` : ''}
           </li>
         `).join('')}
       </ul>
-      ${renderFoundationDetails(checks)}
+      ${locked ? '<p class="hb-muted" style="margin:0.75rem 0 0;"><a href="/admin">Unlock Admin</a> to see what each check found and the next step.</p>' : renderFoundationDetails(checks)}
       <p class="hb-muted" style="margin:0.75rem 0 0;">Library dependencies (each app's npm and Python packages) are not checked yet.</p>
     `;
   }

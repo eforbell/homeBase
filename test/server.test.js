@@ -2382,7 +2382,7 @@ test('executor-mode install previews and records carry no generated credentials,
   }
 });
 
-test('patch posture comes from the executor, is cached, and explains itself without one', async () => {
+test('patch posture comes from the executor, is cached, shows details only to an admin, and explains itself without one', async () => {
   const { createExecutorServer } = require('../executor/server');
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-foundation-'));
   const socketPath = path.join(tempDir, 'e.sock');
@@ -2393,13 +2393,20 @@ test('patch posture comes from the executor, is cached, and explains itself with
   const server = await startServer({ ...base, stateDbPath: path.join(tempDir, 'state.sqlite3'), homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
   const planOnly = await startServer({ ...base, stateDbPath: path.join(tempDir, 'plan.sqlite3') });
   try {
-    const first = await (await fetch(`${server.url}/api/homebase/foundation`)).json();
-    assert.equal(first.available, true);
-    assert.equal(first.checks['node-runtime'].level, 'ok');
-    await fetch(`${server.url}/api/homebase/foundation`);
-    assert.equal(collections, 1, 'the web service caches the executor answer');
+    // Locked: levels only; summaries and details name packages, units, PIDs, and paths.
+    const locked = await (await fetch(`${server.url}/api/homebase/foundation?refresh=1`)).json();
+    assert.equal(locked.available, true);
+    assert.equal(locked.detailsRequireAdmin, true);
+    assert.deepEqual(locked.checks, { 'node-runtime': { ok: true, level: 'ok' } });
     await fetch(`${server.url}/api/homebase/foundation?refresh=1`);
-    assert.equal(collections, 2, 'refresh asks the executor again');
+    assert.equal(collections, 1, 'the web service caches the executor answer, and only an admin can force a refresh');
+
+    const cookie = await setupAdminCookie(server.url);
+    const full = await (await fetch(`${server.url}/api/homebase/foundation`, { headers: { cookie } })).json();
+    assert.equal(full.detailsRequireAdmin, undefined);
+    assert.equal(full.checks['node-runtime'].summary, 'Node.js 24.22.1');
+    await fetch(`${server.url}/api/homebase/foundation?refresh=1`, { headers: { cookie } });
+    assert.equal(collections, 2, 'an admin refresh asks the executor again');
 
     const unavailable = await (await fetch(`${planOnly.url}/api/homebase/foundation`)).json();
     assert.equal(unavailable.available, false);

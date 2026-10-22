@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createFoundationStatusCollector, managedUnits, parseAptSimulation, parseAptConfig, parseUnitPids, replacedFiles } = require('../executor/foundation-status');
+const { createFoundationStatusCollector, managedUnits, parseAptSimulation, parseAptConfig, parseListSource, parseUnitPids, replacedFiles } = require('../executor/foundation-status');
 const { isApprovedBinary } = require('../executor/spawn');
 const { nodeLifecycle, pythonLifecycle, parseVersion, REVIEWED_AT } = require('../src/operations/runtime-lifecycle');
 const { createFakeFs } = require('./fixtures/fake-fs');
@@ -157,8 +157,70 @@ test('probe failures degrade to unknown instead of failing the whole report', as
   assert.equal(checks['automatic-updates'].level, 'unknown');
   assert.equal(checks['stale-processes'].level, 'unknown');
   assert.equal(checks['python-runtime'].level, 'unknown');
-  // Node falls back to the executor's own runtime version when dpkg cannot answer.
+  // A failed package probe proves nothing about the host's Node.js: unknown, not the executor's version.
+  assert.equal(checks['node-runtime'].level, 'unknown');
+  assert.equal(checks['node-runtime'].version, null);
+});
+
+test('only a Node.js that dpkg reports absent falls back to the running version', async () => {
+  const { checks } = await createFoundationStatusCollector({ now: () => NOW, fsImpl: hostFs(), run: stubRun({ 'dpkg-query': 'python3\t3.12.3-0ubuntu2.1\tii \n', 'apt-get': '', 'apt-config': APT_CONFIG, systemctl: SYSTEMCTL }) })();
+  assert.equal(checks['node-runtime'].origin, 'unpackaged');
   assert.equal(checks['node-runtime'].version, process.versions.node);
+});
+
+test('units whose processes cannot be read are unknown, never a false "current"', async () => {
+  const denied = (target) => Object.assign(new Error(`EACCES: ${target}`), { code: 'EACCES' });
+  const deny = (fsImpl, pids) => {
+    const { readlinkSync } = fsImpl;
+    fsImpl.readlinkSync = (target) => { if (pids.some((pid) => target === `/proc/${pid}/exe`)) throw denied(target); return readlinkSync(target); };
+    return fsImpl;
+  };
+  const collect = (fsImpl) => createFoundationStatusCollector({ now: () => NOW, fsImpl, run: stubRun({ 'dpkg-query': DPKG, 'apt-get': '', 'apt-config': APT_CONFIG, systemctl: SYSTEMCTL }) })();
+  const currentFs = () => hostFs({ '/proc/102/exe': { kind: 'link', target: '/usr/bin/node' }, '/proc/102/maps': MAPS_CURRENT });
+
+  const none = (await collect(deny(currentFs(), [101, 102]))).checks['stale-processes'];
+  assert.equal(none.level, 'unknown', 'zero inspected units is not evidence of freshness');
+  assert.equal(none.inspected, 0);
+  assert.deepEqual(none.unreadable, ['homebase.service', 'homebase-executor.service']);
+
+  const some = (await collect(deny(currentFs(), [101]))).checks['stale-processes'];
+  assert.equal(some.level, 'unknown', 'one unreadable unit keeps the check from passing');
+  assert.match(some.summary, /homebase\.service/);
+
+  const mixed = (await collect(deny(hostFs(), [101]))).checks['stale-processes'];
+  assert.equal(mixed.level, 'warn', 'a confirmed stale unit still warns');
+  assert.match(mixed.summary, /1 more could not be inspected/);
+
+  const exited = currentFs();
+  exited.entries.delete('/proc/101/exe');
+  exited.entries.delete('/proc/101/maps');
+  const gone = (await collect(exited)).checks['stale-processes'];
+  assert.equal(gone.level, 'ok', 'a process that exited since systemctl answered is skipped');
+  assert.equal(gone.inspected, 1);
+});
+
+test('a stale security or NodeSource list is flagged even when other lists are fresh', async () => {
+  const lists = (extra) => hostFs({
+    '/var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_noble_InRelease': { kind: 'file', content: '', mtimeMs: Date.parse('2024-04-25T15:11:21Z') },
+    '/var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_noble-updates_InRelease': { kind: 'file', content: '', mtimeMs: NOW },
+    '/var/lib/apt/lists/security.ubuntu.com_ubuntu_dists_noble-security_InRelease': { kind: 'file', content: '', mtimeMs: NOW - DAY },
+    '/var/lib/apt/lists/deb.nodesource.com_node%5f24.x_dists_nodistro_InRelease': { kind: 'file', content: '', mtimeMs: NOW - 3 * DAY },
+    ...extra,
+  });
+  const collect = (fsImpl) => createFoundationStatusCollector({ now: () => NOW, fsImpl, run: stubRun({ 'dpkg-query': DPKG, 'apt-get': '', 'apt-config': APT_CONFIG, systemctl: SYSTEMCTL }) })();
+
+  const fresh = (await collect(lists())).checks['apt-lists'];
+  assert.equal(fresh.level, 'ok', 'the frozen release pocket is old by design and not judged');
+  assert.equal(fresh.sources.length, 4);
+
+  const security = (await collect(lists({ '/var/lib/apt/lists/security.ubuntu.com_ubuntu_dists_noble-security_InRelease': { kind: 'file', content: '', mtimeMs: NOW - 12 * DAY } }))).checks['apt-lists'];
+  assert.equal(security.level, 'warn');
+  assert.deepEqual(security.staleSources, [{ host: 'security.ubuntu.com', suite: 'noble-security', ageDays: 12 }]);
+  assert.match(security.summary, /security\.ubuntu\.com noble-security \(12 days\) is out of date/);
+
+  const nodesource = (await collect(lists({ '/var/lib/apt/lists/deb.nodesource.com_node%5f24.x_dists_nodistro_InRelease': { kind: 'file', content: '', mtimeMs: NOW - 50 * DAY } }))).checks['apt-lists'];
+  assert.equal(nodesource.level, 'warn');
+  assert.deepEqual(nodesource.staleSources.map((source) => source.host), ['deb.nodesource.com']);
 });
 
 test('dpkg-query output is still used when it exits non-zero for an unknown package', async () => {
@@ -185,6 +247,11 @@ test('parsers handle real apt, apt-config, systemctl, and /proc shapes', () => {
   assert.deepEqual(parseAptSimulation('Inst libc6 [2.36-9+deb12u9] (2.36-9+deb12u10 Debian-Security:12/stable-security [amd64]) []'), [{ name: 'libc6', from: '2.36-9+deb12u9', to: '2.36-9+deb12u10', security: true }]);
   assert.deepEqual(parseAptSimulation('Inst newpkg (1.0-1 Debian:12.12/stable [all])'), [{ name: 'newpkg', from: null, to: '1.0-1', security: false }]);
   assert.deepEqual(parseAptConfig('APT::Periodic::Unattended-Upgrade "0";'), { enabled: false, origins: [] });
+  assert.deepEqual(parseListSource('deb.nodesource.com_node%5f24.x_dists_nodistro_InRelease'), { host: 'deb.nodesource.com', suite: 'nodistro', kind: 'nodesource' });
+  assert.deepEqual(parseListSource('security.ubuntu.com_ubuntu_dists_noble-security_InRelease'), { host: 'security.ubuntu.com', suite: 'noble-security', kind: 'security' });
+  assert.deepEqual(parseListSource('deb.debian.org_debian-security_dists_bookworm-security_InRelease'), { host: 'deb.debian.org', suite: 'bookworm-security', kind: 'security' });
+  assert.deepEqual(parseListSource('archive.ubuntu.com_ubuntu_dists_noble_InRelease'), { host: 'archive.ubuntu.com', suite: 'noble', kind: 'other' });
+  assert.equal(parseListSource('archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages'), null);
   assert.deepEqual(parseUnitPids('MainPID=7\nId=a.service\n\nId=b.service\nMainPID=0'), [{ unit: 'a.service', pid: 7 }]);
   assert.deepEqual(replacedFiles('/usr/bin/python3.12', '7f r-xp 0 08:01 9 /tmp/ffi1234 (deleted)\n7f r-xp 0 08:01 9 /usr/lib/python3.12/lib-dynload/_ssl.cpython-312-x86_64-linux-gnu.so (deleted)\n'), ['/usr/lib/python3.12/lib-dynload/_ssl.cpython-312-x86_64-linux-gnu.so']);
 });

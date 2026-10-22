@@ -20,6 +20,7 @@ test('status page shows patch posture from the executor, loaded after the page r
     assert.match(source, new RegExp(`'${id}'`), `${id} has a row`);
   }
   assert.match(source, /if \(page === 'status'\) loadFoundation\(\)/);
+  assert.match(source, /detailsRequireAdmin/, 'a locked session sees levels and an unlock prompt');
 });
 
 test('control-plane UI keeps operational actions available after the settings split', () => {

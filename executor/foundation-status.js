@@ -17,6 +17,8 @@ const APT_UPDATE_STAMP = '/var/lib/apt/periodic/update-success-stamp';
 const REBOOT_REQUIRED = '/var/run/reboot-required';
 const REBOOT_REQUIRED_PKGS = '/var/run/reboot-required.pkgs';
 const LISTS_STALE_DAYS = 7;
+// Node.js lines ship every few weeks, so an older NodeSource list means this host stopped fetching it.
+const NODESOURCE_STALE_DAYS = 45;
 const PACKAGES = ['nodejs', 'python3', 'unattended-upgrades'];
 const HOMEBASE_UNITS = ['homebase.service', 'homebase-executor.service'];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -68,6 +70,20 @@ function parseAptConfig(stdout) {
   return { enabled: periodic != null && periodic !== '0' && periodic !== '', origins };
 }
 
+// apt names a list file <host>_<path>_dists_<suite>_InRelease ('_' inside a component is escaped as
+// %5f, '/' inside a suite becomes '_'). Each file is dated by the repository's own publication time
+// (Last-Modified), not by when this host fetched it, so its age only means something for sources that
+// publish often: security pockets (several times a week) and NodeSource. A frozen release pocket
+// (Ubuntu's "noble" is dated at release) is old by design and is not judged.
+function parseListSource(name) {
+  const match = /^([^_]+)_.*_dists_(.+)_(?:In)?Release$/.exec(name);
+  if (!match) return null;
+  const host = match[1];
+  const suite = match[2].replaceAll('_', '/').replaceAll('%5f', '_');
+  const kind = host === 'deb.nodesource.com' ? 'nodesource' : /-security$|\/updates$/.test(suite) ? 'security' : 'other';
+  return { host, suite, kind };
+}
+
 // systemctl show prints one blank-line-separated block of KEY=value lines per unit.
 function parseUnitPids(stdout) {
   const units = [];
@@ -111,6 +127,7 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
     const at = now();
     const checks = {};
 
+    // null = dpkg-query could not be run (unknown); {} = it ran and none of these packages are installed.
     let packages = {};
     try {
       let stdout = '';
@@ -123,20 +140,26 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
       packages = parseDpkgPackages(stdout);
     } catch { packages = null; }
 
-    // Node.js: the packaged version (what a restart would run) and its release line's support window.
+    // Node.js: the packaged version (what a restart would run) and its release line's support window. Only
+    // a Node.js that dpkg positively reports absent falls back to the executor's own runtime version; a
+    // failed probe proves nothing about the host, so it stays unknown.
     const nodeFromNodeSource = Boolean(packages?.nodejs && /nodesource/i.test(packages.nodejs));
-    const nodeVersion = parseVersion(packages?.nodejs)?.text || parseVersion(process.versions.node)?.text || null;
-    const node = nodeLifecycle(nodeVersion, at);
-    const nodeOrigin = !packages?.nodejs ? 'unpackaged' : nodeFromNodeSource ? 'nodesource' : 'distribution';
-    checks['node-runtime'] = check(node.level, !nodeVersion ? 'Could not read the Node.js version.'
-      : node.level === 'unknown' ? `Node.js ${nodeVersion}: the ${node.line}.x line is not in the lifecycle table reviewed ${REVIEWED_AT}.`
-        : node.level === 'fail' ? `Node.js ${nodeVersion}: the ${node.line}.x line reached end of life on ${node.eol}; move to a supported line.`
-          : `Node.js ${nodeVersion} (${nodeOrigin}): the ${node.line}.x line is supported until ${node.eol} (${node.daysLeft} days).`,
-    {
-      version: nodeVersion, origin: nodeOrigin, line: node.line, eol: node.eol, daysLeft: node.daysLeft,
-      hint: node.level === 'fail' || node.level === 'warn' ? `Move to a supported line${node.level === 'warn' ? ` before ${node.eol}` : ''}: point /etc/apt/sources.list.d/nodesource.list at a newer node_<major>.x, apt-get install nodejs, then restart Home Base and every app.`
-        : node.level === 'unknown' && nodeVersion ? 'Check this line\'s support window and update src/operations/runtime-lifecycle.js.' : '',
-    });
+    if (!packages) {
+      checks['node-runtime'] = check('unknown', 'Could not read installed packages, so the Node.js version a restart would run is unknown.', { version: null, origin: null, line: null, eol: null, daysLeft: null, hint: '' });
+    } else {
+      const nodeVersion = parseVersion(packages.nodejs)?.text || parseVersion(process.versions.node)?.text || null;
+      const node = nodeLifecycle(nodeVersion, at);
+      const nodeOrigin = !packages.nodejs ? 'unpackaged' : nodeFromNodeSource ? 'nodesource' : 'distribution';
+      checks['node-runtime'] = check(node.level, !nodeVersion ? 'Could not read the Node.js version.'
+        : node.level === 'unknown' ? `Node.js ${nodeVersion}: the ${node.line}.x line is not in the lifecycle table reviewed ${REVIEWED_AT}.`
+          : node.level === 'fail' ? `Node.js ${nodeVersion}: the ${node.line}.x line reached end of life on ${node.eol}; move to a supported line.`
+            : `Node.js ${nodeVersion} (${nodeOrigin}): the ${node.line}.x line is supported until ${node.eol} (${node.daysLeft} days).`,
+      {
+        version: nodeVersion, origin: nodeOrigin, line: node.line, eol: node.eol, daysLeft: node.daysLeft,
+        hint: node.level === 'fail' || node.level === 'warn' ? `Move to a supported line${node.level === 'warn' ? ` before ${node.eol}` : ''}: point /etc/apt/sources.list.d/nodesource.list at a newer node_<major>.x, apt-get install nodejs, then restart Home Base and every app.`
+          : node.level === 'unknown' && nodeVersion ? 'Check this line\'s support window and update src/operations/runtime-lifecycle.js.' : '',
+      });
+    }
 
     // Python: upstream end of life is a signal, not a verdict; distributions keep backporting fixes.
     const pythonVersion = parseVersion(packages?.python3)?.text || null;
@@ -153,23 +176,40 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
       });
     }
 
-    // Package-list freshness: pending updates are only as current as the last apt-get update. apt dates
-    // Release files by the server's Last-Modified, so Ubuntu's update-success stamp (touched on every
-    // successful update) is the better signal where it exists; the newest of them counts.
+    // Package-list freshness, two ways. Overall: when apt last refreshed anything (Ubuntu's update-success
+    // stamp, or the newest list). Per source: a security pocket or NodeSource list older than its cadence
+    // means that one source is no longer being fetched, which a fresh list elsewhere would otherwise hide.
     let listsAt = null;
+    const sources = [];
     try {
-      const stamps = fsImpl.readdirSync(APT_LISTS).filter((name) => /_(In)?Release$/.test(name)).map((name) => path.join(APT_LISTS, name));
+      const names = fsImpl.readdirSync(APT_LISTS).filter((name) => /_(In)?Release$/.test(name));
+      const stamps = names.map((name) => path.join(APT_LISTS, name));
       if (fsImpl.existsSync(APT_UPDATE_STAMP)) stamps.push(APT_UPDATE_STAMP);
       for (const stamp of stamps) {
         const { mtimeMs } = fsImpl.statSync(stamp);
-        if (Number.isFinite(mtimeMs) && (listsAt == null || mtimeMs > listsAt)) listsAt = mtimeMs;
+        if (!Number.isFinite(mtimeMs)) continue;
+        if (listsAt == null || mtimeMs > listsAt) listsAt = mtimeMs;
+        const source = stamp === APT_UPDATE_STAMP ? null : parseListSource(path.basename(stamp));
+        if (source) sources.push({ ...source, publishedAt: new Date(mtimeMs).toISOString(), ageDays: daysSince(mtimeMs, at) });
       }
     } catch { listsAt = null; }
     const listsAge = listsAt == null ? null : daysSince(listsAt, at);
-    checks['apt-lists'] = listsAt == null
-      ? check('unknown', 'No apt package lists found; pending updates cannot be known until apt-get update runs.', { refreshedAt: null, ageDays: null, hint: 'sudo apt-get update' })
-      : check(listsAge > LISTS_STALE_DAYS ? 'warn' : 'ok', `Package lists refreshed ${listsAge === 0 ? 'today' : `${listsAge} day${listsAge === 1 ? '' : 's'} ago`}${listsAge > LISTS_STALE_DAYS ? '; pending updates below may be incomplete' : ''}.`,
-        { refreshedAt: new Date(listsAt).toISOString(), ageDays: listsAge, hint: listsAge > LISTS_STALE_DAYS ? 'sudo apt-get update' : '' });
+    const staleSources = sources.filter((source) => (source.kind === 'security' && source.ageDays > LISTS_STALE_DAYS) || (source.kind === 'nodesource' && source.ageDays > NODESOURCE_STALE_DAYS));
+    const sourceDetails = sources.map(({ host, suite, kind, publishedAt, ageDays }) => ({ host, suite, kind, publishedAt, ageDays }));
+    if (listsAt == null) {
+      checks['apt-lists'] = check('unknown', 'No apt package lists found; pending updates cannot be known until apt-get update runs.', { refreshedAt: null, ageDays: null, sources: [], staleSources: [], hint: 'sudo apt-get update' });
+    } else {
+      const overallStale = listsAge > LISTS_STALE_DAYS;
+      const refreshed = `Package lists refreshed ${listsAge === 0 ? 'today' : `${listsAge} day${listsAge === 1 ? '' : 's'} ago`}`;
+      const staleText = staleSources.map((source) => `${source.host} ${source.suite} (${source.ageDays} days)`).join(', ');
+      const summary = overallStale ? `${refreshed}; pending updates below may be incomplete.`
+        : staleSources.length ? `${refreshed}, but ${staleText} ${staleSources.length === 1 ? 'is' : 'are'} out of date; updates from ${staleSources.length === 1 ? 'it' : 'them'} are not being fetched.`
+          : `${refreshed}; security and NodeSource lists are current.`;
+      checks['apt-lists'] = check(overallStale || staleSources.length ? 'warn' : 'ok', summary, {
+        refreshedAt: new Date(listsAt).toISOString(), ageDays: listsAge, sources: sourceDetails.slice(0, LIST_LIMIT * 2), staleSources: staleSources.map(({ host, suite, ageDays }) => ({ host, suite, ageDays })),
+        hint: overallStale ? 'sudo apt-get update' : staleSources.length ? 'sudo apt-get update, then check its output for errors from the sources listed' : '',
+      });
+    }
 
     // Pending upgrades, by simulation (apt-get -s takes no lock and changes nothing).
     try {
@@ -225,6 +265,7 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
       const unitNames = units();
       const shown = await run({ binary: '/usr/bin/systemctl', args: ['show', '--property=Id', '--property=MainPID', '--', ...unitNames], uid: 0, gid: 0, timeoutMs: 10000, env: ENV, outputLimit: 1024 * 1024 });
       const stale = [];
+      const unreadable = [];
       let inspected = 0;
       for (const { unit, pid } of parseUnitPids(shown.stdout)) {
         let exe;
@@ -232,16 +273,27 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
         try {
           exe = fsImpl.readlinkSync(`/proc/${pid}/exe`);
           maps = fsImpl.readFileSync(`/proc/${pid}/maps`, 'utf8');
-        } catch { continue; }
+        } catch (error) {
+          // A process that exited since systemctl answered is not running old code; anything else
+          // (permissions, a hardened /proc) means this unit's freshness is not established.
+          if (error?.code !== 'ENOENT' && error?.code !== 'ESRCH') unreadable.push(unit);
+          continue;
+        }
         inspected += 1;
         const files = replacedFiles(exe, maps);
         if (files.length) stale.push({ unit, pid, replaced: files.slice(0, LIST_LIMIT) });
       }
-      checks['stale-processes'] = stale.length
-        ? check('warn', `${stale.length} running unit${stale.length === 1 ? '' : 's'} still use${stale.length === 1 ? 's' : ''} files that updates replaced; restart ${stale.map((entry) => entry.unit).join(', ')} to load the fixes.`, { inspected, stale, hint: `sudo systemctl restart ${stale.map((entry) => entry.unit).join(' ')}` })
-        : check('ok', `All ${inspected} running Home Base and app units use current binaries and libraries.`, { inspected, stale });
+      const details = { inspected, stale, unreadable: unreadable.slice(0, LIST_LIMIT) };
+      if (stale.length) {
+        checks['stale-processes'] = check('warn', `${stale.length} running unit${stale.length === 1 ? '' : 's'} still use${stale.length === 1 ? 's' : ''} files that updates replaced; restart ${stale.map((entry) => entry.unit).join(', ')} to load the fixes.${unreadable.length ? ` ${unreadable.length} more could not be inspected.` : ''}`, { ...details, hint: `sudo systemctl restart ${stale.map((entry) => entry.unit).join(' ')}` });
+      } else if (unreadable.length || !inspected) {
+        // OK requires positive evidence: at least the executor itself is always running here.
+        checks['stale-processes'] = check('unknown', unreadable.length ? `Could not inspect ${unreadable.length} running unit${unreadable.length === 1 ? '' : 's'} (${unreadable.slice(0, LIST_LIMIT).join(', ')}), so ${unreadable.length === 1 ? 'it' : 'they'} may still run replaced code.` : 'No running Home Base or app units could be inspected.', { ...details, hint: '' });
+      } else {
+        checks['stale-processes'] = check('ok', `All ${inspected} running Home Base and app units use current binaries and libraries.`, details);
+      }
     } catch {
-      checks['stale-processes'] = check('unknown', 'Could not inspect running units.', { inspected: 0, stale: [] });
+      checks['stale-processes'] = check('unknown', 'Could not inspect running units.', { inspected: 0, stale: [], unreadable: [] });
     }
 
     const value = { checks, lifecycleReviewedAt: REVIEWED_AT, collectedAt: new Date(at).toISOString() };
@@ -250,4 +302,4 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
   };
 }
 
-module.exports = { createFoundationStatusCollector, managedUnits, parseAptSimulation, parseAptConfig, parseUnitPids, replacedFiles };
+module.exports = { createFoundationStatusCollector, managedUnits, parseAptSimulation, parseAptConfig, parseListSource, parseUnitPids, replacedFiles };

@@ -667,6 +667,13 @@ function createApp(config) {
   // Runtime and OS patch posture (docs/patch-visibility-plan.md). The executor simulates an apt upgrade,
   // so results are kept for a few minutes; ?refresh=1 asks again.
   const foundationStatusCache = { value: null, expiresAt: 0, inFlight: null };
+  // Without an unlocked admin session only each check's level is served: summaries and details name
+  // packages, versions, units, PIDs, and file paths, which map this host's patch gaps for an attacker.
+  function redactFoundationStatus(status) {
+    if (!status.available) return status;
+    const checks = Object.fromEntries(Object.entries(status.checks || {}).map(([id, entry]) => [id, { ok: entry.ok, level: entry.level }]));
+    return { available: true, detailsRequireAdmin: true, checks, lifecycleReviewedAt: status.lifecycleReviewedAt, collectedAt: status.collectedAt };
+  }
   function getFoundationStatus(effectiveConfig, { force = false } = {}) {
     if (effectiveConfig.homeBaseExecutionMode !== 'executor') {
       return Promise.resolve({ available: false, error: 'Foundation checks need the root executor (executor mode).' });
@@ -795,7 +802,9 @@ function createApp(config) {
         return sendJson(res, 200, await getPreflight(effectiveConfig, { force: url.searchParams.get('refresh') === '1' }));
       }
       if (method === 'GET' && pathname === '/api/homebase/foundation') {
-        return sendJson(res, 200, await getFoundationStatus(effectiveConfig, { force: url.searchParams.get('refresh') === '1' }));
+        const adminStatus = await getAdminStatus(req, stateStore);
+        const foundation = await getFoundationStatus(effectiveConfig, { force: adminStatus.unlocked && url.searchParams.get('refresh') === '1' });
+        return sendJson(res, 200, adminStatus.unlocked ? foundation : redactFoundationStatus(foundation));
       }
       if (method === 'GET' && pathname === '/api/network/tailscale') {
         return sendJson(res, 200, getTailscaleReadiness(effectiveConfig, {
