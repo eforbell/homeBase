@@ -720,8 +720,11 @@ function createApp(config) {
     if (effectiveConfig.homeBaseExecutionMode !== 'executor') {
       return Promise.resolve({ available: false, error: 'Dependency inventory needs the root executor (executor mode).' });
     }
-    const appIds = installations.filter((record) => record.status === 'installed').map((record) => record.appId).filter((appId) => getAppById(appId)).sort();
-    const key = appIds.join(',');
+    const installed = installations.filter((record) => record.status === 'installed' && getAppById(record.appId)).sort((a, b) => (a.appId < b.appId ? -1 : 1));
+    const appIds = installed.map((record) => record.appId);
+    // A completed install, update, or adopt rewrites the record's updatedAt, so the next read after one
+    // sees the new lockfile and venv instead of a cached copy from before the job.
+    const key = installed.map((record) => `${record.appId}@${record.updatedAt || ''}`).join(',');
     if (!force && dependencyInventoryCache.value && dependencyInventoryCache.key === key && dependencyInventoryCache.expiresAt > Date.now()) return Promise.resolve(dependencyInventoryCache.value);
     if (!dependencyInventoryCache.inFlight) {
       dependencyInventoryCache.inFlight = collectDependencyInventory(effectiveConfig, appIds)

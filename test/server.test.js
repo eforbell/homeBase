@@ -2452,9 +2452,14 @@ test('dependency inventory covers Home Base and installed apps, with package nam
     await fetch(`${server.url}/api/apps/dependencies?refresh=1`);
     assert.equal(asked.length, 2, 'cached, and only an admin can force a re-read');
 
+    // An update rewrites the installation's updatedAt: the next read re-reads, without waiting out the cache.
+    store.upsertInstallation({ ...record('family-dinner', 'installed'), updatedAt: '2026-10-22T09:52:31.000Z' });
+    await fetch(`${server.url}/api/apps/dependencies`);
+    assert.deepEqual(asked.slice(2), ['family-dinner', 'helm'], 'a completed update invalidates the cached inventory');
+
     const cookie = await setupAdminCookie(server.url);
     const full = await (await fetch(`${server.url}/api/apps/dependencies?refresh=1`, { headers: { cookie } })).json();
-    assert.equal(asked.length, 4);
+    assert.equal(asked.length, 6);
     assert.equal(full.detailsRequireAdmin, undefined);
     assert.deepEqual(full.homebase.packages, [['ajv', '8.20.0']]);
     assert.deepEqual(full.byAppId['family-dinner'].packages, [['express', '4.22.1']]);
