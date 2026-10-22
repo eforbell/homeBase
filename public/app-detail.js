@@ -399,13 +399,54 @@
     });
   }
 
+  // Library dependencies for this app (stream B of docs/patch-visibility-plan.md): what it runs and
+  // whether a lockfile pins it. Package names and versions are shown only to an unlocked admin.
+  function renderDependencies(dependencies) {
+    const entry = dependencies.byAppId?.[appId];
+    const status = window.HB.dependencyStatus(entry);
+    const unpinned = Array.isArray(entry?.unpinned) && entry.unpinned.length
+      ? `<p class="hb-muted" style="margin:0.55rem 0 0;">Not pinned: ${entry.unpinned.map((name) => `<code>${window.HB.escapeHtml(name)}</code>`).join(', ')}</p>`
+      : '';
+    const fix = entry && !entry.error && status.key !== 'pinned'
+      ? `<p style="margin:0.55rem 0 0;">${entry.ecosystem === 'PyPI'
+        ? 'Commit a lockfile with exact versions to the app repository (for example <code>uv pip compile pyproject.toml --generate-hashes -o requirements.lock</code>), so an update installs exactly the fixed versions.'
+        : 'Commit <code>package-lock.json</code> to the app repository (<code>npm install</code> writes it), so an update installs exactly the fixed versions.'}</p>`
+      : '';
+    let packages = '';
+    if (dependencies.detailsRequireAdmin) {
+      packages = '<p class="hb-muted" style="margin:0.55rem 0 0;"><a href="/admin">Unlock Admin</a> to see package names and versions.</p>';
+    } else if (Array.isArray(entry?.packages) && entry.packages.length) {
+      packages = `
+        <details style="margin-top:0.55rem;">
+          <summary>Packages (${window.HB.escapeHtml(entry.packages.length)})</summary>
+          <ul style="margin:0.5rem 0 0;padding-left:1.2rem;columns:16rem;">
+            ${entry.packages.map(([name, version]) => `<li><code>${window.HB.escapeHtml(name)}</code> <span class="hb-muted">${window.HB.escapeHtml(version)}</span></li>`).join('')}
+          </ul>
+        </details>
+      `;
+    }
+    return `
+      <section id="dependencies" class="hb-card">
+        <div class="hb-row">
+          <h2 style="margin:0;">Dependencies</h2>
+          <span class="hb-badge ${status.className}">${window.HB.escapeHtml(status.label)}</span>
+        </div>
+        <p class="hb-muted" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(status.summary)}</p>
+        ${unpinned}
+        ${fix}
+        ${packages}
+        <p class="hb-muted" style="margin:0.55rem 0 0;font-size:0.83rem;">Read ${window.HB.escapeHtml(window.HB.formatTimestamp(dependencies.collectedAt))}. Known-vulnerability lookup is not enabled yet.</p>
+      </section>
+    `;
+  }
+
   async function load() {
     if (!appId) {
       renderError('Missing app id in URL.');
       return;
     }
     try {
-      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload, updatesPayload] = await Promise.all([
+      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload, updatesPayload, dependencies] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson(`/api/apps/${appId}/backups`),
@@ -413,6 +454,8 @@
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/apps/health'),
         window.HB.getJson('/api/apps/updates'),
+        // Optional: a failed inventory must never keep the rest of the page from rendering.
+        window.HB.getJson('/api/apps/dependencies').catch(() => null),
       ]);
       const catalogApps = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const app = catalogApps.find((item) => item.id === appId);
@@ -451,7 +494,7 @@
               ${install?.externalUrl ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>` : ''}
               ${appHealth?.onboarding?.setupUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(appHealth.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Setup ↗</a>` : ''}
               <span class="hb-muted" style="font-size:0.83rem;margin-left:0.25rem;">
-                <a href="#health">Health</a> · <a href="#backup">Backup</a> · <a href="#restore">Restore</a> · <a href="#update">Update</a> · <a href="#uninstall" style="color:var(--red);">Uninstall</a>
+                <a href="#health">Health</a>${install && dependencies?.available ? ' · <a href="#dependencies">Dependencies</a>' : ''} · <a href="#backup">Backup</a> · <a href="#restore">Restore</a> · <a href="#update">Update</a> · <a href="#uninstall" style="color:var(--red);">Uninstall</a>
               </span>
             </div>
             ${renderBackupSummary(backups, config)}
@@ -482,6 +525,8 @@
             `
     : ''}
           </section>
+
+          ${install && dependencies?.available ? renderDependencies(dependencies) : ''}
 
           ${install?.status === 'planned' ? `
             <section class="hb-card">

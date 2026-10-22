@@ -10,7 +10,7 @@
     return 'Update: up to date';
   }
 
-  function installationCard(install, backupsByApp, config, healthByAppId, catalogEntry, updatesByAppId) {
+  function installationCard(install, backupsByApp, config, healthByAppId, catalogEntry, updatesByAppId, dependencies) {
     const appId = window.HB.escapeHtml(install.appId);
     const detailUrl = `/apps/${appId}`;
     const backups = backupsByApp[install.appId] || [];
@@ -29,6 +29,13 @@
     const setupLink = runtimeStatus === 'needs-setup' && health.onboarding?.setupUrl
       ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(health.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Setup ↗</a>`
       : '';
+    // Only when the inventory is available (executor mode): a pinned app gets a quiet note, anything else
+    // a warning that links to the detail page's Dependencies section.
+    const deps = dependencies?.available ? window.HB.dependencyStatus(dependencies.byAppId?.[install.appId]) : null;
+    const depsNote = deps ? ` · <span class="${deps.key === 'pinned' ? '' : deps.className}">Deps: ${window.HB.escapeHtml(deps.label.toLowerCase())}</span>` : '';
+    const depsHint = deps && !['pinned', 'checking'].includes(deps.key)
+      ? `<p class="hb-warn" style="margin:0.45rem 0 0;font-size:0.83rem;">${window.HB.escapeHtml(deps.summary)} <a href="${detailUrl}#dependencies">Inspect →</a></p>`
+      : '';
     const icon = catalogEntry?.icon ? `<span class="hb-app-icon">${window.HB.escapeHtml(catalogEntry.icon)}</span>` : '';
     return `
       <article class="hb-card">
@@ -40,10 +47,11 @@
         </div>
         <p class="hb-muted" style="margin:0.45rem 0 0;font-size:0.83rem;line-height:1.6;">
           Port ${window.HB.escapeHtml(install.port)} · ${window.HB.escapeHtml(install.mountPath)} · Service: ${window.HB.escapeHtml(health.service?.state || 'unknown')} · Readiness: ${window.HB.escapeHtml(health.readiness?.status || 'unknown')}<br>
-          Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))} · ${window.HB.backupSummary(backups)} · ${window.HB.escapeHtml(updateStatusLabel(updateStatus))}
+          Updated ${window.HB.escapeHtml(window.HB.formatTimestamp(install.updatedAt))} · ${window.HB.backupSummary(backups)} · ${window.HB.escapeHtml(updateStatusLabel(updateStatus))}${depsNote}
         </p>
         ${!backups.length ? '<p class="hb-warn" style="margin:0.45rem 0 0;font-size:0.83rem;">No backups yet.</p>' : ''}
         ${healthHint}
+        ${depsHint}
         <div class="hb-actions" style="margin-top:0.65rem;align-items:center;">
           ${openLink || setupLink}
           <a class="hb-btn-icon" href="${detailUrl}" title="View details">
@@ -341,12 +349,14 @@
   async function load() {
     const availableWasOpen = root.querySelector('[data-available-install]')?.open;
     try {
-      const [statePayload, catalogPayload, config, healthPayload, updatesPayload] = await Promise.all([
+      const [statePayload, catalogPayload, config, healthPayload, updatesPayload, dependencies] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/apps/health'),
         window.HB.getJson('/api/apps/updates'),
+        // Optional: a failed inventory must never keep the app list from rendering.
+        window.HB.getJson('/api/apps/dependencies').catch(() => null),
       ]);
       const installationsMap = statePayload.installations || {};
       const installations = Object.values(installationsMap);
@@ -381,7 +391,7 @@
             </form>
           </section>
           <section class="hb-grid hb-grid-2">
-            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId, catalogById.get(install.appId), updatesByAppId)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
+            ${installations.length ? installations.map((install) => installationCard(install, backupsByApp, config, healthByAppId, catalogById.get(install.appId), updatesByAppId, dependencies)).join('') : '<article class="hb-card"><p class="hb-muted" style="margin:0;">No installed apps yet.</p></article>'}
           </section>
           ${installing.length ? `
             <section>

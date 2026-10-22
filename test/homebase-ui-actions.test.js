@@ -19,8 +19,28 @@ test('status page shows patch posture from the executor, loaded after the page r
   for (const id of ['node-runtime', 'python-runtime', 'pending-updates', 'apt-lists', 'automatic-updates', 'reboot-required', 'stale-processes']) {
     assert.match(source, new RegExp(`'${id}'`), `${id} has a row`);
   }
-  assert.match(source, /if \(page === 'status'\) loadFoundation\(\)/);
+  assert.match(source, /loadFoundation\(\);\n\s+loadDependencies\(\);/);
+  assert.match(source, /\/api\/apps\/dependencies/);
+  assert.match(source, /Library dependencies/);
   assert.match(source, /detailsRequireAdmin/, 'a locked session sees levels and an unlock prompt');
+});
+
+test('per-app dependency status lives on the Apps pages; Status keeps Home Base and a roll-up', () => {
+  const api = readPublicScript('api.js');
+  const apps = readPublicScript('apps.js');
+  const detail = readPublicScript('app-detail.js');
+  const settings = readPublicScript('settings.js');
+  assert.match(api, /function dependencyStatus\(entry\)/);
+  for (const source of [apps, detail]) {
+    assert.match(source, /\/api\/apps\/dependencies'\)\.catch\(\(\) => null\)/, 'a failed inventory never blocks the page');
+    assert.match(source, /window\.HB\.dependencyStatus\(/);
+  }
+  assert.match(apps, /#dependencies/);
+  assert.match(detail, /id="dependencies"/);
+  assert.match(detail, /detailsRequireAdmin/);
+  assert.match(settings, /inventory\.homebase/);
+  assert.match(settings, /href="\/apps">Apps/);
+  assert.doesNotMatch(settings, /renderDependencyRow/, 'no per-app rows on Status');
 });
 
 test('control-plane UI keeps operational actions available after the settings split', () => {

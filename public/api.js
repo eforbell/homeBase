@@ -94,6 +94,29 @@
     return `<span class="hb-badge ${meta.className}">${escapeHtml(meta.label)}</span>`;
   }
 
+  // One app's library-dependency inventory (GET /api/apps/dependencies): pinned by a lockfile,
+  // unpinned (installed versions or ranges), no lockfile, or unknown. Shared by the Apps tiles, the
+  // app detail page, and the Status page summary so they always agree.
+  function dependencyStatus(entry) {
+    if (!entry) return { key: 'checking', label: 'Checking', className: 'hb-muted', summary: 'Reading the lockfile…' };
+    const count = Number(entry.count || 0);
+    const ecosystem = entry.ecosystem === 'PyPI' ? 'Python' : (entry.ecosystem || '');
+    if (entry.error) return { key: 'unknown', label: 'Unknown', className: 'hb-warn', summary: entry.error };
+    if (!entry.source) return { key: 'no-lockfile', label: 'No lockfile', className: 'hb-warn', summary: entry.note || 'No lockfile found.' };
+    if (!entry.pinned) {
+      return {
+        key: 'unpinned', label: 'Unpinned', className: 'hb-warn',
+        summary: `${count} ${ecosystem} packages from the ${entry.source}${entry.unpinnedCount ? `, ${entry.unpinnedCount} without an exact version` : ''}. ${entry.note || 'A reinstall may resolve different versions.'}`,
+      };
+    }
+    return { key: 'pinned', label: 'Pinned', className: 'hb-ok', summary: `${count} ${ecosystem} packages pinned by ${entry.source}.` };
+  }
+
+  function dependencyPill(entry) {
+    const status = dependencyStatus(entry);
+    return `<span class="hb-badge ${status.className}">Deps: ${escapeHtml(status.label.toLowerCase())}</span>`;
+  }
+
   function confirmInline(resultNode, message) {
     return new Promise((resolve, reject) => {
       resultNode.innerHTML = `
@@ -130,6 +153,8 @@
     localOnlyBackupNote,
     runtimeStatusMeta,
     runtimeStatusPill,
+    dependencyStatus,
+    dependencyPill,
     confirmInline,
   };
 }());
