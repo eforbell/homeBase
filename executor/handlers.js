@@ -7,6 +7,7 @@ const { catalog } = require('../src/catalog');
 const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
 const { MIRROR_ROOT } = require('../src/operations/app-layout');
 const { hostSupport } = require('../src/operations/host-support');
+const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
@@ -526,13 +527,43 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       // Every argv is fixed by the catalog layout; the plan only names the task.
       const runApp = ([binary, ...args], extra = {}) => assertCheckout() ?? run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env, ...extra });
       const venvPython = `${layout.checkout}/.venv/bin/python`;
+      const pip = [venvPython, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
+      // Before this venv's pip downloads anything, bring pip itself up to its security floor from the
+      // floor's hash-pinned wheel (security-floors.js). A pip below the floor may trust a compromised CA;
+      // the hash, not TLS, is what makes that one download safe. A venv without pip gets one offline from
+      // ensurepip first. This runs inside every pip install, so it covers installs, updates, and rebuilds.
+      const pipFloor = FLOORS.find((floor) => floor.ecosystem === 'PyPI' && floor.name === 'pip');
+      const pipVersion = async (runner) => {
+        try {
+          return String((await runner([venvPython, '-c', 'import importlib.metadata as m; print(m.version("pip"))'])).stdout || '').trim();
+        } catch (error) {
+          if (error.code === 'OPERATION_FAILED') return '';
+          throw error;
+        }
+      };
+      const ensureSafePip = async (runner, record) => {
+        let current = await pipVersion(runner);
+        if (!current) {
+          record(await runner([venvPython, '-m', 'ensurepip', '--upgrade']));
+          current = await pipVersion(runner);
+        }
+        if (compareVersions(current, pipFloor.minVersion) >= 0) return;
+        record(await runner([...pip, '--no-deps', '--upgrade', `pip @ ${pipFloor.bootstrap.url}#sha256=${pipFloor.bootstrap.sha256}`]));
+        const upgraded = await pipVersion(runner);
+        if (!(compareVersions(upgraded, pipFloor.minVersion) >= 0)) {
+          throw Object.assign(new Error(`${layout.app.name}: pip is still ${upgraded || 'missing'} after installing the pinned pip ${pipFloor.minVersion} wheel.`), { code: 'OPERATION_FAILED' });
+        }
+        summaries.push(`upgraded pip ${current || '(none)'} -> ${upgraded} from the hash-pinned wheel before installing dependencies`);
+      };
       const pipInstall = async (runner, record) => {
         const { requirements, editable, editableNoDeps } = layout.runtime.python;
-        const pip = [venvPython, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
+        await ensureSafePip(runner, record);
         if (requirements) record(await runner([...pip, '-r', requirements]));
         if (editable) record(await runner([...pip, ...(editableNoDeps ? ['--no-deps'] : []), '-e', '.']));
       };
       const outputs = [];
+      // One-line results that must survive the output cap below (a full lockfile install is far longer).
+      const summaries = [];
       const collect = (result) => { const text = String(result.stdout || '').trim(); if (text) outputs.push(text); };
 
       if (operation.task === 'ensure-venv') {
@@ -600,9 +631,11 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       } else {
         deny('Unsupported app task.');
       }
-      // Keep success output well under the protocol's 64 KiB event line limit.
-      const output = outputs.join('\n');
-      return output ? output.slice(-8 * 1024) : `completed ${operation.task}`;
+      // Keep success output well under the protocol's 64 KiB event line limit; summaries always last.
+      const tail = summaries.join('\n');
+      const output = outputs.join('\n').slice(-(8 * 1024 - tail.length - 1));
+      const combined = [output, tail].filter(Boolean).join('\n');
+      return combined || `completed ${operation.task}`;
     },
     'postgres.ensure-role': async (operation, { secretBindings = {}, layout } = {}) => {
       requireLayout(layout);
