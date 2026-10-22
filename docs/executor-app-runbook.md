@@ -216,10 +216,10 @@ Suggested order:
 
 ### Python runtime
 
-**Status (2026-09-25): built.** The notes below are the original spec; where they differ, the support matrix above describes what shipped. Differences: `PYTHONUNBUFFERED` is set in the unit (a value in `.env` would arrive after the interpreter started); venvs are rebuilt in place with `--clear` when the interpreter version changes, rather than swapped, because venv scripts hardcode their absolute path; `pip install --upgrade pip` is not run; there is no separate PyPI preflight (pip runs with `--timeout 30 --retries 2`, so an offline host fails in about a minute with pip's own error). bitcoin-accounting still installs unpinned (`editable` only) until its repo ships a lockfile.
+**Status (2026-10-22): built.** The notes below are the original spec; where they differ, the support matrix above describes what shipped. Differences: `PYTHONUNBUFFERED` is set in the unit (a value in `.env` would arrive after the interpreter started); venvs are swapped with rollback when the interpreter minor version changes; before any package-index request, the executor probes pip offline and, if needed, installs pip 26.2.2 from a hash-pinned wheel (using offline `ensurepip` first if pip is absent). There is no separate PyPI preflight (pip runs with `--timeout 30 --retries 2`). Helm and bitcoin-accounting both install their `requirements.lock` before an editable `--no-deps` install. This requires a bitcoin-accounting checkout containing its lockfile and `scripts/ensure-safe-pip.sh`.
 
 Legacy behavior (`src/services/install-planner.js`), which is what production has today:
-- `python3 -m venv .venv`, then `pip install --upgrade pip`, then the catalog `runtime.installCommand`, all as `sovereign` through `sudo -u`.
+- `python3 -m venv .venv`, then the app's `scripts/ensure-safe-pip.sh` (hash-pinned pip bootstrap), then the catalog `runtime.installCommand`, all as `sovereign` through `sudo -u`.
 - Units run `runtime.startCommand` with `.venv/bin/...` expanded against the install root. They set `EnvironmentFile=<installRoot>/.env`, and `PYTHONUNBUFFERED=1` comes from the unit.
 
 Executor requirements:

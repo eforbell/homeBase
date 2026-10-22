@@ -221,14 +221,20 @@ test('a pip below its security floor is replaced from the hash-pinned wheel befo
 });
 
 test('Python dependencies install from the lockfile, then the checkout, as sovereign with fixed argv', async () => {
-  const calls = [];
-  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => { calls.push(input); return { stdout: input.args[0] === '-c' ? '26.2.2\n' : '' }; } });
-  await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM });
-  const pip = [`${HELM_ROOT}/.venv/bin/python`, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
-  assert.deepEqual(calls.map((call) => [call.binary, ...call.args]), [PIP_PROBE, [...pip, '-r', 'requirements.lock'], [...pip, '--no-deps', '-e', '.']], 'a pip already at its floor is left alone');
-  assert.ok(calls.every((call) => call.uid === 1001 && call.cwd === HELM_ROOT && !('NODE_ENV' in call.env)));
-  await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout: HELM });
-  assert.deepEqual([calls.at(-1).binary, calls.at(-1).args], [`${HELM_ROOT}/.venv/bin/python`, ['migrations/run_migration.py']]);
+  for (const layout of [HELM, BITCOIN]) {
+    const calls = [];
+    const root = layout.checkout;
+    const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [root]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => { calls.push(input); return { stdout: input.args[0] === '-c' ? '26.2.2\n' : '' }; } });
+    await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout });
+    const python = `${root}/.venv/bin/python`;
+    const pip = [python, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
+    assert.deepEqual(calls.map((call) => [call.binary, ...call.args]), [[python, ...PIP_PROBE.slice(1)], [...pip, '-r', 'requirements.lock'], [...pip, '--no-deps', '-e', '.']], 'a pip already at its floor is left alone');
+    assert.ok(calls.every((call) => call.uid === 1001 && call.cwd === root && !('NODE_ENV' in call.env)));
+    if (layout === HELM) {
+      await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout });
+      assert.deepEqual([calls.at(-1).binary, calls.at(-1).args], [python, ['migrations/run_migration.py']]);
+    }
+  }
 });
 
 test('schema-file bootstrap runs once, as the app role, only on an empty database', async () => {
