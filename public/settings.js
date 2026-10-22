@@ -43,6 +43,98 @@
     `;
   }
 
+  // Runtime and OS patch posture from the executor (docs/patch-visibility-plan.md, stream A).
+  const FOUNDATION_CHECKS = [
+    ['node-runtime', 'Node.js runtime'],
+    ['python-runtime', 'Python runtime'],
+    ['pending-updates', 'Pending package updates'],
+    ['apt-lists', 'Package lists'],
+    ['automatic-updates', 'Automatic updates'],
+    ['reboot-required', 'Reboot'],
+    ['stale-processes', 'Running code is current'],
+  ];
+
+  function renderFoundationLevel(level) {
+    if (level === 'ok') return '<span class="hb-ok">OK</span>';
+    if (level === 'fail') return '<span class="hb-err">ACTION</span>';
+    if (level === 'warn') return '<span class="hb-warn">WARN</span>';
+    return '<span class="hb-warn">UNKNOWN</span>';
+  }
+
+  function renderFoundationHint(hint) {
+    if (!hint) return '';
+    // Shell steps are shown as code so they can be copied; everything else is guidance.
+    return /^sudo /.test(hint) ? `<code style="white-space:pre-wrap;overflow-wrap:anywhere;">${window.HB.escapeHtml(hint)}</code>` : window.HB.escapeHtml(hint);
+  }
+
+  function renderFoundationDetails(checks) {
+    const pending = checks['pending-updates'];
+    const stale = checks['stale-processes'];
+    const parts = [];
+    if (Array.isArray(pending?.packages) && pending.packages.length) {
+      const more = pending.total > pending.packages.length ? `<li class="hb-muted">…and ${window.HB.escapeHtml(pending.total - pending.packages.length)} more</li>` : '';
+      parts.push(`
+        <details>
+          <summary>Pending packages (${window.HB.escapeHtml(pending.total)}, ${window.HB.escapeHtml(pending.security)} security)</summary>
+          <ul style="margin:0.5rem 0 0;padding-left:1.2rem;">
+            ${pending.packages.map((pkg) => `<li><code>${window.HB.escapeHtml(pkg.name)}</code> <span class="hb-muted">${window.HB.escapeHtml(pkg.from || 'new')} → ${window.HB.escapeHtml(pkg.to)}</span>${pkg.security ? ' <span class="hb-err">security</span>' : ''}</li>`).join('')}
+            ${more}
+          </ul>
+        </details>
+      `);
+    }
+    if (Array.isArray(stale?.stale) && stale.stale.length) {
+      parts.push(`
+        <details>
+          <summary>Units running replaced files (${window.HB.escapeHtml(stale.stale.length)})</summary>
+          <ul style="margin:0.5rem 0 0;padding-left:1.2rem;">
+            ${stale.stale.map((entry) => `<li><code>${window.HB.escapeHtml(entry.unit)}</code> <span class="hb-muted">pid ${window.HB.escapeHtml(entry.pid)} · ${entry.replaced.map((file) => window.HB.escapeHtml(file)).join(', ')}</span></li>`).join('')}
+          </ul>
+        </details>
+      `);
+    }
+    return parts.length ? `<div class="hb-stack" style="margin-top:0.75rem;">${parts.join('')}</div>` : '';
+  }
+
+  function renderFoundationBody(foundation) {
+    if (!foundation) return '<div class="hb-row"><div class="hb-spinner"></div><span class="hb-muted">Checking runtimes and packages…</span></div>';
+    if (!foundation.available) return `<p class="hb-muted" style="margin:0;">${window.HB.escapeHtml(foundation.error || 'Patch posture is unavailable.')}</p>`;
+    const checks = foundation.checks || {};
+    const rows = FOUNDATION_CHECKS.filter(([id]) => checks[id]);
+    const attention = rows.filter(([id]) => checks[id].level !== 'ok').length;
+    const locked = foundation.detailsRequireAdmin === true;
+    return `
+      <p style="margin:0 0 0.75rem;">${attention ? `<span class="hb-warn">${window.HB.escapeHtml(attention)} of ${window.HB.escapeHtml(rows.length)} checks need attention.</span>` : '<span class="hb-ok">Runtimes and OS packages are current.</span>'}
+        <span class="hb-muted">Checked ${window.HB.escapeHtml(window.HB.formatTimestamp(foundation.collectedAt))} · support dates reviewed ${window.HB.escapeHtml(foundation.lifecycleReviewedAt || 'unknown')}</span></p>
+      <ul class="hb-stack" aria-label="Patch posture" style="list-style:none;padding:0;margin:0;">
+        ${rows.map(([id, title]) => `
+          <li style="border-top:1px solid var(--border);padding-top:0.6rem;">
+            <div class="hb-row" style="justify-content:space-between;"><strong>${window.HB.escapeHtml(title)}</strong>${renderFoundationLevel(checks[id].level)}</div>
+            ${checks[id].summary ? `<p class="hb-muted" style="margin:0.25rem 0 0;">${window.HB.escapeHtml(checks[id].summary)}</p>` : ''}
+            ${checks[id].hint ? `<p style="margin:0.35rem 0 0;">${renderFoundationHint(checks[id].hint)}</p>` : ''}
+          </li>
+        `).join('')}
+      </ul>
+      ${locked ? '<p class="hb-muted" style="margin:0.75rem 0 0;"><a href="/admin">Unlock Admin</a> to see what each check found and the next step.</p>' : renderFoundationDetails(checks)}
+      <p class="hb-muted" style="margin:0.75rem 0 0;">Library dependencies (each app's npm and Python packages) are not checked yet.</p>
+    `;
+  }
+
+  async function loadFoundation({ refresh = false } = {}) {
+    const body = root.querySelector('[data-foundation-body]');
+    const button = root.querySelector('[data-action="refresh-foundation"]');
+    if (!body) return;
+    if (refresh) body.innerHTML = renderFoundationBody(null);
+    if (button) button.disabled = true;
+    try {
+      body.innerHTML = renderFoundationBody(await window.HB.getJson(`/api/homebase/foundation${refresh ? '?refresh=1' : ''}`));
+    } catch (error) {
+      body.innerHTML = renderFoundationBody({ available: false, error: error.message });
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function submitConfig(form) {
     const result = form.querySelector('[data-config-result]');
     const payload = {
@@ -119,6 +211,9 @@
   }
 
   function wireEvents() {
+    root.addEventListener('click', (event) => {
+      if (event.target.closest('[data-action="refresh-foundation"]')) loadFoundation({ refresh: true });
+    });
     root.addEventListener('submit', async (event) => {
       const configForm = event.target.closest('form[data-action="config"]');
       if (configForm) {
@@ -221,6 +316,14 @@
           description: 'Host readiness, Home Base runtime posture, and repair actions.',
           statusLine: `Runtime user: ${status.runtimeUser} · systemd: ${status.systemd?.active || 'unknown'} · execution: ${status.executionMode || 'plan-only'}`,
         })}
+        <section class="hb-card">
+          <div class="hb-row" style="justify-content:space-between;">
+            <h2 style="margin:0;">Patch posture</h2>
+            <button class="hb-btn" type="button" data-action="refresh-foundation">Refresh</button>
+          </div>
+          <p class="hb-muted" style="margin:0.4rem 0 0.75rem;">Runtimes and OS packages on this host: what is out of date, and what is patched on disk but not yet running.</p>
+          <div data-foundation-body>${renderFoundationBody(null)}</div>
+        </section>
         <section class="hb-grid hb-grid-2">
           <article class="hb-card">
             <h2 style="margin-top:0;">Bootstrap / repair host</h2>
@@ -548,6 +651,8 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
       ]);
       root.innerHTML = renderPage(config, status, preflight, adminStatus, tailscale, publishPlan, verification);
       wireEvents();
+      // Loaded after the page renders: the executor simulates an apt upgrade, which takes a few seconds.
+      if (page === 'status') loadFoundation();
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');
         window.HB.getJson('/api/admin/audit?limit=10').then((payload) => {

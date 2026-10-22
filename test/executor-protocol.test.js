@@ -7,7 +7,7 @@ const net = require('net');
 const crypto = require('crypto');
 const { createExecutorServer } = require('../executor/server');
 const { PROTOCOL_VERSION } = require('../executor/protocol');
-const { hello, hostStatus, appUpdateStatus, runAction, planAction, sendRequest } = require('../src/executor/client');
+const { hello, hostStatus, foundationStatus, appUpdateStatus, runAction, planAction, sendRequest } = require('../src/executor/client');
 const { digestOperationPlan } = require('../src/operations/digest');
 
 const SITE = { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' };
@@ -229,6 +229,17 @@ test('host-status is a fixed, argument-free read request', async () => {
   }, { collectHostStatus: async () => ({ checks: { 'nginx-config': { ok: true } } }) });
   await withExecutor(async (socketPath) => {
     await assert.rejects(() => hostStatus(socketPath), (error) => error.code === 'POLICY_DENIED');
+  });
+});
+
+test('foundation-status is a fixed, argument-free read request', async () => {
+  await withExecutor(async (socketPath) => {
+    const status = await foundationStatus(socketPath);
+    assert.equal(status.checks['node-runtime'].ok, true);
+    await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'foundation-status', appId: 'family-dinner' }), (error) => error.code === 'INVALID_REQUEST');
+  }, { collectFoundationStatus: async () => ({ checks: { 'node-runtime': { ok: true } } }) });
+  await withExecutor(async (socketPath) => {
+    await assert.rejects(() => foundationStatus(socketPath), (error) => error.code === 'POLICY_DENIED');
   });
 });
 

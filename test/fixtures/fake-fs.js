@@ -38,6 +38,11 @@ function createFakeFs(initial = {}) {
       if (!entries.has(target)) throw enoent(target);
       return stat(entries.get(target));
     },
+    statSync: (target) => {
+      const entry = entries.get(target);
+      if (!entry) throw enoent(target);
+      return { ...stat(entry), mtimeMs: entry.mtimeMs ?? 0 };
+    },
     realpathSync: (target) => {
       const entry = entries.get(target);
       if (!entry) throw enoent(target);
@@ -115,7 +120,12 @@ function createFakeFs(initial = {}) {
       }
     },
     symlinkSync: (target, link) => { put(link, { kind: 'link', target }); },
-    readlinkSync: (link) => entries.get(link).target,
+    readlinkSync: (link) => {
+      const entry = entries.get(link);
+      if (!entry) throw enoent(link);
+      if (entry.kind !== 'link') throw Object.assign(new Error(`EINVAL: ${link}`), { code: 'EINVAL' });
+      return entry.target;
+    },
     unlinkSync: (target) => { calls.push(['unlink', target]); entries.delete(target); },
     rmSync: (target) => {
       calls.push(['rm', target]);

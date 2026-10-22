@@ -11,6 +11,18 @@ function readPublicFile(fileName) {
   return fs.readFileSync(path.join(__dirname, '..', 'public', fileName), 'utf8');
 }
 
+test('status page shows patch posture from the executor, loaded after the page renders', () => {
+  const source = readPublicScript('settings.js');
+  assert.match(source, /Patch posture/);
+  assert.match(source, /\/api\/homebase\/foundation/);
+  assert.match(source, /data-action="refresh-foundation"/);
+  for (const id of ['node-runtime', 'python-runtime', 'pending-updates', 'apt-lists', 'automatic-updates', 'reboot-required', 'stale-processes']) {
+    assert.match(source, new RegExp(`'${id}'`), `${id} has a row`);
+  }
+  assert.match(source, /if \(page === 'status'\) loadFoundation\(\)/);
+  assert.match(source, /detailsRequireAdmin/, 'a locked session sees levels and an unlock prompt');
+});
+
 test('control-plane UI keeps operational actions available after the settings split', () => {
   const source = readPublicScript('settings.js');
   const nav = readPublicScript('nav.js');
