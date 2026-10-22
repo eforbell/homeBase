@@ -33,6 +33,10 @@ test('bitcoin accounting plan renders postgres-oriented env and readiness probes
 
   assert.match(plan.files['.env'], /DB_BACKEND=postgres/);
   assert.match(plan.files['.env'], /BITCOIN_ACCOUNTING_WEB_BASE_PATH=\/bitcoin-accounting/);
+  assert.match(plan.script, /bash scripts\/ensure-safe-pip\.sh \.venv\/bin\/python/);
+  assert.match(plan.script, /\.venv\/bin\/python -m pip install -r requirements\.lock && \.venv\/bin\/python -m pip install -e \. --no-deps/);
+  assert.ok(plan.script.indexOf('scripts/ensure-safe-pip.sh') < plan.script.indexOf('pip install -r requirements.lock'));
+  assert.doesNotMatch(plan.script, /pip install --upgrade pip/);
   assert.match(plan.script, /bitcoin-accounting-web-init/);
   assert.equal(plan.install.health.readinessPath, '/api/ready');
   assert.match(plan.files['bitcoin-accounting-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/bitcoinAccounting\/.venv\/bin\/uvicorn/);
@@ -533,6 +537,9 @@ test('helm plan renders HomeBase-preserved subpath, Helm env, timers, and python
   assert.match(plan.files['helm.nginx.conf'], /location \/helm\//);
   assert.match(plan.files['helm.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:3011;/);
   assert.doesNotMatch(plan.files['helm.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:3011\//);
+  assert.match(plan.script, /bash scripts\/ensure-safe-pip\.sh \.venv\/bin\/python/);
+  assert.ok(plan.script.indexOf('scripts/ensure-safe-pip.sh') < plan.script.indexOf('pip install -r requirements.lock'));
+  assert.doesNotMatch(plan.script, /pip install --upgrade pip/);
   assert.match(plan.script, /install -d -m 0700 \.secrets/);
   assert.match(plan.script, /migrations\/run_migration\.py/);
   assert.match(plan.script, /systemctl enable helm-sync\.timer/);

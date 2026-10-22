@@ -103,22 +103,24 @@ test('a pinned python app is read from its requirements lock', () => {
   assert.deepEqual(result.floorFindings.map(({ name, version, where }) => [name, version, where]), [['certifi', '2026.5.20', 'lockfile']]);
 });
 
-test('an app with no lockfile is inventoried from its virtualenv and marked unpinned', () => {
+test('bitcoin-accounting inventories the virtualenv, reports lock drift, and notices missing locks', () => {
   const site = '/opt/sovereign-home/apps/bitcoinAccounting/.venv/lib/python3.12/site-packages';
   const result = reader({
     '/opt/sovereign-home/apps/bitcoinAccounting': dir,
+    '/opt/sovereign-home/apps/bitcoinAccounting/requirements.lock': 'certifi==2026.10.19\nrequests==2.32.4\n',
     '/opt/sovereign-home/apps/bitcoinAccounting/.venv/lib/python3.12': dir,
     [site]: dir,
     [`${site}/pandas-2.2.3.dist-info`]: dir,
     [`${site}/requests-2.32.4.dist-info`]: dir,
     [`${site}/pandas`]: dir,
   })({ appId: 'bitcoin-accounting' });
-  assert.deepEqual([result.source, result.inventorySource, result.pinned], [null, 'virtualenv', false]);
+  assert.deepEqual([result.source, result.inventorySource, result.pinned], ['requirements.lock', 'virtualenv', true]);
   assert.deepEqual(result.packages, [['pandas', '2.2.3'], ['requests', '2.32.4']]);
-  assert.match(result.note, /reinstall may resolve different ones/);
+  assert.match(result.note, /locked package.*different version/);
 
   const noVenv = reader({ '/opt/sovereign-home/apps/bitcoinAccounting': dir })({ appId: 'bitcoin-accounting' });
   assert.deepEqual([noVenv.source, noVenv.inventorySource, noVenv.pinned, noVenv.packages], [null, null, false, []]);
+  assert.match(noVenv.note, /No readable requirements.lock/);
 });
 
 test('missing lockfiles, planted symlinks, missing checkouts, and unmanaged apps are handled', () => {

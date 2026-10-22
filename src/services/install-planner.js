@@ -292,7 +292,9 @@ function buildAppBootstrapCommands(app, ctx) {
   }));
   commands.push(renderRunAsServiceUserCommand({
     serviceUser: ctx.serviceUser,
-    command: `cd ${ctx.installRoot} && .venv/bin/python -m pip install --upgrade pip`,
+    // Both Python apps ship this script. It upgrades pip from a hash-pinned wheel before any
+    // index request; `pip install --upgrade pip` would use the affected bundled CA store.
+    command: `cd ${ctx.installRoot} && bash scripts/ensure-safe-pip.sh .venv/bin/python`,
   }));
   commands.push(renderRunAsServiceUserCommand({
     serviceUser: ctx.serviceUser,

@@ -455,9 +455,9 @@ const catalog = [
     },
     runtime: {
       kind: 'python',
-      installCommand: '.venv/bin/python -m pip install -e .',
-      // Typed form of installCommand for the executor. Unpinned until the repo ships a lockfile.
-      python: { editable: true, minVersion: '3.10' },
+      installCommand: '.venv/bin/python -m pip install -r requirements.lock && .venv/bin/python -m pip install -e . --no-deps',
+      // Typed form of installCommand for the executor.
+      python: { requirements: 'requirements.lock', editable: true, editableNoDeps: true, minVersion: '3.10' },
       startCommand: '.venv/bin/uvicorn web.app:create_app --factory --host 127.0.0.1 --port {{port}}',
       pythonVenv: '.venv',
     },
