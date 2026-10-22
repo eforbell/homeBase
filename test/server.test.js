@@ -2417,3 +2417,51 @@ test('patch posture comes from the executor, is cached, shows details only to an
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('dependency inventory covers Home Base and installed apps, with package names only for an admin', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-deps-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const appDir = path.join(tempDir, 'homebase');
+  fs.mkdirSync(appDir);
+  fs.writeFileSync(path.join(appDir, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'home-base' }, 'node_modules/ajv': { version: '8.20.0' } } }));
+  const asked = [];
+  const executor = createExecutorServer({ logger: { info() {} }, readDependencyInventory: async ({ appId }) => {
+    asked.push(appId);
+    if (appId === 'helm') throw Object.assign(new Error('boom at /opt/sovereign-home/apps/helm'), { code: 'OPERATION_FAILED' });
+    return { appId, ecosystem: 'npm', source: 'package-lock.json', pinned: true, packages: [['express', '4.22.1']], unpinned: [] };
+  } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const record = (appId, status) => ({ appId, name: appId, purpose: 'x', port: 1, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status, plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  store.upsertInstallation(record('family-dinner', 'installed'));
+  store.upsertInstallation(record('helm', 'installed'));
+  store.upsertInstallation(record('home-ops', 'planned'));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath, homeBaseAppDir: appDir });
+  try {
+    const locked = await (await fetch(`${server.url}/api/apps/dependencies?refresh=1`)).json();
+    assert.equal(locked.detailsRequireAdmin, true);
+    assert.deepEqual(asked, ['family-dinner', 'helm'], 'only installed apps');
+    assert.deepEqual([locked.homebase.count, locked.homebase.pinned], [1, true]);
+    assert.deepEqual(Object.keys(locked.byAppId), ['family-dinner', 'helm']);
+    assert.deepEqual([locked.byAppId['family-dinner'].count, locked.byAppId['family-dinner'].pinned], [1, true]);
+    assert.ok([locked.homebase, ...Object.values(locked.byAppId)].every((entry) => !('packages' in entry) && !('unpinned' in entry) && !('note' in entry)), 'no package names without admin');
+    assert.equal(locked.byAppId.helm.error, 'Inventory unavailable.', 'executor errors are not passed through unredacted');
+    await fetch(`${server.url}/api/apps/dependencies?refresh=1`);
+    assert.equal(asked.length, 2, 'cached, and only an admin can force a re-read');
+
+    const cookie = await setupAdminCookie(server.url);
+    const full = await (await fetch(`${server.url}/api/apps/dependencies?refresh=1`, { headers: { cookie } })).json();
+    assert.equal(asked.length, 4);
+    assert.equal(full.detailsRequireAdmin, undefined);
+    assert.deepEqual(full.homebase.packages, [['ajv', '8.20.0']]);
+    assert.deepEqual(full.byAppId['family-dinner'].packages, [['express', '4.22.1']]);
+    assert.equal(full.byAppId['family-dinner'].count, 1);
+    assert.match(full.byAppId.helm.error, /boom/);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});

@@ -116,8 +116,45 @@
         `).join('')}
       </ul>
       ${locked ? '<p class="hb-muted" style="margin:0.75rem 0 0;"><a href="/admin">Unlock Admin</a> to see what each check found and the next step.</p>' : renderFoundationDetails(checks)}
-      <p class="hb-muted" style="margin:0.75rem 0 0;">Library dependencies (each app's npm and Python packages) are not checked yet.</p>
     `;
+  }
+
+  // Library dependencies (stream B). Per-app detail lives on the Apps pages; Status shows Home Base's
+  // own lockfile, which is not an app there, and a one-line roll-up of the installed apps.
+  function renderDependenciesBody(inventory) {
+    if (!inventory) return '<div class="hb-row"><div class="hb-spinner"></div><span class="hb-muted">Reading lockfiles…</span></div>';
+    if (!inventory.available) return `<p class="hb-muted" style="margin:0;">${window.HB.escapeHtml(inventory.error || 'Dependency inventory is unavailable.')}</p>`;
+    const own = window.HB.dependencyStatus(inventory.homebase);
+    const apps = Object.values(inventory.byAppId || {});
+    const attention = apps.filter((entry) => window.HB.dependencyStatus(entry).key !== 'pinned').length;
+    const belowFloor = apps.filter((entry) => window.HB.dependencyStatus(entry).key === 'below-floor').length;
+    const rollup = !apps.length ? '<span class="hb-muted">No installed apps yet.</span>'
+      : belowFloor ? `<span class="hb-err">${window.HB.escapeHtml(belowFloor)} of ${window.HB.escapeHtml(apps.length)} installed apps run a package below a required security version.</span>${attention > belowFloor ? ` <span class="hb-warn">${window.HB.escapeHtml(attention - belowFloor)} more need lockfile attention.</span>` : ''}`
+      : attention ? `<span class="hb-warn">${window.HB.escapeHtml(attention)} of ${window.HB.escapeHtml(apps.length)} installed apps are not pinned by a lockfile, or drift from it.</span>`
+        : `<span class="hb-ok">All ${window.HB.escapeHtml(apps.length)} installed apps are pinned by a lockfile.</span>`;
+    return `
+      <ul class="hb-stack" aria-label="Library dependencies" style="list-style:none;padding:0;margin:0;">
+        <li style="border-top:1px solid var(--border);padding-top:0.6rem;">
+          <div class="hb-row" style="justify-content:space-between;"><strong>Home Base</strong><span class="${own.className}">${window.HB.escapeHtml(own.label.toUpperCase())}</span></div>
+          <p class="hb-muted" style="margin:0.25rem 0 0;">${window.HB.escapeHtml(own.summary)}</p>
+        </li>
+        <li style="border-top:1px solid var(--border);padding-top:0.6rem;">
+          <div class="hb-row" style="justify-content:space-between;"><strong>Installed apps</strong><a href="/apps">Apps →</a></div>
+          <p style="margin:0.25rem 0 0;">${rollup}</p>
+        </li>
+      </ul>
+    `;
+  }
+
+  async function loadDependencies({ refresh = false } = {}) {
+    const body = root.querySelector('[data-dependencies-body]');
+    if (!body) return;
+    if (refresh) body.innerHTML = renderDependenciesBody(null);
+    try {
+      body.innerHTML = renderDependenciesBody(await window.HB.getJson(`/api/apps/dependencies${refresh ? '?refresh=1' : ''}`));
+    } catch (error) {
+      body.innerHTML = renderDependenciesBody({ available: false, error: error.message });
+    }
   }
 
   async function loadFoundation({ refresh = false } = {}) {
@@ -212,7 +249,10 @@
 
   function wireEvents() {
     root.addEventListener('click', (event) => {
-      if (event.target.closest('[data-action="refresh-foundation"]')) loadFoundation({ refresh: true });
+      if (event.target.closest('[data-action="refresh-foundation"]')) {
+        loadFoundation({ refresh: true });
+        loadDependencies({ refresh: true });
+      }
     });
     root.addEventListener('submit', async (event) => {
       const configForm = event.target.closest('form[data-action="config"]');
@@ -323,6 +363,9 @@
           </div>
           <p class="hb-muted" style="margin:0.4rem 0 0.75rem;">Runtimes and OS packages on this host: what is out of date, and what is patched on disk but not yet running.</p>
           <div data-foundation-body>${renderFoundationBody(null)}</div>
+          <h3 style="margin:1.25rem 0 0.4rem;">Library dependencies</h3>
+          <p class="hb-muted" style="margin:0 0 0.75rem;">The npm and Python packages Home Base and each app run. A lockfile makes them reproducible, so an update delivers exactly the fixed versions. Each app's details are on its Apps page.</p>
+          <div data-dependencies-body>${renderDependenciesBody(null)}</div>
         </section>
         <section class="hb-grid hb-grid-2">
           <article class="hb-card">
@@ -652,7 +695,10 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
       root.innerHTML = renderPage(config, status, preflight, adminStatus, tailscale, publishPlan, verification);
       wireEvents();
       // Loaded after the page renders: the executor simulates an apt upgrade, which takes a few seconds.
-      if (page === 'status') loadFoundation();
+      if (page === 'status') {
+        loadFoundation();
+        loadDependencies();
+      }
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');
         window.HB.getJson('/api/admin/audit?limit=10').then((payload) => {

@@ -7,7 +7,7 @@ const net = require('net');
 const crypto = require('crypto');
 const { createExecutorServer } = require('../executor/server');
 const { PROTOCOL_VERSION } = require('../executor/protocol');
-const { hello, hostStatus, foundationStatus, appUpdateStatus, runAction, planAction, sendRequest } = require('../src/executor/client');
+const { hello, hostStatus, foundationStatus, dependencyInventory, appUpdateStatus, runAction, planAction, sendRequest } = require('../src/executor/client');
 const { digestOperationPlan } = require('../src/operations/digest');
 
 const SITE = { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' };
@@ -240,6 +240,22 @@ test('foundation-status is a fixed, argument-free read request', async () => {
   }, { collectFoundationStatus: async () => ({ checks: { 'node-runtime': { ok: true } } }) });
   await withExecutor(async (socketPath) => {
     await assert.rejects(() => foundationStatus(socketPath), (error) => error.code === 'POLICY_DENIED');
+  });
+});
+
+test('dependency-inventory accepts exactly one catalog app id', async () => {
+  const seen = [];
+  await withExecutor(async (socketPath) => {
+    const inventory = await dependencyInventory(socketPath, { appId: 'family-dinner' });
+    assert.equal(inventory.source, 'package-lock.json');
+    assert.deepEqual(seen, [{ appId: 'family-dinner' }]);
+    for (const bad of [{ appId: '../../etc' }, { appId: 'family-dinner', path: '/etc/shadow' }, {}]) {
+      await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'dependency-inventory', ...bad }), (error) => error.code === 'INVALID_REQUEST');
+    }
+    assert.equal(seen.length, 1);
+  }, { readDependencyInventory: async (input) => { seen.push(input); return { appId: input.appId, source: 'package-lock.json', packages: [] }; } });
+  await withExecutor(async (socketPath) => {
+    await assert.rejects(() => dependencyInventory(socketPath, { appId: 'family-dinner' }), (error) => error.code === 'POLICY_DENIED');
   });
 });
 

@@ -17,6 +17,8 @@ const { buildHomeBaseRuntimePlan } = require('./services/homebase-runtime-planne
 const { buildHomeBaseUpdatePlan } = require('./services/homebase-update-planner');
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
+const { parseNpmLock } = require('./operations/lockfiles');
+const { evaluateFloors } = require('./operations/security-floors');
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification } = require('./services/tailscale-verify');
@@ -31,7 +33,7 @@ const { HealthAlertNotifier } = require('./services/notifications');
 const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
 const { getExecutorCapabilities, canExecuteMutations } = require('./executor/capabilities');
-const { hostStatus: requestExecutorHostStatus, foundationStatus: requestExecutorFoundationStatus, planAction: requestExecutorPlan } = require('./executor/client');
+const { hostStatus: requestExecutorHostStatus, foundationStatus: requestExecutorFoundationStatus, dependencyInventory: requestExecutorDependencyInventory, planAction: requestExecutorPlan } = require('./executor/client');
 const {
   getAdminStatus,
   setupAdmin,
@@ -693,6 +695,69 @@ function createApp(config) {
     return foundationStatusCache.inFlight;
   }
 
+  // The packages each installed app runs (stream B). The executor reads app checkouts as sovereign;
+  // Home Base's own root-owned lockfile is readable here. Cached; ?refresh=1 (admin only) reads again.
+  const dependencyInventoryCache = { value: null, key: '', expiresAt: 0, inFlight: null };
+  async function collectDependencyInventory(effectiveConfig, appIds) {
+    let homebase;
+    try {
+      const { packages } = parseNpmLock(fs.readFileSync(path.join(effectiveConfig.homeBaseAppDir, 'package-lock.json'), 'utf8'));
+      homebase = { appId: 'homebase', name: 'Home Base', ecosystem: 'npm', source: 'package-lock.json', inventorySource: 'lockfile', pinned: packages.length > 0, packages, unpinned: [], drift: [], errors: [], floorFindings: evaluateFloors({ ecosystem: 'npm', installed: packages }) };
+    } catch (error) {
+      homebase = { appId: 'homebase', name: 'Home Base', ecosystem: 'npm', source: null, inventorySource: null, pinned: false, packages: [], unpinned: [], drift: [], errors: [], floorFindings: [], error: error.code === 'ENOENT' ? 'No package-lock.json in the Home Base install.' : error.message };
+    }
+    const byAppId = {};
+    for (const appId of appIds) {
+      try {
+        byAppId[appId] = await requestExecutorDependencyInventory(effectiveConfig.homeBaseExecutorSocket, { appId }, { timeoutMs: 15_000 });
+      } catch (error) {
+        byAppId[appId] = { appId, ecosystem: null, source: null, inventorySource: null, pinned: false, packages: [], unpinned: [], drift: [], errors: [], floorFindings: [], error: error.message || 'Executor unavailable.' };
+      }
+    }
+    return { available: true, homebase, byAppId, collectedAt: new Date().toISOString() };
+  }
+  function getDependencyInventory(effectiveConfig, installations, { force = false } = {}) {
+    if (effectiveConfig.homeBaseExecutionMode !== 'executor') {
+      return Promise.resolve({ available: false, error: 'Dependency inventory needs the root executor (executor mode).' });
+    }
+    const appIds = installations.filter((record) => record.status === 'installed').map((record) => record.appId).filter((appId) => getAppById(appId)).sort();
+    const key = appIds.join(',');
+    if (!force && dependencyInventoryCache.value && dependencyInventoryCache.key === key && dependencyInventoryCache.expiresAt > Date.now()) return Promise.resolve(dependencyInventoryCache.value);
+    if (!dependencyInventoryCache.inFlight) {
+      dependencyInventoryCache.inFlight = collectDependencyInventory(effectiveConfig, appIds)
+        .then((value) => Object.assign(dependencyInventoryCache, { value, key, expiresAt: Date.now() + 10 * 60_000 }).value)
+        .finally(() => { dependencyInventoryCache.inFlight = null; });
+    }
+    return dependencyInventoryCache.inFlight;
+  }
+  // Every entry gains counts. Without an unlocked admin session that is all it keeps (with ecosystem,
+  // sources, pinning, and a generic error): never package names, versions, notes, or paths.
+  function projectDependencyInventory(inventory, { admin }) {
+    if (!inventory.available) return inventory;
+    const project = (entry) => {
+      const findings = entry.floorFindings || [];
+      const counts = {
+        count: entry.packages.length,
+        unpinnedCount: entry.unpinnedTotal ?? entry.unpinned.length,
+        driftCount: entry.driftTotal ?? (entry.drift || []).length,
+        errorCount: entry.errorTotal ?? (entry.errors || []).length,
+        // Distinct packages: certifi installed and pinned below its floor is one package to fix.
+        floorFindingsCount: new Set(findings.filter((finding) => !finding.hostStore).map((finding) => finding.name)).size,
+        floorNotesCount: new Set(findings.filter((finding) => finding.hostStore).map((finding) => finding.name)).size,
+      };
+      if (admin) return { ...entry, ...counts };
+      const { appId, ecosystem, source, inventorySource, pinned, venvMissing, error, floorsReviewedAt } = entry;
+      return { appId, ecosystem, source, inventorySource, pinned, venvMissing, floorsReviewedAt, ...counts, ...(error ? { error: 'Inventory unavailable.' } : {}) };
+    };
+    return {
+      available: true,
+      ...(admin ? {} : { detailsRequireAdmin: true }),
+      collectedAt: inventory.collectedAt,
+      homebase: project(inventory.homebase),
+      byAppId: Object.fromEntries(Object.entries(inventory.byAppId).map(([appId, entry]) => [appId, project(entry)])),
+    };
+  }
+
   async function getPreflight(effectiveConfig, { force = false } = {}) {
     const previousExecutorStatus = executorStatusCache.value;
     const executorStatus = await refreshExecutorStatus(effectiveConfig, { force });
@@ -805,6 +870,11 @@ function createApp(config) {
         const adminStatus = await getAdminStatus(req, stateStore);
         const foundation = await getFoundationStatus(effectiveConfig, { force: adminStatus.unlocked && url.searchParams.get('refresh') === '1' });
         return sendJson(res, 200, adminStatus.unlocked ? foundation : redactFoundationStatus(foundation));
+      }
+      if (method === 'GET' && pathname === '/api/apps/dependencies') {
+        const adminStatus = await getAdminStatus(req, stateStore);
+        const inventory = await getDependencyInventory(effectiveConfig, Object.values(state.installations || {}), { force: adminStatus.unlocked && url.searchParams.get('refresh') === '1' });
+        return sendJson(res, 200, projectDependencyInventory(inventory, { admin: adminStatus.unlocked }));
       }
       if (method === 'GET' && pathname === '/api/network/tailscale') {
         return sendJson(res, 200, getTailscaleReadiness(effectiveConfig, {

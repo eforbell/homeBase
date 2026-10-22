@@ -399,13 +399,82 @@
     });
   }
 
+  // Library dependencies for this app (stream B of docs/patch-visibility-plan.md): what it runs and
+  // whether a lockfile pins it. Package names and versions are shown only to an unlocked admin.
+  function renderDependencies(dependencies) {
+    const entry = dependencies.byAppId?.[appId];
+    const status = window.HB.dependencyStatus(entry);
+    const unpinned = Array.isArray(entry?.unpinned) && entry.unpinned.length
+      ? `<p class="hb-muted" style="margin:0.55rem 0 0;">Not pinned: ${entry.unpinned.map((name) => `<code>${window.HB.escapeHtml(name)}</code>`).join(', ')}</p>`
+      : '';
+    const findings = Array.isArray(entry?.floorFindings) && entry.floorFindings.length ? `
+      <ul class="hb-stack" style="list-style:none;padding:0;margin:0.55rem 0 0;">
+        ${entry.floorFindings.map((finding) => `
+          <li>
+            <span class="${finding.hostStore ? 'hb-warn' : 'hb-err'}"><code>${window.HB.escapeHtml(finding.name)}</code> ${window.HB.escapeHtml(finding.version)} ${finding.where === 'lockfile' ? `is pinned in ${window.HB.escapeHtml(entry.source || 'the lockfile')}` : 'is installed'}; at least ${window.HB.escapeHtml(finding.minVersion)} is required.</span>
+            <span class="hb-muted">${window.HB.escapeHtml(finding.reason)} <a href="${window.HB.escapeHtml(finding.reference)}" target="_blank" rel="noreferrer">Advisory ↗</a></span>
+            ${finding.hostStore ? `<span class="hb-muted" style="display:block;">${window.HB.escapeHtml(finding.hostStore)} The host store is reported under <a href="/status">Status → Patch posture</a>.</span>` : ''}
+          </li>
+        `).join('')}
+      </ul>
+      ${entry.floorFindings.some((finding) => !finding.hostStore && finding.name !== 'pip') ? '<p style="margin:0.55rem 0 0;">Raise the version in the app\'s lockfile and reinstall.</p>' : ''}
+      ${entry.floorFindings.some((finding) => !finding.hostStore && finding.name === 'pip') ? '<p style="margin:0.55rem 0 0;">Upgrade pip in this virtualenv from the hash-verified wheel the advisory links, not through the old pip\'s own downloads.</p>' : ''}` : '';
+    const drift = Array.isArray(entry?.drift) && entry.drift.length
+      ? `
+        <details style="margin-top:0.55rem;">
+          <summary>Installed differently from ${window.HB.escapeHtml(entry.source)} (${window.HB.escapeHtml(entry.driftCount || entry.drift.length)})</summary>
+          <ul style="margin:0.5rem 0 0;padding-left:1.2rem;columns:16rem;">
+            ${entry.drift.map((item) => `<li><code>${window.HB.escapeHtml(item.name)}</code> <span class="hb-muted">${window.HB.escapeHtml(item.installed || 'missing')} (locked ${window.HB.escapeHtml(item.locked)})</span></li>`).join('')}
+            ${(entry.driftCount || 0) > entry.drift.length ? `<li class="hb-muted">…and ${window.HB.escapeHtml(entry.driftCount - entry.drift.length)} more</li>` : ''}
+          </ul>
+        </details>`
+      : '';
+    const errors = Array.isArray(entry?.errors) && entry.errors.length
+      ? `<p class="hb-warn" style="margin:0.55rem 0 0;">${entry.errors.map((item) => window.HB.escapeHtml(item)).join('<br>')}</p>`
+      : '';
+    const fix = entry && !entry.error && ['no-lockfile', 'unpinned'].includes(status.key)
+      ? `<p style="margin:0.55rem 0 0;">${entry.ecosystem === 'PyPI'
+        ? 'Commit a lockfile with exact versions to the app repository (for example <code>uv pip compile pyproject.toml --generate-hashes -o requirements.lock</code>), so an update installs exactly the fixed versions.'
+        : 'Commit <code>package-lock.json</code> to the app repository (<code>npm install</code> writes it), so an update installs exactly the fixed versions.'}</p>`
+      : '';
+    let packages = '';
+    if (dependencies.detailsRequireAdmin) {
+      packages = '<p class="hb-muted" style="margin:0.55rem 0 0;"><a href="/admin">Unlock Admin</a> to see package names and versions.</p>';
+    } else if (Array.isArray(entry?.packages) && entry.packages.length) {
+      packages = `
+        <details style="margin-top:0.55rem;">
+          <summary>${entry.inventorySource === 'virtualenv' ? 'Installed packages' : 'Packages'} (${window.HB.escapeHtml(entry.packages.length)})</summary>
+          <ul style="margin:0.5rem 0 0;padding-left:1.2rem;columns:16rem;">
+            ${entry.packages.map(([name, version]) => `<li><code>${window.HB.escapeHtml(name)}</code> <span class="hb-muted">${window.HB.escapeHtml(version)}</span></li>`).join('')}
+          </ul>
+        </details>
+      `;
+    }
+    return `
+      <section id="dependencies" class="hb-card">
+        <div class="hb-row">
+          <h2 style="margin:0;">Dependencies</h2>
+          <span class="hb-badge ${status.className}">${window.HB.escapeHtml(status.label)}</span>
+        </div>
+        <p class="hb-muted" style="margin:0.55rem 0 0;">${window.HB.escapeHtml(status.summary)}</p>
+        ${findings}
+        ${drift}
+        ${errors}
+        ${unpinned}
+        ${fix}
+        ${packages}
+        <p class="hb-muted" style="margin:0.55rem 0 0;font-size:0.83rem;">Read ${window.HB.escapeHtml(window.HB.formatTimestamp(dependencies.collectedAt))}. Pinned means exact versions are declared and installed, not that they are free of known vulnerabilities. Security floors reviewed ${window.HB.escapeHtml(entry?.floorsReviewedAt || 'unknown')}; general vulnerability lookup is not enabled yet.</p>
+      </section>
+    `;
+  }
+
   async function load() {
     if (!appId) {
       renderError('Missing app id in URL.');
       return;
     }
     try {
-      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload, updatesPayload] = await Promise.all([
+      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload, updatesPayload, dependencies] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson(`/api/apps/${appId}/backups`),
@@ -413,6 +482,8 @@
         window.HB.getJson('/api/homebase/config'),
         window.HB.getJson('/api/apps/health'),
         window.HB.getJson('/api/apps/updates'),
+        // Optional: a failed inventory must never keep the rest of the page from rendering.
+        window.HB.getJson('/api/apps/dependencies').catch(() => null),
       ]);
       const catalogApps = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const app = catalogApps.find((item) => item.id === appId);
@@ -451,7 +522,7 @@
               ${install?.externalUrl ? `<a class="hb-btn hb-btn-primary" href="${window.HB.escapeHtml(install.externalUrl)}" target="_blank" rel="noreferrer">Open ↗</a>` : ''}
               ${appHealth?.onboarding?.setupUrl ? `<a class="hb-btn" href="${window.HB.escapeHtml(appHealth.onboarding.setupUrl)}" target="_blank" rel="noreferrer">Setup ↗</a>` : ''}
               <span class="hb-muted" style="font-size:0.83rem;margin-left:0.25rem;">
-                <a href="#health">Health</a> · <a href="#backup">Backup</a> · <a href="#restore">Restore</a> · <a href="#update">Update</a> · <a href="#uninstall" style="color:var(--red);">Uninstall</a>
+                <a href="#health">Health</a>${install && dependencies?.available ? ' · <a href="#dependencies">Dependencies</a>' : ''} · <a href="#backup">Backup</a> · <a href="#restore">Restore</a> · <a href="#update">Update</a> · <a href="#uninstall" style="color:var(--red);">Uninstall</a>
               </span>
             </div>
             ${renderBackupSummary(backups, config)}
@@ -482,6 +553,8 @@
             `
     : ''}
           </section>
+
+          ${install && dependencies?.available ? renderDependencies(dependencies) : ''}
 
           ${install?.status === 'planned' ? `
             <section class="hb-card">
