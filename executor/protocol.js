@@ -3,7 +3,7 @@ const { getAppById } = require('../src/catalog');
 const { PROTOCOL_VERSION } = require('./protocol-version');
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
-const REQUEST_TYPES = new Set(['hello', 'host-status', 'foundation-status', 'app-update-status', 'action-status', 'plan-action', 'run-action']);
+const REQUEST_TYPES = new Set(['hello', 'host-status', 'foundation-status', 'dependency-inventory', 'app-update-status', 'action-status', 'plan-action', 'run-action']);
 
 const { ProtocolError } = require('./protocol-error');
 const { normalizeAction, ACTION_FIELDS } = require('./actions');
@@ -28,6 +28,11 @@ function validateRequest(request) {
     requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actionRequestId']));
     if (typeof request.actionRequestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.actionRequestId)) throw new ProtocolError('INVALID_REQUEST', 'actionRequestId must be the run-action request UUID.');
     if (typeof request.jobId !== 'string' || !/^[1-9][0-9]{0,14}$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
+    return request;
+  }
+  if (request.type === 'dependency-inventory') {
+    requireExactKeys(request, new Set([...BASE_KEYS, 'appId']));
+    if (typeof request.appId !== 'string' || !getAppById(request.appId)) throw new ProtocolError('INVALID_REQUEST', 'appId must name a catalog app.');
     return request;
   }
   if (request.type === 'app-update-status') {

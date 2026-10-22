@@ -61,6 +61,10 @@ function foundationStatus(socketPath, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'foundation-status' }, options);
 }
 
+function dependencyInventory(socketPath, { appId }, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'dependency-inventory', appId }, options);
+}
+
 function actionStatus(socketPath, jobId, actionRequestId, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', jobId: String(jobId), actionRequestId }, options);
 }
@@ -96,4 +100,4 @@ function planAction(socketPath, fields, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'plan-action', ...actionFields(fields) }, options);
 }
 
-module.exports = { sendRequest, hello, hostStatus, foundationStatus, appUpdateStatus, actionStatus, runAction, planAction };
+module.exports = { sendRequest, hello, hostStatus, foundationStatus, dependencyInventory, appUpdateStatus, actionStatus, runAction, planAction };

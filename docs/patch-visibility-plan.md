@@ -1,6 +1,6 @@
 # Patch Visibility Plan
 
-Status: in progress (2026-10-22). Phase 1 of a broader patching-posture effort. Slices 1 and 2 (stream A collector and Status page section) are on `feat/foundation-status`, verified end to end in the container harness.
+Status: in progress (2026-10-22). Phase 1 of a broader patching-posture effort. Slices 1 and 2 (stream A collector and Status page section) merged in #5. Slice 3 (dependency inventory) is on `feat/dependency-inventory`.
 
 ## Goal
 
@@ -46,9 +46,9 @@ Notes:
 
 Split by privilege so no root process talks to an advisory service:
 
-1. **Inventory (executor, root, as `sovereign` for app files).** A new read-only request, `dependency-inventory`, reads each managed app's lockfile with the existing no-follow small-file reader, plus Home Base's own `package-lock.json`. It returns a normalized list of `{ ecosystem, name, version }` per app, nothing else. Parsers are pure functions (`src/operations/lockfiles.js`):
-   - npm: `package-lock.json` v2/v3 `packages` map, skipping `dev: true` entries (installs use `--omit=dev`).
-   - Python: `requirements.lock` exact pins (`name==version`). Apps without a lock (bitcoin-accounting today) fall back to `pip list --format=json` from the venv, flagged as "unpinned: installed versions, not reproducible".
+1. **Inventory (executor, root, as `sovereign` for app files).** A read-only, per-app request, `dependency-inventory` (`executor/dependency-inventory.js`), reads one managed app's lockfile with the no-follow small-file reader while assuming the `sovereign` identity. It returns `{ ecosystem, source, pinned, packages: [[name, version], ...], unpinned, note }`. It is per app because the protocol caps a response line at 64 KB (homeSource alone is about 5.5 KB). The web service reads Home Base's own root-owned `package-lock.json` itself. Parsers are pure functions (`src/operations/lockfiles.js`):
+   - npm: `package-lock.json` v2/v3 `packages` map (v1 `dependencies` too), skipping `dev: true`, links, extraneous entries, and optional binaries whose `os` excludes Linux (npm lists `sharp-darwin-arm64` and friends but never installs them here).
+   - Python: requirements-file exact pins (`name==version`, extras, markers, and `--hash` continuations allowed), names normalized per PEP 503; ranges, bare names, and URLs are reported as unpinned. An app whose editable install resolves its own dependencies (bitcoin-accounting: `pip install -e .` without `--no-deps`) is inventoried from its venv's `*.dist-info` directory names (no Python runs) and flagged "unpinned: installed versions, not reproducible".
 2. **Advisory lookup (web service, unprivileged).** The web service sends the inventory to the [OSV](https://osv.dev) `querybatch` API, one ecosystem-agnostic source for npm and PyPI, then caches results in SQLite with a timestamp. It runs on a timer (default every 12 hours), and the operator can trigger it.
 3. **Result per app:** counts by severity, the fixed version when OSV knows one, and whether the fix is already on the app's upstream branch (using the existing ahead/behind check: "update available, fixes 2 high").
 
@@ -62,8 +62,8 @@ A future option is the offline OSV database (zip per ecosystem, refreshed by dow
 
 `GET /api/homebase/foundation` serves the full report (summaries, package names, versions, units, PIDs, replaced-file paths) only to an unlocked admin session; together those map this host's patch gaps. Everyone else gets each check's level, and `?refresh=1` is honored only for admins, so an unauthenticated caller cannot trigger repeated apt simulations.
 
-- **Status page, "Patch posture" section (done):** one entry per Stream A check (OK / WARN / ACTION / UNKNOWN, summary, next step), expandable lists of pending packages and stale units, and a Refresh button. It loads after the page renders because the apt simulation takes a few seconds. A stacked list rather than a table, so the next step stays visible at phone width. The Stream B summary ("3 apps with known vulnerabilities; 1 unpinned") joins it in slice 4.
-- **App detail page:** dependency findings for that app next to the existing update badge.
+- **Status page, "Patch posture" section (done):** one entry per Stream A check (OK / WARN / ACTION / UNKNOWN, summary, next step), expandable lists of pending packages and stale units, and a Refresh button. It loads after the page renders because the apt simulation takes a few seconds. A stacked list rather than a table, so the next step stays visible at phone width. Stream B appears there only as Home Base's own lockfile plus a one-line roll-up linking to Apps.
+- **Apps pages, per app (slice 3):** each app tile's status line gains "Deps: pinned / unpinned / no lockfile", with an "Inspect →" warning when it is not pinned. The app detail page has a Dependencies section (source, pinning, unpinned names, how to add a lockfile, and for admins the package list). Slice 4's vulnerability findings go in that same section. Both pages fetch the inventory separately, so a failure never blocks the rest of the page. `GET /api/apps/dependencies` returns `{ homebase, byAppId }`, like `/api/apps/health` and `/api/apps/updates`; the shared reading of an entry is `HB.dependencyStatus` in `public/api.js`.
 - **Preflight (dropped):** the Patch posture section sits on the same page as the preflight table, so repeating its warnings there would only duplicate them. Preflight keeps gating installs on the Node.js floor alone.
 - **Notifications:** the existing brrr notifier pushes once when a new critical/high finding appears, a unit goes stale, or a runtime enters its last 30 days of support. Same cooldown model as health alerts.
 
@@ -73,7 +73,7 @@ Each slice is mergeable and tested on its own (`node --test`, plus a VM run for 
 
 1. **Stream A collector (done):** `executor/foundation-status.js`, `foundation-status` protocol request, `foundationStatus` client call, `GET /api/homebase/foundation` (cached 5 minutes, `?refresh=1`; the executor caches 10 seconds, only to absorb bursts). `/usr/bin/apt-config` joined the executor allowlist for `apt-config dump`. Tests: `test/executor-foundation-status.test.js`. Each check returns `{ ok, level: ok|warn|fail|unknown, summary, ...details }`.
 2. **Patch posture section on the Status page (done):** `public/settings.js`; route test in `test/server.test.js`.
-3. **Lockfile parsers and `dependency-inventory`:** pure parsers with fixture lockfiles from the real apps; executor request.
+3. **Lockfile parsers and `dependency-inventory` (done):** parsers tested against fixture lockfiles from familyDinner and helm; executor request; `GET /api/apps/dependencies` (installed apps plus Home Base, cached 10 minutes, `?refresh=1` for admins; without an unlocked admin session only per-app counts, source, and pinning, never package names or versions); the per-app indicators on the Apps pages described under Operator surface.
 4. **OSV lookup:** opt-in setting, batching, SQLite cache, per-app findings in the UI.
 5. **Notifications** for new findings, stale units, and approaching EOL.
 
