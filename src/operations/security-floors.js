@@ -17,6 +17,13 @@ const FLOORS = Object.freeze([
     // of its own bundle. Its version then says nothing about its trust: the host store does, and that is
     // a host check (Patch posture), not a package one. The finding stays, as a note saying exactly that.
     hostStoreDecides: true,
+    // How the executor meets this floor before any pip install: the exact wheel, by URL and SHA-256
+    // (checked against PyPI's published digest for pip-26.2.2-py3-none-any.whl). pip refuses a download
+    // whose hash differs, so even a pip with compromised CA trust can fetch its own replacement safely.
+    bootstrap: Object.freeze({
+      url: 'https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl',
+      sha256: 'fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70',
+    }),
   }),
 ]);
 

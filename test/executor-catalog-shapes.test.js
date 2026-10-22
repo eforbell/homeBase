@@ -125,7 +125,8 @@ test('backups archive in-checkout storage under the legacy archive names', async
 test('ensure-venv builds a venv once per interpreter and rebuilds it after a Python upgrade', async () => {
   const run = (version) => {
     const calls = [];
-    return { calls, fn: async (input) => { calls.push(input); return { stdout: input.args[0] === '-c' ? `${version}\n` : '' }; } };
+    // The system python3 reports its version; the venv's python reports an already-safe pip.
+    return { calls, fn: async (input) => { calls.push(input); return { stdout: input.args[0] === '-c' ? `${input.binary === '/usr/bin/python3' ? version : '26.2.2'}\n` : '' }; } };
   };
   const task = base('runtime.run-app-task', { task: 'ensure-venv' });
   const fresh = createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } });
@@ -151,7 +152,7 @@ test('ensure-venv builds a venv once per interpreter and rebuilds it after a Pyt
   const upgradedFs = createFakeFs(built);
   const upgraded = run('3.13.1');
   const rebuilt = await createBaseHandlers({ fsImpl: upgradedFs, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: upgraded.fn })['runtime.run-app-task'](task, { layout: HELM });
-  assert.deepEqual(upgraded.calls.map((call) => [call.binary.split('/').pop(), ...call.args.slice(0, 3)]), [['python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'], ['python3', '-m', 'venv', '.venv'], ['python', '-m', 'pip', 'install'], ['python', '-m', 'pip', 'install']]);
+  assert.deepEqual(upgraded.calls.map((call) => [call.binary.split('/').pop(), ...call.args.slice(0, 3)]), [['python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'], ['python3', '-m', 'venv', '.venv'], ['python', '-c', 'import importlib.metadata as m; print(m.version("pip"))'], ['python', '-m', 'pip', 'install'], ['python', '-m', 'pip', 'install']]);
   assert.match(rebuilt, /rebuilt virtualenv for Python 3\.13\.1 \(was 3\.12\.3\)/);
   assert.equal(upgradedFs.existsSync(`${HELM_ROOT}/.venv.previous`), false);
 
@@ -168,12 +169,63 @@ test('ensure-venv builds a venv once per interpreter and rebuilds it after a Pyt
   await assert.rejects(() => createBaseHandlers({ fsImpl: fresh, lookupUser: () => SOVEREIGN, run: first.fn })['runtime.run-app-task'](task, { layout: getLayout('family-dinner') }), (error) => error.code === 'POLICY_DENIED');
 });
 
+const PIP_PROBE = [`${HELM_ROOT}/.venv/bin/python`, '-c', 'import importlib.metadata as m; print(m.version("pip"))'];
+
+test('a pip below its security floor is replaced from the hash-pinned wheel before any download', async () => {
+  const { FLOORS } = require('../src/operations/security-floors');
+  const floor = FLOORS.find((entry) => entry.name === 'pip');
+  const pip = [`${HELM_ROOT}/.venv/bin/python`, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
+  const pinned = `pip @ ${floor.bootstrap.url}#sha256=${floor.bootstrap.sha256}`;
+  assert.match(floor.bootstrap.url, /^https:\/\/files\.pythonhosted\.org\/.+\/pip-26\.2\.2-py3-none-any\.whl$/);
+  assert.match(floor.bootstrap.sha256, /^[a-f0-9]{64}$/);
+  const scenario = (versions) => {
+    const calls = [];
+    const queue = [...versions];
+    const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => {
+      calls.push(input);
+      if (input.args[0] === '-c') {
+        const next = queue.shift();
+        if (next === null) throw Object.assign(new Error('No module named pip'), { code: 'OPERATION_FAILED' });
+        return { stdout: `${next}\n` };
+      }
+      return { stdout: '' };
+    } });
+    return { calls, run: () => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM }) };
+  };
+
+  // erebor's case: pip 26.2.1 in the venv. The pinned wheel goes first, then the lockfile.
+  const old = scenario(['26.2.1', '26.2.2']);
+  const output = await old.run();
+  assert.deepEqual(old.calls.map((call) => [call.binary, ...call.args]), [PIP_PROBE, [...pip, '--no-deps', '--upgrade', pinned], PIP_PROBE, [...pip, '-r', 'requirements.lock'], [...pip, '--no-deps', '-e', '.']]);
+  assert.match(output, /upgraded pip 26\.2\.1 -> 26\.2\.2 from the hash-pinned wheel[^\n]*$/, 'the summary is the last line, so the output cap never drops it');
+  assert.ok(old.calls.every((call) => call.uid === 1001), 'as sovereign, never root');
+
+  // A long lockfile install (helm's is ~80 packages) cannot push the summary out of the capped output.
+  const noisyQueue = ['26.2.1', '26.2.2'];
+  const noisy = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => (
+    input.args[0] === '-c' ? { stdout: `${noisyQueue.shift()}\n` } : { stdout: input.args.includes('-r') ? 'Requirement already satisfied: x\n'.repeat(2000) : 'Successfully installed pip-26.2.2' }
+  ) });
+  const long = await noisy['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM });
+  assert.ok(long.length <= 8 * 1024);
+  assert.match(long, /upgraded pip 26\.2\.1 -> 26\.2\.2[^\n]*$/);
+
+  // A venv without pip gets one offline from ensurepip, which is then replaced the same way.
+  const missing = scenario([null, '24.0', '26.2.2']);
+  await missing.run();
+  assert.deepEqual(missing.calls.slice(0, 4).map((call) => call.args.slice(0, 3)), [PIP_PROBE.slice(1), ['-m', 'ensurepip', '--upgrade'], PIP_PROBE.slice(1), ['-m', 'pip', 'install']]);
+
+  // If the upgrade does not take, nothing is downloaded through the old pip.
+  const stuck = scenario(['26.2.1', '26.2.1']);
+  await assert.rejects(() => stuck.run(), /pip is still 26\.2\.1 after installing the pinned pip 26\.2\.2 wheel/);
+  assert.ok(!stuck.calls.some((call) => call.args.includes('-r')), 'the lockfile is never installed by a pip below its floor');
+});
+
 test('Python dependencies install from the lockfile, then the checkout, as sovereign with fixed argv', async () => {
   const calls = [];
-  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => { calls.push(input); return { stdout: '' }; } });
+  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => { calls.push(input); return { stdout: input.args[0] === '-c' ? '26.2.2\n' : '' }; } });
   await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM });
   const pip = [`${HELM_ROOT}/.venv/bin/python`, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
-  assert.deepEqual(calls.map((call) => [call.binary, ...call.args]), [[...pip, '-r', 'requirements.lock'], [...pip, '--no-deps', '-e', '.']]);
+  assert.deepEqual(calls.map((call) => [call.binary, ...call.args]), [PIP_PROBE, [...pip, '-r', 'requirements.lock'], [...pip, '--no-deps', '-e', '.']], 'a pip already at its floor is left alone');
   assert.ok(calls.every((call) => call.uid === 1001 && call.cwd === HELM_ROOT && !('NODE_ENV' in call.env)));
   await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout: HELM });
   assert.deepEqual([calls.at(-1).binary, calls.at(-1).args], [`${HELM_ROOT}/.venv/bin/python`, ['migrations/run_migration.py']]);
