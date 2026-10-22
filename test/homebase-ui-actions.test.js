@@ -31,6 +31,10 @@ test('per-app dependency status lives on the Apps pages; Status keeps Home Base 
   const detail = readPublicScript('app-detail.js');
   const settings = readPublicScript('settings.js');
   assert.match(api, /function dependencyStatus\(entry\)/);
+  assert.match(api, /key: 'below-floor'/, 'a security-floor finding has its own, worst state');
+  assert.match(api, /key: 'drift'/);
+  assert.ok(api.indexOf("key: 'below-floor'") < api.indexOf("key: 'drift'") && api.indexOf("key: 'drift'") < api.indexOf("key: 'pinned'"), 'worst state first');
+  assert.match(detail, /not that they are free of known vulnerabilities/, 'Pinned is never presented as patched');
   for (const source of [apps, detail]) {
     assert.match(source, /\/api\/apps\/dependencies'\)\.catch\(\(\) => null\)/, 'a failed inventory never blocks the page');
     assert.match(source, /window\.HB\.dependencyStatus\(/);

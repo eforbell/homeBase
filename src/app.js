@@ -18,6 +18,7 @@ const { buildHomeBaseUpdatePlan } = require('./services/homebase-update-planner'
 const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
 const { parseNpmLock } = require('./operations/lockfiles');
+const { evaluateFloors } = require('./operations/security-floors');
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification } = require('./services/tailscale-verify');
@@ -701,16 +702,16 @@ function createApp(config) {
     let homebase;
     try {
       const { packages } = parseNpmLock(fs.readFileSync(path.join(effectiveConfig.homeBaseAppDir, 'package-lock.json'), 'utf8'));
-      homebase = { appId: 'homebase', name: 'Home Base', ecosystem: 'npm', source: 'package-lock.json', pinned: true, packages, unpinned: [] };
+      homebase = { appId: 'homebase', name: 'Home Base', ecosystem: 'npm', source: 'package-lock.json', inventorySource: 'lockfile', pinned: packages.length > 0, packages, unpinned: [], drift: [], errors: [], floorFindings: evaluateFloors({ ecosystem: 'npm', installed: packages }) };
     } catch (error) {
-      homebase = { appId: 'homebase', name: 'Home Base', ecosystem: 'npm', source: null, pinned: false, packages: [], unpinned: [], error: error.code === 'ENOENT' ? 'No package-lock.json in the Home Base install.' : error.message };
+      homebase = { appId: 'homebase', name: 'Home Base', ecosystem: 'npm', source: null, inventorySource: null, pinned: false, packages: [], unpinned: [], drift: [], errors: [], floorFindings: [], error: error.code === 'ENOENT' ? 'No package-lock.json in the Home Base install.' : error.message };
     }
     const byAppId = {};
     for (const appId of appIds) {
       try {
         byAppId[appId] = await requestExecutorDependencyInventory(effectiveConfig.homeBaseExecutorSocket, { appId }, { timeoutMs: 15_000 });
       } catch (error) {
-        byAppId[appId] = { appId, ecosystem: null, source: null, pinned: false, packages: [], unpinned: [], error: error.message || 'Executor unavailable.' };
+        byAppId[appId] = { appId, ecosystem: null, source: null, inventorySource: null, pinned: false, packages: [], unpinned: [], drift: [], errors: [], floorFindings: [], error: error.message || 'Executor unavailable.' };
       }
     }
     return { available: true, homebase, byAppId, collectedAt: new Date().toISOString() };
@@ -729,15 +730,24 @@ function createApp(config) {
     }
     return dependencyInventoryCache.inFlight;
   }
-  // Every entry gains count and unpinnedCount. Without an unlocked admin session that is all it keeps
-  // (with ecosystem, source, pinning, and a generic error): never package names, versions, or paths.
+  // Every entry gains counts. Without an unlocked admin session that is all it keeps (with ecosystem,
+  // sources, pinning, and a generic error): never package names, versions, notes, or paths.
   function projectDependencyInventory(inventory, { admin }) {
     if (!inventory.available) return inventory;
     const project = (entry) => {
-      const counts = { count: entry.packages.length, unpinnedCount: entry.unpinned.length };
+      const findings = entry.floorFindings || [];
+      const counts = {
+        count: entry.packages.length,
+        unpinnedCount: entry.unpinnedTotal ?? entry.unpinned.length,
+        driftCount: entry.driftTotal ?? (entry.drift || []).length,
+        errorCount: entry.errorTotal ?? (entry.errors || []).length,
+        // Distinct packages: certifi installed and pinned below its floor is one package to fix.
+        floorFindingsCount: new Set(findings.filter((finding) => !finding.mitigated).map((finding) => finding.name)).size,
+        floorNotesCount: new Set(findings.filter((finding) => finding.mitigated).map((finding) => finding.name)).size,
+      };
       if (admin) return { ...entry, ...counts };
-      const { appId, ecosystem, source, pinned, error } = entry;
-      return { appId, ecosystem, source, pinned, ...counts, ...(error ? { error: 'Inventory unavailable.' } : {}) };
+      const { appId, ecosystem, source, inventorySource, pinned, error, floorsReviewedAt } = entry;
+      return { appId, ecosystem, source, inventorySource, pinned, floorsReviewedAt, ...counts, ...(error ? { error: 'Inventory unavailable.' } : {}) };
     };
     return {
       available: true,

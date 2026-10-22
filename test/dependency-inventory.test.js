@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { parseNpmLock, parseRequirementsLock, parseDistInfoNames, normalizePythonName } = require('../src/operations/lockfiles');
+const { parseNpmLock, parseRequirementsLock, parseDistInfoNames, normalizePythonName, lockDrift } = require('../src/operations/lockfiles');
+const { compareVersions, evaluateFloors, FLOORS } = require('../src/operations/security-floors');
 const { createDependencyInventoryReader } = require('../executor/dependency-inventory');
 const { createFakeFs } = require('./fixtures/fake-fs');
 
@@ -95,7 +96,10 @@ test('the executor inventories a node app from its package-lock.json', () => {
 
 test('a pinned python app is read from its requirements lock', () => {
   const result = reader({ '/opt/sovereign-home/apps/helm': dir, '/opt/sovereign-home/apps/helm/requirements.lock': fixture('helm.requirements.lock') })({ appId: 'helm' });
-  assert.deepEqual([result.ecosystem, result.source, result.pinned, result.packages.length], ['PyPI', 'requirements.lock', true, 80]);
+  assert.deepEqual([result.ecosystem, result.source, result.inventorySource, result.pinned, result.packages.length], ['PyPI', 'requirements.lock', 'lockfile', true, 80]);
+  assert.match(result.note, /No virtualenv yet/);
+  // The real helm lock pins certifi 2026.5.20, below the emSign floor: a reinstall would bring it back.
+  assert.deepEqual(result.floorFindings.map(({ name, version, where }) => [name, version, where]), [['certifi', '2026.5.20', 'lockfile']]);
 });
 
 test('an app with no lockfile is inventoried from its virtualenv and marked unpinned', () => {
@@ -108,17 +112,17 @@ test('an app with no lockfile is inventoried from its virtualenv and marked unpi
     [`${site}/requests-2.32.4.dist-info`]: dir,
     [`${site}/pandas`]: dir,
   })({ appId: 'bitcoin-accounting' });
-  assert.deepEqual([result.source, result.pinned], ['installed virtualenv', false]);
+  assert.deepEqual([result.source, result.inventorySource, result.pinned], [null, 'virtualenv', false]);
   assert.deepEqual(result.packages, [['pandas', '2.2.3'], ['requests', '2.32.4']]);
   assert.match(result.note, /reinstall may resolve different ones/);
 
   const noVenv = reader({ '/opt/sovereign-home/apps/bitcoinAccounting': dir })({ appId: 'bitcoin-accounting' });
-  assert.deepEqual([noVenv.source, noVenv.pinned, noVenv.packages], [null, false, []]);
+  assert.deepEqual([noVenv.source, noVenv.inventorySource, noVenv.pinned, noVenv.packages], [null, null, false, []]);
 });
 
 test('missing lockfiles, planted symlinks, missing checkouts, and unmanaged apps are handled', () => {
   const missing = reader({ '/opt/sovereign-home/apps/familyDinner': dir })({ appId: 'family-dinner' });
-  assert.deepEqual([missing.source, missing.pinned], [null, false]);
+  assert.deepEqual([missing.source, missing.inventorySource, missing.pinned], [null, null, false]);
   assert.match(missing.note, /No readable package-lock\.json/);
 
   const planted = reader({ '/opt/sovereign-home/apps/familyDinner': dir, '/opt/sovereign-home/apps/familyDinner/package-lock.json': { kind: 'link', target: '/etc/shadow' } })({ appId: 'family-dinner' });
@@ -127,4 +131,105 @@ test('missing lockfiles, planted symlinks, missing checkouts, and unmanaged apps
   assert.throws(() => reader({})({ appId: 'family-dinner' }), (error) => error.code === 'NOT_INSTALLED');
   assert.throws(() => reader({})({ appId: 'not-an-app' }), (error) => error.code === 'POLICY_DENIED');
   assert.throws(() => reader({ '/opt/sovereign-home/apps/familyDinner': dir, '/opt/sovereign-home/apps/familyDinner/package-lock.json': '{oops' })({ appId: 'family-dinner' }), (error) => error.code === 'OPERATION_FAILED');
+});
+
+const HELM = '/opt/sovereign-home/apps/helm';
+const HELM_SITE = `${HELM}/.venv/lib/python3.12/site-packages`;
+const venvFiles = (names, extra = {}) => ({
+  [`${HELM}/.venv/lib/python3.12`]: dir,
+  [HELM_SITE]: dir,
+  ...Object.fromEntries(names.map((name) => [`${HELM_SITE}/${name}`, dir])),
+  ...extra,
+});
+
+test('a locked python app reports what its virtualenv runs, and drift from the lockfile (review #6, finding 1)', () => {
+  const result = reader({
+    [HELM]: dir,
+    [`${HELM}/requirements.lock`]: 'certifi==2026.10.19\nrequests==2.32.4\n',
+    ...venvFiles(['certifi-2026.5.20.dist-info', 'pip-24.0.dist-info', 'requests-2.32.4.dist-info']),
+  })({ appId: 'helm' });
+  assert.equal(result.inventorySource, 'virtualenv');
+  assert.deepEqual(result.packages, [['certifi', '2026.5.20'], ['pip', '24.0'], ['requests', '2.32.4']], 'the installed certifi, not the locked one');
+  assert.deepEqual(result.drift, [{ name: 'certifi', locked: '2026.10.19', installed: '2026.5.20' }]);
+  assert.equal(result.driftTotal, 1);
+
+  const many = reader({ [HELM]: dir, [`${HELM}/requirements.lock`]: Array.from({ length: 70 }, (_, i) => `pkg${i}==1.0`).join('\n'), ...venvFiles(['pip-24.0.dist-info']) })({ appId: 'helm' });
+  assert.equal(many.drift.length, 50, 'the list is capped');
+  assert.equal(many.driftTotal, 70, 'the total is not');
+  assert.match(result.note, /1 locked package is installed at a different version/);
+  assert.deepEqual(result.floorFindings.map(({ name, version, where, mitigated }) => [name, version, where, Boolean(mitigated)]), [['certifi', '2026.5.20', 'installed', false], ['pip', '24.0', 'installed', false]]);
+  assert.equal(result.pipUsesSystemStore, false);
+});
+
+test('a distribution pip that uses the host CA store is a note, not an alarm', () => {
+  const result = reader({
+    [HELM]: dir,
+    [`${HELM}/requirements.lock`]: 'certifi==2026.10.19\n',
+    ...venvFiles(['certifi-2026.10.19.dist-info', 'pip-24.0.dist-info'], {
+      [`${HELM_SITE}/pip/_vendor/certifi/core.py`]: 'def where() -> str:\n    return "/etc/ssl/certs/ca-certificates.crt"\n',
+    }),
+  })({ appId: 'helm' });
+  assert.equal(result.pipUsesSystemStore, true);
+  assert.equal(result.floorFindings.length, 1);
+  assert.equal(result.floorFindings[0].name, 'pip');
+  assert.match(result.floorFindings[0].mitigated, /host CA store/);
+  assert.deepEqual(result.drift, []);
+  assert.equal(result.pinned, true);
+});
+
+test('-r includes are followed inside the checkout, and anything unreadable is never pinned (review #6, finding 2)', () => {
+  const run = (files) => reader({ [HELM]: dir, ...files })({ appId: 'helm' });
+  const included = run({ [`${HELM}/requirements.lock`]: '-r locks/base.lock\n', [`${HELM}/locks/base.lock`]: '-r ./more.lock\naiohttp==3.14.1\n', [`${HELM}/locks/more.lock`]: 'certifi==2026.10.19\n' });
+  assert.deepEqual(included.packages, [['aiohttp', '3.14.1'], ['certifi', '2026.10.19']]);
+  assert.equal(included.pinned, true);
+
+  const missing = run({ [`${HELM}/requirements.lock`]: '-r base.lock\n' });
+  assert.equal(missing.pinned, false, 'a file that is only an unreadable include is not pinned');
+  assert.deepEqual(missing.unpinned, ['-r base.lock']);
+  assert.match(missing.errors[0], /could not read included base\.lock/);
+
+  const escape = run({ [`${HELM}/requirements.lock`]: '-r ../../../etc/passwd\n--requirement=/etc/shadow\n' });
+  assert.equal(escape.pinned, false);
+  assert.equal(escape.errors.length, 2, 'paths outside the checkout are refused');
+
+  const planted = run({ [`${HELM}/requirements.lock`]: '-r base.lock\n', [`${HELM}/base.lock`]: { kind: 'link', target: '/etc/shadow' } });
+  assert.equal(planted.pinned, false, 'a symlinked include is never followed');
+});
+
+test('requirement parser bounds includes, skips cycles and constraints, and refuses unknown options', () => {
+  const files = { 'a.txt': '-r b.txt\nx==1', 'b.txt': '-r a.txt\n-c constraints.txt\ny==2' };
+  const cyclic = parseRequirementsLock('-r a.txt', { readInclude: (target) => files[target] ?? null, file: 'root.txt' });
+  assert.deepEqual(cyclic.packages, [['x', '1'], ['y', '2']]);
+  assert.deepEqual(cyclic.errors, []);
+
+  const deep = parseRequirementsLock('-r 1.txt', { readInclude: (target) => `-r ${Number(target.split('.')[0]) + 1}.txt\n`, limits: { depth: 3, files: 20 } });
+  assert.match(deep.errors[0], /include limit reached/);
+
+  const unknown = parseRequirementsLock('--some-new-flag\nx==1\n-e git+https://example.com/repo.git#egg=Thing\n-e .\n');
+  assert.deepEqual(unknown.unpinned.sort(), ['--some-new-flag', 'thing']);
+  assert.match(unknown.errors[0], /unrecognized option --some-new-flag/);
+});
+
+test('npm platform filtering applies cpu and libc as well as os (review #6, finding 3)', () => {
+  const lock = JSON.stringify({ lockfileVersion: 3, packages: {
+    '': {},
+    'node_modules/@img/sharp-linux-arm64': { version: '0.33.5', optional: true, os: ['linux'], cpu: ['arm64'] },
+    'node_modules/@img/sharp-linux-x64': { version: '0.33.5', optional: true, os: ['linux'], cpu: ['x64'], libc: ['glibc'] },
+    'node_modules/@img/sharp-linuxmusl-x64': { version: '0.33.5', optional: true, os: ['linux'], cpu: ['x64'], libc: ['musl'] },
+    'node_modules/not-arm': { version: '1.0.0', cpu: ['!arm'] },
+  } });
+  const names = (host) => parseNpmLock(lock, { host }).packages.map(([name]) => name);
+  assert.deepEqual(names({ os: 'linux', cpu: 'x64', libc: 'glibc' }), ['@img/sharp-linux-x64', 'not-arm']);
+  assert.deepEqual(names({ os: 'linux', cpu: 'arm64', libc: 'glibc' }), ['@img/sharp-linux-arm64', 'not-arm']);
+});
+
+test('security floors compare dotted versions and cover both installed and locked packages', () => {
+  assert.equal(compareVersions('2026.5.20', '2026.10.19'), -1, 'numeric, not string, comparison');
+  assert.equal(compareVersions('26.2.2', '26.2.2'), 0);
+  assert.equal(compareVersions('26.10', '26.2.2'), 1);
+  assert.equal(compareVersions('dev', '1.0'), null);
+  assert.ok(FLOORS.every((floor) => floor.reference.startsWith('https://') && floor.since && floor.reason));
+  const findings = evaluateFloors({ ecosystem: 'PyPI', installed: [['certifi', '2026.10.19']], locked: [['certifi', '2026.5.20'], ['pip', '26.2.2']] });
+  assert.deepEqual(findings.map(({ name, where }) => [name, where]), [['certifi', 'lockfile']]);
+  assert.deepEqual(lockDrift([['a', '1'], ['b', '2']], [['a', '1'], ['pip', '24.0']]), [{ name: 'b', locked: '2', installed: null }]);
 });

@@ -127,8 +127,10 @@
     const own = window.HB.dependencyStatus(inventory.homebase);
     const apps = Object.values(inventory.byAppId || {});
     const attention = apps.filter((entry) => window.HB.dependencyStatus(entry).key !== 'pinned').length;
+    const belowFloor = apps.filter((entry) => window.HB.dependencyStatus(entry).key === 'below-floor').length;
     const rollup = !apps.length ? '<span class="hb-muted">No installed apps yet.</span>'
-      : attention ? `<span class="hb-warn">${window.HB.escapeHtml(attention)} of ${window.HB.escapeHtml(apps.length)} installed apps are not pinned by a lockfile.</span>`
+      : belowFloor ? `<span class="hb-err">${window.HB.escapeHtml(belowFloor)} of ${window.HB.escapeHtml(apps.length)} installed apps run a package below a required security version.</span>${attention > belowFloor ? ` <span class="hb-warn">${window.HB.escapeHtml(attention - belowFloor)} more need lockfile attention.</span>` : ''}`
+      : attention ? `<span class="hb-warn">${window.HB.escapeHtml(attention)} of ${window.HB.escapeHtml(apps.length)} installed apps are not pinned by a lockfile, or drift from it.</span>`
         : `<span class="hb-ok">All ${window.HB.escapeHtml(apps.length)} installed apps are pinned by a lockfile.</span>`;
     return `
       <ul class="hb-stack" aria-label="Library dependencies" style="list-style:none;padding:0;margin:0;">

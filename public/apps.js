@@ -34,7 +34,7 @@
     const deps = dependencies?.available ? window.HB.dependencyStatus(dependencies.byAppId?.[install.appId]) : null;
     const depsNote = deps ? ` · <span class="${deps.key === 'pinned' ? '' : deps.className}">Deps: ${window.HB.escapeHtml(deps.label.toLowerCase())}</span>` : '';
     const depsHint = deps && !['pinned', 'checking'].includes(deps.key)
-      ? `<p class="hb-warn" style="margin:0.45rem 0 0;font-size:0.83rem;">${window.HB.escapeHtml(deps.summary)} <a href="${detailUrl}#dependencies">Inspect →</a></p>`
+      ? `<p class="${deps.className}" style="margin:0.45rem 0 0;font-size:0.83rem;">${window.HB.escapeHtml(deps.summary)} <a href="${detailUrl}#dependencies">Inspect →</a></p>`
       : '';
     const icon = catalogEntry?.icon ? `<span class="hb-app-icon">${window.HB.escapeHtml(catalogEntry.icon)}</span>` : '';
     return `
