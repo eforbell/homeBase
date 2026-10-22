@@ -19,6 +19,7 @@ const { JobRunner } = require('./services/job-runner');
 const { runPreflightChecks } = require('./services/preflight');
 const { parseNpmLock } = require('./operations/lockfiles');
 const { evaluateFloors } = require('./operations/security-floors');
+const { HOST_CA_BUNDLE, assessPemBundle, storeTrust } = require('./operations/distrusted-roots');
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification } = require('./services/tailscale-verify');
@@ -487,6 +488,7 @@ function executionBlockOutcome(auth) {
 
 function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
+  const hostCaBundlePath = config.hostCaBundlePath || HOST_CA_BUNDLE;
   stateStore.init();
   const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
   try {
@@ -680,8 +682,11 @@ function createApp(config) {
     if (effectiveConfig.homeBaseExecutionMode !== 'executor') {
       return Promise.resolve({ available: false, error: 'Foundation checks need the root executor (executor mode).' });
     }
+    // A collection already under way is newer than the cache, so it is shared even without force: a
+    // Refresh then gives every reader on the page the same answer.
+    if (foundationStatusCache.inFlight) return foundationStatusCache.inFlight;
     if (!force && foundationStatusCache.value && foundationStatusCache.expiresAt > Date.now()) return Promise.resolve(foundationStatusCache.value);
-    if (!foundationStatusCache.inFlight) {
+    {
       foundationStatusCache.inFlight = requestExecutorFoundationStatus(effectiveConfig.homeBaseExecutorSocket, { timeoutMs: 90_000 })
         .then((status) => {
           const value = { available: true, ...status };
@@ -733,12 +738,21 @@ function createApp(config) {
     }
     return dependencyInventoryCache.inFlight;
   }
-  // What the host CA store's own check (Patch posture, trust-stores) says, for packages whose trust is
-  // the host store's (a distribution pip): verified (no distrusted root), distrusted, or unknown.
-  function hostTrustFrom(foundation) {
-    const host = foundation?.available ? (foundation.checks?.['trust-stores']?.stores || []).find((store) => store.store === 'host') : null;
-    if (!host || host.unreadable) return 'unknown';
-    return host.distrusted.length ? 'distrusted' : 'verified';
+  // Whether the host CA store trusts a root on the distrusted list, for packages whose trust is that
+  // store's (a distribution pip): verified, distrusted, or unknown (src/operations/distrusted-roots.js,
+  // the same assessment as Patch posture's trust-stores check). The bundle is world-readable, so this
+  // reads it here, fresh on every request, rather than waiting on or trusting the foundation cache.
+  const hostTrustCache = { key: '', value: 'unknown' };
+  function readHostTrust() {
+    try {
+      const stat = fs.statSync(hostCaBundlePath);
+      const key = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+      if (hostTrustCache.key !== key) Object.assign(hostTrustCache, { key, value: storeTrust(assessPemBundle(fs.readFileSync(hostCaBundlePath, 'utf8'))) });
+      return hostTrustCache.value;
+    } catch {
+      hostTrustCache.key = '';
+      return 'unknown';
+    }
   }
 
   // Every entry gains counts. Without an unlocked admin session that is all it keeps (with ecosystem,
@@ -889,8 +903,7 @@ function createApp(config) {
       if (method === 'GET' && pathname === '/api/apps/dependencies') {
         const adminStatus = await getAdminStatus(req, stateStore);
         const inventory = await getDependencyInventory(effectiveConfig, Object.values(state.installations || {}), { force: adminStatus.unlocked && url.searchParams.get('refresh') === '1' });
-        const hostTrust = hostTrustFrom(await getFoundationStatus(effectiveConfig));
-        return sendJson(res, 200, projectDependencyInventory(inventory, { admin: adminStatus.unlocked, hostTrust }));
+        return sendJson(res, 200, projectDependencyInventory(inventory, { admin: adminStatus.unlocked, hostTrust: readHostTrust() }));
       }
       if (method === 'GET' && pathname === '/api/network/tailscale') {
         return sendJson(res, 200, getTailscaleReadiness(effectiveConfig, {

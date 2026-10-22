@@ -1,13 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const tls = require('tls');
 const { runApproved } = require('./spawn');
 const { INSTALLABLE_APPS } = require('./actions');
 const { getAppById } = require('../src/catalog');
 const { appLayout } = require('../src/operations/app-layout');
 const { REVIEWED_AT, parseVersion, nodeLifecycle, pythonLifecycle } = require('../src/operations/runtime-lifecycle');
-const { REVIEWED_AT: ROOTS_REVIEWED_AT, distrustedIn } = require('../src/operations/distrusted-roots');
+const { HOST_CA_BUNDLE, REVIEWED_AT: ROOTS_REVIEWED_AT, DISTRUSTED_ROOTS, assessCertificates, assessPemBundle, storeTrust } = require('../src/operations/distrusted-roots');
 
 // Read-only answers to "is this host behind on runtime and OS patches?" (docs/patch-visibility-plan.md,
 // stream A). Like host-status it takes no caller input: every command, path, and unit is fixed here.
@@ -18,9 +17,6 @@ const CACHE_MS = 10 * 1000;
 const APT_LISTS = '/var/lib/apt/lists';
 const APT_UPDATE_STAMP = '/var/lib/apt/periodic/update-success-stamp';
 const REBOOT_REQUIRED = '/var/run/reboot-required';
-// The host's TLS trust: what system OpenSSL, curl, apt, the distribution pip, and Node.js with
-// --use-system-ca trust. Node.js otherwise uses its own built-in roots, checked separately.
-const HOST_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt';
 const REBOOT_REQUIRED_PKGS = '/var/run/reboot-required.pkgs';
 const LISTS_STALE_DAYS = 7;
 // Node.js lines ship every few weeks, so an older NodeSource list means this host stopped fetching it.
@@ -88,19 +84,6 @@ function parseListSource(name) {
   const suite = match[2].replaceAll('_', '/').replaceAll('%5f', '_');
   const kind = host === 'deb.nodesource.com' ? 'nodesource' : /-security$|\/updates$/.test(suite) ? 'security' : 'other';
   return { host, suite, kind };
-}
-
-// SHA-256 fingerprints of every certificate in a PEM bundle (no commands: Node's X509Certificate).
-function pemFingerprints(pems) {
-  const fingerprints = [];
-  let invalid = 0;
-  for (const pem of pems) {
-    try { fingerprints.push(new crypto.X509Certificate(pem).fingerprint256); } catch { invalid += 1; }
-  }
-  return { fingerprints, invalid };
-}
-function splitPem(text) {
-  return String(text || '').match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || [];
 }
 
 // systemctl show prints one blank-line-separated block of KEY=value lines per unit.
@@ -280,36 +263,47 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
     }
 
     // Trust stores: does any CA store a runtime here uses still trust a root on the distrusted list
-    // (src/operations/distrusted-roots.js, published removals only)? The host bundle first, then the
-    // Node.js built-in list (this executor runs the same Node.js binary as Home Base and the apps).
-    {
+    // (src/operations/distrusted-roots.js, published removals only)? The host bundle, then the Node.js
+    // built-in list as loaded by this executor process: the same binary Home Base and the apps run, but
+    // read when the executor started, so after a Node.js upgrade it reports the old list until restarted.
+    try {
       const stores = [];
-      let hostReadable = true;
       try {
-        const { fingerprints, invalid } = pemFingerprints(splitPem(fsImpl.readFileSync(HOST_CA_BUNDLE, 'utf8')));
-        if (!fingerprints.length) throw new Error('empty');
-        stores.push({ store: 'host', path: HOST_CA_BUNDLE, certificates: fingerprints.length, invalid, distrusted: distrustedIn(fingerprints) });
+        stores.push({ store: 'host', path: HOST_CA_BUNDLE, ...assessPemBundle(fsImpl.readFileSync(HOST_CA_BUNDLE, 'utf8')) });
       } catch {
-        hostReadable = false;
         stores.push({ store: 'host', path: HOST_CA_BUNDLE, certificates: 0, invalid: 0, distrusted: [], unreadable: true });
       }
-      const node = pemFingerprints(nodeRoots());
-      stores.push({ store: 'node', version: runningNode, certificates: node.fingerprints.length, invalid: node.invalid, distrusted: distrustedIn(node.fingerprints) });
-      const flagged = stores.filter((store) => store.distrusted.length);
+      try {
+        stores.push({ store: 'node', version: runningNode, ...assessCertificates([...nodeRoots()]) });
+      } catch {
+        stores.push({ store: 'node', version: runningNode, certificates: 0, invalid: 0, distrusted: [], unreadable: true });
+      }
+      const label = (store) => (store.store === 'host' ? 'the host CA store' : `Node.js ${store.version}'s built-in roots`);
+      const flagged = stores.filter((store) => storeTrust(store) === 'distrusted');
+      // Incomplete even when flagged: the summary names both what was found and what could not be read.
+      const unsure = stores.filter((store) => store.unreadable || !store.certificates || store.invalid);
       const describe = (store) => `${store.store === 'host' ? 'the host CA store still trusts' : `Node.js ${store.version}'s built-in roots still include`} ${store.distrusted.map((root) => `${root.subject.split(',')[0].replace(/^CN=/, '')} (${root.incident})`).join(', ')}`;
+      const why = (store) => (store.unreadable ? `could not read ${label(store)}${store.store === 'host' ? ` (${HOST_CA_BUNDLE})` : ''}`
+        : !store.certificates ? `found no certificates in ${label(store)}`
+          : `${store.invalid} certificate${store.invalid === 1 ? '' : 's'} in ${label(store)} could not be parsed, so a distrusted root may be among them`);
       const hints = [];
       if (flagged.some((store) => store.store === 'host')) hints.push('sudo apt-get update && sudo apt-get install --only-upgrade ca-certificates; if no fixed package is published yet, prefix the root\'s line in /etc/ca-certificates.conf with ! and run sudo update-ca-certificates');
-      if (flagged.some((store) => store.store === 'node')) hints.push('Upgrade Node.js to a release whose built-in roots drop it, then restart Home Base and every Node app');
+      if (flagged.some((store) => store.store === 'node')) hints.push('Upgrade Node.js to a release whose built-in roots drop it, then restart homebase-executor, homebase, and every Node app (this check reads the executor\'s loaded copy, so it clears only once homebase-executor restarts)');
+      if (unsure.some((store) => store.store === 'host')) hints.push(`Check ${HOST_CA_BUNDLE}: sudo update-ca-certificates --fresh rebuilds it from the installed roots`);
       const details = {
         stores: stores.map(({ distrusted, ...store }) => ({ ...store, distrusted: distrusted.map(({ subject, incident, sha256, reference }) => ({ subject, incident, sha256, reference })) })),
         rootsReviewedAt: ROOTS_REVIEWED_AT,
         hint: hints.join('. '),
       };
+      const listed = `Home Base's distrusted list (${DISTRUSTED_ROOTS.length} root${DISTRUSTED_ROOTS.length === 1 ? '' : 's'}, reviewed ${ROOTS_REVIEWED_AT})`;
+      const sentence = (text) => `${text.replace(/^./, (c) => c.toUpperCase())}.`;
       checks['trust-stores'] = flagged.length
-        ? check('fail', `${flagged.map(describe).join('; ')}.`.replace(/^./, (c) => c.toUpperCase()), details)
-        : !hostReadable
-          ? check('unknown', `Could not read ${HOST_CA_BUNDLE}; Node.js ${runningNode}'s ${node.fingerprints.length} built-in roots trust no distrusted root.`, details)
-          : check('ok', `No CA store here trusts a distrusted root: the host CA store (${stores[0].certificates} roots) and Node.js ${runningNode}'s built-in roots (${node.fingerprints.length}).`, details);
+        ? check('fail', sentence([...flagged.map(describe), ...unsure.map(why)].join('; ')), details)
+        : unsure.length
+          ? check('unknown', sentence(`${unsure.map(why).join('; ')}; otherwise no root on ${listed}`), details)
+          : check('ok', `No root on ${listed} in the host CA store (${stores[0].certificates} roots) or Node.js ${runningNode}'s built-in roots (${stores[1].certificates}).`, details);
+    } catch (error) {
+      checks['trust-stores'] = check('unknown', `Could not check the CA stores: ${error.message}`, { stores: [], rootsReviewedAt: ROOTS_REVIEWED_AT });
     }
 
     // Units still running a binary or library that apt has since replaced: patched on disk, not live.

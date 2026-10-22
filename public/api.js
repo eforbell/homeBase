@@ -97,8 +97,8 @@
   // One app's library-dependency inventory (GET /api/apps/dependencies), worst first: unknown, below a
   // security floor, host CA trust unknown, no lockfile, no virtualenv, drift, unpinned, pinned. "Host CA
   // trust unknown" is amber rather than red: the package's trust comes from the host CA store, and the
-  // host's trust-stores check could not run, so the exposure is neither confirmed nor cleared. When that
-  // check verifies the store, it is a note on an otherwise normal state; when the store trusts a
+  // host's trust-stores check could not read all of it, so the exposure is neither confirmed nor cleared. When that
+  // check finds no listed root in the store, it is a note on an otherwise normal state; when the store trusts a
   // distrusted root, the API already counts it as "Below security floor". Shared by the
   // Apps tiles, the app detail page, and the Status page summary so they always agree. "Pinned" means
   // exact versions are declared and installed, not that they are free of known vulnerabilities.
@@ -109,8 +109,8 @@
     const what = entry.inventorySource === 'virtualenv' ? `${count} ${ecosystem} packages installed in the virtualenv` : `${count} ${ecosystem} packages`;
     const verified = entry.hostTrust === 'verified';
     const notes = !entry.floorNotesCount ? ''
-      : verified ? ` ${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the host CA store, which Home Base verified holds no distrusted root.`
-        : ` Also: ${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the unverified host CA store.`;
+      : verified ? ` ${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the host CA store, which holds no root on Home Base's distrusted list.`
+        : ` Also: ${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the host CA store, which Home Base could not fully check.`;
     if (entry.error) return { key: 'unknown', label: 'Unknown', className: 'hb-warn', summary: entry.error };
     if (entry.floorFindingsCount) {
       return { key: 'below-floor', label: 'Below security floor', className: 'hb-err', summary: `${entry.floorFindingsCount} package${entry.floorFindingsCount === 1 ? '' : 's'} below a required security version.${notes}` };
@@ -118,7 +118,7 @@
     if (entry.floorNotesCount && !verified) {
       return {
         key: 'host-trust-unknown', label: 'Host CA trust unknown', className: 'hb-warn',
-        summary: `${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the host CA store instead of ${entry.floorNotesCount === 1 ? 'its' : 'their'} own bundle, and Home Base does not verify that store yet.`,
+        summary: `${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the host CA store instead of ${entry.floorNotesCount === 1 ? 'its' : 'their'} own bundle, and Home Base could not fully check that store (see Status → Patch posture).`,
       };
     }
     if (!entry.source) {
