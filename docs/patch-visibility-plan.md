@@ -40,7 +40,7 @@ Notes:
 - The bundled EOL table lives in `src/operations/runtime-lifecycle.js` with its review date, so a stale table is itself visible.
 - **OK needs positive evidence.** A failed probe reports `unknown`, never a fallback that looks healthy: a failed `dpkg-query` leaves Node.js unknown (only a Node.js dpkg reports *absent* falls back to the executor's own version), and a unit whose `/proc` entries cannot be read (anything but the process having exited) leaves the stale-process check unknown, as does inspecting zero units.
 - Every check that is not ok carries a `hint`: the next step, as a copyable command where there is one.
-- NodeSource's Release file says `Origin: . nodistro`, so the unattended-upgrades pattern is `Unattended-Upgrade::Origins-Pattern:: "origin=. nodistro";`. Verified in the container harness: with it, `unattended-upgrade --dry-run` upgrades `nodejs`; without it, `nodejs` is held at its installed version.
+- NodeSource's Release file says `Origin: . nodistro`, so the unattended-upgrades pattern is `Unattended-Upgrade::Origins-Pattern:: "origin=. nodistro";`. Verified in the container harness: with it, `unattended-upgrade --dry-run` upgrades `nodejs`; without it, `nodejs` is held at its installed version. `install.sh` writes it to `/etc/apt/apt.conf.d/52nodesource-unattended` whenever NodeSource is an apt source, on install and on `--repair`, so existing hosts pick it up without a manual step. The file is written only when absent; an operator who empties it keeps Node.js updates manual, and a repair leaves it alone. It stays within the configured major (`node_<major>.x`).
 
 ## Stream B: dependency vulnerability checks
 

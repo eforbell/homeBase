@@ -53,6 +53,8 @@ function installerEnv(tempDir, fixture, overrides = {}) {
     HOMEBASE_ENV_FILE: path.join(tempDir, 'etc', 'homebase.env'),
     HOMEBASE_SYSTEMD_UNIT: path.join(tempDir, 'systemd', 'homebase.service'),
     HOMEBASE_LEGACY_SUDOERS_FILE: path.join(tempDir, 'sudoers.d', 'homebase'),
+    HOMEBASE_APT_SOURCES_DIR: path.join(tempDir, 'apt', 'sources.list.d'),
+    HOMEBASE_NODESOURCE_UNATTENDED: path.join(tempDir, 'apt', 'apt.conf.d', '52nodesource-unattended'),
     HOMEBASE_EXECUTOR_SOCKET_UNIT: path.join(tempDir, 'systemd', 'homebase-executor.socket'),
     HOMEBASE_EXECUTOR_SERVICE_UNIT: path.join(tempDir, 'systemd', 'homebase-executor.service'),
     HOMEBASE_EXECUTOR_SOCKET_PATH: path.join(tempDir, 'run', 'executor.sock'),
@@ -343,6 +345,32 @@ test('installer refreshes apt metadata once for missing prerequisites and npm', 
     'install -y --no-install-recommends curl',
     'install -y --no-install-recommends npm',
   ]);
+});
+
+test('installer lets unattended-upgrades take NodeSource updates, once, and leaves the operator\'s file alone', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homebase-installer-unattended-'));
+  const host = aptHost(tempDir);
+  if (!fs.existsSync(host.realNpm)) return t.skip('npm is not installed beside this Node.js');
+  const fixture = createReleaseFixture(tempDir);
+  const env = installerEnv(tempDir, fixture, { PATH: host.path, HOMEBASE_TEST_APT: '1' });
+  const run = () => runInstaller(['--version', fixture.version, '--no-start', '--force'], env);
+
+  let result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.existsSync(env.HOMEBASE_NODESOURCE_UNATTENDED), false, 'nothing is written without a NodeSource source');
+
+  fs.mkdirSync(env.HOMEBASE_APT_SOURCES_DIR, { recursive: true });
+  fs.writeFileSync(path.join(env.HOMEBASE_APT_SOURCES_DIR, 'nodesource.sources'), 'Types: deb\nURIs: https://deb.nodesource.com/node_24.x\nSuites: nodistro\n');
+  result = run();
+  assert.equal(result.status, 0, result.stderr);
+  const written = fs.readFileSync(env.HOMEBASE_NODESOURCE_UNATTENDED, 'utf8');
+  assert.match(written, /^Unattended-Upgrade::Origins-Pattern:: "origin=\. nodistro";$/m, 'the exact pattern the foundation check looks for');
+  assert.equal(fs.statSync(env.HOMEBASE_NODESOURCE_UNATTENDED).mode & 0o777, 0o644);
+
+  fs.writeFileSync(env.HOMEBASE_NODESOURCE_UNATTENDED, '// opted out\n');
+  result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(env.HOMEBASE_NODESOURCE_UNATTENDED, 'utf8'), '// opted out\n', 'a repair never overwrites the operator\'s copy');
 });
 
 test('installer refuses any pre-existing Home Base sudoers policy', () => {
