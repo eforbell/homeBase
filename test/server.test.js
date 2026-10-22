@@ -2470,3 +2470,47 @@ test('dependency inventory covers Home Base and installed apps, with package nam
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('a pip that trusts the host CA store follows the host trust-stores check', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-hosttrust-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  fs.mkdirSync(path.join(tempDir, 'homebase'));
+  fs.writeFileSync(path.join(tempDir, 'homebase', 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/ajv': { version: '8.20.0' } } }));
+  let hostDistrusted = [];
+  let hostUnreadable = false;
+  const executor = createExecutorServer({
+    logger: { info() {} },
+    collectFoundationStatus: async () => ({ checks: { 'trust-stores': { level: hostDistrusted.length ? 'fail' : 'ok', stores: [{ store: 'host', distrusted: hostDistrusted, ...(hostUnreadable ? { unreadable: true } : {}) }, { store: 'node', distrusted: [] }] } }, collectedAt: new Date().toISOString() }),
+    readDependencyInventory: async ({ appId }) => ({ appId, ecosystem: 'PyPI', source: 'requirements.lock', inventorySource: 'virtualenv', pinned: true, packages: [['pip', '24.0']], unpinned: [], drift: [], errors: [],
+      floorFindings: [{ name: 'pip', version: '24.0', minVersion: '26.2.2', where: 'installed', reason: 'r', reference: 'https://example.com', hostStore: 'trusts the host store' }] }),
+  });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  store.upsertInstallation({ appId: 'helm', name: 'helm', purpose: 'x', port: 1, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: 'helm', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath, homeBaseAppDir: path.join(tempDir, 'homebase') });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const read = async () => (await (await fetch(`${server.url}/api/apps/dependencies?refresh=1`, { headers: { cookie } })).json()).byAppId.helm;
+    const forceFoundation = () => fetch(`${server.url}/api/homebase/foundation?refresh=1`, { headers: { cookie } });
+
+    let helm = await read();
+    assert.deepEqual([helm.hostTrust, helm.floorFindingsCount, helm.floorNotesCount], ['verified', 0, 1], 'a clean host store: a note, not an alarm');
+
+    hostDistrusted = [{ subject: 'CN=emSign ECC Root CA - G3', incident: 'x', sha256: '86a1', reference: 'https://example.com' }];
+    await forceFoundation();
+    helm = await read();
+    assert.deepEqual([helm.hostTrust, helm.floorFindingsCount, helm.floorNotesCount], ['distrusted', 1, 0], 'a host store that trusts a distrusted root makes it an alarm');
+
+    hostDistrusted = [];
+    hostUnreadable = true;
+    await forceFoundation();
+    helm = await read();
+    assert.deepEqual([helm.hostTrust, helm.floorFindingsCount, helm.floorNotesCount], ['unknown', 0, 1], 'an unreadable host store stays unknown (amber in the UI)');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});

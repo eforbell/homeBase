@@ -55,7 +55,7 @@ function evaluateFloors({ ecosystem, installed = [], locked = [], pipUsesSystemS
         const comparison = compareVersions(version, floor.minVersion);
         if (comparison !== null && comparison >= 0) continue;
         const hostStore = floor.hostStoreDecides && pipUsesSystemStore && where === 'installed'
-          ? 'This pip is a distribution build that trusts the host CA store instead of its own bundle, so it is only as safe as that store: it stays exposed until the host\'s ca-certificates drops the affected CA, whatever its version.'
+          ? 'This pip is a distribution build that trusts the host CA store instead of its own bundle, so it is only as safe as that store, whatever its version.'
           : null;
         findings.push({ name, version, minVersion: floor.minVersion, where, reason: floor.reason, reference: floor.reference, ...(hostStore ? { hostStore } : {}) });
       }

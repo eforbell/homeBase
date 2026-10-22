@@ -16,7 +16,7 @@ test('status page shows patch posture from the executor, loaded after the page r
   assert.match(source, /Patch posture/);
   assert.match(source, /\/api\/homebase\/foundation/);
   assert.match(source, /data-action="refresh-foundation"/);
-  for (const id of ['node-runtime', 'python-runtime', 'pending-updates', 'apt-lists', 'automatic-updates', 'reboot-required', 'stale-processes']) {
+  for (const id of ['node-runtime', 'python-runtime', 'pending-updates', 'apt-lists', 'automatic-updates', 'trust-stores', 'reboot-required', 'stale-processes']) {
     assert.match(source, new RegExp(`'${id}'`), `${id} has a row`);
   }
   assert.match(source, /loadFoundation\(\);\n\s+loadDependencies\(\);/);
