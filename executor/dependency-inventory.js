@@ -13,8 +13,27 @@ const { evaluateFloors, REVIEWED_AT: FLOORS_REVIEWED_AT } = require('../src/oper
 // Looking them up in an advisory database is the unprivileged web service's job, never root's.
 const LOCKFILE_LIMIT = 2 * 1024 * 1024;
 const LIST_LIMIT = 50;
-// Debian and Ubuntu patch pip's bundled certifi to return the host bundle instead of its own.
+// Debian and Ubuntu patch pip's bundled certifi (python3-pip-whl) to return the host bundle instead of
+// its own: a module-level DEBIAN_CA_CERTS_PATH = '/etc/ssl/certs/ca-certificates.crt', and a final
+// top-level where() returning it, which overrides the version-specific definitions above it. Only that
+// structure counts; the path in a comment or an unused string does not. This classifies the build; it
+// is not a defense against sovereign, which owns the venv and could make where() return anything.
 const SYSTEM_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt';
+function returnsSystemBundle(source) {
+  const lines = String(source || '').split(/\r?\n/);
+  const assigned = new Set();
+  for (const line of lines) {
+    const match = /^([A-Z_][A-Z0-9_]*)\s*=\s*(['"])(.*?)\2\s*(#.*)?$/.exec(line);
+    if (match && match[3] === SYSTEM_CA_BUNDLE) assigned.add(match[1]);
+  }
+  // The last top-level where() is the one Python binds; its first statement must return the bundle.
+  const last = lines.map((line, index) => (/^def where\(\)/.test(line) ? index : -1)).filter((index) => index >= 0).at(-1);
+  if (last === undefined) return false;
+  const body = lines.slice(last + 1).find((line) => line.trim() && !line.trim().startsWith('#'));
+  const returned = /^\s+return\s+(?:(['"])(.*?)\1|([A-Za-z_][A-Za-z0-9_]*))\s*(#.*)?$/.exec(body || '');
+  if (!returned) return false;
+  return returned[2] === SYSTEM_CA_BUNDLE || assigned.has(returned[3]);
+}
 
 function isDirectory(stat) {
   return Boolean(stat && stat.isDirectory() && !stat.isSymbolicLink());
@@ -69,7 +88,7 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
       const sitePackages = path.posix.join(lib, pythonDir, 'site-packages');
       if (!isDirectory(lstatOrNull(fsImpl, sitePackages))) return null;
       const certifiCore = readSmallFileNoFollow(fsImpl, path.posix.join(sitePackages, 'pip', '_vendor', 'certifi', 'core.py'), 64 * 1024);
-      return { names: fsImpl.readdirSync(sitePackages), pipUsesSystemStore: Boolean(certifiCore && certifiCore.includes(SYSTEM_CA_BUNDLE)) };
+      return { names: fsImpl.readdirSync(sitePackages), pipUsesSystemStore: returnsSystemBundle(certifiCore) };
     });
     const installed = venv ? parseDistInfoNames(venv.names).packages : null;
     const locked = lock?.result?.packages || [];
@@ -108,4 +127,4 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
   };
 }
 
-module.exports = { createDependencyInventoryReader };
+module.exports = { createDependencyInventoryReader, returnsSystemBundle };

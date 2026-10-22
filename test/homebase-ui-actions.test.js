@@ -33,6 +33,7 @@ test('per-app dependency status lives on the Apps pages; Status keeps Home Base 
   assert.match(api, /function dependencyStatus\(entry\)/);
   assert.match(api, /key: 'below-floor'/, 'a security-floor finding has its own, worst state');
   assert.match(api, /key: 'drift'/);
+  assert.ok(api.indexOf("key: 'below-floor'") < api.indexOf("key: 'host-trust-unknown'") && api.indexOf("key: 'host-trust-unknown'") < api.indexOf("key: 'no-lockfile'"), 'unverified host trust is amber, below red findings and above lockfile states');
   assert.ok(api.indexOf("key: 'not-installed'") > 0 && api.indexOf("key: 'not-installed'") < api.indexOf("key: 'pinned'"), 'a missing virtualenv is never shown as pinned');
   assert.ok(api.indexOf("key: 'below-floor'") < api.indexOf("key: 'drift'") && api.indexOf("key: 'drift'") < api.indexOf("key: 'pinned'"), 'worst state first');
   assert.match(detail, /not that they are free of known vulnerabilities/, 'Pinned is never presented as patched');

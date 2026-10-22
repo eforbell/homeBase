@@ -32,7 +32,7 @@
     // Only when the inventory is available (executor mode): a pinned app gets a quiet note, anything else
     // a warning that links to the detail page's Dependencies section.
     const deps = dependencies?.available ? window.HB.dependencyStatus(dependencies.byAppId?.[install.appId]) : null;
-    const depsNote = deps ? ` · <span class="${deps.key === 'pinned' ? '' : deps.className}">Deps: ${window.HB.escapeHtml(deps.label.toLowerCase())}</span>` : '';
+    const depsNote = deps ? ` · <span class="${deps.key === 'pinned' ? '' : deps.className}">Deps: ${window.HB.escapeHtml(deps.label)}</span>` : '';
     const depsHint = deps && !['pinned', 'checking'].includes(deps.key)
       ? `<p class="${deps.className}" style="margin:0.45rem 0 0;font-size:0.83rem;">${window.HB.escapeHtml(deps.summary)} <a href="${detailUrl}#dependencies">Inspect →</a></p>`
       : '';

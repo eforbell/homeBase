@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseNpmLock, parseRequirementsLock, parseDistInfoNames, normalizePythonName, lockDrift } = require('../src/operations/lockfiles');
 const { compareVersions, evaluateFloors, FLOORS } = require('../src/operations/security-floors');
-const { createDependencyInventoryReader } = require('../executor/dependency-inventory');
+const { createDependencyInventoryReader, returnsSystemBundle } = require('../executor/dependency-inventory');
 const { createFakeFs } = require('./fixtures/fake-fs');
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', 'lockfiles', name), 'utf8');
@@ -261,4 +261,15 @@ test('nested includes resolve against the including file, after ../ too (review 
   assert.equal(result.pinned, true, 'the cycle back to locks/main.txt is detected by its canonical path');
   const parsed = parseRequirementsLock('-r locks/main.txt', { file: 'requirements.lock', readInclude: (p) => ({ 'locks/main.txt': '-r ../base.txt', 'base.txt': '-r extra.txt', 'extra.txt': 'x==1' })[p] ?? null });
   assert.deepEqual(parsed.includes, ['locks/main.txt', 'base.txt', 'extra.txt']);
+});
+
+test('only a where() that really returns the host bundle marks pip as a distribution build (review #6 round 3)', () => {
+  const ubuntu = fs.readFileSync(path.join(__dirname, 'fixtures', 'pip', 'ubuntu-24.04-pip-24.0-certifi-core.py'), 'utf8');
+  assert.equal(returnsSystemBundle(ubuntu), true, 'the real Ubuntu 24.04 python3-pip-whl patch');
+  assert.equal(returnsSystemBundle('def where() -> str:\n    return "/etc/ssl/certs/ca-certificates.crt"\n'), true);
+  // The reviewer's repro: the path only in a comment, where() still returning the bundled PEM.
+  assert.equal(returnsSystemBundle('# uses /etc/ssl/certs/ca-certificates.crt on Debian\n_CACERT_PATH = None\ndef where() -> str:\n    return _CACERT_PATH\n'), false);
+  assert.equal(returnsSystemBundle('DEBIAN_CA_CERTS_PATH = "/etc/ssl/certs/ca-certificates.crt"\ndef where() -> str:\n    return DEBIAN_CA_CERTS_PATH\ndef where() -> str:\n    return _CACERT_PATH\n'), false, 'the last definition wins');
+  assert.equal(returnsSystemBundle('    def where() -> str:\n        return "/etc/ssl/certs/ca-certificates.crt"\n'), false, 'a nested definition is not the module where()');
+  assert.equal(returnsSystemBundle(''), false);
 });

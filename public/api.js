@@ -95,7 +95,9 @@
   }
 
   // One app's library-dependency inventory (GET /api/apps/dependencies), worst first: unknown, below a
-  // security floor, no lockfile, no virtualenv, drift between lockfile and virtualenv, unpinned, pinned. Shared by the
+  // security floor, host CA trust unknown, no lockfile, no virtualenv, drift, unpinned, pinned. "Host CA
+  // trust unknown" is amber rather than red: the package's trust comes from the host CA store, which
+  // Home Base does not verify yet, so the exposure is neither confirmed nor cleared. Shared by the
   // Apps tiles, the app detail page, and the Status page summary so they always agree. "Pinned" means
   // exact versions are declared and installed, not that they are free of known vulnerabilities.
   function dependencyStatus(entry) {
@@ -103,10 +105,16 @@
     const count = Number(entry.count || 0);
     const ecosystem = entry.ecosystem === 'PyPI' ? 'Python' : (entry.ecosystem || '');
     const what = entry.inventorySource === 'virtualenv' ? `${count} ${ecosystem} packages installed in the virtualenv` : `${count} ${ecosystem} packages`;
-    const notes = entry.floorNotesCount ? ` ${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version depend${entry.floorNotesCount === 1 ? 's' : ''} on the host CA store.` : '';
+    const notes = entry.floorNotesCount ? ` Also: ${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the unverified host CA store.` : '';
     if (entry.error) return { key: 'unknown', label: 'Unknown', className: 'hb-warn', summary: entry.error };
     if (entry.floorFindingsCount) {
       return { key: 'below-floor', label: 'Below security floor', className: 'hb-err', summary: `${entry.floorFindingsCount} package${entry.floorFindingsCount === 1 ? '' : 's'} below a required security version.${notes}` };
+    }
+    if (entry.floorNotesCount) {
+      return {
+        key: 'host-trust-unknown', label: 'Host CA trust unknown', className: 'hb-warn',
+        summary: `${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version trust${entry.floorNotesCount === 1 ? 's' : ''} the host CA store instead of ${entry.floorNotesCount === 1 ? 'its' : 'their'} own bundle, and Home Base does not verify that store yet.`,
+      };
     }
     if (!entry.source) {
       return entry.inventorySource === 'virtualenv'
@@ -128,7 +136,7 @@
 
   function dependencyPill(entry) {
     const status = dependencyStatus(entry);
-    return `<span class="hb-badge ${status.className}">Deps: ${escapeHtml(status.label.toLowerCase())}</span>`;
+    return `<span class="hb-badge ${status.className}">Deps: ${escapeHtml(status.label)}</span>`;
   }
 
   function confirmInline(resultNode, message) {
