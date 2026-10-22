@@ -97,7 +97,8 @@ test('the executor inventories a node app from its package-lock.json', () => {
 test('a pinned python app is read from its requirements lock', () => {
   const result = reader({ '/opt/sovereign-home/apps/helm': dir, '/opt/sovereign-home/apps/helm/requirements.lock': fixture('helm.requirements.lock') })({ appId: 'helm' });
   assert.deepEqual([result.ecosystem, result.source, result.inventorySource, result.pinned, result.packages.length], ['PyPI', 'requirements.lock', 'lockfile', true, 80]);
-  assert.match(result.note, /No virtualenv yet/);
+  assert.match(result.note, /No virtualenv: nothing is installed to check/);
+  assert.equal(result.venvMissing, true, 'a lockfile alone is a prospective reinstall, not what runs (review #6 round 2, finding 3)');
   // The real helm lock pins certifi 2026.5.20, below the emSign floor: a reinstall would bring it back.
   assert.deepEqual(result.floorFindings.map(({ name, version, where }) => [name, version, where]), [['certifi', '2026.5.20', 'lockfile']]);
 });
@@ -157,7 +158,7 @@ test('a locked python app reports what its virtualenv runs, and drift from the l
   assert.equal(many.drift.length, 50, 'the list is capped');
   assert.equal(many.driftTotal, 70, 'the total is not');
   assert.match(result.note, /1 locked package is installed at a different version/);
-  assert.deepEqual(result.floorFindings.map(({ name, version, where, mitigated }) => [name, version, where, Boolean(mitigated)]), [['certifi', '2026.5.20', 'installed', false], ['pip', '24.0', 'installed', false]]);
+  assert.deepEqual(result.floorFindings.map(({ name, version, where, hostStore }) => [name, version, where, Boolean(hostStore)]), [['certifi', '2026.5.20', 'installed', false], ['pip', '24.0', 'installed', false]]);
   assert.equal(result.pipUsesSystemStore, false);
 });
 
@@ -172,7 +173,9 @@ test('a distribution pip that uses the host CA store is a note, not an alarm', (
   assert.equal(result.pipUsesSystemStore, true);
   assert.equal(result.floorFindings.length, 1);
   assert.equal(result.floorFindings[0].name, 'pip');
-  assert.match(result.floorFindings[0].mitigated, /host CA store/);
+  assert.match(result.floorFindings[0].hostStore, /only as safe as that store/);
+  assert.doesNotMatch(result.floorFindings[0].hostStore, /fixed/i, 'never presented as fixed (review #6 round 2, finding 1)');
+  assert.equal(result.venvMissing, false);
   assert.deepEqual(result.drift, []);
   assert.equal(result.pinned, true);
 });
@@ -232,4 +235,30 @@ test('security floors compare dotted versions and cover both installed and locke
   const findings = evaluateFloors({ ecosystem: 'PyPI', installed: [['certifi', '2026.10.19']], locked: [['certifi', '2026.5.20'], ['pip', '26.2.2']] });
   assert.deepEqual(findings.map(({ name, where }) => [name, where]), [['certifi', 'lockfile']]);
   assert.deepEqual(lockDrift([['a', '1'], ['b', '2']], [['a', '1'], ['pip', '24.0']]), [{ name: 'b', locked: '2', installed: null }]);
+});
+
+test('only the app itself is a skipped editable; other local editables are unpinned (review #6 round 2, finding 2)', () => {
+  const sibling = parseRequirementsLock('certifi==2026.10.19\n-e ../other-app\n-e ./vendored/pkg\n-e file:///opt/x\n-e .\n', { file: 'requirements.lock' });
+  assert.deepEqual(sibling.unpinned, ['-e ../other-app', '-e ./vendored/pkg', '-e file:///opt/x']);
+  const nested = parseRequirementsLock('-e ..\n-e .\n', { file: 'locks/app.txt' });
+  assert.deepEqual(nested.unpinned, ['-e .'], 'from locks/, ".." is the app root and "." is not');
+
+  const app = reader({ [HELM]: dir, [`${HELM}/requirements.lock`]: 'certifi==2026.10.19\n-e ../other-app\n', ...venvFiles(['certifi-2026.10.19.dist-info']) })({ appId: 'helm' });
+  assert.equal(app.pinned, false);
+});
+
+test('nested includes resolve against the including file, after ../ too (review #6 round 2, finding 4)', () => {
+  const result = reader({
+    [HELM]: dir,
+    [`${HELM}/requirements.lock`]: '-r locks/main.txt\n',
+    [`${HELM}/locks/main.txt`]: '-r ../base.txt\naiohttp==3.14.1\n',
+    [`${HELM}/base.txt`]: '-r extra.txt\ncertifi==2026.10.19\n',
+    [`${HELM}/extra.txt`]: 'requests==2.32.4\n-r locks/main.txt\n',
+    ...venvFiles(['aiohttp-3.14.1.dist-info', 'certifi-2026.10.19.dist-info', 'requests-2.32.4.dist-info']),
+  })({ appId: 'helm' });
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.packages, [['aiohttp', '3.14.1'], ['certifi', '2026.10.19'], ['requests', '2.32.4']]);
+  assert.equal(result.pinned, true, 'the cycle back to locks/main.txt is detected by its canonical path');
+  const parsed = parseRequirementsLock('-r locks/main.txt', { file: 'requirements.lock', readInclude: (p) => ({ 'locks/main.txt': '-r ../base.txt', 'base.txt': '-r extra.txt', 'extra.txt': 'x==1' })[p] ?? null });
+  assert.deepEqual(parsed.includes, ['locks/main.txt', 'base.txt', 'extra.txt']);
 });

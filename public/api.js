@@ -95,7 +95,7 @@
   }
 
   // One app's library-dependency inventory (GET /api/apps/dependencies), worst first: unknown, below a
-  // security floor, no lockfile, drift between lockfile and virtualenv, unpinned, pinned. Shared by the
+  // security floor, no lockfile, no virtualenv, drift between lockfile and virtualenv, unpinned, pinned. Shared by the
   // Apps tiles, the app detail page, and the Status page summary so they always agree. "Pinned" means
   // exact versions are declared and installed, not that they are free of known vulnerabilities.
   function dependencyStatus(entry) {
@@ -103,7 +103,7 @@
     const count = Number(entry.count || 0);
     const ecosystem = entry.ecosystem === 'PyPI' ? 'Python' : (entry.ecosystem || '');
     const what = entry.inventorySource === 'virtualenv' ? `${count} ${ecosystem} packages installed in the virtualenv` : `${count} ${ecosystem} packages`;
-    const notes = entry.floorNotesCount ? ` ${entry.floorNotesCount} security note${entry.floorNotesCount === 1 ? '' : 's'}.` : '';
+    const notes = entry.floorNotesCount ? ` ${entry.floorNotesCount} package${entry.floorNotesCount === 1 ? '' : 's'} below a security version depend${entry.floorNotesCount === 1 ? 's' : ''} on the host CA store.` : '';
     if (entry.error) return { key: 'unknown', label: 'Unknown', className: 'hb-warn', summary: entry.error };
     if (entry.floorFindingsCount) {
       return { key: 'below-floor', label: 'Below security floor', className: 'hb-err', summary: `${entry.floorFindingsCount} package${entry.floorFindingsCount === 1 ? '' : 's'} below a required security version.${notes}` };
@@ -112,6 +112,9 @@
       return entry.inventorySource === 'virtualenv'
         ? { key: 'unpinned', label: 'Unpinned', className: 'hb-warn', summary: `${what}; no lockfile pins them, so a reinstall may resolve different versions.${notes}` }
         : { key: 'no-lockfile', label: 'No lockfile', className: 'hb-warn', summary: entry.note || 'No lockfile found.' };
+    }
+    if (entry.venvMissing) {
+      return { key: 'not-installed', label: 'No virtualenv', className: 'hb-warn', summary: `No virtualenv, so nothing installed can be checked; ${entry.source} would install ${count} ${ecosystem} packages.${notes}` };
     }
     if (entry.driftCount) {
       return { key: 'drift', label: 'Drift', className: 'hb-warn', summary: `${what}; ${entry.driftCount} differ from ${entry.source}. Reinstall the app to match its lockfile.${notes}` };

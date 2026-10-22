@@ -56,13 +56,8 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
       const text = read(requirements);
       lock = { file: requirements, text };
       if (text != null) {
-        // Includes resolve relative to the including file and must stay inside the checkout.
-        const readInclude = (target, fromFile) => {
-          if (path.posix.isAbsolute(target)) return null;
-          const relative = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), target));
-          if (relative === '..' || relative.startsWith('../')) return null;
-          return read(relative);
-        };
+        // The parser hands over canonical checkout-relative paths; refuse anything else regardless.
+        const readInclude = (relative) => (path.posix.isAbsolute(relative) || relative === '..' || relative.startsWith('../') ? null : read(relative));
         lock.result = parsed(parseRequirementsLock, text, { readInclude, file: requirements });
       }
     }
@@ -88,7 +83,7 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
     if (lock && lock.text == null) notes.push(unreadable(lock.file));
     if (!lock) notes.push('No lockfile: these are the versions installed today, and a reinstall may resolve different ones.');
     if (lockErrors.length) notes.push(`${lock.file} could not be fully read: ${lockErrors.slice(0, 3).join('; ')}.`);
-    if (!installed) notes.push(lock?.result ? 'No virtualenv yet: showing what the lockfile would install.' : 'No virtualenv to inventory yet.');
+    if (!installed) notes.push(lock?.result ? 'No virtualenv: nothing is installed to check; the packages shown are what the lockfile would install.' : 'No virtualenv to inventory yet.');
     if (drift.length) notes.push(`${drift.length} locked package${drift.length === 1 ? ' is' : 's are'} installed at a different version than ${lock.file} says; reinstall the app to match it.`);
 
     return {
@@ -107,6 +102,7 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
       floorFindings,
       errors: lockErrors.slice(0, LIST_LIMIT),
       pipUsesSystemStore: venv ? venv.pipUsesSystemStore : null,
+      venvMissing: !installed,
       ...(notes.length ? { note: notes.join(' ') } : {}),
     };
   };

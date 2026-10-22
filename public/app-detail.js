@@ -411,14 +411,14 @@
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0.55rem 0 0;">
         ${entry.floorFindings.map((finding) => `
           <li>
-            <span class="${finding.mitigated ? 'hb-muted' : 'hb-err'}"><code>${window.HB.escapeHtml(finding.name)}</code> ${window.HB.escapeHtml(finding.version)} ${finding.where === 'lockfile' ? `is pinned in ${window.HB.escapeHtml(entry.source || 'the lockfile')}` : 'is installed'}; at least ${window.HB.escapeHtml(finding.minVersion)} is required.</span>
+            <span class="${finding.hostStore ? 'hb-warn' : 'hb-err'}"><code>${window.HB.escapeHtml(finding.name)}</code> ${window.HB.escapeHtml(finding.version)} ${finding.where === 'lockfile' ? `is pinned in ${window.HB.escapeHtml(entry.source || 'the lockfile')}` : 'is installed'}; at least ${window.HB.escapeHtml(finding.minVersion)} is required.</span>
             <span class="hb-muted">${window.HB.escapeHtml(finding.reason)} <a href="${window.HB.escapeHtml(finding.reference)}" target="_blank" rel="noreferrer">Advisory ↗</a></span>
-            ${finding.mitigated ? `<span class="hb-muted" style="display:block;">${window.HB.escapeHtml(finding.mitigated)}</span>` : ''}
+            ${finding.hostStore ? `<span class="hb-muted" style="display:block;">${window.HB.escapeHtml(finding.hostStore)} The host store is reported under <a href="/status">Status → Patch posture</a>.</span>` : ''}
           </li>
         `).join('')}
       </ul>
-      ${entry.floorFindings.some((finding) => !finding.mitigated && finding.name !== 'pip') ? '<p style="margin:0.55rem 0 0;">Raise the version in the app\'s lockfile and reinstall.</p>' : ''}
-      ${entry.floorFindings.some((finding) => !finding.mitigated && finding.name === 'pip') ? '<p style="margin:0.55rem 0 0;">Upgrade pip in this virtualenv from the hash-verified wheel the advisory links, not through the old pip\'s own downloads.</p>' : ''}` : '';
+      ${entry.floorFindings.some((finding) => !finding.hostStore && finding.name !== 'pip') ? '<p style="margin:0.55rem 0 0;">Raise the version in the app\'s lockfile and reinstall.</p>' : ''}
+      ${entry.floorFindings.some((finding) => !finding.hostStore && finding.name === 'pip') ? '<p style="margin:0.55rem 0 0;">Upgrade pip in this virtualenv from the hash-verified wheel the advisory links, not through the old pip\'s own downloads.</p>' : ''}` : '';
     const drift = Array.isArray(entry?.drift) && entry.drift.length
       ? `
         <details style="margin-top:0.55rem;">

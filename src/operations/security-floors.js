@@ -13,9 +13,10 @@ const FLOORS = Object.freeze([
   Object.freeze({
     ecosystem: 'PyPI', name: 'pip', minVersion: '26.2.2', since: '2026-10-20', reference: EMSIGN,
     reason: 'eMudhra/emSign CA incident: earlier pip always trusts its own bundled CA list, so updating the host store does not fix it.',
-    // A distribution build (Debian/Ubuntu python3-pip-whl) is patched to use the host CA store instead,
-    // so the host's ca-certificates decides; the finding is kept as a note, not an alarm.
-    mitigatedBySystemStore: true,
+    // A distribution build (Debian/Ubuntu python3-pip-whl) is patched to trust the host CA store instead
+    // of its own bundle. Its version then says nothing about its trust: the host store does, and that is
+    // a host check (Patch posture), not a package one. The finding stays, as a note saying exactly that.
+    hostStoreDecides: true,
   }),
 ]);
 
@@ -36,7 +37,8 @@ function compareVersions(a, b) {
 }
 
 // findings: one per (package, where) below its floor. where is 'installed' (running now) or 'lockfile'
-// (a reinstall would bring it back). mitigated explains why a finding is only a note.
+// (a reinstall would bring it back). hostStore marks a finding whose trust is the host CA store's, not the
+// package version's: shown as a note, never as fixed.
 function evaluateFloors({ ecosystem, installed = [], locked = [], pipUsesSystemStore = false, floors = FLOORS }) {
   const findings = [];
   for (const floor of floors.filter((entry) => entry.ecosystem === ecosystem)) {
@@ -45,10 +47,10 @@ function evaluateFloors({ ecosystem, installed = [], locked = [], pipUsesSystemS
         if (name !== floor.name) continue;
         const comparison = compareVersions(version, floor.minVersion);
         if (comparison !== null && comparison >= 0) continue;
-        const mitigated = floor.mitigatedBySystemStore && pipUsesSystemStore && where === 'installed'
-          ? 'This pip is a distribution build that uses the host CA store; it is fixed when the host\'s ca-certificates drops the affected CA.'
+        const hostStore = floor.hostStoreDecides && pipUsesSystemStore && where === 'installed'
+          ? 'This pip is a distribution build that trusts the host CA store instead of its own bundle, so it is only as safe as that store: it stays exposed until the host\'s ca-certificates drops the affected CA, whatever its version.'
           : null;
-        findings.push({ name, version, minVersion: floor.minVersion, where, reason: floor.reason, reference: floor.reference, ...(mitigated ? { mitigated } : {}) });
+        findings.push({ name, version, minVersion: floor.minVersion, where, reason: floor.reason, reference: floor.reference, ...(hostStore ? { hostStore } : {}) });
       }
     }
   }

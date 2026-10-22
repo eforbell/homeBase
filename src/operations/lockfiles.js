@@ -3,6 +3,8 @@
 // dependency without an exact version is reported as unpinned rather than guessed, and anything the
 // parser cannot account for (an unreadable include, an unknown option) is unpinned too, never green.
 
+const path = require('path');
+
 // PEP 503 normalization, so "Jinja2", "jinja2", and "jinja_2" match the same advisory records.
 function normalizePythonName(name) {
   return String(name).toLowerCase().replace(/[-_.]+/g, '-');
@@ -70,12 +72,22 @@ const PIP_CONSTRAINT = /^(?:-c|--constraint)(?:\s+|=)(\S+)$/;
 const PIP_EDITABLE = /^(?:-e|--editable)(?:\s+|=)(\S+)$/;
 const INCLUDE_LIMITS = Object.freeze({ depth: 5, files: 20 });
 
+// Resolves a path written in a requirements file against the file that contains it, as pip does, into
+// a canonical checkout-relative path; null when it is absolute or leaves the checkout.
+function resolveRequirementPath(target, fromFile) {
+  if (!target || path.posix.isAbsolute(target)) return null;
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), target));
+  return resolved === '..' || resolved.startsWith('../') ? null : resolved;
+}
+
 // A pip requirements file. Exact pins (name==version, with optional extras, markers, and --hash
-// options) become packages; ranges, bare names, and URLs are unpinned. `-r` includes are followed
-// through readInclude(path, fromFile) (the caller confines paths to the app checkout), bounded in depth
-// and count; an include that cannot be read, or an option this parser does not know, is recorded in
-// errors and unpinned so the file can never be reported as fully pinned by accident. Constraint files
-// (-c) only narrow versions and add nothing. An editable local path (-e .) is the app itself.
+// options) become packages; ranges, bare names, and URLs are unpinned. `-r` includes are resolved
+// against the including file into canonical checkout-relative paths (used for cycle detection and the
+// next level's base) and read through readInclude(resolvedPath), bounded in depth and count. An include
+// that cannot be read or leaves the checkout, or an option this parser does not know, is recorded in
+// errors and unpinned, so the file can never be reported as fully pinned by accident. Constraint files
+// (-c) only narrow versions and add nothing. The only editable that is not a dependency is the app
+// itself: a local path resolving to the checkout root (-e . beside a root lockfile).
 function parseRequirementsLock(text, { readInclude = null, file = 'requirements.txt', limits = INCLUDE_LIMITS } = {}) {
   const pairs = [];
   const unpinned = [];
@@ -91,31 +103,37 @@ function parseRequirementsLock(text, { readInclude = null, file = 'requirements.
         const include = PIP_INCLUDE.exec(line);
         if (include) {
           const target = include[1];
+          const resolved = resolveRequirementPath(target, currentFile);
+          if (!resolved) {
+            errors.push(`${currentFile}: included ${target} is outside the app checkout`);
+            unpinned.push(`-r ${target}`);
+            continue;
+          }
+          if (seenFiles.has(resolved)) continue;
           if (depth >= limits.depth || seenFiles.size >= limits.files) {
             errors.push(`${currentFile}: include limit reached at ${target}`);
             unpinned.push(`-r ${target}`);
             continue;
           }
-          if (seenFiles.has(target)) continue;
-          seenFiles.add(target);
-          const included = typeof readInclude === 'function' ? readInclude(target, currentFile) : null;
+          seenFiles.add(resolved);
+          const included = typeof readInclude === 'function' ? readInclude(resolved) : null;
           if (included == null) {
-            errors.push(`${currentFile}: could not read included ${target}`);
+            errors.push(`${currentFile}: could not read included ${resolved}`);
             unpinned.push(`-r ${target}`);
             continue;
           }
-          includes.push(target);
-          visit(included, target, depth + 1);
+          includes.push(resolved);
+          visit(included, resolved, depth + 1);
           continue;
         }
         if (PIP_CONSTRAINT.test(line) || PIP_IGNORED_OPTIONS.test(line)) continue;
         const editable = PIP_EDITABLE.exec(line);
         if (editable) {
-          // A local path is the app (or a vendored copy) checked in beside the lockfile; a VCS or URL
-          // editable installs whatever that ref resolves to today.
-          if (/^(\.|\/|file:)/.test(editable[1]) && !/^(git|hg|svn|bzr)\+/.test(editable[1])) continue;
+          // Only the app's own checkout root is skipped; any other local path (a sibling app, a vendored
+          // package), file: URL, or VCS ref installs code no lockfile pins.
+          if (!/^[a-z][a-z0-9+.-]*:/i.test(editable[1]) && resolveRequirementPath(editable[1], currentFile) === '.') continue;
           const egg = /#egg=([A-Za-z0-9._-]+)/.exec(editable[1]);
-          unpinned.push(egg ? normalizePythonName(egg[1]) : editable[1].slice(0, 80));
+          unpinned.push(egg ? normalizePythonName(egg[1]) : `-e ${editable[1]}`.slice(0, 80));
           continue;
         }
         errors.push(`${currentFile}: unrecognized option ${line.split(/\s+/)[0]}`);
@@ -162,4 +180,4 @@ function lockDrift(locked, installed) {
   return drift;
 }
 
-module.exports = { HOST_PLATFORM, normalizePythonName, parseNpmLock, parseRequirementsLock, parseDistInfoNames, lockDrift };
+module.exports = { HOST_PLATFORM, normalizePythonName, resolveRequirementPath, parseNpmLock, parseRequirementsLock, parseDistInfoNames, lockDrift };

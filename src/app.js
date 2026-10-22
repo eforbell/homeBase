@@ -742,12 +742,12 @@ function createApp(config) {
         driftCount: entry.driftTotal ?? (entry.drift || []).length,
         errorCount: entry.errorTotal ?? (entry.errors || []).length,
         // Distinct packages: certifi installed and pinned below its floor is one package to fix.
-        floorFindingsCount: new Set(findings.filter((finding) => !finding.mitigated).map((finding) => finding.name)).size,
-        floorNotesCount: new Set(findings.filter((finding) => finding.mitigated).map((finding) => finding.name)).size,
+        floorFindingsCount: new Set(findings.filter((finding) => !finding.hostStore).map((finding) => finding.name)).size,
+        floorNotesCount: new Set(findings.filter((finding) => finding.hostStore).map((finding) => finding.name)).size,
       };
       if (admin) return { ...entry, ...counts };
-      const { appId, ecosystem, source, inventorySource, pinned, error, floorsReviewedAt } = entry;
-      return { appId, ecosystem, source, inventorySource, pinned, floorsReviewedAt, ...counts, ...(error ? { error: 'Inventory unavailable.' } : {}) };
+      const { appId, ecosystem, source, inventorySource, pinned, venvMissing, error, floorsReviewedAt } = entry;
+      return { appId, ecosystem, source, inventorySource, pinned, venvMissing, floorsReviewedAt, ...counts, ...(error ? { error: 'Inventory unavailable.' } : {}) };
     };
     return {
       available: true,
