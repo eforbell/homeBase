@@ -26,6 +26,10 @@ NODESOURCE_KEY_SHA256='b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0a
 NODESOURCE_KEYRING='/etc/apt/keyrings/nodesource.asc'
 NODESOURCE_LIST='/etc/apt/sources.list.d/nodesource.list'
 NODESOURCE_PIN='/etc/apt/preferences.d/nodesource'
+# unattended-upgrades only takes Ubuntu's and Debian's own pockets by default; this adds NodeSource's
+# origin (its Release file says Origin: . nodistro) so Node.js security releases install unattended.
+APT_SOURCES_DIR="${HOMEBASE_APT_SOURCES_DIR:-/etc/apt/sources.list.d}"
+NODESOURCE_UNATTENDED="${HOMEBASE_NODESOURCE_UNATTENDED:-/etc/apt/apt.conf.d/52nodesource-unattended}"
 
 INSTALL_DIR="${HOMEBASE_INSTALL_DIR:-/opt/sovereign-home/homebase}"
 STATE_DIR="${HOMEBASE_STATE_DIR:-/var/lib/sovereign-home/homebase}"
@@ -594,6 +598,19 @@ provision_nodesource_node() {
   apt-get install -y --no-install-recommends nodejs
 }
 
+# Whenever NodeSource is an apt source (provisioned here or added by the operator), let unattended-upgrades
+# take its updates. It stays within the configured major (node_<major>.x), so it brings security releases,
+# never a new line. Written only when absent: after that the file is the operator's, and emptying it opts
+# out. Updated binaries reach running services on restart (Status, Stale processes, lists them).
+ensure_nodesource_unattended() {
+  grep -qs 'deb\.nodesource\.com' "$APT_SOURCES_DIR"/* || return 0
+  [ -e "$NODESOURCE_UNATTENDED" ] && return 0
+  log "letting unattended-upgrades install Node.js updates from NodeSource (${NODESOURCE_UNATTENDED})"
+  install -d -m 0755 "$(dirname "$NODESOURCE_UNATTENDED")"
+  printf '// Written by Home Base install.sh: unattended-upgrades also installs NodeSource Node.js updates.\n// Empty this file (do not delete it) to keep Node.js updates manual.\nUnattended-Upgrade::Origins-Pattern:: "origin=. nodistro";\n' > "$NODESOURCE_UNATTENDED"
+  chmod 0644 "$NODESOURCE_UNATTENDED"
+}
+
 # Refresh package metadata before the run's first install: a host's apt lists may be empty or stale.
 APT_UPDATED=0
 apt_install() {
@@ -627,6 +644,7 @@ if [ "$TEST_MODE" != '1' ] || [ "${HOMEBASE_TEST_APT:-0}" = '1' ]; then
     log 'installing runtime prerequisite: npm'
     apt_install npm
   fi
+  ensure_nodesource_unattended
 fi
 
 for command in curl tar python3 node npm ${SOURCE_DIR:+git}; do

@@ -246,7 +246,7 @@ function createFoundationStatusCollector({ run = runApproved, fsImpl = fs, now =
           : nodeFromNodeSource && !coversNodeSource ? 'unattended-upgrades is enabled but does not include the NodeSource origin, so Node.js updates stay manual.'
             : 'unattended-upgrades is enabled.';
         const hint = !config.enabled ? 'sudo dpkg-reconfigure -plow unattended-upgrades'
-          : nodeFromNodeSource && !coversNodeSource ? `Add ${NODESOURCE_ORIGIN_PATTERN} to /etc/apt/apt.conf.d/52nodesource-unattended` : '';
+          : nodeFromNodeSource && !coversNodeSource ? `Run sudo bash install.sh --repair, which writes /etc/apt/apt.conf.d/52nodesource-unattended; or create that file containing ${NODESOURCE_ORIGIN_PATTERN}` : '';
         checks['automatic-updates'] = check(level, summary, { installed: true, enabled: config.enabled, coversNodeSource, origins: config.origins.slice(0, LIST_LIMIT), hint });
       }
     } catch {
