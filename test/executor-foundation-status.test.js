@@ -4,6 +4,12 @@ const { createFoundationStatusCollector, managedUnits, parseAptSimulation, parse
 const { isApprovedBinary } = require('../executor/spawn');
 const { nodeLifecycle, pythonLifecycle, parseVersion, REVIEWED_AT } = require('../src/operations/runtime-lifecycle');
 const { createFakeFs } = require('./fixtures/fake-fs');
+const fs = require('fs');
+const path = require('path');
+
+const cert = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', 'certs', `${name}.pem`), 'utf8');
+const G1 = cert('emsign-root-ca-g1');
+const G3 = cert('emsign-ecc-root-ca-g3');
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
 const DAY = 24 * 60 * 60 * 1000;
@@ -42,6 +48,7 @@ function hostFs(extra = {}) {
     '/var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_noble_InRelease': { kind: 'file', content: '', mtimeMs: NOW - 2 * DAY },
     '/var/lib/apt/lists/archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages': { kind: 'file', content: '', mtimeMs: NOW - 40 * DAY },
     '/var/lib/apt/periodic/update-success-stamp': { kind: 'file', content: '', mtimeMs: NOW },
+    '/etc/ssl/certs/ca-certificates.crt': G1,
     '/proc/101/exe': { kind: 'link', target: '/usr/bin/node' },
     '/proc/101/maps': MAPS_CURRENT,
     '/proc/102/exe': { kind: 'link', target: '/usr/bin/node (deleted)' },
@@ -111,6 +118,8 @@ test('a patched, current host is all ok', async () => {
   const { checks } = await createFoundationStatusCollector({
     now: () => NOW,
     fsImpl,
+    // Not the test runner's own Node.js: its built-in roots vary by release (v26.5.0 still has G3).
+    nodeRoots: () => [G1],
     run: stubRun({ 'dpkg-query': DPKG, 'apt-get': 'NOTE: This is only a simulation!\n', 'apt-config': `${APT_CONFIG}\nUnattended-Upgrade::Origins-Pattern:: "origin=. nodistro";`, systemctl: SYSTEMCTL }),
   })();
   for (const [name, entry] of Object.entries(checks)) {
@@ -273,4 +282,81 @@ test('runtime lifecycle table classifies support windows', () => {
   assert.deepEqual(nodeLifecycle('18.20.0', NOW).level, 'fail');
   assert.deepEqual(nodeLifecycle('30.1.0', NOW).level, 'unknown', 'majors missing from the table are unknown, not supported');
   assert.deepEqual(pythonLifecycle('3.11.2', NOW).eol, '2027-10-31');
+});
+
+test('trust stores flag a distrusted root in the host bundle or Node.js built-ins, by fingerprint', async () => {
+  const collect = (bundle, nodeRoots) => createFoundationStatusCollector({
+    now: () => NOW,
+    fsImpl: hostFs(bundle === undefined ? {} : { '/etc/ssl/certs/ca-certificates.crt': bundle }),
+    run: stubRun({ 'dpkg-query': DPKG, 'apt-get': '', 'apt-config': APT_CONFIG, systemctl: SYSTEMCTL }),
+    nodeRoots: () => nodeRoots,
+    nodeVersion: 'v24.22.1',
+  })();
+
+  const clean = (await collect(`${G1}\n`, [G1])).checks['trust-stores'];
+  assert.equal(clean.level, 'ok', 'an unaffected emSign root (G1) is not flagged');
+  assert.deepEqual(clean.stores.map(({ store, certificates }) => [store, certificates]), [['host', 1], ['node', 1]]);
+  assert.match(clean.summary, /^No root on Home Base's distrusted list \(1 root, reviewed \d{4}-\d{2}-\d{2}\) in the host CA store \(1 roots\) or Node\.js v24\.22\.1's built-in roots \(1\)\.$/);
+
+  const host = (await collect(`${G1}\n${G3}\n`, [G1])).checks['trust-stores'];
+  assert.equal(host.level, 'fail');
+  assert.match(host.summary, /^The host CA store still trusts emSign ECC Root CA - G3 \(eMudhra\/emSign CA incident\)/);
+  assert.equal(host.stores[0].distrusted[0].sha256, '86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b');
+  assert.match(host.hint, /ca-certificates/);
+  assert.doesNotMatch(host.hint, /Node\.js/);
+
+  const node = (await collect(`${G1}\n`, [G1, G3])).checks['trust-stores'];
+  assert.equal(node.level, 'fail');
+  assert.match(node.summary, /Node\.js v24\.22\.1's built-in roots still include emSign ECC Root CA - G3/);
+  assert.match(node.hint, /Upgrade Node\.js/);
+  assert.match(node.hint, /homebase-executor/, 'the check reads the executor\'s loaded roots, so the hint names it');
+
+  const missing = (await collect(undefined, [G1]));
+  const fsMissing = createFoundationStatusCollector({ now: () => NOW, fsImpl: createFakeFs({}), run: stubRun({ 'dpkg-query': DPKG, 'apt-get': '', 'apt-config': APT_CONFIG, systemctl: '' }), nodeRoots: () => [G1] });
+  assert.equal(missing.checks['trust-stores'].level, 'ok');
+  assert.equal((await fsMissing()).checks['trust-stores'].level, 'unknown', 'an unreadable host bundle is unknown, never ok');
+});
+
+test('trust stores are unknown, never ok, when any certificate cannot be read', async () => {
+  const collect = (bundle, nodeRoots) => createFoundationStatusCollector({
+    now: () => NOW,
+    fsImpl: hostFs({ '/etc/ssl/certs/ca-certificates.crt': bundle }),
+    run: stubRun({ 'dpkg-query': DPKG, 'apt-get': '', 'apt-config': APT_CONFIG, systemctl: SYSTEMCTL }),
+    nodeRoots,
+    nodeVersion: 'v24.22.1',
+  })().then((status) => status.checks['trust-stores']);
+  const corrupt = '-----BEGIN CERTIFICATE-----\nnot base64 at all\n-----END CERTIFICATE-----\n';
+
+  const garbled = await collect(`${G1}\n${corrupt}`, () => [G1]);
+  assert.equal(garbled.level, 'unknown', 'an unparseable block could be a listed root');
+  assert.equal(garbled.stores[0].invalid, 1);
+  assert.match(garbled.summary, /^1 certificate in the host CA store could not be parsed/);
+  assert.match(garbled.hint, /update-ca-certificates --fresh/);
+
+  const truncated = await collect(`${G1}\n${G3.slice(0, G3.indexOf('-----END'))}`, () => [G1]);
+  assert.equal(truncated.level, 'unknown', 'a BEGIN with no END (a truncated file) counts as unreadable');
+  assert.equal(truncated.stores[0].invalid, 1);
+
+  assert.equal((await collect(`${G1}\n`, () => [])).level, 'unknown', 'Node.js reporting no built-in roots is not a clean list');
+  const thrown = await collect(`${G1}\n`, () => { throw new Error('boom'); });
+  assert.equal(thrown.level, 'unknown');
+  assert.equal(thrown.stores[1].unreadable, true);
+  assert.equal((await collect(`${G1}\n`, () => 42)).level, 'unknown', 'a non-list of roots is unknown');
+
+  const both = await collect(`${G1}\n${G3}\n${corrupt}`, () => [G1]);
+  assert.equal(both.level, 'fail', 'a listed root still fails even when other blocks are unreadable');
+  assert.match(both.summary, /G3.*; 1 certificate in the host CA store could not be parsed/);
+});
+
+test('a broken trust-stores check leaves every other check in place', async () => {
+  const status = await createFoundationStatusCollector({
+    now: () => NOW,
+    fsImpl: hostFs({ '/etc/ssl/certs/ca-certificates.crt': `${G1}\n` }),
+    run: stubRun({ 'dpkg-query': DPKG, 'apt-get': '', 'apt-config': APT_CONFIG, systemctl: SYSTEMCTL }),
+    nodeRoots: () => [G1],
+    nodeVersion: { toString() { throw new Error('bad version'); } },
+  })();
+  assert.equal(status.checks['trust-stores'].level, 'unknown');
+  assert.equal(status.checks['node-runtime'].level, 'ok');
+  assert.ok(status.checks['stale-processes']);
 });

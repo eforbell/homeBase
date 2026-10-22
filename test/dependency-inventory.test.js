@@ -275,3 +275,16 @@ test('only a where() that really returns the host bundle marks pip as a distribu
   assert.equal(returnsSystemBundle('    def where() -> str:\n        return "/etc/ssl/certs/ca-certificates.crt"\n'), false, 'a nested definition is not the module where()');
   assert.equal(returnsSystemBundle(''), false);
 });
+
+test('the distrusted-root table holds only normalized SHA-256 fingerprints and rejects a typo', () => {
+  const { DISTRUSTED_ROOTS, distrustedIn, storeTrust, assessPemBundle } = require('../src/operations/distrusted-roots');
+  assert.ok(DISTRUSTED_ROOTS.length > 0);
+  for (const root of DISTRUSTED_ROOTS) {
+    assert.match(root.sha256, /^[0-9a-f]{64}$/, `${root.subject} is a lower-case SHA-256 without colons`);
+    assert.match(root.reference, /^https:\/\//);
+  }
+  const upper = { sha256: DISTRUSTED_ROOTS[0].sha256.toUpperCase().match(/../g).join(':'), subject: 'x' };
+  assert.equal(distrustedIn([DISTRUSTED_ROOTS[0].sha256], [upper]).length, 1, 'a table entry written as OpenSSL prints it still matches');
+  assert.deepEqual([storeTrust(null), storeTrust({ certificates: 0, invalid: 0, distrusted: [] }), storeTrust({ certificates: 3, invalid: 1, distrusted: [] }), storeTrust({ certificates: 3, invalid: 0, distrusted: [] })], ['unknown', 'unknown', 'unknown', 'verified']);
+  assert.deepEqual(assessPemBundle('no certificates here'), { certificates: 0, invalid: 0, distrusted: [] });
+});

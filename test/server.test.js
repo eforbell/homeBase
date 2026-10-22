@@ -2470,3 +2470,86 @@ test('dependency inventory covers Home Base and installed apps, with package nam
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('a pip that trusts the host CA store follows the host CA bundle, read fresh and without waiting on patch posture', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-hosttrust-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const bundlePath = path.join(tempDir, 'ca-certificates.crt');
+  const G1 = fs.readFileSync(path.join(__dirname, 'fixtures', 'certs', 'emsign-root-ca-g1.pem'), 'utf8');
+  const G3 = fs.readFileSync(path.join(__dirname, 'fixtures', 'certs', 'emsign-ecc-root-ca-g3.pem'), 'utf8');
+  fs.mkdirSync(path.join(tempDir, 'homebase'));
+  fs.writeFileSync(path.join(tempDir, 'homebase', 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/ajv': { version: '8.20.0' } } }));
+  let foundationCollections = 0;
+  const executor = createExecutorServer({
+    logger: { info() {} },
+    collectFoundationStatus: async () => { foundationCollections += 1; return { checks: {}, collectedAt: new Date().toISOString() }; },
+    readDependencyInventory: async ({ appId }) => ({ appId, ecosystem: 'PyPI', source: 'requirements.lock', inventorySource: 'virtualenv', pinned: true, packages: [['pip', '24.0']], unpinned: [], drift: [], errors: [],
+      floorFindings: [{ name: 'pip', version: '24.0', minVersion: '26.2.2', where: 'installed', reason: 'r', reference: 'https://example.com', hostStore: 'trusts the host store' }] }),
+  });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  store.upsertInstallation({ appId: 'helm', name: 'helm', purpose: 'x', port: 1, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: 'helm', ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath, homeBaseAppDir: path.join(tempDir, 'homebase'), hostCaBundlePath: bundlePath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const read = async (headers = { cookie }) => (await (await fetch(`${server.url}/api/apps/dependencies`, { headers })).json()).byAppId.helm;
+    // Each write changes the file's size, so the next read never sees a cached verdict.
+    const writeBundle = (text) => fs.writeFileSync(bundlePath, text);
+
+    writeBundle(`${G1}\n`);
+    let helm = await read();
+    assert.deepEqual([helm.hostTrust, helm.floorFindingsCount, helm.floorNotesCount], ['verified', 0, 1], 'a clean host store: a note, not an alarm');
+    assert.equal((await read({})).hostTrust, 'verified', 'host trust is a level, shown without an admin session too');
+    assert.equal(foundationCollections, 0, 'the dependency route never waits on the patch posture collection (an apt simulation)');
+
+    writeBundle(`${G1}\n${G3}\n`);
+    helm = await read();
+    assert.deepEqual([helm.hostTrust, helm.floorFindingsCount, helm.floorNotesCount], ['distrusted', 1, 0], 'a host store that trusts a distrusted root makes it an alarm, at once');
+    assert.equal((await read({})).floorFindingsCount, 1);
+
+    writeBundle(`${G1}\n-----BEGIN CERTIFICATE-----\nAAAA\n`);
+    helm = await read();
+    assert.deepEqual([helm.hostTrust, helm.floorFindingsCount, helm.floorNotesCount], ['unknown', 0, 1], 'a bundle with an unparseable block stays unknown (amber in the UI)');
+
+    fs.rmSync(bundlePath);
+    assert.equal((await read()).hostTrust, 'unknown', 'an unreadable host store stays unknown');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('a patch posture collection under way is shared, so a Refresh does not answer from the older cache', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-foundation-inflight-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  let collections = 0;
+  let release = null;
+  const executor = createExecutorServer({ logger: { info() {} }, collectFoundationStatus: async () => {
+    collections += 1;
+    const level = collections === 1 ? 'ok' : 'fail';
+    if (collections > 1) await new Promise((resolve) => { release = resolve; });
+    return { checks: { 'trust-stores': { ok: level === 'ok', level, summary: level } }, collectedAt: new Date().toISOString() };
+  } });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const server = await startServer({ appName: 'Home Base', port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: '/var/lib/sovereign-home/backups', baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', stateDbPath: path.join(tempDir, 'state.sqlite3'), homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const get = (query = '') => fetch(`${server.url}/api/homebase/foundation${query}`, { headers: { cookie } }).then((res) => res.json());
+    assert.equal((await get()).checks['trust-stores'].level, 'ok');
+    const refreshing = get('?refresh=1');
+    while (!release) await new Promise((resolve) => setTimeout(resolve, 5));
+    const plain = get();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    assert.equal((await refreshing).checks['trust-stores'].level, 'fail');
+    assert.equal((await plain).checks['trust-stores'].level, 'fail', 'a read during a refresh waits for it instead of serving the cache');
+    assert.equal(collections, 2);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});

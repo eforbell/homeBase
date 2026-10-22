@@ -411,9 +411,9 @@
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0.55rem 0 0;">
         ${entry.floorFindings.map((finding) => `
           <li>
-            <span class="${finding.hostStore ? 'hb-warn' : 'hb-err'}"><code>${window.HB.escapeHtml(finding.name)}</code> ${window.HB.escapeHtml(finding.version)} ${finding.where === 'lockfile' ? `is pinned in ${window.HB.escapeHtml(entry.source || 'the lockfile')}` : 'is installed'}; at least ${window.HB.escapeHtml(finding.minVersion)} is required.</span>
+            <span class="${!finding.hostStore || entry.hostTrust === 'distrusted' ? 'hb-err' : (entry.hostTrust === 'verified' ? 'hb-muted' : 'hb-warn')}"><code>${window.HB.escapeHtml(finding.name)}</code> ${window.HB.escapeHtml(finding.version)} ${finding.where === 'lockfile' ? `is pinned in ${window.HB.escapeHtml(entry.source || 'the lockfile')}` : 'is installed'}; at least ${window.HB.escapeHtml(finding.minVersion)} is required.</span>
             <span class="hb-muted">${window.HB.escapeHtml(finding.reason)} <a href="${window.HB.escapeHtml(finding.reference)}" target="_blank" rel="noreferrer">Advisory ↗</a></span>
-            ${finding.hostStore ? `<span class="hb-muted" style="display:block;">${window.HB.escapeHtml(finding.hostStore)} The host store is reported under <a href="/status">Status → Patch posture</a>.</span>` : ''}
+            ${finding.hostStore ? `<span class="hb-muted" style="display:block;">${window.HB.escapeHtml(finding.hostStore)} ${({ verified: 'Home Base checked the host CA store: it holds no root on Home Base\'s distrusted list.', distrusted: 'The host CA store still trusts a root on Home Base\'s distrusted list, so this counts as exposed.' })[entry.hostTrust] || 'Home Base could not fully check the host CA store.'} See <a href="/status">Status → Patch posture</a>.</span>` : ''}
           </li>
         `).join('')}
       </ul>

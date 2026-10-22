@@ -50,6 +50,7 @@
     ['pending-updates', 'Pending package updates'],
     ['apt-lists', 'Package lists'],
     ['automatic-updates', 'Automatic updates'],
+    ['trust-stores', 'Trust stores'],
     ['reboot-required', 'Reboot'],
     ['stale-processes', 'Running code is current'],
   ];
