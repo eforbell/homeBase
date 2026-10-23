@@ -1,0 +1,211 @@
+{
+  "branchName": "feature/suite-identity",
+  "projectName": "Suite Identity: Tailnet Sign-In and Passkey Step-Up",
+  "description": "Replace per-app passphrases, PINs, and name pickers with one household identity. The tailnet login (asserted by Tailscale Serve) identifies the member on every request with zero interaction. Home Base keeps the household directory and runs a suite passkey service that sensitive apps use for step-up checks. Every app keeps its existing local auth as the standalone fallback.",
+  "timing": {
+    "draftedOn": "2026-10-23",
+    "plannedEarliestExecution": "After the Feature-4 Serve publishing lane is stable on production hosts",
+    "gatingCondition": "Spike 1 (Serve identity headers) and spike 2 (passkey step-up prototype) passed on a test VM on 2026-10-23. Production Serve topology (svc:home VIP vs node-level Serve) must be confirmed read-only on each host before SID-001 executes there."
+  },
+  "principles": [
+    "The tailnet login is the person. Tagged devices (headless service hosts) get no identity, by design",
+    "Members who never had a password get no new friction; apps that had passphrases trade them for nothing (tailnet-only) or a passkey tap (sensitive apps)",
+    "Identity headers are trusted only when the only possible path to the app is Tailscale Serve → root-only nginx socket → app socket",
+    "Passkey checks never request the PRF extension; they prove presence only, so synced passkeys from third-party providers work on iOS",
+    "Classify credentials from what the authenticator reports, never from what the user picked",
+    "The administrator is a Home Base designation, not an app role; apps keep parent/kid",
+    "Every app can still run standalone with its existing local auth",
+    "No acting as another member; no shared-device mode",
+    "Prefer the simplest storage: directory in Home Base state, a signed snapshot file for apps"
+  ],
+  "decisions": {
+    "D1": "Tailnet identity (Tailscale Serve identity headers) is the suite identity",
+    "D2": "No shared devices; tagged devices get no identity",
+    "D3": "No impersonation; a parent who needs a kid's view uses the kid's device",
+    "D4": "Passkey checks only in sensitive apps (finance, estate documents, trading, Bitcoin accounting); previously passwordless apps get no new friction",
+    "D5": "Multi-host federation deferred; each host is its own household instance keyed on tailnet logins",
+    "D7": "Kid views in sensitive apps stay at tailnet level where the app already scopes kid data server-side",
+    "D8": "Home Base admin requires a passkey: 8h session plus every-time hardware check for privileged plans; admin passphrase kept as setup and break-glass",
+    "D9": "Operator apps (trading, Bitcoin accounting) use a 24h passkey session window",
+    "D10": "'administrator' is a Home Base-only flag, separate from parent; only an administrator can grant it; never synced between hosts",
+    "D11": "Multiple credentials per member (synced passkeys and hardware keys side by side); administrator must hold ≥2 credentials including ≥1 hardware key",
+    "D12": "Three freshness levels: session (app window), recent (≤5 min, 'credentials' class), every time (single-use action token); administrator actions use every time + hardware key"
+  },
+  "evidence": {
+    "spike1": "Serve adds Tailscale-User-Login/Name and replaces client-forged copies; correct identity from macOS, iOS web wrapper, and a kid's Windows PC; tagged host gets no identity headers. nginx on a 0700 root unix socket refuses non-root local users. Found: nginx on 0.0.0.0 blocks Serve's tailnet :443 bind; apps bind 0.0.0.0 despite catalog upstreamBind; forged X-Sovereign-* passes unless nginx overwrites it; absolute redirects leak http://localhost behind the socket",
+    "spike2": "Passkey enroll/step-up with 1Password (desktop and iPhone), Apple Passwords, and a USB-C YubiKey; YubiKey classified hardware from flags; tailnet-level RP ID accepted by Chrome and Safari; signed assurance cookie rejected on identity mismatch or tamper; single-use action tokens reject reuse, wrong action, wrong kind, wrong member, and expiry; a non-administrator member (a kid's Windows PC) enrolled a synced passkey, passed session and recent checks, and was refused the administrator action with 403 before any passkey prompt. Not exercised: parent/kid roles (the spike directory had only the administrator flag; covered by the SID-006 pilot and SID-007 rehearsal). Found: apps on loopback TCP can be reached directly with forged headers; all apps share one service user"
+  },
+  "techStack": {
+    "language": "Node.js planner/executor + vanilla JS UI; shared adapter for Node apps and a Python twin for FastAPI apps",
+    "runtime": "Tailscale Serve (unix socket target), nginx on a unix socket, systemd tmpfiles/RuntimeDirectory for socket dirs, @simplewebauthn/server 13.x",
+    "storage": "Home Base SQLite state for directory, credentials, and challenges; Ed25519 signing key under /var/lib/sovereign-home/homebase; signed directory snapshot file readable by the apps group",
+    "testing": "Planner tests for nginx/Serve/socket rendering, unit tests for assurance and action tokens, WebAuthn flows with Chrome virtual authenticators (Playwright), VM rehearsal with real authenticators (synced passkey, platform passkey, hardware key) on macOS and iOS"
+  },
+  "userStories": [
+    {
+      "id": "SID-001",
+      "title": "Identity-safe ingress: Serve → root-only nginx socket",
+      "acceptanceCriteria": [
+        "Serve publish plan targets 443 → unix:/run/sovereign-serve/nginx.sock instead of https+insecure://localhost:443; the ownership policy for svc:home is preserved",
+        "nginx suite server listens only on that socket (no TCP 80/443 for the suite); the directory is created at boot by tmpfiles.d with mode 0700 root:root",
+        "Server block sets absolute_redirect off; every mount (apps and /_sovereign/*) gets an explicit 'location = /mount { return 301 /mount/; }'",
+        "A shared nginx snippet sets Host from X-Forwarded-Host, X-Forwarded-Proto from Serve, and always overwrites X-Sovereign-Login / X-Sovereign-Name from Tailscale-User-Login / Tailscale-User-Name (absent upstream header ⇒ header omitted)",
+        "Feature-4 verification replaces the 'nginx listener on tcp:443' check with 'nginx socket present, root-only, and Serve targets it'",
+        "Planner refuses to enable tailnet identity for any app whose upstream is still TCP, and says why",
+        "Rollback plan restores the previous Serve target and nginx listen lines"
+      ],
+      "priority": 1,
+      "estimatedLines": "+420/-80",
+      "testStrategy": "Planner/renderer tests; VM rehearsal repeating spike-1 checks (forged headers, local bypass refused, tagged host no identity, redirects stay on the tailnet host)",
+      "passes": false
+    },
+    {
+      "id": "SID-002",
+      "title": "App listen contract: apps on group-restricted unix sockets",
+      "acceptanceCriteria": [
+        "Catalog gains a listen contract (e.g. runtime.listen = unix) and renders SOVEREIGN_LISTEN=unix:/run/sovereign-apps/<id>/app.sock; apps not yet supporting it render HOST=127.0.0.1 and stay in local-auth mode",
+        "Socket directories are setgid www-data, 2750; sockets 0660; only nginx and the app's user can connect",
+        "Health checks and post-install verification work over the socket",
+        "Sensitive apps (finance, estate, trading, Bitcoin accounting) run as their own service user instead of the shared service user, so a compromised sibling app cannot reach their sockets",
+        "nginx upstreams use proxy_pass http://unix:<sock>:/ and include the identity snippet"
+      ],
+      "priority": 2,
+      "estimatedLines": "+380/-60",
+      "testStrategy": "Install-planner tests for env/unit/nginx rendering; VM check that other local users (including the shared service user) are refused by a sensitive app's socket",
+      "passes": false
+    },
+    {
+      "id": "SID-003",
+      "title": "Household directory in Home Base",
+      "acceptanceCriteria": [
+        "Directory records per member: suite_member_id, display name, tailnet login(s), optional tailnet user ID (via whois on the Serve-supplied client IP), role parent|kid, administrator flag, status, per-app access list (default all; operator apps default administrator-only)",
+        "A Household page lets the administrator add/disable members, change roles, set app access, and open a time-boxed passkey enrollment window for a member",
+        "Only an administrator can grant 'administrator', with an every-time hardware check; Home Base refuses to remove or disable the last administrator",
+        "Home Base writes a signed snapshot (members, roles, app access; no credentials) to a file readable by the apps group; apps verify it with the Home Base public key",
+        "The administrator flag is local to this host and excluded from any future export/sync"
+      ],
+      "priority": 3,
+      "estimatedLines": "+520/-40",
+      "testStrategy": "State/store tests, endpoint auth tests, snapshot signature tests, UI source assertions",
+      "passes": false
+    },
+    {
+      "id": "SID-004",
+      "title": "Suite passkey service at /_sovereign/auth/",
+      "acceptanceCriteria": [
+        "Served by Home Base on its own unix socket behind nginx, same origin as the apps",
+        "Members enroll multiple credentials (label, kind, AAGUID, transports, created/last-used) and revoke them; first credential may be enrolled on tailnet identity alone, later ones need a recent check, and an administrator who holds a hardware key needs an every-time hardware check",
+        "Kind is derived from reported flags: multiDevice or backed up ⇒ synced; singleDevice + cross-platform ⇒ hardware; otherwise device-bound",
+        "Assertions never request PRF; userVerification is required; RP ID is the tailnet domain (or host, per config) with expected origins pinned to known Home Base hosts",
+        "Successful checks set a host-only HttpOnly SameSite=Strict sv_assurance cookie: Ed25519-signed {sub, kind, rp, auth_time}; apps verify with the public key and require sub to match the request's tailnet login",
+        "Every-time actions get a single-use, action-bound, 60-second token; reuse, wrong action, wrong kind, wrong member, and expiry are rejected",
+        "A shared helper (/_sovereign/auth/stepup.js) turns a 401 {code:'step_up_required'} into an in-page confirm dialog, the check, and one retry",
+        "Members can see their check status (which credential, how long ago)"
+      ],
+      "priority": 4,
+      "estimatedLines": "+700/-0",
+      "testStrategy": "Unit tests for classification, cookie and token rules; Playwright virtual-authenticator flows (synced + USB); VM rehearsal with real 1Password, Apple Passwords, and hardware key on macOS and iOS",
+      "passes": false
+    },
+    {
+      "id": "SID-005",
+      "title": "Home Base admin on tailnet identity + passkeys",
+      "acceptanceCriteria": [
+        "Home Base itself listens on a unix socket that Serve targets for :3080; no TCP listener",
+        "Admin unlock requires the administrator's tailnet identity plus a passkey (8h); the admin session is bound to that identity",
+        "Executing privileged plans (install, repair, adopt, update, uninstall, restore) requires an every-time hardware-key check",
+        "First-run setup still uses the admin passphrase; after the administrator enrolls ≥2 credentials including a hardware key, the passphrase becomes break-glass only and the UI says so",
+        "A root-only CLI (homebase admin reset) recovers from total credential loss and is audited"
+      ],
+      "priority": 5,
+      "estimatedLines": "+360/-120",
+      "testStrategy": "Endpoint auth tests, CLI tests, VM rehearsal including break-glass and reset",
+      "passes": false
+    },
+    {
+      "id": "SID-006",
+      "title": "Shared suite auth adapter (Node + Python) and pilot app",
+      "acceptanceCriteria": [
+        "Adapter fills the app's existing member object (req.member / current principal) in one of three modes: local (today's auth), tailnet (trusted headers + directory snapshot), oidc (reserved, not implemented)",
+        "Tailnet mode trusts identity headers only when the app is listening on its socket; otherwise it refuses to start in tailnet mode",
+        "Apps link local member rows to suite_member_id once (match by display name with administrator confirmation); unlinked logins see a clear 'ask the administrator' page",
+        "requireAssurance(level, {action, kind}) supports session, recent, and every-time levels and returns step_up_required for the helper",
+        "One previously passwordless app is piloted end to end (member auto-selected, picker and PINs replaced by role checks)"
+      ],
+      "priority": 6,
+      "estimatedLines": "+450/-0 (adapter) plus pilot app changes",
+      "testStrategy": "Adapter unit tests in both languages; pilot app tests; VM rehearsal with a parent and a kid device",
+      "passes": false
+    },
+    {
+      "id": "SID-007",
+      "title": "Rollout runbook and VM rehearsal",
+      "acceptanceCriteria": [
+        "docs/suite-identity-rollout-runbook.md covers read-only pre-checks, cutover, verification, and rollback per host",
+        "A full rehearsal on a test VM passes the spike-1 and spike-2 checklists before any production host changes",
+        "Tailnet policy changes needed for rollout (and any spike-only grants to remove) are listed"
+      ],
+      "priority": 7,
+      "estimatedLines": "+250/-0 (docs)",
+      "testStrategy": "Runbook walkthrough on the test VM with evidence captured in the PR",
+      "passes": false
+    }
+  ],
+  "followUpFeatures": [
+    "App waves, each in its own app repo: wave 1 previously passwordless apps (dinner, fasting, help desk, calendar); wave 2 passphrase apps (finance, home ops, photos, estate documents); wave 3 operator apps (trading, Bitcoin accounting)",
+    "Estate-documents app: fix credential tier classification and iOS unlock guidance (tracked in bugBase)",
+    "Multi-host directory export/import, then peer pairing (decision D5 deferred)",
+    "Machine tokens for MCP/agents and publish-token apps (deferred)",
+    "Optional AAGUID allowlist for administrator hardware keys"
+  ],
+  "riskAssessment": {
+    "high": [
+      "Any remaining TCP path to nginx or an app makes identity headers forgeable; the planner must refuse tailnet mode unless the socket-only path is in place",
+      "Administrator lockout if all credentials are lost; break-glass passphrase and root CLI must be rehearsed",
+      "Cookies are not isolated by port: cookies set for :3080 are also sent to :443 apps and vice versa. Admin and assurance cookies must be bound to the tailnet identity and useless from any other path",
+      "Apps sharing one service user can reach each other's sockets; sensitive apps need dedicated users before they trust identity"
+    ],
+    "medium": [
+      "Production may publish via a svc:home VIP rather than node-level Serve; socket targets and bind behavior must be confirmed on each host",
+      "Renaming the tailnet orphans passkeys registered with the tailnet-level RP ID",
+      "iOS requires a fresh user gesture for WebAuthn; the shared helper must keep its own confirm tap",
+      "Kids' surfaces must not regress; wave 1 must be invisible to kids except for removing the picker"
+    ],
+    "low": [
+      "AAGUID metadata is self-reported without attestation; acceptable for a household, upgradeable later"
+    ]
+  },
+  "preFlightChecklist": [
+    "Confirm on each production host (read-only): tailscale serve get-config --all, ss -ltnp, and whether svc:home uses a VIP",
+    "Decide where the shared adapter lives (new small repo installed as a git dependency vs vendored file per app)",
+    "Decide RP ID default: tailnet domain (one passkey across hosts) vs host name",
+    "Decide which apps get dedicated service users in this feature vs their own wave",
+    "Confirm @simplewebauthn/server version alignment with the estate-documents app",
+    "Keep family names, real tailnet names, and private hostnames out of this repo's docs and tests"
+  ],
+  "metrics": {
+    "estimatedTotalLines": "+3080/-300 (Home Base) plus pilot app",
+    "storiesCount": 7,
+    "filesLikelyModified": [
+      "src/services/tailscale-publisher.js",
+      "src/services/tailscale-policy.js",
+      "src/services/tailscale-verify.js",
+      "src/services/bootstrap-planner.js",
+      "src/services/install-planner.js",
+      "src/operations/app-layout.js",
+      "src/catalog.js",
+      "src/admin-auth.js",
+      "src/app.js",
+      "src/config.js",
+      "src/state/sqlite-store.js",
+      "src/state/sqlite-driver.js",
+      "src/identity/ (new: directory, passkeys, assurance, snapshot)",
+      "public/ (Household page, step-up helper)",
+      "deploy/ (tmpfiles.d, unit changes)",
+      "docs/suite-identity-rollout-runbook.md",
+      "test/",
+      "planning/current-feature.json",
+      "planning/progress.txt"
+    ]
+  }
+}
