@@ -82,6 +82,12 @@
       "featureName": "Managed App Uninstall",
       "branch": "feature/managed-app-uninstall",
       "summary": "Add a destructive but explicit Uninstall flow that fully removes a managed app and returns it to Available to install."
+    },
+    {
+      "featureId": "feature-10",
+      "featureName": "Suite Identity: Tailnet Sign-In and Passkey Step-Up",
+      "branch": "feature/suite-identity",
+      "summary": "One household identity from the tailnet login; Home Base directory and passkey step-up for sensitive apps; identity-safe Serve → socket ingress."
     }
   ],
   "launchDefinition": {

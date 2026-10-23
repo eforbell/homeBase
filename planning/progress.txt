@@ -223,3 +223,8 @@
 - Added config persistence/migration support for `tailscale_managed_service_id` in sqlite state storage.
 - Added regression coverage for configurable service IDs in readiness/publisher/verify logic and server config API behavior.
 - Verification: `npm test` passed (121/121).
+
+2026-10-23 (Feature-10 drafted: Suite Identity)
+- Drafted planning/features/feature-10-prd.json and feature-10-summary.md, plus docs/suite-identity-rollout-runbook.md (draft).
+- Evidence: two VM spikes. Serve identity headers verified from macOS, the iOS web wrapper, and a Windows PC; a tagged host gets no identity. Passkey step-up verified with synced passkeys and a hardware key on macOS and iOS.
+- Spike findings folded into SID-001/002: nginx on 0.0.0.0 blocks Serve's :443 bind, apps ignore upstreamBind, loopback app ports accept forged headers, all apps share one service user, absolute redirects leak localhost.
