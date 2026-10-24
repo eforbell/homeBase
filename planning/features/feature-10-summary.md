@@ -14,34 +14,35 @@ Each app has its own auth today:
 
 That's a pile of credentials for families to manage, and it still leaves the picker apps spoofable. The tailnet already authenticates each person, with the household's identity provider, MFA and its own allowlist. The suite just isn't using it.
 
+## Trust boundaries
+
+- **Who:** only members the administrator has admitted, matched on the tailnet's stable user ID. Tagged devices, unknown logins and externally shared users get no identity.
+- **Hostnames:** low-friction apps share the suite hostname. Each sensitive app and Home Base admin gets its own hostname (a Tailscale Service), so a compromised sibling app can't drive them from a member's browser.
+- **Ingress:** each hostname's Serve config → its own root-only nginx socket → the app's own socket. nginx overwrites identity headers in every location.
+- **Processes:** each sensitive app runs as its own user and owns its whole footprint: code, `.env`, data, backups, dependencies. Only root, nginx and the app itself can reach it.
+- **Requests:** the tailnet identity is ambient, like a cookie. Every mutation needs an exact Origin match and a JSON content type, and authorization runs before any mutation or prompt.
+
 ## Scope
 
-1. **Identity-safe ingress (SID-001):**
-   - Tailscale Serve → a root-only nginx Unix socket.
-   - nginx overwrites `X-Sovereign-*` identity headers from Serve's `Tailscale-User-*`.
-   - Relative redirects; no TCP path to nginx.
-2. **App listen contract (SID-002):**
-   - Apps listen on group-restricted Unix sockets.
-   - Sensitive apps run as their own service users.
-3. **Household directory (SID-003):**
-   - Members, roles (parent/kid), an administrator flag, and per-app access.
-   - A signed snapshot that apps read.
-4. **Suite passkey service at `/_sovereign/auth/` (SID-004):**
-   - Several credentials per member (1Password, Apple Passwords, YubiKey).
-   - Classification from what the authenticator reports.
-   - A signed assurance cookie, and single-use action tokens.
-5. **Home Base admin (SID-005):** tailnet identity + passkey. Every-time hardware key for privileged plans. Passphrase kept as break-glass.
-6. **Shared adapter + pilot (SID-006):** `local | tailnet | oidc` modes for Node and Python apps, in a new public `sovereignAuth` repo that apps take as a pinned git dependency. One previously passwordless app piloted end to end.
-7. **Runbook + rehearsal (SID-007):** VM rehearsal before any production host changes.
+1. **Identity-safe ingress (SID-001):** per-hostname sockets, header normalization in every location, on both the planner and executor paths. Rollback refuses to reopen TCP while any app trusts headers.
+2. **Listen contract and ownership (SID-002):** apps on owner-restricted sockets; sensitive apps' whole ownership graph moves to their own user; each app's URI behavior is preserved.
+3. **sovereignAuth core library (SID-003):** the wire contract, snapshot reader, mutation guard, assurance checks, and conformance vectors. Node first; Python when the first Python app migrates.
+4. **Directory, bootstrap and recovery (SID-004):** stable user IDs, setup → active → recovery states, enrollment grants, a root reset CLI, and a snapshot with generations and member epochs so revocation lands within a minute.
+5. **Passkey service (SID-005):** multiple credentials per member; hardware keys proven by attestation; host-scoped assurance cookies; every-time tokens bound to the exact request and consumed once by Home Base.
+6. **Home Base admin (SID-006):** its own hostname, a route authorization matrix that covers every route, and an attested hardware key every time for administrator actions.
+7. **Pilots (SID-007):** one low-friction app and the finance app as a sensitive canary.
+8. **Runbook + rehearsal (SID-008):** a VM rehearsal, including an interrupted cutover and a rollback, before any production host changes.
 
-## Freshness levels
+## Assurance levels
 
 | Level | Meaning | Used for |
 |---|---|---|
-| Tailnet | Identity header present | Every app, every request |
-| Session | A passkey check within the app's window | Opening sensitive apps (24h for trading and Bitcoin accounting, 30d for finance and estate documents) |
-| Recent | A check within 5 minutes | `credentials` actions: linking accounts, adding or removing passkeys, changing roles |
-| Every time + hardware key | A single-use token for one named action | Administrator actions: rotating secrets, granting administrator, privileged Home Base plans |
+| Tailnet | An admitted member's identity on the request | Low-friction apps, every request |
+| Session | A passkey check within the app's window, on this hostname | Opening sensitive apps (8h Home Base admin, 24h trading and Bitcoin accounting, 30d finance and estate documents) |
+| Recent | A check within 5 minutes | Linking accounts, exports, changing parent/kid, a member's own passkeys |
+| Every time + hardware key | A single-use token for one exact request | Administrator actions: privileged plans, config and publishing changes, rotating secrets, administrator credentials, granting administrator |
+
+The full matrix is `assurancePolicy` in the PRD.
 
 ## Evidence
 
@@ -53,23 +54,33 @@ Two spikes on a test VM (2026-10-23):
 - **Passkey step-up:**
   - Works with 1Password on desktop and iPhone, as long as PRF isn't requested.
   - Works with Apple Passwords and a USB-C YubiKey.
-  - Hardware keys are classified correctly from their reported flags.
   - The tailnet-level RP ID is accepted by Chrome and Safari.
-  - Every cookie and token rejection rule held.
-  - A non-administrator member (a kid's PC) could enroll a passkey and pass session and recent checks, but was refused the administrator action before any prompt.
-  - Parent/kid roles weren't exercised; the spike had only the administrator flag. The pilot (SID-006) and rehearsal (SID-007) cover them.
-- **Gaps the spikes found, all addressed by SID-001/002:**
-  - nginx on `0.0.0.0` blocked Serve's `:443` bind.
-  - Apps bind `0.0.0.0` despite the catalog.
-  - Loopback app ports accept forged headers.
-  - All apps share one service user.
-  - Redirects leaked `http://localhost` behind the socket.
+  - Cookie and token rejection rules held.
+  - A non-administrator member was refused the administrator action before any prompt.
+- **Limits:**
+  - Hardware classification came from flags, which isn't proof; attestation is now required.
+  - Single process, single origin.
+  - Parent/kid roles weren't exercised.
+
+**Spike 3 (required before SID-001):**
+- Identity headers and socket targets work on Tailscale Services traffic.
+- Two services on one host route to their own sockets.
+- Stable user IDs resolve from the client IP.
+- A local process on the host gets no member identity.
+- YubiKey attestation verifies against the pinned vendor root.
+- A cross-hostname read and post are refused.
+
+## Review
+
+An external plan review (2026-10-24) requested changes: 9 high, 5 medium. This revision addresses each one; the PRD's `reviewResolution` maps findings to changes.
 
 ## Definition of Done
 
-- A member opens any wave-1 app from their own tailnet device and lands as themselves: no picker, no PIN.
-- Sensitive apps ask for a passkey tap instead of a passphrase. Administrator actions ask for the hardware key every time.
-- No local process other than root can forge identity to nginx, Home Base or a sensitive app.
-- Home Base admin no longer needs the passphrase day to day; break-glass recovery is rehearsed.
+- The pilot app and the finance canary run in tailnet mode. A member lands as themselves with no picker or PIN; the canary asks for a passkey tap instead of a passphrase.
+- Administrator actions ask for an attested hardware key every time, and every Home Base route is in the authorization matrix.
+- Forged headers, cross-site posts, sibling-hostname requests, tagged hosts and unknown logins are all refused in tests and in the rehearsal.
+- Only root, nginx and the app itself can reach a sensitive app's socket, code, secrets or backups.
+- Revoking a passkey or disabling a member takes effect within one snapshot interval while apps keep running.
+- Home Base admin no longer needs the passphrase day to day; recovery and reset are rehearsed.
 - Every app still runs standalone with its local auth when tailnet mode is off.
-- The rollout runbook has been walked end to end on a test VM.
+- The rollout runbook has been walked end to end on a test VM, including rollback.
