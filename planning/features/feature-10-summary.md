@@ -31,7 +31,7 @@ That's a pile of credentials for families to manage, and it still leaves the pic
    - Classification from what the authenticator reports.
    - A signed assurance cookie, and single-use action tokens.
 5. **Home Base admin (SID-005):** tailnet identity + passkey. Every-time hardware key for privileged plans. Passphrase kept as break-glass.
-6. **Shared adapter + pilot (SID-006):** `local | tailnet | oidc` modes for Node and Python apps. One previously passwordless app piloted end to end.
+6. **Shared adapter + pilot (SID-006):** `local | tailnet | oidc` modes for Node and Python apps, in a new public `sovereignAuth` repo that apps take as a pinned git dependency. One previously passwordless app piloted end to end.
 7. **Runbook + rehearsal (SID-007):** VM rehearsal before any production host changes.
 
 ## Freshness levels

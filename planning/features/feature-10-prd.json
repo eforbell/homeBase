@@ -29,14 +29,15 @@
     "D9": "Operator apps (trading, Bitcoin accounting) use a 24h passkey session window",
     "D10": "'administrator' is a Home Base-only flag, separate from parent; only an administrator can grant it; never synced between hosts",
     "D11": "Multiple credentials per member (synced passkeys and hardware keys side by side); administrator must hold ≥2 credentials including ≥1 hardware key",
-    "D12": "Three freshness levels: session (app window), recent (≤5 min, 'credentials' class), every time (single-use action token); administrator actions use every time + hardware key"
+    "D12": "Three freshness levels: session (app window), recent (≤5 min, 'credentials' class), every time (single-use action token); administrator actions use every time + hardware key",
+    "D13": "The shared adapter and passkey code live in a new public repo, sovereignAuth: the Node package at the repo root, the Python twin under python/. Apps take it as a git dependency pinned to a commit (package-lock.json for Node; a git+https URL with a commit SHA and #subdirectory=python in requirements.lock for Python). Hosts need no GitHub credentials, and each app upgrades on its own schedule"
   },
   "evidence": {
     "spike1": "Serve adds Tailscale-User-Login/Name and replaces client-forged copies; correct identity from macOS, iOS web wrapper, and a kid's Windows PC; tagged host gets no identity headers. nginx on a 0700 root unix socket refuses non-root local users. Found: nginx on 0.0.0.0 blocks Serve's tailnet :443 bind; apps bind 0.0.0.0 despite catalog upstreamBind; forged X-Sovereign-* passes unless nginx overwrites it; absolute redirects leak http://localhost behind the socket",
     "spike2": "Passkey enroll/step-up with 1Password (desktop and iPhone), Apple Passwords, and a USB-C YubiKey; YubiKey classified hardware from flags; tailnet-level RP ID accepted by Chrome and Safari; signed assurance cookie rejected on identity mismatch or tamper; single-use action tokens reject reuse, wrong action, wrong kind, wrong member, and expiry; a non-administrator member (a kid's Windows PC) enrolled a synced passkey, passed session and recent checks, and was refused the administrator action with 403 before any passkey prompt. Not exercised: parent/kid roles (the spike directory had only the administrator flag; covered by the SID-006 pilot and SID-007 rehearsal). Found: apps on loopback TCP can be reached directly with forged headers; all apps share one service user"
   },
   "techStack": {
-    "language": "Node.js planner/executor + vanilla JS UI; shared adapter for Node apps and a Python twin for FastAPI apps",
+    "language": "Node.js planner/executor + vanilla JS UI; shared adapter in the sovereignAuth repo (Node package plus a Python twin for FastAPI apps)",
     "runtime": "Tailscale Serve (unix socket target), nginx on a unix socket, systemd tmpfiles/RuntimeDirectory for socket dirs, @simplewebauthn/server 13.x",
     "storage": "Home Base SQLite state for directory, credentials, and challenges; Ed25519 signing key under /var/lib/sovereign-home/homebase; signed directory snapshot file readable by the apps group",
     "testing": "Planner tests for nginx/Serve/socket rendering, unit tests for assurance and action tokens, WebAuthn flows with Chrome virtual authenticators (Playwright), VM rehearsal with real authenticators (synced passkey, platform passkey, hardware key) on macOS and iOS"
@@ -126,6 +127,8 @@
       "id": "SID-006",
       "title": "Shared suite auth adapter (Node + Python) and pilot app",
       "acceptanceCriteria": [
+        "The sovereignAuth repo exists (public) with the Node package at the root and the Python package under python/; the WebAuthn helpers extracted from the estate-documents app live there too (D11); tagged releases",
+        "The pilot app installs it as a git dependency pinned to a commit, and a Home Base install on the VM (npm ci / pip install -r requirements.lock) succeeds without GitHub credentials",
         "Adapter fills the app's existing member object (req.member / current principal) in one of three modes: local (today's auth), tailnet (trusted headers + directory snapshot), oidc (reserved, not implemented)",
         "Tailnet mode trusts identity headers only when the app is listening on its socket; otherwise it refuses to start in tailnet mode",
         "Apps link local member rows to suite_member_id once (match by display name with administrator confirmation); unlinked logins see a clear 'ask the administrator' page",
@@ -177,9 +180,6 @@
   },
   "preFlightChecklist": [
     "Confirm on each production host (read-only): tailscale serve get-config --all, ss -ltnp, and whether svc:home uses a VIP",
-    "Decide where the shared adapter lives (new small repo installed as a git dependency vs vendored file per app)",
-    "Decide RP ID default: tailnet domain (one passkey across hosts) vs host name",
-    "Decide which apps get dedicated service users in this feature vs their own wave",
     "Confirm @simplewebauthn/server version alignment with the estate-documents app",
     "Keep family names, real tailnet names, and private hostnames out of this repo's docs and tests"
   ],
