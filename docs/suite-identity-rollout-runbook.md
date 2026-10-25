@@ -33,11 +33,11 @@ Record:
 
 ## 2. Tailnet policy and services
 
-- Define the services:
-  - `svc:home` for low-friction apps;
-  - `svc:homebase` for Home Base admin;
-  - one `svc:<app>` per sensitive app.
-- Approve this host as each service's host.
+- Define the services, each qualified by this household instance:
+  - `svc:<instance>-home` for low-friction apps;
+  - `svc:<instance>-homebase` for Home Base admin;
+  - one `svc:<instance>-<app>` per sensitive app.
+- Approve this host, and only this host, for each service. Home Base refuses to publish a service that another host already serves.
 - Members need `tcp:443` to each service they use.
 - Tagged service hosts don't need app access. If one has it, it still gets no identity.
 - Remove spike-only grants (e.g. test-VM access) once the rehearsal is done.
@@ -48,13 +48,16 @@ Record:
 |---|---|---|---|
 | 3.1 | Snapshot `serve get-config --all`, the nginx site, and `sovereign-home.d/` | Files saved | — |
 | 3.2 | Install the tmpfiles.d entry for `/run/sovereign-serve` (0700 root) | Dir exists after `systemd-tmpfiles --create` | Remove entry |
-| 3.3 | nginx: one server block per service, each on its own socket; `absolute_redirect off`; identity snippet in every location; explicit mount redirects | `nginx -t`; no suite TCP listeners in `ss -ltnp` | Restore snapshot, reload (no app is in tailnet mode yet) |
+| 3.3 | nginx: one server block per service, each on its own socket and including only its own mounts; `absolute_redirect off`; identity snippet (with the identity lookup) in every location; explicit mount redirects | `nginx -t`; no suite TCP listeners in `ss -ltnp` | Restore snapshot, reload (no app is in tailnet mode yet) |
 | 3.4 | Each service's Serve config → `unix:/run/sovereign-serve/<service>.sock` (via the Home Base publish plan) | `serve status` shows each socket target | Re-apply saved Serve config |
 
 Verify after 3.x, from a member device and from the host:
 - [ ] `https://<service>.<tailnet>.ts.net/<app>/` loads for each installed app.
 - [ ] `https://<service>.<tailnet>.ts.net/<app>` redirects to `.../<app>/` (never `localhost`).
-- [ ] An echo route shows `X-Sovereign-Login` = the member's login. Forged `X-Sovereign-*` and `Tailscale-User-*` headers are replaced, on every location, including sidecar routes.
+- [ ] Every mount requested on every other service's hostname is refused, and so is a mismatched host.
+- [ ] An echo route shows the member's `X-Sovereign-User-Id` and `X-Sovereign-Login`.
+- [ ] Forged `X-Sovereign-*`, `Tailscale-User-*` and `X-Forwarded-For` headers don't change the identity, on every location, including sidecar routes.
+- [ ] With Home Base stopped, requests carry no identity.
 - [ ] `curl -k https://127.0.0.1/` on the host fails (no TCP listener).
 - [ ] A non-root local user can't connect to any nginx socket.
 - [ ] A local process requesting the host's own public service URL gets no member identity.
@@ -63,6 +66,7 @@ Verify after 3.x, from a member device and from the host:
 ## 4. Cutover: app ownership (SID-002)
 
 Per sensitive app, while the app is still in local mode:
+0. Install the app version that supports the socket listen contract. Confirm it still runs on loopback TCP before changing anything else.
 1. Create its service user. Move the checkout, `.env`, storage, backups and caches to that user; parents stay root-owned.
 2. Switch it to its socket (owner = app user, group = nginx's group, 2750; socket 0660).
 3. Verify:
@@ -108,9 +112,13 @@ Per app:
 ## 7. Tailnet rename
 
 A renamed tailnet changes the RP ID, so every passkey stops working.
-1. Re-publish services under the new name.
-2. The founder uses the passphrase, which opens recovery, and enrolls new administrator credentials.
-3. The administrator issues enrollment grants so members re-enroll.
+1. Re-publish services under the new name. Home Base then:
+   - rebinds the RP ID to the new tailnet domain (the only time it changes);
+   - marks every credential as orphaned;
+   - bumps the global epoch, so every assurance cookie stops working.
+2. The founder uses the passphrase, which opens recovery, and enrolls new administrator credentials, including an attested hardware key. A fresh hardware ceremony then returns Home Base to `active`.
+3. The administrator issues enrollment grants so members re-enroll. Members whose only credentials are orphaned count as having none.
+4. Revoke the orphaned credential records once everyone has re-enrolled.
 
 ## 8. Clean-up
 

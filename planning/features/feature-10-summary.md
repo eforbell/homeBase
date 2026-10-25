@@ -16,9 +16,10 @@ That's a pile of credentials for families to manage, and it still leaves the pic
 
 ## Trust boundaries
 
-- **Who:** only members the administrator has admitted, matched on the tailnet's stable user ID. Tagged devices, unknown logins and externally shared users get no identity.
-- **Hostnames:** low-friction apps share the suite hostname. Each sensitive app and Home Base admin gets its own hostname (a Tailscale Service), so a compromised sibling app can't drive them from a member's browser.
-- **Ingress:** each hostname's Serve config → its own root-only nginx socket → the app's own socket. nginx overwrites identity headers in every location.
+- **Who:** only members the administrator has admitted, matched on the tailnet's stable user ID. On every request, nginx asks Home Base to look up the caller's stable ID; if that lookup fails, the request has no identity. Tagged devices, unknown logins and externally shared users get no identity.
+- **Hostnames:** low-friction apps share the suite hostname. Each sensitive app and Home Base admin gets its own hostname (a Tailscale Service), so a compromised sibling app can't drive them from a member's browser. Service names carry the household instance (`svc:<instance>-<app>`), and each service has exactly one host.
+- **Ingress:** each hostname's Serve config → its own root-only nginx socket → only that hostname's allowlisted mounts → the app's own socket. nginx overwrites identity headers in every location.
+- **Snapshot and tokens:** apps read the directory from a file Home Base owns and they can only read. They redeem every-time tokens over their own Home Base socket.
 - **Processes:** each sensitive app runs as its own user and owns its whole footprint: code, `.env`, data, backups, dependencies. Only root, nginx and the app itself can reach it.
 - **Requests:** the tailnet identity is ambient, like a cookie. Every mutation needs an exact Origin match and a JSON content type, and authorization runs before any mutation or prompt.
 
@@ -27,8 +28,16 @@ That's a pile of credentials for families to manage, and it still leaves the pic
 1. **Identity-safe ingress (SID-001):** per-hostname sockets, header normalization in every location, on both the planner and executor paths. Rollback refuses to reopen TCP while any app trusts headers.
 2. **Listen contract and ownership (SID-002):** apps on owner-restricted sockets; sensitive apps' whole ownership graph moves to their own user; each app's URI behavior is preserved.
 3. **sovereignAuth core library (SID-003):** the wire contract, snapshot reader, mutation guard, assurance checks, and conformance vectors. Node first; Python when the first Python app migrates.
-4. **Directory, bootstrap and recovery (SID-004):** stable user IDs, setup → active → recovery states, enrollment grants, a root reset CLI, and a snapshot with generations and member epochs so revocation lands within a minute.
-5. **Passkey service (SID-005):** multiple credentials per member; hardware keys proven by attestation; host-scoped assurance cookies; every-time tokens bound to the exact request and consumed once by Home Base.
+4. **Directory, bootstrap and recovery (SID-004):**
+   - stable user IDs;
+   - setup → active → recovery states, with a defined recovery exception and exit;
+   - enrollment grants and a root reset CLI;
+   - a snapshot with generations, member epochs and a global epoch, so revocation lands within seconds.
+5. **Passkey service (SID-005):**
+   - multiple credentials per member;
+   - hardware keys proven by attestation to pinned vendor roots, with a policy for maintaining those roots;
+   - host-scoped assurance cookies;
+   - every-time tokens bound to the resolved target or frozen plan, consumed once by Home Base.
 6. **Home Base admin (SID-006):** its own hostname, a route authorization matrix that covers every route, and an attested hardware key every time for administrator actions.
 7. **Pilots (SID-007):** one low-friction app and the finance app as a sensitive canary.
 8. **Runbook + rehearsal (SID-008):** a VM rehearsal, including an interrupted cutover and a rollback, before any production host changes.
@@ -64,15 +73,21 @@ Two spikes on a test VM (2026-10-23):
 
 **Spike 3 (required before SID-001):**
 - Identity headers and socket targets work on Tailscale Services traffic.
-- Two services on one host route to their own sockets.
-- Stable user IDs resolve from the client IP.
+- Two services on one host route to their own sockets and serve only their own mounts.
+- Serve's `X-Forwarded-For` can't be spoofed by the client.
+- nginx's per-request identity lookup returns the stable user ID.
 - A local process on the host gets no member identity.
-- YubiKey attestation verifies against the pinned vendor root.
+- A second host can't take over another host's service.
+- YubiKey attestation verifies against the pinned vendor root, and unpinned or self-attested credentials don't count as hardware.
 - A cross-hostname read and post are refused.
 
 ## Review
 
-An external plan review (2026-10-24) requested changes: 9 high, 5 medium. This revision addresses each one; the PRD's `reviewResolution` maps findings to changes.
+Two rounds of external plan review:
+- **Round 1 (2026-10-24):** requested changes, with 9 high and 5 medium findings.
+- **Round 2:** found 8 of those resolved, 6 partly resolved, and 9 new issues.
+
+Revision 3 (2026-10-25) addresses all of them. The PRD's `reviewResolution` maps each finding to the change that answers it.
 
 ## Definition of Done
 
