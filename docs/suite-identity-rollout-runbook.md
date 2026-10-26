@@ -51,7 +51,10 @@ Record:
   Done in the wrong order, this host loses its approvals while a stale host keeps its own.
 - **After any approver change, review every service's hosts in the console** and remove any host other than this one. Tightening the policy doesn't revoke approvals that already exist.
 - Turn on Tailnet Lock if it isn't already. A leaked tagged auth key then can't add a host without a trusted signature.
-- Either add a read-only Tailscale API credential (policy and device read only) to Home Base for automatic verification, or plan to confirm the checklist with the hardware key on each publish and every 30 days (D23).
+- Choose how Home Base verifies each service's hosts (D23):
+  - **Automatic:** a Tailscale API credential that can only read services and devices. Home Base lists every host of each service, standbys included, and requires exactly one approved host: this one.
+  - **Confirmation:** on the console's Services page, check that each service lists exactly one approved host and remove any other. Confirm in Home Base with the hardware key on each publish and every 30 days.
+- On a fresh host, only `svc:<instance>-homebase` can be published during setup, before any hardware key exists. Everything else waits until Home Base is active and the check has passed again.
 - Members need `tcp:443` to each service they use. Members with sensitive apps also need `svc:<instance>-homebase`, where all credential management happens.
 - Tagged service hosts don't need app access. If one has it, it still gets no identity.
 - Remove spike-only grants (e.g. test-VM access) once the rehearsal is done.

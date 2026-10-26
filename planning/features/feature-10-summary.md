@@ -106,7 +106,9 @@ New service hostnames take 35–40 s on first use while their certificate is iss
 - **Tightening the policy:** switching approvers to a per-host tag **left its existing approval in place**, so it still took over. The real host lost its approvals until it had the new tag.
 - **Fresh advertisement:** after withdrawing and advertising again, the node stayed unapproved and got no traffic.
 
-The local host can't see standby hosts or the policy. So, under D23, Home Base verifies the setup through a read-only Tailscale API credential, or the administrator confirms a checklist with the hardware key. The runbook adds:
+The local host can't see standby hosts, and a correct policy doesn't prove there's no stale approval. So D23 decides on the service's **host list**, which the Tailscale API returns with every host and its approval level, standbys included. The check passes only if exactly one host is approved, and it's this one. A missing or partial list means unverified.
+
+Without an API credential, the administrator confirms the same list from the console, with the hardware key. On a fresh install, only the Home Base hostname can be published before the first hardware key exists. The runbook adds:
 - the order for changing the policy;
 - a review of existing approvals after every change;
 - Tailnet Lock.
