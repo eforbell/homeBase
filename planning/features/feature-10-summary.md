@@ -21,7 +21,7 @@ That's a pile of credentials for families to manage, and it still leaves the pic
 - **Ingress:** each hostname's Serve config → its own root-only nginx socket → only that hostname's allowlisted mounts → the app's own socket. nginx overwrites identity headers in every location.
 - **Snapshot and tokens:** apps read the directory from a file Home Base owns and they can only read. They redeem every-time tokens over their own Home Base socket.
 - **Processes:** each sensitive app runs as its own user and owns its whole footprint: code, `.env`, data, backups, dependencies. Only root, nginx and the app itself can reach it.
-- **Requests:** the tailnet identity is ambient, like a cookie. Every mutation needs an exact Origin match and a JSON content type, and authorization runs before any mutation or prompt.
+- **Requests:** the tailnet identity is ambient, like a cookie. Every mutation needs an exact Origin match and a JSON content type, and authorization runs before any mutation or prompt. All service hostnames are one browser site (D20), so SameSite doesn't separate them: cookies are `__Host-` and bound to their hostname, and GETs change nothing.
 
 ## Scope
 
@@ -71,15 +71,26 @@ Two spikes on a test VM (2026-10-23):
   - Single process, single origin.
   - Parent/kid roles weren't exercised.
 
-**Spike 3 (required before SID-001):**
-- Identity headers and socket targets work on Tailscale Services traffic.
-- Two services on one host route to their own sockets and serve only their own mounts.
-- Serve's `X-Forwarded-For` can't be spoofed by the client.
-- nginx's per-request identity lookup returns the stable user ID.
-- A local process on the host gets no member identity.
-- A second host can't take over another host's service.
-- YubiKey attestation verifies against the pinned vendor root, and unpinned or self-attested credentials don't count as hardware.
-- A cross-hostname read and post are refused.
+**Spike 3 (2026-10-25, Tailscale 1.102.4, tagged test VM, two test services):**
+- **Services:** identity headers and socket targets work on Tailscale Services traffic. Each service reaches only its own socket and mounts; a hostname sent to the wrong service gets 421.
+- **Forwarded headers:** Serve overwrites client-sent `X-Forwarded-For` and `X-Forwarded-Host`.
+- **Identity lookup:** nginx's per-request lookup returns the stable user ID, ignores forged headers, and fails closed when the endpoint is down.
+- **Local processes:** on a user-owned host, any local process reached the host's own URL as the owner (why D2 requires tagged hosts). Once the host was tagged, local requests carried no login.
+- **Service takeover:** a user-owned node is refused as a service host. A second *tagged* host wasn't available, so that check moves to the SID-008 rehearsal.
+- **Hardware keys:** a YubiKey's attestation verified against the pinned Yubico root and failed with a wrong one. A software authenticator was refused hardware under both attestation settings.
+- **Cross-hostname:** reads are blocked by the browser, and a JSON post stops at the preflight. A form post reaches the app with the member's identity; the mutation guard refuses it.
+
+**What spike 3 changed (D20).** Every service hostname in a tailnet is the same browser *site*, because `ts.net` is a public suffix:
+- A sibling hostname's requests arrive as `same-site`.
+- A cookie set for the tailnet domain reaches every hostname, even with `SameSite=Strict`.
+
+So the plan now requires:
+- `__Host-` assurance cookies;
+- side-effect-free GETs;
+- refusal of non-navigation same-site requests in sensitive apps;
+- each passkey ceremony accepting only its own hostname's origin.
+
+New service hostnames take 35–40 s on first use while their certificate is issued, so publishing waits for it.
 
 ## Review
 

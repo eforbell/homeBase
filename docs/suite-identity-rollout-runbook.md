@@ -50,6 +50,7 @@ Record:
 | 3.2 | Install the tmpfiles.d entry for `/run/sovereign-serve` (0700 root) | Dir exists after `systemd-tmpfiles --create` | Remove entry |
 | 3.3 | nginx: one server block per service, each on its own socket and including only its own mounts; `absolute_redirect off`; identity snippet (with the identity lookup) in every location; explicit mount redirects | `nginx -t`; no suite TCP listeners in `ss -ltnp` | Restore snapshot, reload (no app is in tailnet mode yet) |
 | 3.4 | Each service's Serve config → `unix:/run/sovereign-serve/<service>.sock` (via the Home Base publish plan) | `serve status` shows each socket target | Re-apply saved Serve config |
+| 3.5 | Warm each new hostname's certificate: request `https://<service>.<tailnet>.ts.net/` once and wait (first issue takes ~35–40 s) | Second request answers in under a second | — |
 
 Verify after 3.x, from a member device and from the host:
 - [ ] `https://<service>.<tailnet>.ts.net/<app>/` loads for each installed app.
@@ -62,6 +63,11 @@ Verify after 3.x, from a member device and from the host:
 - [ ] A non-root local user can't connect to any nginx socket.
 - [ ] A local process requesting the host's own public service URL gets no member identity.
 - [ ] A tagged host and an unknown login get no identity.
+- [ ] From a page on `svc:<instance>-home`, a credentialed read of a sensitive hostname fails. A form post to it carries `Sec-Fetch-Site: same-site` and the sibling's Origin, and the app refuses it.
+- [ ] A cookie set on the home hostname with `Domain=<tailnet>.ts.net` is ignored by every sensitive app and by Home Base. Only `__Host-` cookies are read.
+- [ ] A second tagged host can't advertise a service this host serves (rehearsal VM only).
+
+Note: a service host can't resolve its own service names through tailnet DNS. Run the "local process" check with `curl --resolve <service>.<tailnet>.ts.net:443:<service IP>`.
 
 ## 4. Cutover: app ownership (SID-002)
 

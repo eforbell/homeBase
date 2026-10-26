@@ -4,9 +4,9 @@
   "description": "Replace per-app passphrases, PINs, and name pickers with one household identity. The tailnet login (asserted by Tailscale Serve) identifies the member on every request with zero interaction. Home Base keeps the household directory and runs a suite passkey service that sensitive apps use for step-up checks. Sensitive apps and Home Base admin each get their own hostname so a compromised sibling app cannot drive them from the browser. Every app keeps its existing local auth as the standalone fallback.",
   "timing": {
     "draftedOn": "2026-10-23",
-    "revisedOn": "2026-10-25",
+    "revisedOn": "2026-10-26",
     "plannedEarliestExecution": "After the Feature-4 Serve publishing lane is stable on production hosts",
-    "gatingCondition": "Spike 1 (Serve identity headers) and spike 2 (passkey step-up prototype) passed on a test VM on 2026-10-23. Spike 3 (evidence.spike3Required) must pass on the production Tailscale version before SID-001 starts. Production Serve topology must be confirmed read-only on each host before SID-001 executes there."
+    "gatingCondition": "Spikes 1 and 2 passed on a test VM on 2026-10-23; spike 3 passed on 2026-10-25 (evidence.spike3) on Tailscale 1.102.4, except the second-tagged-host takeover check, which moves to the SID-008 rehearsal. Each production host must run Tailscale ≥ 1.102.4 and have its Serve topology confirmed read-only before SID-001 executes there."
   },
   "review": {
     "2026-10-24": "External plan review (Codex) requested changes: 9 high, 5 medium. This revision addresses all 14; see reviewResolution",
@@ -41,9 +41,10 @@
     "D14": "Separate hostnames via Tailscale Services, qualified by household instance: svc:<instance>-home (low-friction apps), svc:<instance>-homebase (admin), svc:<instance>-<app> per sensitive app. Each service has exactly one host; Home Base refuses to publish a service another host already advertises. Each service targets its own root-only nginx socket and serves only its own allowlisted mounts",
     "D15": "Credential kinds: synced, device-bound, hardware. 'hardware' requires attestation verified against pinned vendor root certificates shipped in sovereignAuth; flags alone never make a credential hardware",
     "D16": "Bootstrap states: setup → active → recovery (SID-004). Recovery is the only exception to the credential rules: the recorded administrator (same stable user ID) plus the passphrase may enroll replacement administrator credentials without an existing hardware check. Recovery ends when the administrator again meets D11 and completes a fresh hardware ceremony",
-    "D17": "The RP ID is the tailnet domain, fixed when the first credential is enrolled; expected origins are the exact list of https://<service>.<tailnet>.ts.net names Home Base publishes (port 443 only). It is not configurable per host. The only change is a tailnet rename, which rebinds it, orphans every credential, bumps the global epoch, and enters recovery (runbook section 7)",
+    "D17": "The RP ID is the tailnet domain, fixed when the first credential is enrolled. Because every hostname in the tailnet can start a ceremony for that RP ID, each ceremony accepts exactly one origin: https://<the hostname it was served on> (port 443 only), and the cookie or token it produces is scoped to that hostname. Home Base serves ceremonies only on hostnames it publishes. The RP ID is not configurable per host. The only change is a tailnet rename, which rebinds it, orphans every credential, bumps the global epoch, and enters recovery (runbook section 7)",
     "D18": "Snapshot trust comes from file ownership: Home Base writes it into a directory it owns that apps can read but not write. Apps open it by descriptor (no symlinks) and refuse it unless the file and directory are owned by the Home Base user and writable by no one else. It is rewritten on every change and every 30 s; apps re-check at most every 5 s and refuse it when older than 120 s",
-    "D19": "Token redemption goes over a per-app Home Base socket, /run/sovereign-identity/<app>.sock (owner Home Base user, group the app's user, 0660), so the socket path authenticates the calling app. Redemption fails closed on timeout or Home Base restart"
+    "D19": "Token redemption goes over a per-app Home Base socket, /run/sovereign-identity/<app>.sock (owner Home Base user, group the app's user, 0660), so the socket path authenticates the calling app. Redemption fails closed on timeout or Home Base restart",
+    "D20": "All service hostnames in one tailnet are a single browser site: ts.net is a public suffix, so <service>.<tailnet>.ts.net names are same-site to each other (spike 3: Sec-Fetch-Site: same-site; a Domain=<tailnet>.ts.net cookie set on one hostname is sent to the others, even with SameSite=Strict). SameSite gives no isolation between them. Isolation therefore rests on: exact-Origin and Sec-Fetch-Site: same-origin checks on mutations, __Host- prefixed cookies (which a sibling cannot set), aud-bound signed cookies, side-effect-free GET/HEAD, and refusing non-navigation requests from same-site or cross-site in sensitive apps and Home Base admin"
   },
   "assurancePolicy": {
     "levels": {
@@ -114,7 +115,8 @@
       "A second host cannot advertise the first host's instance-qualified service while Home Base's guard is in place",
       "A YubiKey registration with attestation 'direct' verifies against the pinned vendor root; a software authenticator reporting the same flags, a self-attested credential, and a valid chain to an unpinned root do not",
       "A page on the home service cannot read responses from a sensitive service, and its credentialed cross-origin POST is refused by the Origin check"
-    ]
+    ],
+    "spike3": "Test VM, Tailscale 1.102.4, 2026-10-25, host tagged, two instance-qualified test services. Passed: Serve identity headers and unix-socket targets work on Tailscale Services; each service reaches only its own nginx socket and allowlisted mounts (others 404; a hostname sent to the other service's address gets 421); Serve overwrites client-sent X-Forwarded-For (single and multiple values) and X-Forwarded-Host; the nginx auth_request whois lookup returns the stable user ID and ignores forged X-Sovereign-*, Tailscale-User-*, X-Forwarded-* headers; stopping the identity endpoint fails requests closed; a non-root local user cannot connect to the nginx sockets. On the user-owned node, any local process (even nobody) reached the host's own Serve URL as the owner (confirms D2; a self-IP guard in the identity endpoint refused it); once tagged, local requests carry no login. A user-owned node is refused as a service host (\"service hosts must be tagged nodes\"). A YubiKey packed attestation verified against the pinned Yubico U2F root and was rejected with a wrong root; with no roots loaded the library skips chain checks (why SID-005 refuses that); a software authenticator's direct attestation was rejected under pinned roots and its none-attestation credential classified device-bound, where the spike-2 flag rule would have said hardware. Cross-hostname from the home service to a sensitive one: credentialed reads are blocked by CORS, a JSON POST stops at the preflight, a form POST reaches the app with the member's identity, Origin of the sibling, and Sec-Fetch-Site: same-site (refused by the SID-003 mutation guard). Found: hostnames are same-site (D20) and cookie tossing works; each new service hostname takes 35–40 s on first request while its certificate is issued; a service host cannot resolve its own service names through tailnet DNS. Not tested: a second tagged host trying to take over a service (SID-008)"
   },
   "techStack": {
     "language": "Node.js planner/executor + vanilla JS UI; shared library in the sovereignAuth repo (Node; Python later per D13)",
@@ -137,7 +139,9 @@
         "Apps and Home Base read identity only from X-Sovereign-*; a forged X-Sovereign-* or Tailscale-User-* header is replaced or dropped on every location, including sidecar routes (e.g. the bug tracker's MCP location)",
         "Planner refuses tailnet identity for an app whose upstream is still TCP, and on a user-owned (untagged) serving node; it says why",
         "Feature-4 verification replaces the 'nginx listener on tcp:443' check with 'nginx sockets present, root-only, and each service targets its own'; readiness checks in src/operations/policy.js no longer assume ports",
-        "Rollback is dependency-ordered: the planner refuses to restore any TCP ingress while any app is in tailnet mode; the rollback plan first returns every app to local mode, then restores the saved Serve and nginx config"
+        "Rollback is dependency-ordered: the planner refuses to restore any TCP ingress while any app is in tailnet mode; the rollback plan first returns every app to local mode, then restores the saved Serve and nginx config",
+        "Publishing a service waits until its certificate is issued (first request takes 35–40 s) and verifies the hostname answers before any app on it switches to tailnet mode",
+        "The identity endpoint refuses lookups for the host's own tailnet addresses, as a backstop to D2"
       ],
       "priority": 1,
       "estimatedLines": "+680/-130",
@@ -172,9 +176,10 @@
         "Defines and documents the wire contract: X-Sovereign-* headers, snapshot format, assurance cookie, action token, step-up 401 body",
         "Snapshot reader (D18): opens by descriptor without following symlinks; refuses a snapshot that is missing, not owned by the Home Base user, writable by anyone else, older than 120 s, or of a lower generation than the last one seen; re-checks at most every 5 s",
         "Request guard: the member comes from X-Sovereign-User-Id looked up in the snapshot (never from the login alone), and the snapshot's login for that ID must match X-Sovereign-Login; unknown, disabled, or tagged ⇒ no member; app modes are 'local' or 'tailnet' only, anything else fails closed; tailnet mode refuses to start unless listening on its socket",
-        "Mutation guard (default on for every non-GET/HEAD): Origin must equal this hostname's origin, content type must be application/json, Sec-Fetch-Site must be same-origin when present",
-        "requireAssurance(policyKey, {target}) reads the level and kind from the assurance policy matrix and returns step_up_required before the handler runs. Cookies must match aud (this hostname), the member's epoch, and the global epoch. Every-time actions redeem the token over the app's own redemption socket (D19), passing the action and the target the app resolved before the 401, and Home Base rechecks the member's current authorization",
-        "Conformance vectors (valid, expired, wrong aud, stale epoch, replayed, wrong digest) ship with the repo for any later language port",
+        "Mutation guard (default on for every non-GET/HEAD): Origin must equal this hostname's origin (same-site is not enough, D20), content type must be application/json, Sec-Fetch-Site must be same-origin when present. GET and HEAD handlers must have no side effects (a sibling hostname's GET reaches the app with the member's identity); exports and other actions are POST",
+        "Resource isolation (on by default for sensitive apps and Home Base admin): refuse a request whose Sec-Fetch-Site is same-site or cross-site unless it is a top-level GET navigation",
+        "requireAssurance(policyKey, {target}) reads the level and kind from the assurance policy matrix and returns step_up_required before the handler runs. Only the __Host-sv_assurance cookie is read (any other name, including a same-named cookie without the prefix, is ignored); it must match aud (this hostname), the member's epoch, and the global epoch. Every-time actions redeem the token over the app's own redemption socket (D19), passing the action and the target the app resolved before the 401, and Home Base rechecks the member's current authorization",
+        "Conformance vectors (valid, expired, wrong aud, stale epoch, replayed, wrong digest, unprefixed or tossed cookie, same-site Origin) ship with the repo for any later language port",
         "The WebAuthn helpers extracted from the estate-documents app live here (D11)"
       ],
       "priority": 3,
@@ -217,8 +222,9 @@
         "Members enroll multiple credentials (label, kind, AAGUID, transports, created/last-used) and revoke them, per the assurance policy matrix",
         "Kind (D15): 'hardware' only with 'packed' attestation whose chain verifies to a root pinned in sovereignAuth; Home Base refuses to classify anything as hardware when no roots are loaded (the library would otherwise skip chain checks); self-attestation or an unpinned chain ⇒ not hardware. Each credential records the root it verified against",
         "Pinned roots are updated through sovereignAuth releases; removing a root (e.g. vendor compromise) demotes credentials that verified against it on the next snapshot, and an administrator left without an attested hardware key is told to enroll a new one",
-        "Ceremonies use RP ID = the tailnet domain (D17), userVerification required, no PRF; the server checks the exact origin against the published list",
-        "Successful checks set a host-only, HttpOnly, Secure, SameSite=Strict sv_assurance cookie: Ed25519-signed {sub (stable user ID), aud (hostname), sid, cred, kind, epoch, auth_time}",
+        "Ceremonies use RP ID = the tailnet domain (D17), userVerification required, no PRF. Each ceremony's expected origin is the single origin of the hostname that served it (from X-Forwarded-Host), never the whole published list; an assertion produced on a sibling hostname is refused, and its cookie or token is never valid elsewhere",
+        "Attestation is requested ('direct') only when enrolling an administrator hardware key; ordinary enrollment requests 'none', because with roots pinned an unpinned packed chain is rejected outright rather than downgraded",
+        "Successful checks set a __Host-sv_assurance cookie (Secure, Path=/, no Domain, HttpOnly, SameSite=Strict): Ed25519-signed {sub (stable user ID), aud (hostname), sid, cred, kind, epoch, auth_time}. The __Host- prefix is required because sibling hostnames are same-site and can otherwise plant cookies (D20)",
         "Every-time tokens are minted only from a fresh ceremony and bind {sub, household, aud app, action, resolved target, digest}. For Home Base plans the digest is of the frozen plan (e.g. restore resolves 'latest' to a named backup before the 401) and the retry runs exactly that frozen plan; for apps it covers the canonical request body plus the target the app resolved. 60-second expiry; consumed atomically in SQLite (one consumption across processes and restarts)",
         "The shared helper (/_sovereign/auth/stepup.js) turns a 401 step_up_required into its own confirm tap (iOS gesture), the ceremony, and one retry of the identical request; it never retries a request that changed",
         "Signing-key rotation keeps the previous public key in the snapshot for one session window; losing the key invalidates sessions only",
@@ -281,6 +287,7 @@
       ],
       "acceptanceCriteria": [
         "docs/suite-identity-rollout-runbook.md covers read-only pre-checks, tailnet policy and service definitions, dependency-ordered cutover and rollback, verification, and the tailnet-rename re-enrollment procedure",
+        "The rehearsal adds the one spike-3 check not yet run: a second tagged host trying to advertise an instance-qualified service the first host serves is refused by the Home Base guard (and is not auto-approved)",
         "A full rehearsal on a test VM passes the spike-1, spike-2, and spike-3 checklists, an interrupted cutover, and a rollback, before any production host changes",
         "Spike-only tailnet grants are removed after the rehearsal"
       ],
@@ -340,14 +347,15 @@
       "Renaming the tailnet invalidates every passkey (RP ID); the runbook's re-enrollment procedure is the only path",
       "iOS requires a fresh user gesture for WebAuthn; the shared helper must keep its own confirm tap",
       "Kids' surfaces must not regress; wave 1 must be invisible to kids except for removing the picker",
-      "If Home Base stops writing the snapshot, tailnet-mode apps refuse members once it ages out; max age must balance revocation speed against outages"
+      "If Home Base stops writing the snapshot, tailnet-mode apps refuse members once it ages out; max age must balance revocation speed against outages",
+      "Service hostnames are one browser site (D20): a compromised low-friction app can send credentialed requests and plant unprefixed cookies on sensitive hostnames. Mitigated by the exact-Origin, __Host-, aud, side-effect-free GET and resource-isolation rules; every new route needs those tests"
     ],
     "low": [
       "Hardware vendors outside the pinned roots can't serve as administrator hardware keys until their root is added"
     ]
   },
   "preFlightChecklist": [
-    "Run spike 3 on the test VM",
+    "Spike 3 passed on the test VM (2026-10-25); confirm each production host runs Tailscale ≥ 1.102.4",
     "Confirm on each production host (read-only): tailscale serve get-config --all, ss -ltnp, host tags, and how svc:home is defined",
     "Confirm @simplewebauthn/server version alignment with the estate-documents app",
     "Keep family names, real tailnet names, and private hostnames out of this repo's docs and tests"
