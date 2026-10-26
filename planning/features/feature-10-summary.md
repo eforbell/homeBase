@@ -76,21 +76,32 @@ Two spikes on a test VM (2026-10-23):
 - **Forwarded headers:** Serve overwrites client-sent `X-Forwarded-For` and `X-Forwarded-Host`.
 - **Identity lookup:** nginx's per-request lookup returns the stable user ID, ignores forged headers, and fails closed when the endpoint is down.
 - **Local processes:** on a user-owned host, any local process reached the host's own URL as the owner (why D2 requires tagged hosts). Once the host was tagged, local requests carried no login.
-- **Service takeover:** a user-owned node is refused as a service host. A second *tagged* host wasn't available, so that check moves to the SID-008 rehearsal.
+- **Service takeover:** a user-owned node is refused as a service host. A second *tagged* host wasn't available; see spike 3b below.
 - **Hardware keys:** a YubiKey's attestation verified against the pinned Yubico root and failed with a wrong one. A software authenticator was refused hardware under both attestation settings.
-- **Cross-hostname:** reads are blocked by the browser, and a JSON post stops at the preflight. A form post reaches the app with the member's identity; the mutation guard refuses it.
+- **Cross-hostname:** reads are blocked by the browser, and a JSON post stops at the preflight. A form post reaches the app with the member's identity. The test app had no guards, so this shows what arrives; server-side refusal is tested in SID-003 and the rehearsal.
 
 **What spike 3 changed (D20).** Every service hostname in a tailnet is the same browser *site*, because `ts.net` is a public suffix:
 - A sibling hostname's requests arrive as `same-site`.
 - A cookie set for the tailnet domain reaches every hostname, even with `SameSite=Strict`.
 
 So the plan now requires:
-- `__Host-` assurance cookies;
-- side-effect-free GETs;
-- refusal of non-navigation same-site requests in sensitive apps;
-- each passkey ceremony accepting only its own hostname's origin.
+- **Cookies:** `__Host-` assurance cookies, bound to their hostname.
+- **GETs:** side-effect free. Pages also must not mutate on load from URL parameters.
+- **Sensitive and Home Base hostnames:**
+  - accept only same-origin requests and top-level document navigations;
+  - refuse requests with missing fetch metadata;
+  - send `frame-ancestors 'none'`.
+- **Passkey ceremonies (D17, D21):**
+  - run only on the Home Base and sensitive hostnames, never on the low-friction hostname;
+  - all credential management happens on the Home Base hostname;
+  - each challenge is stored with its hostname, member and purpose, and verified once.
+- **OAuth callbacks (D22):** a read-only landing page, then a same-origin POST, with single-use state bound to the member and hostname.
 
 New service hostnames take 35–40 s on first use while their certificate is issued, so publishing waits for it.
+
+**Spike 3b (required before SID-001).** Spike 3 couldn't try a second *tagged* host, and its own test policy auto-approved services for a shared tag, which any second host with that tag would also satisfy. The boundary is the tailnet policy, not Home Base, so D14 now requires per-host tags and per-service approvers. Spike 3b runs a second tagged node with the raw Tailscale CLI:
+- With a shared approver tag, the second node gets approved.
+- With per-host approvers, it doesn't.
 
 ## Review
 
@@ -98,7 +109,7 @@ Two rounds of external plan review:
 - **Round 1 (2026-10-24):** requested changes, with 9 high and 5 medium findings.
 - **Round 2:** found 8 of those resolved, 6 partly resolved, and 9 new issues.
 
-Revision 3 (2026-10-25) addresses all of them. The PRD's `reviewResolution` maps each finding to the change that answers it.
+Revision 3 (2026-10-25) addresses all of them. A review of the spike-3 change (2026-10-26) requested changes (2 high, 2 medium: ceremonies on the low-friction hostname, framing, OAuth callbacks, service approval), addressed in the same PR. The PRD's `reviewResolution` maps each finding to the change that answers it.
 
 ## Definition of Done
 

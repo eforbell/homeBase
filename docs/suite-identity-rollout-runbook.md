@@ -37,8 +37,13 @@ Record:
   - `svc:<instance>-home` for low-friction apps;
   - `svc:<instance>-homebase` for Home Base admin;
   - one `svc:<instance>-<app>` per sensitive app.
-- Approve this host, and only this host, for each service. Home Base refuses to publish a service that another host already serves.
-- Members need `tcp:443` to each service they use.
+- Give this host its own tag (`tag:<instance>-host`), used by no other machine.
+- Approve this host, and only this host, for each service:
+  - either auto-approve each service only for this host's tag;
+  - or approve by hand.
+
+  Never use a tag that several hosts share as an approver. Any host with that tag could take over the service. Home Base refuses to publish a service another host already serves, but that is only a second check. The policy is the boundary.
+- Members need `tcp:443` to each service they use. Members with sensitive apps also need `svc:<instance>-homebase`, where all credential management happens.
 - Tagged service hosts don't need app access. If one has it, it still gets no identity.
 - Remove spike-only grants (e.g. test-VM access) once the rehearsal is done.
 
@@ -50,7 +55,7 @@ Record:
 | 3.2 | Install the tmpfiles.d entry for `/run/sovereign-serve` (0700 root) | Dir exists after `systemd-tmpfiles --create` | Remove entry |
 | 3.3 | nginx: one server block per service, each on its own socket and including only its own mounts; `absolute_redirect off`; identity snippet (with the identity lookup) in every location; explicit mount redirects | `nginx -t`; no suite TCP listeners in `ss -ltnp` | Restore snapshot, reload (no app is in tailnet mode yet) |
 | 3.4 | Each service's Serve config → `unix:/run/sovereign-serve/<service>.sock` (via the Home Base publish plan) | `serve status` shows each socket target | Re-apply saved Serve config |
-| 3.5 | Warm each new hostname's certificate: request `https://<service>.<tailnet>.ts.net/` once and wait (first issue takes ~35–40 s) | Second request answers in under a second | — |
+| 3.5 | Warm each new hostname's certificate from the host: `curl --resolve <service>.<tailnet>.ts.net:443:<service IP> https://<service>.<tailnet>.ts.net/` and wait (first issue takes ~35–40 s) | Second request answers in under a second | — |
 
 Verify after 3.x, from a member device and from the host:
 - [ ] `https://<service>.<tailnet>.ts.net/<app>/` loads for each installed app.
@@ -63,9 +68,13 @@ Verify after 3.x, from a member device and from the host:
 - [ ] A non-root local user can't connect to any nginx socket.
 - [ ] A local process requesting the host's own public service URL gets no member identity.
 - [ ] A tagged host and an unknown login get no identity.
-- [ ] From a page on `svc:<instance>-home`, a credentialed read of a sensitive hostname fails. A form post to it carries `Sec-Fetch-Site: same-site` and the sibling's Origin, and the app refuses it.
+- [ ] From a page on `svc:<instance>-home`, requests to a sensitive hostname are refused **on the server** (check its log, not just the browser): fetch, form post, image, script and iframe.
+- [ ] A top-level link from the home hostname to a sensitive page opens it and changes nothing.
+- [ ] Sensitive and Home Base responses carry `Content-Security-Policy: frame-ancestors 'none'`, including `/_sovereign/auth/`.
+- [ ] A request with no `Sec-Fetch-Site` header is refused on sensitive and Home Base hostnames.
 - [ ] A cookie set on the home hostname with `Domain=<tailnet>.ts.net` is ignored by every sensitive app and by Home Base. Only `__Host-` cookies are read.
-- [ ] A second tagged host can't advertise a service this host serves (rehearsal VM only).
+- [ ] `/_sovereign/auth/` returns 404 on `svc:<instance>-home`.
+- [ ] A second tagged host can't become a host of a service this host serves (rehearsal VM only; spike 3b procedure).
 
 Note: a service host can't resolve its own service names through tailnet DNS. Run the "local process" check with `curl --resolve <service>.<tailnet>.ts.net:443:<service IP>`.
 
@@ -90,7 +99,7 @@ Per sensitive app, while the app is still in local mode:
    - a second attested hardware key (offline spare).
 4. Home Base moves to `active`. Confirm the passphrase now opens only a recovery session.
 5. Add members (stable user IDs, parent/kid) and set app access.
-6. Members with sensitive apps enroll through a 15-minute enrollment grant.
+6. Members with sensitive apps enroll through a 15-minute enrollment grant, on the Home Base hostname. Credentials can't be enrolled or revoked anywhere else.
 
 Verify:
 - [ ] A privileged plan asks for the hardware key every time, and a token for one plan can't run another.
