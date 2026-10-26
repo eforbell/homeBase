@@ -21,7 +21,7 @@ That's a pile of credentials for families to manage, and it still leaves the pic
 - **Ingress:** each hostname's Serve config → its own root-only nginx socket → only that hostname's allowlisted mounts → the app's own socket. nginx overwrites identity headers in every location.
 - **Snapshot and tokens:** apps read the directory from a file Home Base owns and they can only read. They redeem every-time tokens over their own Home Base socket.
 - **Processes:** each sensitive app runs as its own user and owns its whole footprint: code, `.env`, data, backups, dependencies. Only root, nginx and the app itself can reach it.
-- **Requests:** the tailnet identity is ambient, like a cookie. Every mutation needs an exact Origin match and a JSON content type, and authorization runs before any mutation or prompt.
+- **Requests:** the tailnet identity is ambient, like a cookie. Every mutation needs an exact Origin match and a JSON content type, and authorization runs before any mutation or prompt. All service hostnames are one browser site (D20), so SameSite doesn't separate them: cookies are `__Host-` and bound to their hostname, and GETs change nothing.
 
 ## Scope
 
@@ -71,15 +71,47 @@ Two spikes on a test VM (2026-10-23):
   - Single process, single origin.
   - Parent/kid roles weren't exercised.
 
-**Spike 3 (required before SID-001):**
-- Identity headers and socket targets work on Tailscale Services traffic.
-- Two services on one host route to their own sockets and serve only their own mounts.
-- Serve's `X-Forwarded-For` can't be spoofed by the client.
-- nginx's per-request identity lookup returns the stable user ID.
-- A local process on the host gets no member identity.
-- A second host can't take over another host's service.
-- YubiKey attestation verifies against the pinned vendor root, and unpinned or self-attested credentials don't count as hardware.
-- A cross-hostname read and post are refused.
+**Spike 3 (2026-10-25, Tailscale 1.102.4, tagged test VM, two test services):**
+- **Services:** identity headers and socket targets work on Tailscale Services traffic. Each service reaches only its own socket and mounts; a hostname sent to the wrong service gets 421.
+- **Forwarded headers:** Serve overwrites client-sent `X-Forwarded-For` and `X-Forwarded-Host`.
+- **Identity lookup:** nginx's per-request lookup returns the stable user ID, ignores forged headers, and fails closed when the endpoint is down.
+- **Local processes:** on a user-owned host, any local process reached the host's own URL as the owner (why D2 requires tagged hosts). Once the host was tagged, local requests carried no login.
+- **Service takeover:** a user-owned node is refused as a service host. A second *tagged* host wasn't available; see spike 3b below.
+- **Hardware keys:** a YubiKey's attestation verified against the pinned Yubico root and failed with a wrong one. A software authenticator was refused hardware under both attestation settings.
+- **Cross-hostname:** reads are blocked by the browser, and a JSON post stops at the preflight. A form post reaches the app with the member's identity. The test app had no guards, so this shows what arrives; server-side refusal is tested in SID-003 and the rehearsal.
+
+**What spike 3 changed (D20).** Every service hostname in a tailnet is the same browser *site*, because `ts.net` is a public suffix:
+- A sibling hostname's requests arrive as `same-site`.
+- A cookie set for the tailnet domain reaches every hostname, even with `SameSite=Strict`.
+
+So the plan now requires:
+- **Cookies:** `__Host-` assurance cookies, bound to their hostname.
+- **GETs:** side-effect free. Pages also must not mutate on load from URL parameters.
+- **Sensitive and Home Base hostnames:**
+  - accept only same-origin requests and top-level document navigations;
+  - refuse requests with missing fetch metadata;
+  - send `frame-ancestors 'none'`.
+- **Passkey ceremonies (D17, D21):**
+  - run only on the Home Base and sensitive hostnames, never on the low-friction hostname;
+  - all credential management happens on the Home Base hostname;
+  - each challenge is stored with its hostname, member and purpose, and verified once.
+- **OAuth callbacks (D22):** a read-only landing page, then a same-origin POST, with single-use state bound to the member and hostname. This is the only page allowed to act on URL parameters, and apps that can't follow it stay entirely in local mode.
+- **Supported browsers:** Safari 16.4+ (including the iOS wrapper), Chrome/Edge 80+ and Firefox 90+. Older browsers are refused on sensitive and Home Base hostnames.
+
+New service hostnames take 35–40 s on first use while their certificate is issued, so publishing waits for it.
+
+**Spike 3b (2026-10-26): a second tagged node, driven with the raw Tailscale CLI.**
+- **Tailnet Lock:** the node was locked out until a trusted key signed it, so a leaked auth key alone isn't enough.
+- **Shared approver tag:** once signed, it was auto-approved as a hidden standby, with a valid certificate for the service hostname. It took all traffic when the real host stopped serving.
+- **Tightening the policy:** switching approvers to a per-host tag **left its existing approval in place**, so it still took over. The real host lost its approvals until it had the new tag.
+- **Fresh advertisement:** after withdrawing and advertising again, the node stayed unapproved and got no traffic.
+
+The local host can't see standby hosts, and a correct policy doesn't prove there's no stale approval. So D23 decides on the service's **host list**, which the Tailscale API returns with every host and its approval level, standbys included. The check passes only if exactly one host is approved, and it's this one. A missing or partial list means unverified.
+
+Without an API credential, the administrator confirms the same list from the console, with the hardware key. On a fresh install, only the Home Base hostname can be published before the first hardware key exists. The runbook adds:
+- the order for changing the policy;
+- a review of existing approvals after every change;
+- Tailnet Lock.
 
 ## Review
 
@@ -87,7 +119,7 @@ Two rounds of external plan review:
 - **Round 1 (2026-10-24):** requested changes, with 9 high and 5 medium findings.
 - **Round 2:** found 8 of those resolved, 6 partly resolved, and 9 new issues.
 
-Revision 3 (2026-10-25) addresses all of them. The PRD's `reviewResolution` maps each finding to the change that answers it.
+Revision 3 (2026-10-25) addresses all of them. A review of the spike-3 change (2026-10-26) requested changes (2 high, 2 medium: ceremonies on the low-friction hostname, framing, OAuth callbacks, service approval), addressed in the same PR. Its re-review found both high findings resolved and raised one new high (the planner can't see the policy, answered by D23) and two mediums (OAuth vs. the navigation rule, browser minimums). These are addressed with the spike 3b evidence. The PRD's `reviewResolution` maps each finding to the change that answers it.
 
 ## Definition of Done
 
