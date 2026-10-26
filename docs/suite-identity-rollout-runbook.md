@@ -42,7 +42,16 @@ Record:
   - either auto-approve each service only for this host's tag;
   - or approve by hand.
 
-  Never use a tag that several hosts share as an approver. Any host with that tag could take over the service. Home Base refuses to publish a service another host already serves, but that is only a second check. The policy is the boundary.
+  Never use a tag that several hosts share as an approver. Any host with that tag can become an approved standby. It gets a valid certificate for the service hostname and takes all of the service's traffic when this host stops serving. Home Base refuses to publish a service another host already serves, but that is only a second check. The policy is the boundary.
+- Change the policy in this order:
+  1. Give this host its tag.
+  2. Change the approvers.
+  3. Review existing approvals.
+
+  Done in the wrong order, this host loses its approvals while a stale host keeps its own.
+- **After any approver change, review every service's hosts in the console** and remove any host other than this one. Tightening the policy doesn't revoke approvals that already exist.
+- Turn on Tailnet Lock if it isn't already. A leaked tagged auth key then can't add a host without a trusted signature.
+- Either add a read-only Tailscale API credential (policy and device read only) to Home Base for automatic verification, or plan to confirm the checklist with the hardware key on each publish and every 30 days (D23).
 - Members need `tcp:443` to each service they use. Members with sensitive apps also need `svc:<instance>-homebase`, where all credential management happens.
 - Tagged service hosts don't need app access. If one has it, it still gets no identity.
 - Remove spike-only grants (e.g. test-VM access) once the rehearsal is done.

@@ -95,13 +95,21 @@ So the plan now requires:
   - run only on the Home Base and sensitive hostnames, never on the low-friction hostname;
   - all credential management happens on the Home Base hostname;
   - each challenge is stored with its hostname, member and purpose, and verified once.
-- **OAuth callbacks (D22):** a read-only landing page, then a same-origin POST, with single-use state bound to the member and hostname.
+- **OAuth callbacks (D22):** a read-only landing page, then a same-origin POST, with single-use state bound to the member and hostname. This is the only page allowed to act on URL parameters, and apps that can't follow it stay entirely in local mode.
+- **Supported browsers:** Safari 16.4+ (including the iOS wrapper), Chrome/Edge 80+ and Firefox 90+. Older browsers are refused on sensitive and Home Base hostnames.
 
 New service hostnames take 35–40 s on first use while their certificate is issued, so publishing waits for it.
 
-**Spike 3b (required before SID-001).** Spike 3 couldn't try a second *tagged* host, and its own test policy auto-approved services for a shared tag, which any second host with that tag would also satisfy. The boundary is the tailnet policy, not Home Base, so D14 now requires per-host tags and per-service approvers. Spike 3b runs a second tagged node with the raw Tailscale CLI:
-- With a shared approver tag, the second node gets approved.
-- With per-host approvers, it doesn't.
+**Spike 3b (2026-10-26): a second tagged node, driven with the raw Tailscale CLI.**
+- **Tailnet Lock:** the node was locked out until a trusted key signed it, so a leaked auth key alone isn't enough.
+- **Shared approver tag:** once signed, it was auto-approved as a hidden standby, with a valid certificate for the service hostname. It took all traffic when the real host stopped serving.
+- **Tightening the policy:** switching approvers to a per-host tag **left its existing approval in place**, so it still took over. The real host lost its approvals until it had the new tag.
+- **Fresh advertisement:** after withdrawing and advertising again, the node stayed unapproved and got no traffic.
+
+The local host can't see standby hosts or the policy. So, under D23, Home Base verifies the setup through a read-only Tailscale API credential, or the administrator confirms a checklist with the hardware key. The runbook adds:
+- the order for changing the policy;
+- a review of existing approvals after every change;
+- Tailnet Lock.
 
 ## Review
 
@@ -109,7 +117,7 @@ Two rounds of external plan review:
 - **Round 1 (2026-10-24):** requested changes, with 9 high and 5 medium findings.
 - **Round 2:** found 8 of those resolved, 6 partly resolved, and 9 new issues.
 
-Revision 3 (2026-10-25) addresses all of them. A review of the spike-3 change (2026-10-26) requested changes (2 high, 2 medium: ceremonies on the low-friction hostname, framing, OAuth callbacks, service approval), addressed in the same PR. The PRD's `reviewResolution` maps each finding to the change that answers it.
+Revision 3 (2026-10-25) addresses all of them. A review of the spike-3 change (2026-10-26) requested changes (2 high, 2 medium: ceremonies on the low-friction hostname, framing, OAuth callbacks, service approval), addressed in the same PR. Its re-review found both high findings resolved and raised one new high (the planner can't see the policy, answered by D23) and two mediums (OAuth vs. the navigation rule, browser minimums). These are addressed with the spike 3b evidence. The PRD's `reviewResolution` maps each finding to the change that answers it.
 
 ## Definition of Done
 
