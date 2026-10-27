@@ -169,11 +169,16 @@ function createIngressControl({ config, api = null, apiProblem = null, cli = tai
     return writeConfirmation(config.dataDir, { service: entry.name, hostNodeId, confirmedAt: new Date(now()).toISOString(), confirmedBy: confirmedBy || null, assurance }, fsImpl);
   }
 
-  // A publish has used this service's confirmation; the next publish needs a new one.
-  function markConfirmationUsed(key) {
+  // Claims the confirmation a publish was authorized with, so the next publish needs a new one. Synchronous
+  // on purpose: the caller claims and starts the job with no await between, so two overlapping publishes
+  // can't both claim it. Throws (and nothing starts) if it is gone, already used, replaced, or can't be saved.
+  function claimConfirmation(key, confirmedAt) {
     const name = ingressServices({ instance, domain, apps: catalog }).find((entry) => entry.key === key)?.name;
     const record = name ? readConfirmations(config.dataDir, fsImpl)[name] : null;
-    if (record && !record.publishedAt) writeConfirmation(config.dataDir, { ...record, publishedAt: new Date(now()).toISOString() }, fsImpl);
+    if (!record || record.publishedAt || record.confirmedAt !== confirmedAt) {
+      throw Object.assign(new Error(`the confirmation for ${name || key} was used or replaced meanwhile; check the console again and confirm`), { code: 'CONFIRMATION_USED' });
+    }
+    writeConfirmation(config.dataDir, { ...record, publishedAt: new Date(now()).toISOString() }, fsImpl);
   }
 
   // The first request to a new service hostname waits for its certificate (spike 3: 35-40 s). The host
@@ -199,7 +204,7 @@ function createIngressControl({ config, api = null, apiProblem = null, cli = tai
     });
   }
 
-  return { configured, status, service, confirm, markConfirmationUsed, warmUp };
+  return { configured, status, service, confirm, claimConfirmation, warmUp };
 }
 
 module.exports = { CONFIRMATIONS_FILE, createIngressControl, currentIngress, readConfirmations, setupSheet };

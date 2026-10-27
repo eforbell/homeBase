@@ -94,7 +94,8 @@ class HealthAlertNotifier {
         reason: problem.reason,
         detail: problem.detail,
         checkedAt: check.checkedAt,
-        networkUrl: `${buildPublicBase(config)}/network`,
+        // After cutover Home Base has its own address; the old hostname no longer answers.
+        networkUrl: check.networkUrl || `${buildPublicBase(config)}/network`,
       });
       this.lastSentByKey.set(key, this.now());
       sent += 1;

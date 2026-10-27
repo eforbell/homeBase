@@ -56,7 +56,8 @@ function createIngressRoutes({
     return sendJson(res, statusCode, { error, code });
   }
 
-  async function startAction(res, config, { auth, auditAction, target, kind, action, onComplete, onQueued }) {
+  // beforeStart runs synchronously right before the job starts; if it throws, nothing starts.
+  async function startAction(res, config, { auth, auditAction, target, kind, action, onComplete, beforeStart }) {
     if (config.homeBaseExecutionMode !== 'executor') return refuse(res, { action: auditAction, target, auth, error: 'Socket ingress changes run only through the root executor.', code: 'EXECUTOR_REQUIRED' });
     let capabilities;
     try { capabilities = await executorCapabilities(config.homeBaseExecutorSocket); } catch {
@@ -65,10 +66,12 @@ function createIngressRoutes({
     if (!canExecuteMutations(capabilities) || !capabilities.actions?.includes(action.action)) {
       return sendJson(res, 409, { error: `The executor does not support ${action.action} yet; update it with install.sh --repair.`, code: 'EXECUTOR_INCOMPATIBLE' });
     }
+    if (beforeStart) {
+      try { beforeStart(); } catch (error) { return refuse(res, { action: auditAction, target, auth, error: `Not started: ${error.message}.`, code: error.code || 'NOT_STARTED' }); }
+    }
     let jobId = null;
     jobId = jobRunner.startTypedActionJob({ kind, target, action, onComplete: onComplete ? () => onComplete(jobId) : null });
     recordAdminAudit(stateStore, { action: auditAction, target, dryRun: false, outcome: 'queued', jobId, sessionTokenHash: auth?.sessionTokenHash });
-    if (onQueued) onQueued(jobId);
     return sendJson(res, 202, { ok: true, jobId });
   }
 
@@ -81,7 +84,11 @@ function createIngressRoutes({
       .filter((entry) => entry.published && !['verified', 'confirmed'].includes(entry.verification?.state))
       .map((entry) => ({ service: entry.name, reason: entry.verification?.reason || null, detail: entry.verification?.detail || 'not verified' }));
     if (!status.configured) problems.push({ service: null, reason: 'not-configured', detail: status.problem });
-    lastCheck = { checkedAt: new Date(now()).toISOString(), problems, errors: status.errors || [] };
+    // Without Serve's config (or this host's identity) nothing looks published, so the check is incomplete,
+    // never clean.
+    for (const error of status.errors || []) problems.push({ service: null, reason: 'check-incomplete', detail: `the check could not finish: ${error}` });
+    const homebase = (status.services || []).find((entry) => entry.key === 'homebase');
+    lastCheck = { checkedAt: new Date(now()).toISOString(), problems, errors: status.errors || [], networkUrl: homebase ? `https://${homebase.hostname}/network` : null };
     return lastCheck;
   }
 
@@ -158,7 +165,7 @@ function createIngressRoutes({
       await startAction(res, config, {
         auth, auditAction: 'service-publish', target: entry.name, kind: 'service-publish',
         action: { action: 'service-publish', serviceKey: key },
-        onQueued: () => { if (entry.verification.state === 'confirmed') control.markConfirmationUsed(key); },
+        beforeStart: entry.verification.state === 'confirmed' ? () => control.claimConfirmation(key, entry.verification.confirmedAt) : null,
         // Certificates are issued on first use (35-40 s); warm it now so members never wait.
         onComplete: (jobId) => control.warmUp(key)
           .then((result) => stateStore.appendJobLog(jobId, `[ingress] certificate warm-up: ${result.detail}${result.ms != null ? ` after ${Math.round(result.ms / 1000)} s` : ''}\n`))

@@ -83,7 +83,7 @@ function evaluateConfirmation({ service, selfNodeId, confirmation, now = Date.no
   // Before SID-005 there is no hardware key, so confirmations are made in a passphrase session.
   const assurance = confirmation.assurance === 'hardware-key' ? 'hardware-key' : 'passphrase-session';
   const publishedAt = typeof confirmation.publishedAt === 'string' ? confirmation.publishedAt : null;
-  return { service, state: 'confirmed', reason: null, assurance, publishedAt, detail: `confirmed by administrator ${confirmation.confirmedBy || ''} at ${confirmation.confirmedAt}`.replace('  ', ' ') };
+  return { service, state: 'confirmed', reason: null, assurance, confirmedAt: confirmation.confirmedAt, publishedAt, detail: `confirmed by administrator ${confirmation.confirmedBy || ''} at ${confirmation.confirmedAt}`.replace('  ', ' ') };
 }
 
 // Policy and tag checks (D14), reported as warnings: they show what to fix before the next approval goes

@@ -151,7 +151,7 @@ test('executor actions: the three ingress actions compile to policy-valid plans 
 });
 
 // The route module behind a real HTTP server, with the admin check, executor, and jobs faked.
-async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeApi(), apiFactory = () => api, capabilities = { protocolVersions: [PROTOCOL_VERSION], mutationsEnabled: true, actions: ['install', 'ingress-cutover', 'service-publish', 'ingress-rollback'] }, installations = {} } = {}) {
+async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeApi(), apiFactory = () => api, capabilities = { protocolVersions: [PROTOCOL_VERSION], mutationsEnabled: true, actions: ['install', 'ingress-cutover', 'service-publish', 'ingress-rollback'] }, executorDelayMs = 0, installations = {} } = {}) {
   const audits = [];
   const jobs = [];
   const logs = [];
@@ -166,7 +166,7 @@ async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeAp
     apiFactory,
     adminStatus: async () => ({ unlocked }),
     requireAdmin: async () => (unlocked ? { ok: true, sessionTokenHash: 'h' } : { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' } }),
-    executorCapabilities: async () => capabilities,
+    executorCapabilities: async () => { await new Promise((resolve) => setTimeout(resolve, executorDelayMs)); return capabilities; },
   });
   const server = http.createServer(async (req, res) => {
     const handled = await handle({ req, res, method: req.method, pathname: new URL(req.url, 'http://x').pathname, config, state: { installations } });
@@ -259,6 +259,24 @@ test('routes: each publish needs its own confirmation', async (t) => {
   assert.equal(jobs.length, 2);
 });
 
+test('routes: two overlapping publishes cannot share one confirmation, and a claim that cannot be saved starts nothing', async (t) => {
+  // The executor check is slow, so both requests pass the gate before either starts its job.
+  const { post, jobs, config } = await routes(t, { api: null, executorDelayMs: 100 });
+  assert.equal((await post('/api/ingress/services/pulse/confirm', { hostNodeId: SELF })).status, 200);
+  const [a, b] = await Promise.all([post('/api/ingress/services/pulse/publish', { confirm: 'PUBLISH' }), post('/api/ingress/services/pulse/publish', { confirm: 'PUBLISH' })]);
+  assert.deepEqual([a.status, b.status].sort(), [202, 409]);
+  assert.equal([a, b].find((res) => res.status === 409).body.code, 'CONFIRMATION_USED');
+  assert.equal(jobs.length, 1);
+  assert.equal((await post('/api/ingress/services/pulse/confirm', { hostNodeId: SELF })).status, 200);
+  fs.chmodSync(config.dataDir, 0o500);
+  t.after(() => fs.chmodSync(config.dataDir, 0o700));
+  const unsaved = await post('/api/ingress/services/pulse/publish', { confirm: 'PUBLISH' });
+  assert.equal(unsaved.status, 409);
+  assert.equal(jobs.length, 1, 'the job never started');
+  fs.chmodSync(config.dataDir, 0o700);
+  assert.equal(readConfirmations(config.dataDir)['svc:smith-pulse'].publishedAt, undefined, 'still unused, so a retry may use it');
+});
+
 test('daily check: a published service that loses verification is reported; nothing before cutover', async (t) => {
   const cutOver = { jobs: [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }] };
   const clean = await routes(t);
@@ -268,6 +286,21 @@ test('daily check: a published service that loses verification is reported; noth
   const check = await standby.handle.checkServices(standby.config, cutOver);
   assert.deepEqual(check.problems.map((problem) => [problem.service, problem.reason]), [['svc:smith-home', 'other-host-approved']]);
   assert.deepEqual((await standby.get('/api/ingress')).body.dailyCheck.problems, check.problems);
+  assert.equal(check.networkUrl, 'https://smith-homebase.example-tailnet.ts.net/network', 'alerts link to the cut-over address');
+});
+
+test('daily check: when Serve or this host cannot be read, the check is incomplete, never clean', async (t) => {
+  const cutOver = { jobs: [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }] };
+  const { handle, config } = await routes(t);
+  const serveDown = async (args) => { if (args[0] === 'serve') throw new Error('timed out'); return cli()(args); };
+  const blind = createIngressRoutes({
+    stateStore: {}, jobRunner: {}, sendJson: () => {}, parseBody: async () => ({}), recordAdminAudit: () => {}, executionBlockOutcome: () => 'blocked-auth',
+    controlFactory: (options) => createIngressControl({ ...options, cli: serveDown }), apiFactory: () => fakeApi(),
+  });
+  const check = await blind.checkServices(config, cutOver);
+  assert.deepEqual(check.problems.map((problem) => problem.reason), ['check-incomplete']);
+  assert.match(check.problems[0].detail, /tailscale serve get-config: timed out/);
+  assert.deepEqual((await handle.checkServices(config, cutOver)).problems, [], 'the same host with Serve readable is clean');
 });
 
 test('routes: a confirmation needs an unlocked admin but not privileged jobs (it runs nothing)', async (t) => {
