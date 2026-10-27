@@ -632,8 +632,9 @@ test('homebase config changes need the administrator and a same-origin JSON requ
     assert.match((await unconfigured.json()).error, /Set up the admin passphrase/);
 
     const cookie = await setupAdminCookie(server.url);
-    const lockRes = await fetch(`${server.url}/api/admin/lock`, { method: 'POST', headers: { cookie } });
-    assert.equal(lockRes.status, 200, 'an empty POST with no content type still works');
+    assert.equal((await fetch(`${server.url}/api/admin/lock`, { method: 'POST', headers: { cookie } })).status, 415, 'an empty no-CORS POST is refused too');
+    const lockRes = await fetch(`${server.url}/api/admin/lock`, { method: 'POST', headers: { 'content-type': 'application/json', cookie } });
+    assert.equal(lockRes.status, 200);
     const locked = await post({ 'content-type': 'application/json', cookie });
     assert.equal(locked.status, 401);
     assert.match((await locked.json()).error, /Admin unlock is required to change Home Base settings/);
@@ -765,7 +766,7 @@ test('real execute requires admin setup/unlock', async () => {
 
     const lockRes = await fetch(`${server.url}/api/admin/lock`, {
       method: 'POST',
-      headers: { cookie: setupCookie },
+      headers: { 'content-type': 'application/json', cookie: setupCookie },
     });
     assert.equal(lockRes.status, 200);
 
@@ -967,7 +968,7 @@ test('job history endpoints require admin unlock before exposing logs and plan p
     const setupCookie = await setupAdminCookie(server.url, 'history-passphrase');
     const lockRes = await fetch(`${server.url}/api/admin/lock`, {
       method: 'POST',
-      headers: { cookie: setupCookie },
+      headers: { 'content-type': 'application/json', cookie: setupCookie },
     });
     assert.equal(lockRes.status, 200);
 

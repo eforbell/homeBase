@@ -13,6 +13,8 @@ const { appsInTailnetMode } = require('./operations/compilers/ingress');
 //   POST /api/ingress/services/:key/confirm    { hostNodeId }  (no API credential: the console check)
 //   POST /api/ingress/services/:key/publish    { confirm: 'PUBLISH' }
 //   POST /api/ingress/rollback                 { confirm: 'ROLLBACK' }
+//
+// handle.checkServices() is D23's daily check: an approval added after a publish shows up within a day.
 
 const API_RECHECK_MS = 60_000;
 
@@ -32,7 +34,8 @@ function createIngressRoutes({
     }
     return api;
   }
-  const controlFor = (config) => controlFactory({ config, api: apiFor(config) });
+  // A credential that exists but can't be loaded fails closed: no automatic check, and no confirmations.
+  const controlFor = (config) => { const client = apiFor(config); return controlFactory({ config, api: client, apiProblem: client ? null : apiProblem }); };
 
   // executes: false for a record that runs nothing on the host (a confirmation): an unlocked admin session is
   // enough, even on a plan-only host.
@@ -53,7 +56,7 @@ function createIngressRoutes({
     return sendJson(res, statusCode, { error, code });
   }
 
-  async function startAction(res, config, { auth, auditAction, target, kind, action, onComplete }) {
+  async function startAction(res, config, { auth, auditAction, target, kind, action, onComplete, onQueued }) {
     if (config.homeBaseExecutionMode !== 'executor') return refuse(res, { action: auditAction, target, auth, error: 'Socket ingress changes run only through the root executor.', code: 'EXECUTOR_REQUIRED' });
     let capabilities;
     try { capabilities = await executorCapabilities(config.homeBaseExecutorSocket); } catch {
@@ -65,11 +68,25 @@ function createIngressRoutes({
     let jobId = null;
     jobId = jobRunner.startTypedActionJob({ kind, target, action, onComplete: onComplete ? () => onComplete(jobId) : null });
     recordAdminAudit(stateStore, { action: auditAction, target, dryRun: false, outcome: 'queued', jobId, sessionTokenHash: auth?.sessionTokenHash });
+    if (onQueued) onQueued(jobId);
     return sendJson(res, 202, { ok: true, jobId });
   }
 
+  // Every published service must still be verified (or confirmed and in date). Null when not cut over.
+  let lastCheck = null;
+  async function checkServices(config, state) {
+    if (!currentIngress(state.jobs, config)) return null;
+    const status = await controlFor(config).status();
+    const problems = (status.services || [])
+      .filter((entry) => entry.published && !['verified', 'confirmed'].includes(entry.verification?.state))
+      .map((entry) => ({ service: entry.name, reason: entry.verification?.reason || null, detail: entry.verification?.detail || 'not verified' }));
+    if (!status.configured) problems.push({ service: null, reason: 'not-configured', detail: status.problem });
+    lastCheck = { checkedAt: new Date(now()).toISOString(), problems, errors: status.errors || [] };
+    return lastCheck;
+  }
+
   // Returns true when it handled the request.
-  return async function handle({ req, res, method, pathname, config, state }) {
+  async function handle({ req, res, method, pathname, config, state }) {
     if (!pathname.startsWith('/api/ingress')) return false;
 
     if (method === 'GET' && pathname === '/api/ingress') {
@@ -86,6 +103,7 @@ function createIngressRoutes({
         services,
         cutOver: Boolean(currentIngress(state.jobs, config)),
         apiCredential: apiFor(config) ? 'configured' : (apiProblem ? `unusable: ${apiProblem}` : 'none'),
+        dailyCheck: lastCheck,
         setup: status.configured ? setupSheet({ instance: status.instance, services, installedAppIds, administratorLogin: config.administratorLogin }) : null,
       });
       return true;
@@ -115,7 +133,7 @@ function createIngressRoutes({
       const key = confirmMatch[1];
       const auth = await authorize(req, res, config, { action: 'ingress-confirm', target: key, executes: false });
       if (!auth) return true;
-      if (apiFor(config)) { refuse(res, { action: 'ingress-confirm', target: key, auth, error: 'An API credential is configured, so service hosts are verified automatically.', code: 'CONFIRMATION_NOT_USED' }); return true; }
+      if (apiFor(config) || apiProblem) { refuse(res, { action: 'ingress-confirm', target: key, auth, error: apiProblem ? `The Tailscale API credential is configured but unusable (${apiProblem}); fix it, or remove it to confirm hosts by hand.` : 'An API credential is configured, so service hosts are verified automatically.', code: 'CONFIRMATION_NOT_USED' }); return true; }
       try {
         const record = await controlFor(config).confirm(key, { hostNodeId: String(body.hostNodeId || ''), confirmedBy: config.administratorLogin || null });
         recordAdminAudit(stateStore, { action: 'ingress-confirm', target: record.service, dryRun: false, outcome: 'recorded', sessionTokenHash: auth.sessionTokenHash });
@@ -140,6 +158,7 @@ function createIngressRoutes({
       await startAction(res, config, {
         auth, auditAction: 'service-publish', target: entry.name, kind: 'service-publish',
         action: { action: 'service-publish', serviceKey: key },
+        onQueued: () => { if (entry.verification.state === 'confirmed') control.markConfirmationUsed(key); },
         // Certificates are issued on first use (35-40 s); warm it now so members never wait.
         onComplete: (jobId) => control.warmUp(key)
           .then((result) => stateStore.appendJobLog(jobId, `[ingress] certificate warm-up: ${result.detail}${result.ms != null ? ` after ${Math.round(result.ms / 1000)} s` : ''}\n`))
@@ -162,7 +181,9 @@ function createIngressRoutes({
 
     sendJson(res, 404, { error: 'Not found' });
     return true;
-  };
+  }
+  handle.checkServices = checkServices;
+  return handle;
 }
 
 module.exports = { createIngressRoutes };

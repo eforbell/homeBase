@@ -119,6 +119,20 @@ test('publish gate: allowed while no other host is approved; refused on another 
   assert.equal(gate({ state: 'confirmed', detail: 'c' }).allowed, true);
 });
 
+test('publish gate: a confirmation covers one publish, and once active it needs a hardware key (D23)', () => {
+  const gate = (evaluation, lifecycleState = 'none', serviceKey = 'pulse') => serviceGate({ lifecycleState, serviceKey, action: 'publish', evaluation });
+  const fresh = { state: 'confirmed', assurance: 'passphrase-session', publishedAt: null, detail: 'c' };
+  assert.equal(gate(fresh).allowed, true, 'before the directory exists there is no hardware key');
+  assert.match(gate({ ...fresh, publishedAt: '2026-10-01T00:00:00.000Z' }).reason, /was used by the publish at 2026-10-01/);
+  assert.match(gate(fresh, 'active').reason, /needs a confirmation made with a hardware key/);
+  assert.equal(gate({ ...fresh, assurance: 'hardware-key' }, 'active').allowed, true);
+  assert.equal(gate(fresh, 'setup', 'homebase').allowed, true, 'bootstrap: the Home Base service with a passphrase session');
+  const at = Date.parse('2026-10-20T00:00:00.000Z');
+  const used = evaluateConfirmation({ service: SERVICE, selfNodeId: SELF, confirmation: { service: SERVICE, hostNodeId: SELF, confirmedAt: '2026-10-19T00:00:00.000Z', publishedAt: '2026-10-19T00:05:00.000Z' }, now: at });
+  assert.equal(used.state, 'confirmed', 'still confirmed for status and tailnet mode');
+  assert.equal(gate(used).allowed, false);
+});
+
 test('bootstrap gate (D16/D23): in setup only the Home Base service may be published; tailnet mode waits for active', () => {
   const verified = { state: 'verified', detail: 'ok' };
   assert.equal(serviceGate({ lifecycleState: 'setup', serviceKey: 'homebase', action: 'publish', evaluation: verified }).allowed, true);

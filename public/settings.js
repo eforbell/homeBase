@@ -638,7 +638,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
     }
     const verificationLabel = data.apiCredential === 'configured'
       ? 'automatic (read-only Tailscale API credential)'
-      : `administrator confirmation (${esc(data.apiCredential)})`;
+      : (data.apiCredential === 'none' ? 'administrator confirmation (no API credential)' : `automatic, but the credential is ${esc(data.apiCredential)}`);
     const self = data.self || {};
     const state = (entry) => {
       const v = entry.verification || {};
@@ -650,7 +650,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
       const v = entry.verification || {};
       const warnings = (entry.warnings || []).filter((warning) => warning.id !== 'policy-not-checked');
       const canPublish = data.cutOver && !entry.published && entry.gates?.publish?.allowed;
-      const canConfirm = data.apiCredential !== 'configured' && self.nodeId;
+      const canConfirm = data.apiCredential === 'none' && self.nodeId;
       return `
         <li class="hb-stack" style="gap:0.35rem;border-top:1px solid var(--line, rgba(127,127,127,0.25));padding-top:0.6rem;">
           <div class="hb-row" style="flex-wrap:wrap;gap:0.5rem;justify-content:space-between;">
@@ -681,6 +681,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
         <li class="hb-row"><strong>This host</strong><span>${self.tagged ? (self.holdsHostTag ? `<span class="hb-ok">tagged ${esc(self.hostTag)}</span>` : `<span class="hb-warn">tagged, but not ${esc(self.hostTag)}</span>`) : '<span class="hb-err">untagged: service hosts must be tagged</span>'}</span></li>
         <li class="hb-row"><strong>Ingress</strong><span>${data.cutOver ? '<span class="hb-ok">per-service sockets</span>' : '<span class="hb-muted">TCP gateway (not cut over)</span>'}</span></li>
         <li class="hb-row"><strong>Host verification</strong><span>${verificationLabel}</span></li>
+        ${data.dailyCheck ? `<li class="hb-row"><strong>Daily check</strong><span class="${data.dailyCheck.problems.length ? 'hb-warn' : 'hb-ok'}">${data.dailyCheck.problems.length ? esc(data.dailyCheck.problems.map((problem) => `${problem.service || 'ingress'}: ${problem.detail}`).join('; ')) : 'every published service verified'} · ${esc(window.HB.formatTimestamp(data.dailyCheck.checkedAt))}</span></li>` : ''}
         <li class="hb-row"><strong>Tailnet identity</strong><span class="hb-muted">${data.lifecycleState === 'none' ? 'off until the household directory exists' : esc(data.lifecycleState)}</span></li>
       </ul>
       ${(data.errors || []).map((error) => `<p class="hb-warn" style="margin:0.5rem 0 0;">${esc(error)}</p>`).join('')}

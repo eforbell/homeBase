@@ -2106,6 +2106,23 @@ function createApp(config) {
     }
   });
 
+  // D23: re-check every published service's hosts daily (and shortly after start), not only when an
+  // administrator opens the Network page.
+  function scheduleIngressCheck() {
+    const run = () => {
+      const effective = mergeHomeBaseConfig(config, stateStore.getHomeBaseConfig() || {});
+      return ingressRoutes.checkServices(effective, stateStore.loadState())
+        .then((check) => {
+          if (!check?.problems.length) return;
+          for (const problem of check.problems) console.warn(`[homebase] service host check: ${problem.service || 'ingress'}: ${problem.detail}`);
+          return healthAlertNotifier.notifyIngressProblems(check, effective);
+        })
+        .catch((error) => console.warn(`[homebase] service host check failed: ${error.message}`));
+    };
+    setTimeout(run, config.ingressCheckDelayMs ?? 5 * 60_000).unref();
+    setInterval(run, config.ingressCheckIntervalMs ?? 24 * 60 * 60_000).unref();
+  }
+
   return {
     server,
     listen(callback) {
@@ -2117,6 +2134,7 @@ function createApp(config) {
         if (config.homeBaseExecutionModeMissing) console.warn(`[homebase] ${EXECUTION_MODE_UPGRADE_HINT}`);
         if (typeof callback === 'function') callback();
       });
+      scheduleIngressCheck();
       if (config.identitySocket) {
         const log = (message) => console.warn(`[homebase] ${message}`);
         const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log }), log });

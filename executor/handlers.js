@@ -381,6 +381,21 @@ function directoryFor(operation, layout) {
 }
 
 // The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
+// Does an app's .env put it in tailnet mode? Fail closed: dotenv loaders accept `export`, quotes and inline
+// comments, so any assignment of SOVEREIGN_IDENTITY_MODE to something other than empty or "local", however
+// written, counts as trusting identity headers.
+const IDENTITY_MODE_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_IDENTITY_MODE\s*[=:](.*)$/;
+function trustsIdentityHeaders(content) {
+  return String(content).split(/\r\n|\r|\n/).some((line) => {
+    const match = IDENTITY_MODE_ASSIGNMENT.exec(line);
+    if (!match) return false;
+    let value = match[1].trim();
+    const quoted = /^(['"])(.*?)\1/.exec(value);
+    value = quoted ? quoted[2] : value.replace(/\s+#.*$/, '');
+    return !['', 'local'].includes(value.trim().toLowerCase());
+  });
+}
+
 function readIngressRecord(fsImpl = fs) {
   const stat = lstatOrNull(fsImpl, INGRESS_STATE_PATH);
   if (!stat) return null;
@@ -765,8 +780,12 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       const trusting = !sovereign ? [] : catalog.filter((app) => {
         let layout;
         try { layout = appLayout(app); } catch { return false; }
+        // An env file that is not a plain file (a symlink the app's loader would follow) can't be read here, so
+        // it counts as trusting.
+        const stat = asUser(sovereign, () => lstatOrNull(fsImpl, layout.envPath));
+        if (stat && !stat.isFile()) return true;
         const content = asUser(sovereign, () => readSmallFileNoFollow(fsImpl, layout.envPath));
-        return Boolean(content) && parseDotEnv(content).SOVEREIGN_IDENTITY_MODE === 'tailnet';
+        return Boolean(content) && trustsIdentityHeaders(content);
       }).map((app) => app.id);
       if (trusting.length) deny(`${trusting.join(', ')} still ${trusting.length === 1 ? 'trusts' : 'trust'} identity headers (SOVEREIGN_IDENTITY_MODE=tailnet); return ${trusting.length === 1 ? 'it' : 'them'} to local mode before restoring TCP ingress.`);
       if (lstatOrNull(fsImpl, INGRESS_STATE_PATH)) fsImpl.unlinkSync(INGRESS_STATE_PATH);
@@ -942,6 +961,7 @@ END $$;
 }
 
 module.exports = {
+  trustsIdentityHeaders,
   DIRECTORY_PATHS,
   SOVEREIGN_HOME,
   GIT_DEPLOY_KEY_PATH,

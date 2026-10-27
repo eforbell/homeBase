@@ -142,3 +142,16 @@ test('rollback refuses while any app reads identity from headers, by its own .en
   await assert.rejects(() => handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' })), /family-pulse still trusts identity headers \(SOVEREIGN_IDENTITY_MODE=tailnet\)/);
   assert.ok(reads.length > 0 && reads.every((uid) => uid === 1001), 'app files are read as sovereign, never as root');
 });
+
+test('rollback reads the identity mode the way dotenv loaders do, and fails closed', async () => {
+  const { trustsIdentityHeaders } = require('../executor/handlers');
+  for (const content of ['SOVEREIGN_IDENTITY_MODE=tailnet # pilot', 'export SOVEREIGN_IDENTITY_MODE=tailnet', 'SOVEREIGN_IDENTITY_MODE = "tailnet"', "  SOVEREIGN_IDENTITY_MODE='Tailnet'", 'SOVEREIGN_IDENTITY_MODE=tailnet\r', 'SOVEREIGN_IDENTITY_MODE=headers', 'SOVEREIGN_IDENTITY_MODE=local\nSOVEREIGN_IDENTITY_MODE=tailnet']) {
+    assert.equal(trustsIdentityHeaders(content), true, JSON.stringify(content));
+  }
+  for (const content of ['', 'SOVEREIGN_IDENTITY_MODE=local', 'SOVEREIGN_IDENTITY_MODE=', 'SOVEREIGN_IDENTITY_MODE="local" # default', '# SOVEREIGN_IDENTITY_MODE=tailnet', 'OTHER_SOVEREIGN_IDENTITY_MODE=tailnet']) {
+    assert.equal(trustsIdentityHeaders(content), false, JSON.stringify(content));
+  }
+  const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/familyPulse/.env': { kind: 'link', target: '/opt/sovereign-home/apps/familyPulse/real.env' }, '/opt/sovereign-home/apps/familyPulse/real.env': 'SOVEREIGN_IDENTITY_MODE=tailnet\n' });
+  const handlers = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: () => ({ uid: 1001, gid: 1002 }), asUser: (_user, fn) => fn() });
+  await assert.rejects(() => handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' })), /family-pulse still trusts identity headers/, 'a symlinked .env counts as trusting');
+});

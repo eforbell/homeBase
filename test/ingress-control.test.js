@@ -25,13 +25,13 @@ function cli({ tags = ['tag:smith-host'], services = { 'svc:home': { endpoints: 
 }
 
 // A read-only API: svc:smith-pulse also has another approved host.
-function fakeApi({ hosts = {} } = {}) {
+function fakeApi({ hosts = {}, serviceTags = {}, policy = null } = {}) {
   const inventory = { 'svc:smith-home': [{ nodeId: SELF, approvalLevel: 'approved:auto', configured: 'ready' }], 'svc:smith-pulse': [{ nodeId: OTHER, approvalLevel: 'approved:manual' }], ...hosts };
   return {
     listServiceHosts: async (name) => ({ ok: true, status: 200, body: { hosts: inventory[name] || [] } }),
-    getService: async () => ({ ok: true, status: 200, body: { addrs: ['100.100.1.2', 'fd7a:115c:a1e0::1:2'] } }),
+    getService: async (name) => ({ ok: true, status: 200, body: { name, addrs: ['100.100.1.2', 'fd7a:115c:a1e0::1:2'], tags: serviceTags[name] || [] } }),
     listDevices: async () => ({ ok: true, status: 200, body: { devices: [{ nodeId: SELF, tags: ['tag:smith-host'] }] } }),
-    getPolicy: async () => ({ ok: true, status: 200, body: { tagOwners: { 'tag:smith-host': ['admin@example.com'] }, autoApprovers: { services: { 'svc:smith-home': ['tag:smith-host'] } } } }),
+    getPolicy: async () => ({ ok: true, status: 200, body: policy || { tagOwners: { 'tag:smith-host': ['admin@example.com'] }, autoApprovers: { services: { 'svc:smith-home': ['tag:smith-host'] } } } }),
   };
 }
 
@@ -51,6 +51,17 @@ test('status with an API credential: verified, publishable, and blocked services
   assert.equal(byKey.homebase.gates.publish.allowed, true, 'nothing else is approved, so this host may become its host');
   assert.equal(byKey.pulse.verification.reason, 'other-host-approved');
   assert.equal(byKey.pulse.gates.publish.allowed, false);
+});
+
+test("approver rules for a service's tags are checked too", async () => {
+  const policy = { tagOwners: { 'tag:smith-host': ['admin@example.com'] }, autoApprovers: { services: { 'svc:smith-home': ['tag:smith-host'], 'tag:web': ['tag:servers'] } } };
+  const status = await createIngressControl({ config: CONFIG(tmp()), api: fakeApi({ policy, serviceTags: { 'svc:smith-home': ['tag:web'] } }), cli: cli() }).status();
+  const home = status.services.find((entry) => entry.key === 'home');
+  assert.deepEqual(home.warnings.map((warning) => warning.id), ['shared-approver', 'extra-approver-rule']);
+  assert.match(home.warnings[0].detail, /autoApprovers.services\["tag:web"\] also approves tag:servers/);
+  const unreadable = { ...fakeApi(), getService: async () => ({ ok: false, status: 500 }) };
+  const blind = (await createIngressControl({ config: CONFIG(tmp()), api: unreadable, cli: cli() }).status()).services.find((entry) => entry.key === 'home');
+  assert.deepEqual(blind.warnings.map((warning) => warning.id), ['service-unreadable']);
 });
 
 test('an untagged host can publish nothing', async () => {
@@ -140,7 +151,7 @@ test('executor actions: the three ingress actions compile to policy-valid plans 
 });
 
 // The route module behind a real HTTP server, with the admin check, executor, and jobs faked.
-async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeApi(), capabilities = { protocolVersions: [PROTOCOL_VERSION], mutationsEnabled: true, actions: ['install', 'ingress-cutover', 'service-publish', 'ingress-rollback'] }, installations = {} } = {}) {
+async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeApi(), apiFactory = () => api, capabilities = { protocolVersions: [PROTOCOL_VERSION], mutationsEnabled: true, actions: ['install', 'ingress-cutover', 'service-publish', 'ingress-rollback'] }, installations = {} } = {}) {
   const audits = [];
   const jobs = [];
   const logs = [];
@@ -152,7 +163,7 @@ async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeAp
     recordAdminAudit: (_store, record) => audits.push(record),
     executionBlockOutcome: () => 'blocked-auth',
     controlFactory: (options) => createIngressControl({ ...options, cli: cli() }),
-    apiFactory: () => api,
+    apiFactory,
     adminStatus: async () => ({ unlocked }),
     requireAdmin: async () => (unlocked ? { ok: true, sessionTokenHash: 'h' } : { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' } }),
     executorCapabilities: async () => capabilities,
@@ -166,7 +177,7 @@ async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeAp
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = async (url, body) => { const res = await fetch(`${base}${url}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: res.status, body: await res.json() }; };
   const get = async (url) => { const res = await fetch(`${base}${url}`); return { status: res.status, body: await res.json() }; };
-  return { base, post, get, audits, jobs, logs };
+  return { base, post, get, audits, jobs, logs, handle, config };
 }
 
 test('routes: status needs an unlocked admin; other paths are left alone', async (t) => {
@@ -218,6 +229,45 @@ test('routes: confirmation is only for hosts without a credential; rollback wait
   const clean = await routes(t);
   assert.equal((await clean.post('/api/ingress/rollback', { confirm: 'ROLLBACK' })).status, 202);
   assert.equal((await clean.post('/api/ingress/rollback', {})).status, 400);
+});
+
+test('routes: a configured credential that cannot be read fails closed, with no fallback to confirmations', async (t) => {
+  const dataDir = tmp();
+  fs.writeFileSync(path.join(dataDir, 'ingress-confirmations.json'), JSON.stringify({ 'svc:smith-pulse': { service: 'svc:smith-pulse', hostNodeId: SELF, confirmedAt: new Date().toISOString(), assurance: 'passphrase-session' } }));
+  const broken = await routes(t, { config: CONFIG(dataDir), apiFactory: () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); } });
+  const status = await broken.get('/api/ingress');
+  assert.match(status.body.apiCredential, /^unusable: EACCES/);
+  const pulse = status.body.services.find((entry) => entry.key === 'pulse');
+  assert.equal(pulse.verification.reason, 'credential-unusable');
+  assert.equal(pulse.verification.mode, 'automatic');
+  const publish = await broken.post('/api/ingress/services/pulse/publish', { confirm: 'PUBLISH' });
+  assert.equal(publish.status, 409, 'the old confirmation on record is not used');
+  assert.equal((await broken.post('/api/ingress/services/pulse/confirm', { hostNodeId: SELF })).body.code, 'CONFIRMATION_NOT_USED');
+  assert.equal(broken.jobs.length, 0);
+});
+
+test('routes: each publish needs its own confirmation', async (t) => {
+  const { post, jobs, config } = await routes(t, { api: null });
+  assert.equal((await post('/api/ingress/services/pulse/confirm', { hostNodeId: SELF })).status, 200);
+  assert.equal((await post('/api/ingress/services/pulse/publish', { confirm: 'PUBLISH' })).status, 202);
+  assert.match(readConfirmations(config.dataDir)['svc:smith-pulse'].publishedAt, /^\d{4}-/);
+  const again = await post('/api/ingress/services/pulse/publish', { confirm: 'PUBLISH' });
+  assert.equal(again.status, 409);
+  assert.match(again.body.error, /was used by the publish at/);
+  assert.equal((await post('/api/ingress/services/pulse/confirm', { hostNodeId: SELF })).status, 200);
+  assert.equal((await post('/api/ingress/services/pulse/publish', { confirm: 'PUBLISH' })).status, 202);
+  assert.equal(jobs.length, 2);
+});
+
+test('daily check: a published service that loses verification is reported; nothing before cutover', async (t) => {
+  const cutOver = { jobs: [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }] };
+  const clean = await routes(t);
+  assert.equal(await clean.handle.checkServices(clean.config, { jobs: [] }), null);
+  assert.deepEqual((await clean.handle.checkServices(clean.config, cutOver)).problems, []);
+  const standby = await routes(t, { api: fakeApi({ hosts: { 'svc:smith-home': [{ nodeId: SELF, approvalLevel: 'approved:auto' }, { nodeId: OTHER, approvalLevel: 'approved:auto' }] } }) });
+  const check = await standby.handle.checkServices(standby.config, cutOver);
+  assert.deepEqual(check.problems.map((problem) => [problem.service, problem.reason]), [['svc:smith-home', 'other-host-approved']]);
+  assert.deepEqual((await standby.get('/api/ingress')).body.dailyCheck.problems, check.problems);
 });
 
 test('routes: a confirmation needs an unlocked admin but not privileged jobs (it runs nothing)', async (t) => {
@@ -275,4 +325,20 @@ test('after cutover: config locks the address fields, readiness reflects service
   assert.equal(moved.status, 409);
   assert.match(moved.body.error, /domain cannot change while this host uses per-service sockets/);
   assert.equal((await post('/api/network/tailscale/publish-execute', { dryRun: true })).body.code, 'INGRESS_CUT_OVER');
+});
+
+test('daily check problems go to the alert webhook once per service and reason', async () => {
+  const { HealthAlertNotifier } = require('../src/services/notifications');
+  const posted = [];
+  let clock = 1_000_000;
+  const notifier = new HealthAlertNotifier({ postJson: async (url, body) => posted.push({ url, body }), now: () => clock });
+  const check = { checkedAt: '2026-10-27T00:00:00.000Z', problems: [{ service: 'svc:smith-home', reason: 'other-host-approved', detail: 'nOther2CNTRL is also approved' }] };
+  const config = { healthAlertsEnabled: true, healthAlertsWebhookUrl: 'https://alerts.example.test/hook', hostname: 'homebase', domain: 'example-tailnet.ts.net' };
+  assert.deepEqual(await notifier.notifyIngressProblems(check, { ...config, healthAlertsEnabled: false }), { enabled: false, sent: 0 });
+  assert.equal((await notifier.notifyIngressProblems(check, config)).sent, 1);
+  assert.equal((await notifier.notifyIngressProblems(check, config)).sent, 0, 'not again within the cooldown');
+  assert.equal(posted[0].body.event, 'service-host-unverified');
+  assert.equal(posted[0].body.service, 'svc:smith-home');
+  clock += 16 * 60 * 1000;
+  assert.equal((await notifier.notifyIngressProblems(check, config)).sent, 1);
 });

@@ -2,7 +2,7 @@ const { getTailscalePublishPlan } = require('./tailscale-publisher');
 const { runCommand } = require('./tailscale-readiness');
 const { DEFAULT_MANAGED_SERVICE_ID, normalizeManagedServiceId } = require('./tailscale-policy');
 const fs = require('fs');
-const { SERVE_SOCKET_DIR, ingressServices, serveTarget } = require('../operations/ingress-layout');
+const { SERVE_SOCKET_DIR, ingressServices, serveTarget, serviceSocket } = require('../operations/ingress-layout');
 const { catalog } = require('../catalog');
 
 function safeJsonParse(value) {
@@ -15,7 +15,8 @@ function safeJsonParse(value) {
 
 // Socket ingress (Feature-10 SID-001) replaces "nginx listens on tcp:443" with: nothing but tailscaled
 // answers 80/443 (Serve itself listens on this host's tailnet addresses), the socket directory is
-// root-only, and every published service targets its own socket. Readable without root.
+// root-only, every published service targets its own socket, and nginx is listening on each of those
+// sockets. Readable without root: ss lists bound unix sockets from /proc/net/unix, whatever the directory.
 function getIngressVerification({ instance, domain, run = runCommand, statFn = (target) => fs.statSync(target) }) {
   const status = safeJsonParse(run('tailscale status --json --peers=false').stdout);
   const ownAddresses = new Set((status?.Self?.TailscaleIPs || []).map((value) => String(value).toLowerCase()));
@@ -31,6 +32,8 @@ function getIngressVerification({ instance, domain, run = runCommand, statFn = (
   const configured = serve?.services || {};
   const services = ingressServices({ instance, domain, apps: catalog });
   const published = services.filter((service) => configured[service.name]);
+  const listening = new Set(String(run('ss -lxn 2>/dev/null').stdout || '').split(/\s+/).filter((token) => token.startsWith(`${SERVE_SOCKET_DIR}/`)));
+  const silent = published.filter((service) => !listening.has(serviceSocket(service.key)));
   const wrongTargets = published.filter((service) => {
     const endpoints = configured[service.name]?.endpoints || {};
     return Object.keys(endpoints).length !== 1 || endpoints['tcp:443'] !== `https://${serveTarget(service.key)}`;
@@ -56,6 +59,14 @@ function getIngressVerification({ instance, domain, run = runCommand, statFn = (
       summary: wrongTargets.length
         ? `${wrongTargets.map((service) => service.name).join(', ')} target something else`
         : (tcpTargets.length ? `${tcpTargets.join(', ')} still target nginx over TCP` : (published.length ? `${published.map((service) => service.name).join(', ')} on their sockets` : 'no socket-ingress service is published yet')),
+    },
+    {
+      id: 'service-sockets-listening',
+      title: 'nginx listens on each published service\'s socket',
+      ok: published.length > 0 && !silent.length,
+      summary: silent.length
+        ? `nothing listens on ${silent.map((service) => serviceSocket(service.key)).join(', ')} (is nginx running? sudo nginx -t && sudo systemctl restart nginx)`
+        : (published.length ? `${published.length} socket${published.length === 1 ? '' : 's'} listening` : 'no socket-ingress service is published yet'),
     },
   ];
   const byKey = Object.fromEntries(services.map((service) => [service.key, service.hostname]));

@@ -70,7 +70,8 @@ function evaluateServiceHosts({ service, selfNodeId, apiResult }) {
 }
 
 // Confirmation branch: the administrator checked the console's Services page and confirmed this host is
-// the only approved one. Valid for 30 days and only for the host it named.
+// the only approved one. Valid for 30 days and only for the host it named; it covers one publish
+// (publishedAt is set once a publish uses it), so every publish is confirmed afresh (D23).
 function evaluateConfirmation({ service, selfNodeId, confirmation, now = Date.now() }) {
   if (!confirmation) return { service, state: 'unconfirmed', reason: 'not-confirmed', detail: `confirm ${service}'s hosts in the admin console, then in Home Base` };
   if (confirmation.service !== service || confirmation.hostNodeId !== selfNodeId) {
@@ -81,7 +82,8 @@ function evaluateConfirmation({ service, selfNodeId, confirmation, now = Date.no
   if (now - at > CONFIRMATION_MAX_AGE_MS) return { service, state: 'unconfirmed', reason: 'confirmation-expired', detail: `the confirmation from ${confirmation.confirmedAt} is older than 30 days; confirm again` };
   // Before SID-005 there is no hardware key, so confirmations are made in a passphrase session.
   const assurance = confirmation.assurance === 'hardware-key' ? 'hardware-key' : 'passphrase-session';
-  return { service, state: 'confirmed', reason: null, assurance, detail: `confirmed by administrator ${confirmation.confirmedBy || ''} at ${confirmation.confirmedAt}`.replace('  ', ' ') };
+  const publishedAt = typeof confirmation.publishedAt === 'string' ? confirmation.publishedAt : null;
+  return { service, state: 'confirmed', reason: null, assurance, publishedAt, detail: `confirmed by administrator ${confirmation.confirmedBy || ''} at ${confirmation.confirmedAt}`.replace('  ', ' ') };
 }
 
 // Policy and tag checks (D14), reported as warnings: they show what to fix before the next approval goes
@@ -132,8 +134,9 @@ const PUBLISHABLE_REASONS = new Set(['self-missing', 'self-not-approved']);
 //            exists. Publishing needs the host evaluation; nothing enters tailnet mode.
 //   setup    (D16/D23 bootstrap) only the Home Base service may be published, so the enrollment surface
 //   recovery exists; nothing enters tailnet mode.
-//   active   publishing needs the host evaluation; tailnet mode needs this host verified, or confirmed by
-//            the administrator with a hardware key.
+//   active   publishing and tailnet mode need this host verified, or confirmed by the administrator with
+//            a hardware key.
+// A confirmation already used by a publish never covers another one.
 function serviceGate({ lifecycleState, serviceKey, action, evaluation }) {
   if (!['publish', 'tailnet-mode'].includes(action)) return { allowed: false, reason: `unknown action ${action}` };
   if (!['none', 'setup', 'recovery', 'active'].includes(lifecycleState)) return { allowed: false, reason: `unknown Home Base state ${lifecycleState}` };
@@ -146,6 +149,10 @@ function serviceGate({ lifecycleState, serviceKey, action, evaluation }) {
   }
   if ((lifecycleState === 'setup' || lifecycleState === 'recovery') && serviceKey !== 'homebase') {
     return { allowed: false, reason: `Home Base is in ${lifecycleState}; only the Home Base service can be published until it is active` };
+  }
+  if (evaluation?.state === 'confirmed') {
+    if (evaluation.publishedAt) return { allowed: false, reason: `the confirmation on record was used by the publish at ${evaluation.publishedAt}; check the console again and confirm before publishing` };
+    if (lifecycleState === 'active' && evaluation.assurance !== 'hardware-key') return { allowed: false, reason: 'once Home Base is active, a publish needs a confirmation made with a hardware key; confirm again' };
   }
   if (ok || (evaluation?.state === 'unverified' && PUBLISHABLE_REASONS.has(evaluation.reason))) {
     return { allowed: true, reason: ok ? evaluation.detail : 'no other host is approved for this service' };

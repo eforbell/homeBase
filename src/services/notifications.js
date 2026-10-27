@@ -79,6 +79,29 @@ class HealthAlertNotifier {
     return { enabled: true, sent, skipped, failed, errors };
   }
 
+  // D23's daily check found a published service that is no longer verified (another host approved, an
+  // expired confirmation, an unreadable inventory). The alert cooldown spaces out repeats of one service and reason.
+  async notifyIngressProblems(check, config = {}) {
+    if (!config.healthAlertsEnabled || !config.healthAlertsWebhookUrl) return { enabled: false, sent: 0 };
+    let sent = 0;
+    for (const problem of check?.problems || []) {
+      const key = `ingress:${problem.service}:${problem.reason}`;
+      if (this.now() - (this.lastSentByKey.get(key) || 0) < this.cooldownMs) continue;
+      await this.postJson(config.healthAlertsWebhookUrl, {
+        source: 'homebase',
+        event: 'service-host-unverified',
+        service: problem.service,
+        reason: problem.reason,
+        detail: problem.detail,
+        checkedAt: check.checkedAt,
+        networkUrl: `${buildPublicBase(config)}/network`,
+      });
+      this.lastSentByKey.set(key, this.now());
+      sent += 1;
+    }
+    return { enabled: true, sent };
+  }
+
   async sendTestAlert(config = {}) {
     if (!config.healthAlertsEnabled) {
       const error = new Error('Health alerts are disabled. Enable alerts before sending a test message.');

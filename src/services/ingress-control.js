@@ -86,8 +86,9 @@ function setupSheet({ instance, services, installedAppIds = [], administratorLog
   };
 }
 
-// Lifecycle until SID-004 adds the household directory: 'none'.
-function createIngressControl({ config, api = null, cli = tailscaleCli, fsImpl = fs, now = Date.now, lifecycleState = () => 'none' }) {
+// Lifecycle until SID-004 adds the household directory: 'none'. apiProblem: a credential is configured but
+// could not be loaded; automatic verification can't run, and it never falls back to confirmations.
+function createIngressControl({ config, api = null, apiProblem = null, cli = tailscaleCli, fsImpl = fs, now = Date.now, lifecycleState = () => 'none' }) {
   const instance = config.instance || '';
   const domain = String(config.defaultDomain || '').toLowerCase();
   const hostTag = instance ? `tag:${instance}-host` : null;
@@ -109,15 +110,24 @@ function createIngressControl({ config, api = null, cli = tailscaleCli, fsImpl =
     const selfNodeId = self?.ID || null;
     const tagged = Array.isArray(self?.Tags) && self.Tags.length > 0;
     const [policy, devices] = api ? await Promise.all([api.getPolicy(), api.listDevices()]) : [null, null];
-    const confirmations = api ? {} : readConfirmations(config.dataDir, fsImpl);
+    const automatic = Boolean(api || apiProblem);
+    const confirmations = automatic ? {} : readConfirmations(config.dataDir, fsImpl);
     const services = [];
     for (const service of ingressServices({ instance, domain, apps: catalog })) {
-      const evaluation = api
-        ? evaluateServiceHosts({ service: service.name, selfNodeId, apiResult: await api.listServiceHosts(service.name) })
+      const evaluation = apiProblem
+        ? { service: service.name, state: 'unverified', reason: 'credential-unusable', detail: `the Tailscale API credential is configured but unusable (${apiProblem}); fix it, or remove it to confirm hosts by hand`, approvedHosts: [] }
+        : api ? evaluateServiceHosts({ service: service.name, selfNodeId, apiResult: await api.listServiceHosts(service.name) })
         : evaluateConfirmation({ service: service.name, selfNodeId, confirmation: confirmations[service.name], now: now() });
+      // Approver rules can name the service or one of its tags; a service whose tags can't be read can't be
+      // checked against the tag rules, so that is a warning of its own.
+      const info = api ? await api.getService(service.name) : null;
+      const serviceTags = info?.ok && Array.isArray(info.body?.tags) ? info.body.tags : [];
       const warnings = api
-        ? policyWarnings({ service: service.name, hostTag, selfNodeId, policy: policy?.ok ? policy.body : null, devices: devices?.ok ? devices.body?.devices : null, administratorLogin: config.administratorLogin || null })
-        : [{ id: 'policy-not-checked', detail: 'no Tailscale API credential, so the policy and tags were not checked' }];
+        ? [
+          ...policyWarnings({ service: service.name, serviceTags, hostTag, selfNodeId, policy: policy?.ok ? policy.body : null, devices: devices?.ok ? devices.body?.devices : null, administratorLogin: config.administratorLogin || null }),
+          ...(info?.ok || info?.status === 404 ? [] : [{ id: 'service-unreadable', detail: `${service.name}'s definition could not be read, so approver rules for its tags were not checked` }]),
+        ]
+        : [{ id: 'policy-not-checked', detail: apiProblem ? 'the Tailscale API credential is unusable, so the policy and tags were not checked' : 'no Tailscale API credential, so the policy and tags were not checked' }];
       const publish = tagged
         ? serviceGate({ lifecycleState: state, serviceKey: service.key, action: 'publish', evaluation })
         : { allowed: false, reason: 'this host is user-owned (untagged); service hosts must be tagged (D2)' };
@@ -127,7 +137,7 @@ function createIngressControl({ config, api = null, cli = tailscaleCli, fsImpl =
         hostname: service.hostname,
         apps: service.appIds,
         published: endpointsMatch(serve?.services?.[service.name]?.endpoints, service.key),
-        verification: { mode: api ? 'automatic' : 'confirmation', ...evaluation },
+        verification: { mode: automatic ? 'automatic' : 'confirmation', ...evaluation },
         warnings,
         gates: { publish, tailnetMode: serviceGate({ lifecycleState: state, serviceKey: service.key, action: 'tailnet-mode', evaluation }) },
       });
@@ -159,6 +169,13 @@ function createIngressControl({ config, api = null, cli = tailscaleCli, fsImpl =
     return writeConfirmation(config.dataDir, { service: entry.name, hostNodeId, confirmedAt: new Date(now()).toISOString(), confirmedBy: confirmedBy || null, assurance }, fsImpl);
   }
 
+  // A publish has used this service's confirmation; the next publish needs a new one.
+  function markConfirmationUsed(key) {
+    const name = ingressServices({ instance, domain, apps: catalog }).find((entry) => entry.key === key)?.name;
+    const record = name ? readConfirmations(config.dataDir, fsImpl)[name] : null;
+    if (record && !record.publishedAt) writeConfirmation(config.dataDir, { ...record, publishedAt: new Date(now()).toISOString() }, fsImpl);
+  }
+
   // The first request to a new service hostname waits for its certificate (spike 3: 35-40 s). The host
   // cannot resolve its own service names, so the request goes to the service address directly.
   async function warmUp(key, { request = https.request } = {}) {
@@ -182,7 +199,7 @@ function createIngressControl({ config, api = null, cli = tailscaleCli, fsImpl =
     });
   }
 
-  return { configured, status, service, confirm, warmUp };
+  return { configured, status, service, confirm, markConfirmationUsed, warmUp };
 }
 
 module.exports = { CONFIRMATIONS_FILE, createIngressControl, currentIngress, readConfirmations, setupSheet };
