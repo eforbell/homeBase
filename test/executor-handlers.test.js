@@ -352,8 +352,15 @@ test('managed files have fixed destinations and never accept caller content', ()
   // systemd reads EnvironmentFile= as root; Dinner loads its sovereign-owned .env via dotenv instead.
   assert.doesNotMatch(unit.content, /EnvironmentFile=/);
   const snippet = renderManagedFile(base('filesystem.write-managed-file', { template: 'app-nginx-v1' }), { layout: LAYOUT });
-  assert.equal(snippet.path, '/etc/nginx/sovereign-home.d/family-dinner.conf');
+  assert.equal(snippet.path, '/etc/nginx/sovereign-home.d/home--family-dinner.conf');
+  assert.equal(snippet.replaces, '/etc/nginx/sovereign-home.d/family-dinner.conf');
   assert.match(snippet.content, /X-Forwarded-Prefix \/dinner;/);
+  // A host still on the TCP gateway has no identity lookup, so its snippets must not call one.
+  assert.doesNotMatch(snippet.content, /sovereign-identity/);
+  assert.match(snippet.content, /proxy_set_header Host \$host;/);
+  const socketSnippet = renderManagedFile(base('filesystem.write-managed-file', { template: 'app-nginx-v1' }), { layout: LAYOUT, ingress: { mode: 'sockets', instance: 'smith', domain: 'example-tailnet.ts.net' } });
+  assert.match(socketSnippet.content, /include \/etc\/nginx\/sovereign-identity\.conf;/);
+  assert.doesNotMatch(socketSnippet.content, /\$proxy_add_x_forwarded_for|\$host;/);
   assert.throws(() => renderManagedFile(base('filesystem.write-managed-file', { template: '../../etc/shadow' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
 });
 
@@ -449,7 +456,7 @@ test('homeSource: service, sidecar, and timer units come from the catalog with f
   assert.throws(() => render('app-sidecar-service-v1', 'family-dinner.service'), (error) => error.code === 'POLICY_DENIED');
   assert.throws(() => render('app-timer-v1', 'ssh.timer'), (error) => error.code === 'POLICY_DENIED');
   const snippet = renderManagedFile(base('filesystem.write-managed-file', { purpose: 'nginx-snippet', template: 'app-nginx-v1' }), { layout: SOURCE });
-  assert.equal(snippet.path, '/etc/nginx/sovereign-home.d/home-source.conf');
+  assert.equal(snippet.path, '/etc/nginx/sovereign-home.d/source--home-source.conf');
   assert.match(snippet.content, /proxy_pass http:\/\/127\.0\.0\.1:3008\/;/);
   assert.match(snippet.content, /X-Forwarded-Prefix \/source;/);
 });

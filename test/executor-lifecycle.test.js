@@ -96,6 +96,8 @@ test('uninstall removes only root-owned layout artifacts as root and app files a
   const { fsImpl, calls, identities, handlers } = harness({
     '/etc/systemd/system/home-source.service': 'unit',
     '/etc/systemd/system/home-source-continuity-check.timer': 'unit',
+    '/etc/nginx/sovereign-home.d/source--home-source.conf': 'snippet',
+    // Named before SID-001; removed too.
     '/etc/nginx/sovereign-home.d/home-source.conf': 'snippet',
     '/etc/systemd/system/sshd.service': 'not ours',
     '/var/lib/sovereign-home/git-mirrors/homeSource.git': { kind: 'dir', uid: 0 },
@@ -103,6 +105,7 @@ test('uninstall removes only root-owned layout artifacts as root and app files a
   });
   await handlers['filesystem.remove-app-artifacts'](op('filesystem.remove-app-artifacts', { risk: 'destructive' }), { layout: SOURCE });
   assert.equal(fsImpl.existsSync('/etc/systemd/system/home-source.service'), false);
+  assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-home.d/source--home-source.conf'), false);
   assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-home.d/home-source.conf'), false);
   assert.equal(fsImpl.existsSync('/var/lib/sovereign-home/git-mirrors/homeSource.git'), false);
   assert.equal(fsImpl.existsSync('/etc/systemd/system/sshd.service'), true);

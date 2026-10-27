@@ -53,3 +53,13 @@ test('job logging persists executor diagnostics with another redaction pass', ()
   assert.match(combined, /\[REDACTED\]/);
   assert.doesNotMatch(combined, /canary-password/);
 });
+
+test('host plans other than bootstrap run without an app layout (ingress cutover, publish, rollback)', async () => {
+  const { buildIngressCutoverPlan, buildServicePublishPlan, buildIngressRollbackPlan } = require('../src/operations/compilers/ingress');
+  for (const plan of [buildIngressCutoverPlan({ instance: 'smith', domain: 'example-tailnet.ts.net' }), buildServicePublishPlan({ serviceKey: 'home' }), buildIngressRollbackPlan({})]) {
+    const seen = [];
+    const handlers = Object.fromEntries(plan.operations.map((operation) => [operation.type, async (_operation, { layout }) => { seen.push(layout); return null; }]));
+    await executePlan({ plan, secretBindings: {} }, { handlers });
+    assert.deepEqual(seen, plan.operations.map(() => null), plan.kind);
+  }
+});

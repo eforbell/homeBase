@@ -113,6 +113,14 @@ Without an API credential, the administrator confirms the same list from the con
 - a review of existing approvals after every change;
 - Tailnet Lock.
 
+**SID-001 rehearsal (2026-10-27, test VM, Tailscale 1.102.4).** The cutover, three published services, a rollback and a second cutover all ran through the real executor:
+- **Verification:** each service verified automatically with a read-only API credential. Services, devices and policy can all be read without write scopes, which settles the open D23 question.
+- **Isolation:** each address served only its own apps. Forged identity headers never reached an app, and a local process on the host got no identity.
+- **Identity:** the lookup returned a member's stable ID only for their own device and login.
+- **Fixed along the way:** app snippets now follow the host's ingress mode, the identity socket has its own directory, the executor accepts the new host actions, and the live API's field names are handled. Serve is changed only with `set-config --all`, because `set-raw` wipes the node's own Serve entries.
+
+Until the household directory exists, services may be published but no app can use tailnet identity.
+
 ## Review
 
 Two rounds of external plan review:

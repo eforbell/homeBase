@@ -43,7 +43,7 @@ test('executor hello reports protocol v2 actions and stays mutation-disabled by 
     assert.equal(PROTOCOL_VERSION, 2);
     assert.deepEqual(response.capabilities.protocolVersions, [2]);
     assert.equal(response.capabilities.mutationsEnabled, false);
-    assert.deepEqual(response.capabilities.actions, ['bootstrap', 'install', 'adopt', 'restart', 'backup', 'restore', 'uninstall']);
+    assert.deepEqual(response.capabilities.actions, ['bootstrap', 'install', 'adopt', 'restart', 'backup', 'restore', 'uninstall', 'ingress-cutover', 'service-publish', 'ingress-rollback']);
     assert.deepEqual([...response.capabilities.installableApps].sort(), require('../src/catalog').catalog.map((app) => app.id).sort());
   });
 });
@@ -282,4 +282,15 @@ test('an oversized response still produces a terminal error line instead of hang
   await withExecutor(async (socketPath) => {
     await assert.rejects(() => planAction(socketPath, DINNER_INSTALL, { timeoutMs: 3000 }), (error) => error.code === 'RESPONSE_TOO_LARGE');
   }, { planAction: () => ({ blob: 'x'.repeat(70 * 1024) }) });
+});
+
+test('the ingress actions get through the protocol layer with exactly their own fields', async () => {
+  await withExecutor(async (socketPath) => {
+    const cutover = await planAction(socketPath, { action: 'ingress-cutover', instance: 'smith', domain: 'example-tailnet.ts.net', legacyService: 'svc:home' });
+    assert.deepEqual(cutover.plan.operations.map((operation) => operation.type), ['nginx.ensure-socket-gateway', 'nginx.validate-and-reload', 'tailscale.retire-service']);
+    assert.equal((await planAction(socketPath, { action: 'service-publish', serviceKey: 'home' })).plan.kind, 'service-publish');
+    assert.equal((await planAction(socketPath, { action: 'ingress-rollback' })).plan.kind, 'ingress-rollback');
+    await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'plan-action', action: 'service-publish', serviceKey: 'home', instance: 'smith' }), /instance is not accepted for service-publish/);
+    await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'plan-action', action: 'ingress-rollback', command: 'id' }), /Unsupported request field: command/);
+  });
 });

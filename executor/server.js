@@ -9,6 +9,7 @@ const { createDependencyInventoryReader } = require('./dependency-inventory');
 const { createAppUpdateStatusChecker } = require('./app-status');
 const { compileAction } = require('./actions');
 const { createLifecycleHandlers } = require('./lifecycle-handlers');
+const { createServeHandlers } = require('./serve-handlers');
 const { createJournal } = require('./journal');
 const { createRunAction } = require('./run-action');
 const { maintenanceActive } = require('./maintenance');
@@ -130,7 +131,7 @@ function createExecutorServer({ logger = console, requestTimeoutMs = 10000, runA
   });
 }
 function listenSystemd({ logger = console } = {}) {
-  const handlers = { ...createBaseHandlers(), ...createLifecycleHandlers() };
+  const handlers = { ...createBaseHandlers(), ...createLifecycleHandlers(), ...createServeHandlers() };
   const journal = createJournal();
   journal.markInterrupted();
   const runAction = createRunAction({ handlers, journal });

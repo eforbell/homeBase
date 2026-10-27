@@ -2,6 +2,7 @@ const path = require('path');
 const { OperationPlanError } = require('./validate');
 const { templatePlaceholders } = require('./env');
 const { catalogPorts } = require('../catalog');
+const { appServiceKey, appSnippetPath, legacyAppSnippetPath } = require('./ingress-layout');
 
 // Everything the executor needs to know about an app's on-host shape, derived only from the
 // root-owned catalog. Catalog values are trusted, but still validated here so a malformed entry
@@ -126,6 +127,11 @@ function sidecarNginx(app, sidecar) {
   return { mountPath: `${app.network.preferredMountPath}${mountPathSuffix}`, upstreamPath };
 }
 
+// The ingress service (SID-001) an app is served under: home, or its own key for a sensitive app.
+function ingressServiceKey(app) {
+  try { return appServiceKey(app); } catch (error) { return unsupported(app, error.message); }
+}
+
 function validPort(port) { return Number.isInteger(port) && port >= 1024 && port <= 65535; }
 
 function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
@@ -226,7 +232,9 @@ function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
     migrationArgv: app.database?.migrationCommand ? commandArgv(app, app.database.migrationCommand, { checkout, port }) : null,
     storage: storageLayout(app, checkout),
     packages,
-    nginxSnippet: `/etc/nginx/sovereign-home.d/${app.id}.conf`,
+    ingressService: ingressServiceKey(app),
+    nginxSnippet: appSnippetPath(app),
+    legacyNginxSnippet: legacyAppSnippetPath(app),
     unitNames,
   };
 }

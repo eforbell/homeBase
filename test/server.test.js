@@ -31,6 +31,13 @@ function assertUnlockedRealExecuteResult(response, payload) {
   assert.doesNotMatch(payload.error, /Admin setup is required/i);
 }
 
+// Config changes are administrator only (bugBase #150); one session per test server.
+const adminCookies = new Map();
+async function adminCookieFor(baseUrl) {
+  if (!adminCookies.has(baseUrl)) adminCookies.set(baseUrl, await setupAdminCookie(baseUrl));
+  return adminCookies.get(baseUrl);
+}
+
 async function setupAdminCookie(baseUrl, passphrase = 'test-admin-passphrase') {
   const setupRes = await fetch(`${baseUrl}/api/admin/setup`, {
     method: 'POST',
@@ -572,7 +579,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
 
     const updateRes = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({
         hostname: 'erebor',
         domain: 'example.ts.net',
@@ -600,6 +607,57 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(after.gitTransport, 'ssh-key');
     assert.equal(after.healthAlertsEnabled, true);
     assert.equal(after.tailscaleManagedServiceId, 'svc:test');
+  } finally {
+    await server.close();
+  }
+});
+
+test('homebase config changes need the administrator and a same-origin JSON request (bugBase #150)', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-config-auth-'));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    gitTransport: 'https',
+  });
+  const patch = JSON.stringify({ hostname: 'moved', domain: 'example.ts.net', gitTransport: 'https' });
+  const post = (headers, body = patch) => fetch(`${server.url}/api/homebase/config`, { method: 'POST', headers, body });
+  const hostname = async () => (await (await fetch(`${server.url}/api/homebase/config`)).json()).hostname;
+
+  try {
+    const unconfigured = await post({ 'content-type': 'application/json' });
+    assert.equal(unconfigured.status, 409);
+    assert.match((await unconfigured.json()).error, /Set up the admin passphrase/);
+
+    const cookie = await setupAdminCookie(server.url);
+    assert.equal((await fetch(`${server.url}/api/admin/lock`, { method: 'POST', headers: { cookie } })).status, 415, 'an empty no-CORS POST is refused too');
+    const lockRes = await fetch(`${server.url}/api/admin/lock`, { method: 'POST', headers: { 'content-type': 'application/json', cookie } });
+    assert.equal(lockRes.status, 200);
+    const locked = await post({ 'content-type': 'application/json', cookie });
+    assert.equal(locked.status, 401);
+    assert.match((await locked.json()).error, /Admin unlock is required to change Home Base settings/);
+
+    const unlockRes = await fetch(`${server.url}/api/admin/unlock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ passphrase: 'test-admin-passphrase' }) });
+    const session = (unlockRes.headers.get('set-cookie') || '').split(';')[0];
+    for (const site of ['cross-site', 'same-site']) {
+      const res = await post({ 'content-type': 'application/json', cookie: session, 'sec-fetch-site': site });
+      assert.equal(res.status, 403, site);
+      assert.equal((await res.json()).code, 'CROSS_ORIGIN');
+    }
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x']) {
+      const res = await post({ 'content-type': type, cookie: session });
+      assert.equal(res.status, 415, type);
+      assert.equal((await res.json()).code, 'JSON_REQUIRED');
+    }
+    assert.equal((await post({ cookie: session })).status, 415, 'a body without a content type');
+    assert.equal(await hostname(), 'homebase', 'nothing refused was saved');
+
+    assert.equal((await post({ 'content-type': 'application/json; charset=utf-8', cookie: session, 'sec-fetch-site': 'same-origin' })).status, 200);
+    assert.equal(await hostname(), 'moved');
+    const audit = await (await fetch(`${server.url}/api/admin/audit`, { headers: { cookie: session } })).json();
+    assert.deepEqual(audit.entries.filter((entry) => entry.action === 'homebase-config').map((entry) => entry.outcome), ['completed', 'blocked-auth', 'blocked-auth']);
   } finally {
     await server.close();
   }
@@ -708,7 +766,7 @@ test('real execute requires admin setup/unlock', async () => {
 
     const lockRes = await fetch(`${server.url}/api/admin/lock`, {
       method: 'POST',
-      headers: { cookie: setupCookie },
+      headers: { 'content-type': 'application/json', cookie: setupCookie },
     });
     assert.equal(lockRes.status, 200);
 
@@ -910,7 +968,7 @@ test('job history endpoints require admin unlock before exposing logs and plan p
     const setupCookie = await setupAdminCookie(server.url, 'history-passphrase');
     const lockRes = await fetch(`${server.url}/api/admin/lock`, {
       method: 'POST',
-      headers: { cookie: setupCookie },
+      headers: { 'content-type': 'application/json', cookie: setupCookie },
     });
     assert.equal(lockRes.status, 200);
 
@@ -965,7 +1023,7 @@ test('health alert test endpoint posts to configured webhook target', async () =
   try {
     await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({
         hostname: 'test',
         domain: 'example.ts.net',
@@ -1028,7 +1086,7 @@ test('apps health endpoint still responds when webhook delivery fails', async ()
 
     const cfgRes = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({
         hostname: 'homebase',
         domain: 'tailnet',
@@ -1077,7 +1135,7 @@ test('apps health onboarding setupUrl follows hostname/domain config updates', a
 
     const updateRes = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({
         hostname: 'test',
         domain: 'example.ts.net',
@@ -1122,7 +1180,7 @@ test('homebase config updates are reflected in existing app launch URLs', async 
 
     const updateRes = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({
         hostname: 'test',
         domain: 'example.ts.net',
@@ -1158,21 +1216,21 @@ test('homebase config endpoint rejects invalid updates', async () => {
   try {
     const badTransport = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({ gitTransport: 'ftp' }),
     });
     assert.equal(badTransport.status, 400);
 
     const missingKey = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({ gitTransport: 'ssh-key' }),
     });
     assert.equal(missingKey.status, 400);
 
     const injectedKeyPath = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({
         gitTransport: 'ssh-key',
         gitSshKeyPath: '/tmp/key; touch /tmp/homebase-preflight-pwned',
@@ -1184,7 +1242,7 @@ test('homebase config endpoint rejects invalid updates', async () => {
 
     const unknownField = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
       body: JSON.stringify({ serviceUser: 'root' }),
     });
     assert.equal(unknownField.status, 400);

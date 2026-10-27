@@ -24,6 +24,11 @@ const PROFILE_TYPES = {
 // Adopt takes over a legacy install in place: the install operations, plus a safety backup, the nginx
 // include check, retiring the legacy snippet, and handing database objects to the app role.
 PROFILE_TYPES['app-adopt-v1'] = new Set([...PROFILE_TYPES['app-install-v1'], 'backup.create', 'nginx.assert-app-include', 'nginx.retire-legacy-snippets', 'postgres.transfer-ownership']);
+// Identity-safe ingress (Feature-10 SID-001): the move to per-service nginx sockets, and its rollback.
+// Publishing is its own profile because each service is gated separately (D23).
+PROFILE_TYPES['ingress-cutover-v1'] = new Set(['nginx.ensure-socket-gateway', 'nginx.validate-and-reload', 'tailscale.retire-service']);
+PROFILE_TYPES['ingress-rollback-v1'] = new Set(['nginx.restore-tcp-gateway', 'nginx.validate-and-reload', 'tailscale.restore-serve-snapshot']);
+PROFILE_TYPES['service-publish-v1'] = new Set(['tailscale.publish-service']);
 const PROFILE_KIND = {
   'host-bootstrap-v1': 'host-bootstrap',
   'app-install-v1': 'app-install',
@@ -32,10 +37,15 @@ const PROFILE_KIND = {
   'app-restore-v1': 'app-restore',
   'app-uninstall-v1': 'app-uninstall',
   'app-adopt-v1': 'app-adopt',
+  'ingress-cutover-v1': 'ingress-cutover',
+  'ingress-rollback-v1': 'ingress-rollback',
+  'service-publish-v1': 'service-publish',
 };
+// Profiles that change the host itself rather than one catalog app.
+const HOST_PROFILES = new Set(['host-bootstrap-v1', 'ingress-cutover-v1', 'ingress-rollback-v1', 'service-publish-v1']);
 // Destructive operations exist only in the profiles an operator explicitly confirms.
-const DESTRUCTIVE_PROFILES = new Set(['app-restore-v1', 'app-uninstall-v1', 'app-adopt-v1']);
-const DESTRUCTIVE_TYPES = new Set(['backup.restore', 'backup.remove-all', 'filesystem.remove-app-artifacts', 'filesystem.remove-checkout', 'postgres.drop-database', 'nginx.retire-legacy-snippets']);
+const DESTRUCTIVE_PROFILES = new Set(['app-restore-v1', 'app-uninstall-v1', 'app-adopt-v1', 'ingress-cutover-v1', 'ingress-rollback-v1']);
+const DESTRUCTIVE_TYPES = new Set(['backup.restore', 'backup.remove-all', 'filesystem.remove-app-artifacts', 'filesystem.remove-checkout', 'postgres.drop-database', 'nginx.retire-legacy-snippets', 'nginx.restore-tcp-gateway', 'tailscale.retire-service', 'tailscale.restore-serve-snapshot']);
 const TEMPLATE_PURPOSE = {
   'app-env-v1': 'app-env',
   'app-service-v1': 'systemd-unit',
@@ -128,17 +138,18 @@ function validateOperationPolicy(plan) {
   validateOperationSchema(plan);
   const profileTypes = PROFILE_TYPES[plan.policyProfile];
   if (!profileTypes) deny(`Unknown policy profile: ${plan.policyProfile}`);
+  const hostPlan = HOST_PROFILES.has(plan.policyProfile);
   const bootstrap = plan.policyProfile === 'host-bootstrap-v1';
   if (plan.kind !== PROFILE_KIND[plan.policyProfile]) deny('Plan kind does not match its policy profile.');
-  if (bootstrap !== (plan.target === 'local-host')) deny('Plan target does not match its policy profile.');
-  const layout = bootstrap ? null : appLayout(getAppById(plan.target));
+  if (hostPlan !== (plan.target === 'local-host')) deny('Plan target does not match its policy profile.');
+  const layout = hostPlan ? null : appLayout(getAppById(plan.target));
   for (const operation of plan.operations) {
     if (!profileTypes.has(operation.type)) deny(`Operation ${operation.type} is not allowed by ${plan.policyProfile}.`);
     const destructive = DESTRUCTIVE_TYPES.has(operation.type) || ['stop', 'disable-now'].includes(operation.action);
     if (destructive !== (operation.risk === 'destructive')) deny(`Operation ${operation.id} must declare risk "destructive" exactly when it is destructive.`);
     if (destructive && !DESTRUCTIVE_PROFILES.has(plan.policyProfile)) deny(`Destructive operations are not allowed by ${plan.policyProfile}.`);
     if (bootstrap) checkBootstrapOperation(operation);
-    else checkInstallOperation(operation, layout, plan);
+    else if (!hostPlan) checkInstallOperation(operation, layout, plan);
   }
   return plan;
 }

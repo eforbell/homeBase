@@ -37,6 +37,14 @@ function loadConfig() {
     stateDbPath,
     port: numberFromEnv(process.env.PORT, 3080),
     bindHost: process.env.HOME_BASE_BIND_HOST || '127.0.0.1',
+    // Feature-10 D1: the socket nginx asks for each request's identity. Home Base listens once the ingress
+    // cutover has created its directory; 'off' disables it (development machines).
+    identitySocket: process.env.HOME_BASE_IDENTITY_SOCKET === 'off' ? '' : (process.env.HOME_BASE_IDENTITY_SOCKET || '/run/homebase-identity/identity.sock'),
+    // Feature-10 SID-001: this household's instance name (svc:<instance>-home, ...), unset until cutover.
+    instance: String(process.env.HOME_BASE_INSTANCE || '').trim(),
+    // A read-only Tailscale trust credential for D23 verification; absent means administrator confirmation.
+    tailscaleApiCredentialPath: process.env.HOME_BASE_TAILSCALE_API_CREDENTIAL || path.join(process.env.HOME_BASE_CONFIG_DIR || '/etc/sovereign-home', 'tailscale-api.env'),
+    administratorLogin: String(process.env.HOME_BASE_ADMINISTRATOR_LOGIN || '').trim(),
     serviceUser: process.env.HOME_BASE_SERVICE_USER || 'sovereign',
     baseInstallDir,
     homeBaseSharedRoot: sharedRoot,
