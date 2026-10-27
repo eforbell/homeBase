@@ -25,7 +25,10 @@
         "app-backup",
         "app-restore",
         "app-uninstall",
-        "app-adopt"
+        "app-adopt",
+        "ingress-cutover",
+        "ingress-rollback",
+        "service-publish"
       ]
     },
     "target": {
@@ -49,7 +52,10 @@
         "app-backup-v1",
         "app-restore-v1",
         "app-uninstall-v1",
-        "app-adopt-v1"
+        "app-adopt-v1",
+        "ingress-cutover-v1",
+        "ingress-rollback-v1",
+        "service-publish-v1"
       ]
     },
     "operations": {
@@ -210,6 +216,21 @@
         },
         {
           "$ref": "#/$defs/postgresTransfer"
+        },
+        {
+          "$ref": "#/$defs/nginxSocketGateway"
+        },
+        {
+          "$ref": "#/$defs/nginxTcpGateway"
+        },
+        {
+          "$ref": "#/$defs/servePublish"
+        },
+        {
+          "$ref": "#/$defs/serveRetire"
+        },
+        {
+          "$ref": "#/$defs/serveRestore"
         }
       ]
     },
@@ -1014,6 +1035,155 @@
             "database",
             "owner"
           ]
+        }
+      ]
+    },
+    "nginxSocketGateway": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "instance",
+            "domain"
+          ],
+          "properties": {
+            "type": {
+              "const": "nginx.ensure-socket-gateway"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true,
+            "instance": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+              "maxLength": 24
+            },
+            "domain": {
+              "type": "string",
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
+              "maxLength": 253
+            }
+          }
+        }
+      ]
+    },
+    "nginxTcpGateway": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "nginx.restore-tcp-gateway"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "servePublish": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "serviceKey"
+          ],
+          "properties": {
+            "type": {
+              "const": "tailscale.publish-service"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true,
+            "serviceKey": {
+              "type": "string",
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+              "maxLength": 40
+            }
+          }
+        }
+      ]
+    },
+    "serveRetire": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "service"
+          ],
+          "properties": {
+            "type": {
+              "const": "tailscale.retire-service"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true,
+            "service": {
+              "type": "string",
+              "pattern": "^svc:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+            }
+          }
+        }
+      ]
+    },
+    "serveRestore": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "tailscale.restore-serve-snapshot"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
         }
       ]
     }

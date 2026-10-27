@@ -22,7 +22,11 @@ const { evaluateFloors } = require('./operations/security-floors');
 const { HOST_CA_BUNDLE, assessPemBundle, storeTrust } = require('./operations/distrusted-roots');
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
-const { getTailscalePublishVerification } = require('./services/tailscale-verify');
+const { getTailscalePublishVerification, getIngressVerification } = require('./services/tailscale-verify');
+const { createIdentityResolver, createIdentityServer, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
+const { createIngressRoutes } = require('./ingress-routes');
+const { appPublicBase } = require('./operations/ingress-layout');
+const { currentIngress } = require('./services/ingress-control');
 const {
   mergeHomeBaseConfig,
   toClientHomeBaseConfig,
@@ -307,23 +311,28 @@ function joinExternalPath(baseUrl, mountPath) {
   return `${trimTrailingSlash(baseUrl)}${String(mountPath || '/').startsWith('/') ? '' : '/'}${String(mountPath || '/')}`;
 }
 
-function projectInstallationsWithCurrentUrls(installations = {}, config = {}) {
-  const hostname = config.defaultHostname || 'homebase';
-  const domain = config.defaultDomain || 'tailnet';
-  const publicBase = `https://${hostname}.${domain}`;
-  return Object.fromEntries(Object.entries(installations).map(([appId, record]) => [
-    appId,
-    {
-      ...record,
-      externalUrl: joinExternalPath(publicBase, record.mountPath),
-    },
-  ]));
+// What every page needs to know about socket ingress (not secret): the instance, whether this host is cut
+// over, and its two main addresses.
+function ingressSummary(state, config) {
+  const ingress = currentIngress(state.jobs, config);
+  if (!ingress) return { instance: config.instance || null, cutOver: false };
+  return { instance: ingress.instance, cutOver: true, homebaseUrl: `https://${ingress.instance}-homebase.${ingress.domain}/`, appsUrl: `https://${ingress.instance}-home.${ingress.domain}/` };
+}
+
+// Open buttons follow the host's ingress: each app's service hostname once cut over.
+function projectInstallationsWithCurrentUrls(installations = {}, config = {}, ingress = null) {
+  const site = { hostname: config.defaultHostname || 'homebase', domain: config.defaultDomain || 'tailnet' };
+  return Object.fromEntries(Object.entries(installations).map(([appId, record]) => {
+    const app = getAppById(appId);
+    const publicBase = app ? appPublicBase(app, { site, ingress }) : `https://${site.hostname}.${site.domain}`;
+    return [appId, { ...record, externalUrl: joinExternalPath(publicBase, record.mountPath) }];
+  }));
 }
 
 function projectStateForClient(state, config) {
   return {
     ...state,
-    installations: projectInstallationsWithCurrentUrls(state.installations || {}, config),
+    installations: projectInstallationsWithCurrentUrls(state.installations || {}, config, currentIngress(state.jobs, config)),
   };
 }
 
@@ -491,6 +500,7 @@ function createApp(config) {
   const hostCaBundlePath = config.hostCaBundlePath || HOST_CA_BUNDLE;
   stateStore.init();
   const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
+  const ingressRoutes = createIngressRoutes({ stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome });
   try {
     jobRunner.reconcileStaleUpdateJobs();
     jobRunner.failInterruptedLegacyJobs();
@@ -626,7 +636,9 @@ function createApp(config) {
       return tailscaleVerifyCache.value;
     }
     const lastPublishedJob = stateStore.getLatestCompletedRealJobByKind('tailscale-publish');
-    const value = getTailscalePublishVerification({
+    // A host cut over to socket ingress is verified by its sockets, not by a tcp:443 listener.
+    const cutOver = Boolean(currentIngress(stateStore.loadState().jobs, effectiveConfig));
+    const value = cutOver ? getIngressVerification({ instance: effectiveConfig.instance, domain: String(effectiveConfig.defaultDomain || '').toLowerCase(), run: effectiveConfig.tailscaleRunCommand }) : getTailscalePublishVerification({
       hostname: effectiveConfig.defaultHostname || 'homebase',
       domain: effectiveConfig.defaultDomain || 'tailnet',
       run: effectiveConfig.tailscaleRunCommand,
@@ -905,10 +917,14 @@ function createApp(config) {
         const inventory = await getDependencyInventory(effectiveConfig, Object.values(state.installations || {}), { force: adminStatus.unlocked && url.searchParams.get('refresh') === '1' });
         return sendJson(res, 200, projectDependencyInventory(inventory, { admin: adminStatus.unlocked, hostTrust: readHostTrust() }));
       }
+      if (await ingressRoutes({ req, res, method, pathname, config: effectiveConfig, state })) return undefined;
       if (method === 'GET' && pathname === '/api/network/tailscale') {
-        return sendJson(res, 200, getTailscaleReadiness(effectiveConfig, {
-          force: url.searchParams.get('refresh') === '1',
-        }));
+        const readiness = getTailscaleReadiness(effectiveConfig, { force: url.searchParams.get('refresh') === '1' });
+        // After cutover there is no single managed service to look for; each address has its own (see /api/ingress).
+        if (currentIngress(state.jobs, effectiveConfig) && readiness?.readiness?.state === 'authenticated-unpublished') {
+          return sendJson(res, 200, { ...readiness, readiness: { state: 'published', label: 'Per-service sockets', summary: 'Each address is its own Tailscale Service on a private nginx socket; see Identity-safe ingress for each one.', blockers: [] } });
+        }
+        return sendJson(res, 200, readiness);
       }
       if (method === 'GET' && pathname === '/api/network/tailscale/publish-plan') {
         return sendJson(res, 200, getTailscalePublishPlanCached(effectiveConfig, {
@@ -937,7 +953,7 @@ function createApp(config) {
         return sendJson(res, 200, manifestSchema);
       }
       if (method === 'GET' && pathname === '/api/homebase/config') {
-        return sendJson(res, 200, toClientHomeBaseConfig(config, homeBaseConfigOverride));
+        return sendJson(res, 200, { ...toClientHomeBaseConfig(config, homeBaseConfigOverride), ingress: ingressSummary(state, effectiveConfig) });
       }
       if (method === 'GET' && pathname === '/api/admin/status') {
         return sendJson(res, 200, await getAdminStatus(req, stateStore));
@@ -977,13 +993,20 @@ function createApp(config) {
         if (parsed.error) {
           return sendJson(res, 400, { error: parsed.error });
         }
+        // A cut-over host is bound to its instance and tailnet domain (the executor's cutover record); these
+        // fields would only make Home Base and the executor disagree about every address.
+        if (currentIngress(state.jobs, effectiveConfig)) {
+          const locked = ['hostname', 'domain', 'tailscaleManagedServiceId'].filter((field) => parsed.value[field] !== current[field]);
+          if (locked.length) return sendJson(res, 409, { error: `${locked.join(', ')} cannot change while this host uses per-service sockets; roll back ingress first.`, code: 'INGRESS_LOCKED' });
+        }
         const persisted = {
           ...parsed.value,
           updatedAt: new Date().toISOString(),
         };
         stateStore.setHomeBaseConfig(persisted);
         const updatedConfig = mergeHomeBaseConfig(config, persisted);
-        const updatedInstallations = projectInstallationsWithCurrentUrls(stateStore.loadState().installations || {}, updatedConfig);
+        const updatedState = stateStore.loadState();
+        const updatedInstallations = projectInstallationsWithCurrentUrls(updatedState.installations || {}, updatedConfig, currentIngress(updatedState.jobs, updatedConfig));
         for (const installation of Object.values(updatedInstallations)) {
           stateStore.upsertInstallation({
             ...installation,
@@ -1232,6 +1255,10 @@ function createApp(config) {
         const dryRun = body.dryRun !== false;
         let auth = null;
 
+        // The single-service plan targets nginx over TCP, which a cut-over host no longer has.
+        if (currentIngress(state.jobs, effectiveConfig)) {
+          return sendJson(res, 409, { error: 'This host uses per-service sockets; publish each service from Identity-safe ingress instead.', code: 'INGRESS_CUT_OVER' });
+        }
         const plan = getTailscalePublishPlanCached(effectiveConfig, { force: true });
         if (!plan.canExecute) {
           if (!dryRun) {
@@ -2079,10 +2106,17 @@ function createApp(config) {
         if (config.homeBaseExecutionModeMissing) console.warn(`[homebase] ${EXECUTION_MODE_UPGRADE_HINT}`);
         if (typeof callback === 'function') callback();
       });
+      if (config.identitySocket) {
+        const log = (message) => console.warn(`[homebase] ${message}`);
+        const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log }), log });
+        startIdentitySocketWhenReady({ server: identityServer, socketPath: config.identitySocket, log: (message) => console.log(`Home Base ${message}`) });
+      }
     },
   };
 }
 
 module.exports = {
   createApp,
+  currentIngress,
+  projectInstallationsWithCurrentUrls,
 };

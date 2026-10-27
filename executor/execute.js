@@ -27,8 +27,10 @@ function getFailureOutput(error, secrets) {
 // receives unvalidated JSON and it never exposes the secret binding object in events.
 async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
   const completed = new Set();
-  // App operations resolve every path, unit, and name from the target's catalog layout.
-  const layout = request.plan.kind === 'host-bootstrap' ? null : appLayout(getAppById(request.plan.target));
+  // App operations resolve every path, unit, and name from the target's catalog layout. Host plans
+  // (bootstrap, ingress cutover/rollback, service publish) target local-host and have none; policy ties
+  // every host profile to that target.
+  const layout = request.plan.target === 'local-host' ? null : appLayout(getAppById(request.plan.target));
   for (const operation of request.plan.operations) {
     if (operation.dependsOn.some((id) => !completed.has(id))) {
       throw new ProtocolError('INVALID_PLAN', `Operation dependencies are incomplete for ${operation.id}.`);

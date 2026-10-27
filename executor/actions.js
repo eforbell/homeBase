@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { ProtocolError } = require('./protocol-error');
 const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
 const { buildAppInstallPlan, buildAppAdoptPlan } = require('../src/operations/compilers/install');
+const { buildIngressCutoverPlan, buildIngressRollbackPlan, buildServicePublishPlan } = require('../src/operations/compilers/ingress');
 const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan } = require('../src/operations/compilers/lifecycle');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const { digestOperationPlan } = require('../src/operations/digest');
@@ -18,11 +19,16 @@ const ACTIONS = Object.freeze({
   backup: { fields: ['appId'] },
   restore: { fields: ['appId', 'backupId'] },
   uninstall: { fields: ['appId', 'keepBackups'] },
+  // Feature-10 SID-001 socket ingress. Home Base gates each one first (D23); the executor still binds
+  // service names to its own cutover record and checks app identity modes itself before a rollback.
+  'ingress-cutover': { fields: ['instance', 'domain', 'legacyService'] },
+  'service-publish': { fields: ['serviceKey'] },
+  'ingress-rollback': { fields: [] },
 });
 // Apps the executor manages. Each entry has passed the runbook (docs/executor-app-runbook.md),
 // including a container run; since 2026-09-25 that is the whole catalog.
 const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-plan', 'fast-to-eat', 'family-help', 'home-ops', 'family-pulse', 'bug-base', 'helm', 'bitcoin-accounting', 'home-drop']);
-const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups'];
+const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups', 'instance', 'domain', 'legacyService', 'serviceKey'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }
 
@@ -45,6 +51,16 @@ function normalizeAction(request) {
     if (!spec.fields.includes(field) && field in request) invalid(`${field} is not accepted for ${request.action}.`);
   }
   if (request.action === 'bootstrap') return { action: 'bootstrap' };
+  if (request.action === 'ingress-rollback') return { action: 'ingress-rollback' };
+  if (request.action === 'service-publish') {
+    if (typeof request.serviceKey !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(request.serviceKey)) invalid('serviceKey must name an ingress service.');
+    return { action: 'service-publish', serviceKey: request.serviceKey };
+  }
+  if (request.action === 'ingress-cutover') {
+    if (typeof request.instance !== 'string' || typeof request.domain !== 'string') invalid('instance and domain are required.');
+    if (request.legacyService != null && (typeof request.legacyService !== 'string' || !/^svc:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(request.legacyService))) invalid('legacyService must be a service name.');
+    return { action: 'ingress-cutover', instance: request.instance, domain: request.domain, ...(request.legacyService ? { legacyService: request.legacyService } : {}) };
+  }
   if (typeof request.appId !== 'string' || !getAppById(request.appId)) invalid('appId must name a catalog app.');
   if (request.action === 'restart' || request.action === 'backup') return { action: request.action, appId: request.appId };
   if (request.action === 'restore') {
@@ -66,6 +82,13 @@ function compileAction(action, { generatedAt = new Date().toISOString(), adoptAl
   let plan;
   if (action.action === 'bootstrap') {
     plan = buildHostBootstrapPlan({ generatedAt });
+  } else if (action.action === 'ingress-cutover') {
+    plan = buildIngressCutoverPlan({ instance: action.instance, domain: action.domain, legacyService: action.legacyService || null, generatedAt });
+  } else if (action.action === 'service-publish') {
+    plan = buildServicePublishPlan({ serviceKey: action.serviceKey, generatedAt });
+  } else if (action.action === 'ingress-rollback') {
+    // App identity modes are checked again by nginx.restore-tcp-gateway, from the apps' own env files.
+    plan = buildIngressRollbackPlan({ generatedAt });
   } else if (!INSTALLABLE_APPS.includes(action.appId)) {
     deny(`The executor does not manage ${action.appId} yet.`);
   } else if (action.action === 'install') {

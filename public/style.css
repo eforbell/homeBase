@@ -140,3 +140,7 @@ a:hover { text-decoration: underline; }
 .hb-nav-link--more {
   display: inline-flex;
 }
+
+/* Ingress card (Network): service names and hostnames are long unbroken words; let them break on phones. */
+[data-ingress] { overflow-wrap: anywhere; }
+[data-ingress] .hb-row > * { min-width: 0; }

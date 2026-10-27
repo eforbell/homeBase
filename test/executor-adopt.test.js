@@ -101,19 +101,19 @@ test('retiring legacy snippets keeps root-only copies and covers nginx-published
 });
 
 test('a snippet swap nginx rejects is undone: legacy snippet restored, new one removed', async () => {
-  const fsImpl = createFakeFs({ '/etc/nginx/snippets/bug-base.conf': '# legacy bug-base\n', '/etc/nginx/sovereign-home.d/bug-base.conf': '# executor bug-base\n' });
+  const fsImpl = createFakeFs({ '/etc/nginx/snippets/bug-base.conf': '# legacy bug-base\n', '/etc/nginx/sovereign-home.d/home--bug-base.conf': '# executor bug-base\n' });
   const reject = async () => { throw Object.assign(new Error('exit 1'), { code: 'OPERATION_FAILED', output: { stderr: 'nginx: [emerg] "location" directive is not allowed here' } }); };
   await assert.rejects(() => createBaseHandlers({ fsImpl, run: reject })['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS }), /legacy snippet was restored.*not allowed here.*inside the server block/);
   assert.equal(fsImpl.readFileSync('/etc/nginx/snippets/bug-base.conf'), '# legacy bug-base\n');
-  assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-home.d/bug-base.conf'), false);
+  assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-home.d/home--bug-base.conf'), false);
 });
 
 test('a re-run whose nginx check fails for another reason never deletes the only snippet', async () => {
   // The first attempt already retired the legacy snippet; now nginx -t fails because of something else.
-  const fsImpl = createFakeFs({ '/etc/nginx/sovereign-home.d/bug-base.conf': '# executor bug-base\n', '/etc/nginx/snippets': { kind: 'dir' } });
+  const fsImpl = createFakeFs({ '/etc/nginx/sovereign-home.d/home--bug-base.conf': '# executor bug-base\n', '/etc/nginx/snippets': { kind: 'dir' } });
   const reject = async () => { throw Object.assign(new Error('exit 1'), { code: 'OPERATION_FAILED', output: { stderr: 'cannot load certificate "/etc/letsencrypt/live/x/fullchain.pem"' } }); };
   await assert.rejects(() => createBaseHandlers({ fsImpl, run: reject })['nginx.retire-legacy-snippets'](base('nginx.retire-legacy-snippets', { risk: 'destructive' }), { layout: BUGS }), /nginx -t failed: cannot load certificate/);
-  assert.equal(fsImpl.readFileSync('/etc/nginx/sovereign-home.d/bug-base.conf'), '# executor bug-base\n');
+  assert.equal(fsImpl.readFileSync('/etc/nginx/sovereign-home.d/home--bug-base.conf'), '# executor bug-base\n');
 });
 
 test('ownership transfer runs as postgres in the app database, bound to the catalog role', async () => {
@@ -151,7 +151,7 @@ test('the web client sends exactly the fields the executor accepts for every act
   const source = require('fs').readFileSync(require.resolve('../src/executor/client'), 'utf8');
   const table = source.slice(source.indexOf('const ACTION_FIELD_NAMES = {'), source.indexOf('};', source.indexOf('const ACTION_FIELD_NAMES = {')));
   for (const [name, spec] of Object.entries(ACTIONS)) {
-    const match = new RegExp(`\\n  ${name}: \\[([^\\]]*)\\]`).exec(table);
+    const match = new RegExp(`\\n  '?${name}'?: \\[([^\\]]*)\\]`).exec(table);
     assert.ok(match, `client has no field list for ${name}`);
     const fields = match[1].split(',').map((field) => field.trim().replace(/'/g, '')).filter(Boolean);
     assert.deepEqual(fields, spec.fields, name);

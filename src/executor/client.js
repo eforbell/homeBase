@@ -83,6 +83,9 @@ const ACTION_FIELD_NAMES = {
   backup: ['appId'],
   restore: ['appId', 'backupId'],
   uninstall: ['appId', 'keepBackups'],
+  'ingress-cutover': ['instance', 'domain', 'legacyService'],
+  'service-publish': ['serviceKey'],
+  'ingress-rollback': [],
 };
 
 function actionFields(fields) {

@@ -188,7 +188,7 @@
     result.textContent = 'Saving...';
     try {
       const saved = await window.HB.postJson('/api/homebase/config', payload);
-      result.textContent = `Saved. Host now ${saved.hostname}.${saved.domain}`;
+      result.textContent = form.dataset.cutOver === 'true' ? 'Saved.' : `Saved. Host now ${saved.hostname}.${saved.domain}`;
     } catch (error) {
       result.textContent = error.message;
     }
@@ -250,6 +250,11 @@
 
   function wireEvents() {
     root.addEventListener('click', (event) => {
+      if (event.target.closest('[data-action="copy-ingress-policy"]')) {
+        const text = root.querySelector('[data-ingress-policy]')?.textContent || '';
+        navigator.clipboard?.writeText(text).then(() => { event.target.textContent = 'Copied'; }).catch(() => { event.target.textContent = 'Select and copy the text above'; });
+        return;
+      }
       if (event.target.closest('[data-action="refresh-foundation"]')) {
         loadFoundation({ refresh: true });
         loadDependencies({ refresh: true });
@@ -304,6 +309,34 @@
         const payload = { dryRun };
         if (!dryRun) payload.confirm = 'EXECUTE';
         triggerHomebaseAction('/api/network/tailscale/publish-execute', payload, tailscalePublishExecute.querySelector('[data-result]'), tailscalePublishExecute);
+        return;
+      }
+      const ingressForm = event.target.closest('form[data-action^="ingress-"]');
+      if (ingressForm) {
+        event.preventDefault();
+        const action = ingressForm.dataset.action;
+        const result = ingressForm.querySelector('[data-result]');
+        if (ingressForm.elements.sure && !ingressForm.elements.sure.checked) {
+          result.textContent = 'Tick the box to confirm.';
+          return;
+        }
+        const key = encodeURIComponent(ingressForm.dataset.key || '');
+        const request = {
+          'ingress-cutover': ['/api/ingress/cutover', { confirm: 'CUTOVER' }],
+          'ingress-rollback': ['/api/ingress/rollback', { confirm: 'ROLLBACK' }],
+          'ingress-publish': [`/api/ingress/services/${key}/publish`, { confirm: 'PUBLISH' }],
+          'ingress-confirm': [`/api/ingress/services/${key}/confirm`, { hostNodeId: '' }],
+        }[action];
+        if (!request) return;
+        if (action === 'ingress-confirm') {
+          result.textContent = 'Recording…';
+          window.HB.getJson('/api/ingress')
+            .then((data) => window.HB.postJson(request[0], { hostNodeId: data.self?.nodeId || '' }))
+            .then(loadIngress)
+            .catch((error) => { result.textContent = error.message; });
+          return;
+        }
+        triggerHomebaseAction(request[0], request[1], result, ingressForm);
         return;
       }
       const adminSetup = event.target.closest('form[data-action="admin-setup"]');
@@ -462,18 +495,24 @@
   function renderConfigPage(config, status) {
     // The self-update button and the legacy git settings only work in legacy-sudo mode.
     const executorMode = status?.executionMode === 'executor';
+    // After the ingress cutover, addresses come from the instance; these fields are fixed until a rollback.
+    const cutOver = Boolean(config.ingress?.cutOver);
+    const lockedAttr = cutOver ? ' readonly aria-readonly="true" style="opacity:0.7;"' : '';
     return `
       <div class="hb-stack">
         ${renderOverviewCard({
           title: 'Config',
           description: 'Home Base identity, update posture, and alert preferences.',
-          statusLine: `Current host: ${config.hostname}.${config.domain} · service ID: ${config.tailscaleManagedServiceId || 'svc:home'} · systemd: ${status.systemd?.active || 'unknown'}`,
+          statusLine: cutOver
+            ? `Instance ${config.ingress.instance} on ${config.domain} · Home Base at ${config.ingress.homebaseUrl} · systemd: ${status.systemd?.active || 'unknown'}`
+            : `Current host: ${config.hostname}.${config.domain} · service ID: ${config.tailscaleManagedServiceId || 'svc:home'} · systemd: ${status.systemd?.active || 'unknown'}`,
         })}
         <section class="hb-card">
           <h2 style="margin-top:0;">Home Base configuration</h2>
-          <form class="hb-form-grid" data-action="config">
-            <label class="hb-label">Hostname <input class="hb-input" name="hostname" value="${window.HB.escapeHtml(config.hostname)}" required></label>
-            <label class="hb-label">Domain <input class="hb-input" name="domain" value="${window.HB.escapeHtml(config.domain)}" required></label>
+          <form class="hb-form-grid" data-action="config" data-cut-over="${cutOver ? 'true' : 'false'}">
+            ${cutOver ? `<p class="hb-muted" style="margin:0;">This host uses per-service sockets (instance <strong>${window.HB.escapeHtml(config.ingress.instance)}</strong>), so its addresses are <code>${window.HB.escapeHtml(config.ingress.instance)}-home</code>, <code>-homebase</code> and one per sensitive app on this tailnet. Hostname, domain and the old service ID stay fixed until you roll back ingress on <a href="/network">Network</a>.</p>` : ''}
+            <label class="hb-label">Hostname${cutOver ? ' (not used for addresses after cutover)' : ''} <input class="hb-input" name="hostname" value="${window.HB.escapeHtml(config.hostname)}" required${lockedAttr}></label>
+            <label class="hb-label">Domain${cutOver ? ' (the tailnet domain)' : ''} <input class="hb-input" name="domain" value="${window.HB.escapeHtml(config.domain)}" required${lockedAttr}></label>
             ${executorMode ? `
             <p class="hb-muted" style="margin:0;">Git access: the executor fetches app repositories with its own root-only key (<code>/etc/sovereign-home/git/deploy_key</code>, set with <code>install.sh --git-ssh-key</code>). The legacy transport and key-path settings no longer apply.</p>
             <input type="hidden" name="gitTransport" value="${window.HB.escapeHtml(config.gitTransport || 'https')}">
@@ -508,9 +547,10 @@
                 <option value="Pacific/Honolulu" ${config.householdTimezone === 'Pacific/Honolulu' ? 'selected' : ''}>Hawaii (Pacific/Honolulu)</option>
               </select>
             </label>
+            ${cutOver ? `<input type="hidden" name="tailscaleManagedServiceId" value="${window.HB.escapeHtml(config.tailscaleManagedServiceId || 'svc:home')}">` : `
             <label class="hb-label">Managed Tailscale service ID
               <input class="hb-input" name="tailscaleManagedServiceId" placeholder="svc:home" value="${window.HB.escapeHtml(config.tailscaleManagedServiceId || 'svc:home')}">
-            </label>
+            </label>`}
             <button class="hb-btn hb-btn-primary" type="submit">Save config</button>
             <p class="hb-muted" data-config-result style="margin:0;"></p>
           </form>
@@ -588,6 +628,89 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
     `;
   }
 
+
+  // Identity-safe ingress (Feature-10 SID-001): setup sheet, per-service verification, and the cutover,
+  // publish, and rollback actions. Loaded after the page renders; administrators only.
+  function renderIngressBody(data) {
+    const esc = window.HB.escapeHtml;
+    if (!data.configured) {
+      return `<p class="hb-muted" style="margin:0;">Not set up on this host: ${esc(data.problem || 'unknown')}. Set <code>HOME_BASE_INSTANCE</code> in <code>/etc/sovereign-home/homebase.env</code> (runbook section 2.4).</p>`;
+    }
+    const verificationLabel = data.apiCredential === 'configured'
+      ? 'automatic (read-only Tailscale API credential)'
+      : `administrator confirmation (${esc(data.apiCredential)})`;
+    const self = data.self || {};
+    const state = (entry) => {
+      const v = entry.verification || {};
+      const cls = v.state === 'verified' || v.state === 'confirmed' ? 'hb-ok' : (v.reason === 'service-unknown' ? 'hb-muted' : 'hb-warn');
+      const label = v.reason === 'service-unknown' ? 'not defined in the console' : (v.state === 'unverified' && ['self-missing', 'self-not-approved'].includes(v.reason) ? 'ready to publish' : v.state);
+      return `<span class="${cls}">${esc(label)}</span>`;
+    };
+    const rows = (data.services || []).filter((entry) => entry.installed).map((entry) => {
+      const v = entry.verification || {};
+      const warnings = (entry.warnings || []).filter((warning) => warning.id !== 'policy-not-checked');
+      const canPublish = data.cutOver && !entry.published && entry.gates?.publish?.allowed;
+      const canConfirm = data.apiCredential !== 'configured' && self.nodeId;
+      return `
+        <li class="hb-stack" style="gap:0.35rem;border-top:1px solid var(--line, rgba(127,127,127,0.25));padding-top:0.6rem;">
+          <div class="hb-row" style="flex-wrap:wrap;gap:0.5rem;justify-content:space-between;">
+            <strong>${esc(entry.name)}</strong>
+            <span>${entry.published ? '<span class="hb-ok">published</span>' : '<span class="hb-muted">not published</span>'} · ${state(entry)}</span>
+          </div>
+          <span class="hb-muted" style="font-size:0.85rem;">https://${esc(entry.hostname)}/ · ${esc(entry.apps.length ? entry.apps.join(', ') : 'Home Base admin')}</span>
+          ${v.detail && v.state !== 'verified' ? `<span class="hb-muted" style="font-size:0.85rem;">${esc(v.detail)}</span>` : ''}
+          ${warnings.map((warning) => `<span class="hb-warn" style="font-size:0.85rem;">${esc(warning.detail)}</span>`).join('')}
+          ${!entry.gates?.publish?.allowed && !entry.published ? `<span class="hb-muted" style="font-size:0.85rem;">Publish blocked: ${esc(entry.gates?.publish?.reason || '')}</span>` : ''}
+          <div class="hb-row" style="flex-wrap:wrap;gap:0.5rem;">
+            ${canPublish ? `<form data-action="ingress-publish" data-key="${esc(entry.key)}"><button class="hb-btn hb-btn-primary" type="submit">Publish</button> <span class="hb-muted" data-result style="font-size:0.85rem;"></span></form>` : ''}
+            ${canConfirm ? `<form data-action="ingress-confirm" data-key="${esc(entry.key)}"><button class="hb-btn" type="submit">I checked the console: no other host is approved</button> <span class="hb-muted" data-result style="font-size:0.85rem;"></span></form>` : ''}
+          </div>
+        </li>`;
+    }).join('');
+    const sheet = data.setup ? `
+      <details style="margin-top:0.8rem;">
+        <summary><strong>Tailscale console setup sheet</strong> <span class="hb-muted">(define these services, then paste the policy)</span></summary>
+        <p class="hb-muted" style="margin:0.5rem 0 0;">Services page, each with port <code>tcp:443</code>: ${data.setup.services.map((service) => `<code>${esc(service.name.replace(/^svc:/, ''))}</code>`).join(', ')}.</p>
+        <pre data-ingress-policy style="white-space:pre-wrap;overflow-x:auto;font-size:0.8rem;margin:0.5rem 0 0;">${esc(data.setup.policy)}</pre>
+        <button class="hb-btn" type="button" data-action="copy-ingress-policy" style="margin-top:0.4rem;">Copy policy</button>
+        <p class="hb-muted" style="margin:0.5rem 0 0;">Home Base never changes your tailnet policy. After saving, review each service's hosts in the console and remove any host other than this one.</p>
+      </details>` : '';
+    return `
+      <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">
+        <li class="hb-row"><strong>Instance</strong><span>${esc(data.instance)} on ${esc(data.domain)}</span></li>
+        <li class="hb-row"><strong>This host</strong><span>${self.tagged ? (self.holdsHostTag ? `<span class="hb-ok">tagged ${esc(self.hostTag)}</span>` : `<span class="hb-warn">tagged, but not ${esc(self.hostTag)}</span>`) : '<span class="hb-err">untagged: service hosts must be tagged</span>'}</span></li>
+        <li class="hb-row"><strong>Ingress</strong><span>${data.cutOver ? '<span class="hb-ok">per-service sockets</span>' : '<span class="hb-muted">TCP gateway (not cut over)</span>'}</span></li>
+        <li class="hb-row"><strong>Host verification</strong><span>${verificationLabel}</span></li>
+        <li class="hb-row"><strong>Tailnet identity</strong><span class="hb-muted">${data.lifecycleState === 'none' ? 'off until the household directory exists' : esc(data.lifecycleState)}</span></li>
+      </ul>
+      ${(data.errors || []).map((error) => `<p class="hb-warn" style="margin:0.5rem 0 0;">${esc(error)}</p>`).join('')}
+      ${sheet}
+      <h3 style="margin:1rem 0 0.4rem;">Services</h3>
+      <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">${rows}</ul>
+      ${data.cutOver ? `
+        <form class="hb-form-grid" data-action="ingress-rollback" style="margin-top:1rem;">
+          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Restore the TCP gateway and the Serve services from before the cutover</label>
+          <button class="hb-btn" type="submit">Roll back ingress</button>
+          <p class="hb-muted" data-result style="margin:0;"></p>
+        </form>` : `
+        <form class="hb-form-grid" data-action="ingress-cutover" style="margin-top:1rem;">
+          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Move nginx to one private socket per service (runbook section 3). Apps stay reachable only at their new addresses once published.</label>
+          <button class="hb-btn hb-btn-primary" type="submit">Cut over to per-service sockets</button>
+          <p class="hb-muted" data-result style="margin:0;"></p>
+        </form>`}
+    `;
+  }
+
+  async function loadIngress() {
+    const node = root.querySelector('[data-ingress]');
+    if (!node) return;
+    try {
+      node.innerHTML = renderIngressBody(await window.HB.getJson('/api/ingress'));
+    } catch (error) {
+      node.innerHTML = `<p class="hb-muted" style="margin:0;">${window.HB.escapeHtml(error.message)} <a href="/admin">Unlock on Admin</a> to manage ingress.</p>`;
+    }
+  }
+
   function renderNetworkPage(config, preflight, tailscale = null, publishPlan = null, verification = null) {
     const host = `${config.hostname}.${config.domain}`;
     const readiness = tailscale?.readiness || {};
@@ -608,8 +731,13 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
         ${renderOverviewCard({
           title: 'Network',
           description: 'Tailnet reachability and managed Tailscale publishing readiness.',
-          statusLine: `Current intended host: ${host}`,
+          statusLine: config.ingress?.cutOver ? `Per-service sockets · Home Base at ${config.ingress.homebaseUrl}` : `Current intended host: ${host}`,
         })}
+        <section class="hb-card">
+          <h2 style="margin-top:0;">Identity-safe ingress</h2>
+          <p class="hb-muted" style="margin:0 0 0.8rem;">Separate addresses for Home Base and sensitive apps, each on its own private nginx socket (Feature-10).</p>
+          <div data-ingress><div class="hb-row" style="gap:0.5rem;"><div class="hb-spinner"></div><span class="hb-muted">Checking Tailscale services…</span></div></div>
+        </section>
         <section class="hb-card">
           <h2 style="margin-top:0;">Tailscale readiness</h2>
           ${tailscale?.error ? `<p class="hb-err" style="margin:0;">${window.HB.escapeHtml(tailscale.error)}</p>` : `
@@ -632,7 +760,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
           ${serve.error ? `<p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(serve.error)}</p>` : serviceList}
           ${serve.tcp443Owners?.length ? `<p class="hb-muted" style="margin:0.7rem 0 0;">tcp:443 owners: ${window.HB.escapeHtml(serve.tcp443Owners.join(', '))}</p>` : ''}
         </section>
-        <section class="hb-card">
+${config.ingress?.cutOver ? '' : `        <section class="hb-card">
           <h2 style="margin-top:0;">Managed publish plan (${window.HB.escapeHtml(managedServiceId)})</h2>
           ${renderPublishPlanSummary(publishPlan)}
           <form class="hb-form-grid" data-action="tailscale-publish-execute" style="margin-top:0.85rem;">
@@ -641,7 +769,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
             <p class="hb-muted" style="margin:0;">Real execution requires Admin unlock and will refuse endpoint ownership conflicts by policy for ${window.HB.escapeHtml(managedServiceId)}.</p>
             <p class="hb-muted" data-result style="margin:0;"></p>
           </form>
-        </section>
+        </section>`}
         <section class="hb-card">
           <h2 style="margin-top:0;">Verification & repair</h2>
           ${renderVerificationSummary(verification)}
@@ -700,6 +828,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
         loadFoundation();
         loadDependencies();
       }
+      if (page === 'network') loadIngress();
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');
         window.HB.getJson('/api/admin/audit?limit=10').then((payload) => {

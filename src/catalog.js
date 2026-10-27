@@ -26,6 +26,8 @@ const catalog = [
     },
     network: {
       preferredMountPath: '/pulse/',
+      // Sensitive app (Feature-10 D4): its own hostname, svc:<instance>-<mount name>.
+      dedicatedHostname: true,
       preferredPort: 3003,
       upstreamBind: '127.0.0.1',
       // Transaction attachments are up to 10 MB (lib/routes/transactions.js); nginx defaults to 1 MB.
@@ -463,6 +465,8 @@ const catalog = [
     },
     network: {
       preferredMountPath: '/bitcoin-accounting/',
+      // Sensitive app (Feature-10 D4): its own hostname, svc:<instance>-<mount name>.
+      dedicatedHostname: true,
       preferredPort: 3010,
       // Exchange CSV imports have no app-side cap; nginx's 1 MB default rejects long histories.
       clientMaxBodySize: '20M',
@@ -551,6 +555,8 @@ const catalog = [
     },
     network: {
       preferredMountPath: '/helm/',
+      // Sensitive app (Feature-10 D4): its own hostname, svc:<instance>-<mount name>.
+      dedicatedHostname: true,
       preferredPort: 3011,
       preserveMountPath: true,
       upstreamBind: '127.0.0.1',
@@ -684,6 +690,8 @@ const catalog = [
     systemPackages: ['poppler-utils', 'tesseract-ocr'],
     network: {
       preferredMountPath: '/source/',
+      // Sensitive app (Feature-10 D4): its own hostname, svc:<instance>-<mount name>.
+      dedicatedHostname: true,
       preferredPort: 3008,
       upstreamBind: '127.0.0.1',
       health: {

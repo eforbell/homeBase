@@ -5,10 +5,14 @@ const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
 const { catalog } = require('../src/catalog');
 const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
-const { MIRROR_ROOT } = require('../src/operations/app-layout');
+const { MIRROR_ROOT, appLayout } = require('../src/operations/app-layout');
 const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
+const {
+  appPublicBase, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
+  IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
+} = require('../src/operations/ingress-layout');
 const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
@@ -67,6 +71,10 @@ const NGINX_GATEWAY_CONTENT = [
   '}',
   '',
 ].join('\n');
+
+// Socket ingress (Feature-10 SID-001). Once a host is cut over, this root-only record says so, and every
+// later gateway write (install, repair, update) renders the socket gateway from it, never TCP.
+const INGRESS_STATE_PATH = '/var/lib/homebase-executor/ingress.json';
 
 const ROOT_ENV = Object.freeze({ PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C' });
 const APT_ENV = Object.freeze({ ...ROOT_ENV, DEBIAN_FRONTEND: 'noninteractive', NEEDRESTART_MODE: 'l' });
@@ -174,8 +182,9 @@ const GOOGLE_FONT_MONO_CSS_URL = 'https://fonts.googleapis.com/css2?family=JetBr
 
 // Render context equivalent to the legacy planner's for the same inputs (see test/env-parity.test.js).
 // Secrets are fresh candidates only: the shared reinstall contract keeps any existing secret values.
-function buildEnvContext({ layout, site, databaseUrl, dbPassword, fsImpl = fs, randomHex = () => crypto.randomBytes(32).toString('hex') }) {
-  const publicBase = `https://${site.hostname}.${site.domain}`;
+// ingress: the cutover record; once a host is cut over, an app's URLs use its service hostname.
+function buildEnvContext({ layout, site, ingress = null, databaseUrl, dbPassword, fsImpl = fs, randomHex = () => crypto.randomBytes(32).toString('hex') }) {
+  const publicBase = appPublicBase(layout.app, { site, ingress });
   const localFonts = fsImpl.existsSync(`${FONT_ASSETS_DIR}/source-sans-3.css`) && fsImpl.existsSync(`${FONT_ASSETS_DIR}/jetbrains-mono.css`);
   // Sidecar ports are reserved in the catalog (app-layout.js); legacy's port + 1 allocation lands on the same values.
   const sidecarPorts = Object.fromEntries(layout.sidecars.filter((sidecar) => sidecar.port != null).map((sidecar) => [sidecar.name, sidecar.port]));
@@ -204,14 +213,14 @@ function buildEnvContext({ layout, site, databaseUrl, dbPassword, fsImpl = fs, r
 // The shared reinstall contract (src/operations/env.js), rendered strictly. NODE_ENV is written into
 // .env because the app reads it after dotenv loads; interpreter-level settings (TZ, PYTHONUNBUFFERED)
 // must exist before the process starts, so those live in the unit instead (renderServiceUnit).
-function renderAppEnvFile({ layout, password = null, site, existingContent = '', fsImpl = fs }) {
+function renderAppEnvFile({ layout, password = null, site, ingress = null, existingContent = '', fsImpl = fs }) {
   const { app } = layout;
   const existing = existingContent ? parseDotEnv(existingContent) : null;
   const dbPassword = layout.database ? assertDatabasePassword(password) : undefined;
   const databaseUrl = layout.database
     ? `postgresql://${layout.database.user}:${encodeURIComponent(dbPassword)}@127.0.0.1:5432/${layout.database.name}`
     : undefined;
-  const ctx = buildEnvContext({ layout, site, databaseUrl, dbPassword, fsImpl });
+  const ctx = buildEnvContext({ layout, site, ingress, databaseUrl, dbPassword, fsImpl });
   let env;
   try {
     ({ env } = renderAppEnv({ app, ctx, existing, strict: true }));
@@ -295,45 +304,15 @@ function renderTimerUnit({ timer }) {
   ].join('\n');
 }
 
-function nginxLocation({ mountPath, upstream, clientMaxBodySize = null }) {
-  const base = mountPath.replace(/\/$/, '');
-  return [
-    `location = ${base} {`,
-    `    return 301 ${mountPath};`,
-    '}',
-    `location ${mountPath} {`,
-    ...(clientMaxBodySize ? [`    client_max_body_size ${clientMaxBodySize};`] : []),
-    `    proxy_pass ${upstream};`,
-    '    proxy_set_header Host $host;',
-    '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
-    '    proxy_set_header X-Forwarded-Proto $scheme;',
-    `    proxy_set_header X-Forwarded-Prefix ${base};`,
-    '}',
-  ];
-}
-
-// preserveMountPath passes /mount/... through unchanged (proxy_pass without a URI); otherwise nginx
-// strips the mount path. Published sidecars get their own, longer (so more specific) location.
-function renderNginxSnippet({ layout }) {
-  return [
-    `# ${layout.app.id}`,
-    ...nginxLocation({ mountPath: layout.mountPath, upstream: `http://127.0.0.1:${layout.port}${layout.preserveMountPath ? '' : '/'}`, clientMaxBodySize: layout.clientMaxBodySize }),
-    ...layout.sidecars.filter((sidecar) => sidecar.nginx).flatMap((sidecar) => [
-      `# ${sidecar.name}`,
-      ...nginxLocation({ mountPath: sidecar.nginx.mountPath, upstream: `http://127.0.0.1:${sidecar.port}${sidecar.nginx.upstreamPath}` }),
-    ]),
-    '',
-  ].join('\n');
-}
-
-function renderManagedFile(operation, { secretBindings = {}, layout } = {}) {
+// ingress: the host's cutover record (readIngressRecord), or null on a TCP-gateway host.
+function renderManagedFile(operation, { secretBindings = {}, layout, ingress = null } = {}) {
   requireLayout(layout);
   const unitPath = (unit) => `/etc/systemd/system/${unit}`;
   switch (operation.template) {
     case 'app-env-v1':
       return {
         path: layout.envPath, mode: 0o640, owner: 'sovereign',
-        render: ({ existingContent, fsImpl }) => renderAppEnvFile({ layout, password: layout.database ? secretBindings.databasePassword : null, site: operation.site, existingContent, fsImpl }),
+        render: ({ existingContent, fsImpl }) => renderAppEnvFile({ layout, password: layout.database ? secretBindings.databasePassword : null, site: operation.site, ingress, existingContent, fsImpl }),
       };
     case 'app-service-v1':
       if (operation.unit !== layout.service.unit) break;
@@ -354,7 +333,7 @@ function renderManagedFile(operation, { secretBindings = {}, layout } = {}) {
       return { path: unitPath(timer.timerUnit), mode: 0o644, owner: 'root', content: renderTimerUnit({ timer }) };
     }
     case 'app-nginx-v1':
-      return { path: layout.nginxSnippet, mode: 0o644, owner: 'root', content: renderNginxSnippet({ layout }) };
+      return { path: layout.nginxSnippet, mode: 0o644, owner: 'root', content: renderAppLocations(layout, { identity: Boolean(ingress) }), replaces: layout.legacyNginxSnippet };
     default:
       break;
   }
@@ -401,6 +380,19 @@ function directoryFor(operation, layout) {
   return deny('Unknown managed directory purpose.');
 }
 
+// The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
+function readIngressRecord(fsImpl = fs) {
+  const stat = lstatOrNull(fsImpl, INGRESS_STATE_PATH);
+  if (!stat) return null;
+  if (!stat.isFile()) deny(`${INGRESS_STATE_PATH} is not a regular file.`);
+  let state;
+  try { state = JSON.parse(readSmallFileNoFollow(fsImpl, INGRESS_STATE_PATH)); } catch { state = null; }
+  if (!state || state.mode !== 'sockets' || validateInstance(state.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(state.domain || ''))) {
+    deny(`${INGRESS_STATE_PATH} is unreadable; fix or remove it by hand (removing it means the host is not cut over).`);
+  }
+  return state;
+}
+
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   // The active nginx configuration, every file, as root (nginx -T). stdout only: on success nginx also
@@ -410,6 +402,54 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     const result = await run({ binary: '/usr/sbin/nginx', args: ['-T'], ...rootIdentity, timeoutMs, env: ROOT_ENV, outputLimit: 8 * 1024 * 1024 });
     return String(result.stdout || '');
   };
+
+  function writeGatewaySite(content) {
+    writeFileAtomic(fsImpl, NGINX_GATEWAY_SITE, content, 0o644);
+    const link = lstatOrNull(fsImpl, NGINX_GATEWAY_LINK);
+    if (!link) fsImpl.symlinkSync(NGINX_GATEWAY_SITE, NGINX_GATEWAY_LINK);
+    else if (!link.isSymbolicLink() || fsImpl.readlinkSync(NGINX_GATEWAY_LINK) !== NGINX_GATEWAY_SITE) deny(`${NGINX_GATEWAY_LINK} exists and is not the managed gateway link.`);
+    const defaultSite = lstatOrNull(fsImpl, NGINX_DEFAULT_LINK);
+    if (defaultSite && !defaultSite.isSymbolicLink()) deny(`${NGINX_DEFAULT_LINK} is a regular file; disable it manually so the managed gateway can own the default server.`);
+    if (defaultSite) fsImpl.unlinkSync(NGINX_DEFAULT_LINK);
+  }
+
+  function gatewayIsSocketMode() {
+    return lstatOrNull(fsImpl, NGINX_GATEWAY_SITE)?.isFile() && String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '').startsWith(SOCKET_GATEWAY_MARKER);
+  }
+
+  const readIngressState = () => readIngressRecord(fsImpl);
+
+  // Every installed app's snippet, re-rendered for the ingress mode and moved to its <service>--<app> name.
+  // A snippet left in the old mode would either be outside every socket block or call a lookup that the
+  // TCP gateway does not have.
+  function rewriteAppSnippets({ identity }) {
+    const rewritten = [];
+    for (const app of catalog) {
+      let layout;
+      try { layout = appLayout(app); } catch { continue; }
+      const current = lstatOrNull(fsImpl, layout.nginxSnippet);
+      const legacy = lstatOrNull(fsImpl, layout.legacyNginxSnippet);
+      if (!current && !legacy) continue;
+      for (const [target, stat] of [[layout.nginxSnippet, current], [layout.legacyNginxSnippet, legacy]]) {
+        if (stat && !stat.isFile()) deny(`${target} is not a regular file.`);
+      }
+      writeFileAtomic(fsImpl, layout.nginxSnippet, renderAppLocations(layout, { identity }), 0o644);
+      if (legacy) fsImpl.unlinkSync(layout.legacyNginxSnippet);
+      rewritten.push(app.id);
+    }
+    return rewritten;
+  }
+
+  async function installSocketGateway(ingress, operation) {
+    writeFileAtomic(fsImpl, TMPFILES_PATH, TMPFILES_CONTENT, 0o644);
+    await run({ binary: '/usr/bin/systemd-tmpfiles', args: ['--create', TMPFILES_PATH], ...rootIdentity, timeoutMs: operation?.timeoutMs || 30000, env: ROOT_ENV });
+    const dir = lstatOrNull(fsImpl, SERVE_SOCKET_DIR);
+    if (!dir || !dir.isDirectory() || dir.uid !== 0 || (dir.mode & 0o077) !== 0) deny(`${SERVE_SOCKET_DIR} must be a root-owned 0700 directory.`);
+    writeFileAtomic(fsImpl, IDENTITY_SNIPPET, renderIdentitySnippet(), 0o644);
+    const rewritten = rewriteAppSnippets({ identity: true });
+    writeGatewaySite(renderGatewaySite({ instance: ingress.instance, domain: ingress.domain, apps: catalog }));
+    return rewritten;
+  }
   // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
   const missingPackages = async (packages, timeoutMs) => {
     let stdout = '';
@@ -680,6 +720,13 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       return `${operation.action} ${operation.unit}`;
     },
     'nginx.ensure-gateway': async (operation) => {
+      // A cut-over host keeps its socket gateway; this only refreshes it (new catalog services included).
+      const ingress = readIngressState();
+      if (ingress) {
+        await installSocketGateway(ingress, operation);
+        return 'refreshed the per-service socket gateway';
+      }
+      if (gatewayIsSocketMode()) deny(`${NGINX_GATEWAY_SITE} is a socket gateway but ${INGRESS_STATE_PATH} is missing; re-run the ingress cutover rather than restoring a TCP listener.`);
       // A host whose own server block already includes the app snippets (adopted legacy hosts) keeps
       // its gateway: installing ours would take over default_server on 80/443 from the operator's site.
       if (!lstatOrNull(fsImpl, NGINX_GATEWAY_SITE)) {
@@ -690,14 +737,42 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         }
         if (operatorGateway) return 'the host nginx configuration already includes /etc/nginx/sovereign-home.d; managed gateway not installed';
       }
-      writeFileAtomic(fsImpl, NGINX_GATEWAY_SITE, NGINX_GATEWAY_CONTENT, 0o644);
-      const link = lstatOrNull(fsImpl, NGINX_GATEWAY_LINK);
-      if (!link) fsImpl.symlinkSync(NGINX_GATEWAY_SITE, NGINX_GATEWAY_LINK);
-      else if (!link.isSymbolicLink() || fsImpl.readlinkSync(NGINX_GATEWAY_LINK) !== NGINX_GATEWAY_SITE) deny(`${NGINX_GATEWAY_LINK} exists and is not the managed gateway link.`);
-      const defaultSite = lstatOrNull(fsImpl, NGINX_DEFAULT_LINK);
-      if (defaultSite && !defaultSite.isSymbolicLink()) deny(`${NGINX_DEFAULT_LINK} is a regular file; disable it manually so the managed gateway can own the default server.`);
-      if (defaultSite) fsImpl.unlinkSync(NGINX_DEFAULT_LINK);
+      writeGatewaySite(NGINX_GATEWAY_CONTENT);
       return 'installed managed nginx gateway site';
+    },
+    'nginx.ensure-socket-gateway': async (operation) => {
+      const ingress = { mode: 'sockets', instance: operation.instance, domain: operation.domain };
+      if (validateInstance(ingress.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(ingress.domain || ''))) deny('The ingress instance or tailnet domain is malformed.');
+      const existing = readIngressState();
+      if (existing && (existing.instance !== ingress.instance || existing.domain !== ingress.domain)) {
+        deny(`This host is already cut over as ${existing.instance} on ${existing.domain}; changing the instance or tailnet renames every service (runbook section 7).`);
+      }
+      // An operator's own server block that includes the app snippets would keep serving them over TCP,
+      // where any local process can forge identity headers. It has to go first.
+      let operatorGateway;
+      try { operatorGateway = operatorServesAppSnippets(await nginxConfigDump(operation.timeoutMs), NGINX_GATEWAY_LINK); } catch (error) {
+        deny(`Could not read the active nginx configuration (nginx -T): ${error.message}. Fix nginx, then retry.`);
+      }
+      if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook 3.3), then run the cutover again.');
+      writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify(ingress)}\n`, 0o600);
+      const rewritten = await installSocketGateway(ingress, operation);
+      return `installed the per-service socket gateway for ${ingress.instance} on ${ingress.domain}; app snippets: ${rewritten.join(', ') || 'none installed'}`;
+    },
+    'nginx.restore-tcp-gateway': async () => {
+      // Over TCP any local process can forge identity headers, so no app may still trust them. Home Base
+      // refuses this too (compilers/ingress.js); here the apps' own env files decide, not the caller.
+      const sovereign = lookupUser('sovereign');
+      const trusting = !sovereign ? [] : catalog.filter((app) => {
+        let layout;
+        try { layout = appLayout(app); } catch { return false; }
+        const content = asUser(sovereign, () => readSmallFileNoFollow(fsImpl, layout.envPath));
+        return Boolean(content) && parseDotEnv(content).SOVEREIGN_IDENTITY_MODE === 'tailnet';
+      }).map((app) => app.id);
+      if (trusting.length) deny(`${trusting.join(', ')} still ${trusting.length === 1 ? 'trusts' : 'trust'} identity headers (SOVEREIGN_IDENTITY_MODE=tailnet); return ${trusting.length === 1 ? 'it' : 'them'} to local mode before restoring TCP ingress.`);
+      if (lstatOrNull(fsImpl, INGRESS_STATE_PATH)) fsImpl.unlinkSync(INGRESS_STATE_PATH);
+      const rewritten = rewriteAppSnippets({ identity: false });
+      writeGatewaySite(NGINX_GATEWAY_CONTENT);
+      return `restored the TCP nginx gateway (app snippets: ${rewritten.join(', ') || 'none installed'}); re-apply the saved Serve config next`;
     },
     'nginx.assert-app-include': async (operation) => {
       // The same server block that serves the legacy routes must serve the executor's snippets; an include
@@ -839,9 +914,18 @@ END $$;
       return `ensured ${operation.purpose}`;
     },
     'filesystem.write-managed-file': async (operation, { secretBindings = {}, layout } = {}) => {
-      const template = renderManagedFile(operation, { secretBindings, layout });
+      // App snippets and URLs follow the host's ingress mode: identity lookups and service hostnames exist
+      // only once the host is cut over.
+      const ingress = ['app-nginx-v1', 'app-env-v1'].includes(operation.template) ? readIngressRecord(fsImpl) : null;
+      const template = renderManagedFile(operation, { secretBindings, layout, ingress });
       if (template.owner === 'root') {
         writeFileAtomic(fsImpl, template.path, template.content, template.mode);
+        // An app snippet written before SID-001 used another name; both would declare the same locations.
+        if (template.replaces && template.replaces !== template.path) {
+          const old = lstatOrNull(fsImpl, template.replaces);
+          if (old && old.isDirectory()) deny(`${template.replaces} is a directory.`);
+          if (old) fsImpl.unlinkSync(template.replaces);
+        }
         return `wrote ${operation.template}`;
       }
       const sovereign = lookupUser('sovereign');
@@ -865,6 +949,9 @@ module.exports = {
   SOVEREIGN_GITCONFIG_PATH,
   GITHUB_KNOWN_HOSTS,
   NGINX_GATEWAY_CONTENT,
+  INGRESS_STATE_PATH,
+  readIngressRecord,
+  ROOT_ENV,
   lookupSystemUser,
   deployKeyStatus,
   createBaseHandlers,

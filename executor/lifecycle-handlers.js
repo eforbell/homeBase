@@ -183,7 +183,7 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       requireLayout(layout);
       const removed = [];
       // All of these live in root-owned directories; unlink removes a planted symlink, never its target.
-      for (const target of [...layout.unitNames.map((unit) => `/etc/systemd/system/${unit}`), layout.nginxSnippet]) {
+      for (const target of [...layout.unitNames.map((unit) => `/etc/systemd/system/${unit}`), layout.nginxSnippet, layout.legacyNginxSnippet]) {
         const stat = lstatOrNull(fsImpl, target);
         if (!stat) continue;
         if (stat.isDirectory()) deny(`${target} is a directory.`);
