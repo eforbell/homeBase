@@ -256,7 +256,9 @@ test('after cutover: config locks the address fields, readiness reflects service
   t.after(() => app.server.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const json = async (url, options) => { const res = await fetch(`${base}${url}`, options); return { status: res.status, body: await res.json() }; };
-  const post = (url, body) => json(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const setup = await fetch(`${base}/api/admin/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ passphrase: 'test-admin-passphrase' }) });
+  const cookie = (setup.headers.get('set-cookie') || '').split(';')[0];
+  const post = (url, body) => json(url, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
 
   assert.deepEqual((await json('/api/homebase/config')).body.ingress, { instance: 'smith', cutOver: false });
   assert.equal((await json('/api/network/tailscale')).body.readiness.state, 'authenticated-unpublished', 'before cutover: the old single service is missing');

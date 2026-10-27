@@ -25,6 +25,7 @@ const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification, getIngressVerification } = require('./services/tailscale-verify');
 const { createIdentityResolver, createIdentityServer, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
 const { createIngressRoutes } = require('./ingress-routes');
+const { refuseUnsafeRequest } = require('./request-guard');
 const { appPublicBase } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
@@ -829,6 +830,8 @@ function createApp(config) {
       const homeBaseConfigOverride = stateStore.getHomeBaseConfig() || {};
       const effectiveConfig = mergeHomeBaseConfig(config, homeBaseConfigOverride);
       const normalizedPath = normalizePathname(pathname);
+      const unsafe = refuseUnsafeRequest(req, method);
+      if (unsafe) return sendJson(res, unsafe.statusCode, unsafe.payload);
 
       if (method === 'GET') {
         if (normalizedPath === '/') return servePublicPage(res, 'index.html');
@@ -988,6 +991,13 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/homebase/config') {
         const body = await parseBody(req);
+        // Host settings re-project every app's URLs: administrator only (bugBase #150). Nothing runs on the
+        // host, so plan-only hosts can still save.
+        const auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: true });
+        if (!auth.ok) {
+          recordAdminAudit(stateStore, { action: 'homebase-config', target: 'homebase', dryRun: false, outcome: 'blocked-auth', reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
+          return sendJson(res, auth.statusCode, { ...auth.payload, error: auth.statusCode === 401 ? 'Admin unlock is required to change Home Base settings.' : 'Set up the admin passphrase before changing Home Base settings.' });
+        }
         const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
         const parsed = validateHomeBaseConfigPatch(body, current);
         if (parsed.error) {
@@ -1004,6 +1014,7 @@ function createApp(config) {
           updatedAt: new Date().toISOString(),
         };
         stateStore.setHomeBaseConfig(persisted);
+        recordAdminAudit(stateStore, { action: 'homebase-config', target: 'homebase', dryRun: false, outcome: 'completed', sessionTokenHash: auth.sessionTokenHash });
         const updatedConfig = mergeHomeBaseConfig(config, persisted);
         const updatedState = stateStore.loadState();
         const updatedInstallations = projectInstallationsWithCurrentUrls(updatedState.installations || {}, updatedConfig, currentIngress(updatedState.jobs, updatedConfig));
