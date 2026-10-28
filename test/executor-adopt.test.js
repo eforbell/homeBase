@@ -146,6 +146,27 @@ test('adopt never generates database credentials: no existing wiring means nothi
   assert.equal(finished[0].ok, false);
 });
 
+test('a move writes the app\'s existing database password, never a fresh one, and refuses without it', async () => {
+  // On a production host a move gave Helm (HELM_DATABASE_URL, which the reinstall contract re-derives) a new
+  // password its database role never had.
+  const { createRunAction } = require('../executor/run-action');
+  const journal = { begin() {}, progress() {}, finish() {} };
+  const asked = [];
+  let bound = null;
+  const runAction = createRunAction({
+    handlers: {}, journal,
+    existingPassword: (layout, options) => { asked.push([layout.app.id, options]); return 'Existing-pass-123'; },
+    execute: async ({ secretBindings }) => { bound = secretBindings; return {}; },
+  });
+  await runAction({ action: 'move-user', appId: 'helm', site: SITE }, { emit() {}, jobId: '10', requestId: 'r' });
+  assert.equal(bound.databasePassword, 'Existing-pass-123');
+  assert.deepEqual(asked, [['helm', { duringMove: true }]], 'read as the app\'s owner, even mid-move');
+  let executed = false;
+  const missing = createRunAction({ handlers: {}, journal, existingPassword: () => null, execute: async () => { executed = true; return {}; } });
+  await assert.rejects(() => missing({ action: 'move-user', appId: 'helm', site: SITE }, { emit() {}, jobId: '11', requestId: 'r' }), (error) => error.code === 'POLICY_DENIED' && /nothing to move/.test(error.message));
+  assert.equal(executed, false);
+});
+
 test('the web client sends exactly the fields the executor accepts for every action', () => {
   const { ACTIONS } = require('../executor/actions');
   const source = require('fs').readFileSync(require.resolve('../src/executor/client'), 'utf8');

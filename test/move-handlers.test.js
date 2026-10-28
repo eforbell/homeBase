@@ -229,6 +229,19 @@ test('anything mounted inside a tree is refused before the app stops, bind mount
   assert.throws(() => validateOperationPolicy(writes));
 });
 
+test('a data parent the legacy installer gave to the shared user is taken back for root first, not refused', async () => {
+  // As on a production host: /var/lib/sovereign-home/<app id> was sovereign:sovereign 0750.
+  const fsImpl = installedBeforeSid002({ '/var/lib/sovereign-home/home-source': { kind: 'dir', uid: SHARED.uid, gid: SHARED.gid, mode: 0o750 } });
+  await createMoveHandlers({ fsImpl, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
+  const parent = fsImpl.entries.get('/var/lib/sovereign-home/home-source');
+  assert.deepEqual([parent.uid, parent.mode & 0o777], [0, 0o755], 'root\'s, and passable so the app reaches its own data');
+  assert.equal(fsImpl.entries.get('/var/lib/sovereign-home/home-source/data').uid, OWN);
+  // One that can't be taken back (a symlink) refuses before the marker, so nothing reads as a move under way.
+  const planted = installedBeforeSid002({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700, uid: 0, gid: 0 }, '/var/lib/sovereign-home/home-source': { kind: 'link', target: '/root' } });
+  await assert.rejects(() => createMoveHandlers({ fsImpl: planted, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /not a real directory/);
+  assert.equal(planted.existsSync('/var/lib/homebase-executor/moves/home-source'), false);
+});
+
 test('a .env that is someone else\'s hardlink keeps its mode: the private chmod is for the app\'s own file only', async () => {
   const fsImpl = installedBeforeSid002({ [`${CHECKOUT}/.env`]: { kind: 'file', content: 'object', uid: 0, gid: 0, mode: 0o444, nlink: 2 } });
   await createMoveHandlers({ fsImpl, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });

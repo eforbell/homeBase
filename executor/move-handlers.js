@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { lookupSystemUser, lstatOrNull, requireLayout, deny, writeFileAtomic } = require('./handlers');
 const { moveMarker } = require('./identity');
-const { BACKUP_ROOT, APPS_ROOT, MOVE_STATE_ROOT } = require('../src/operations/paths');
+const { BACKUP_ROOT, APPS_ROOT, DATA_ROOT, MOVE_STATE_ROOT } = require('../src/operations/paths');
 
 // Moving a sensitive app from the shared user to its own (Feature-10 SID-002). Everything it owns is
 // handed over by root: its HOME, external storage, backups, and last the checkout, whose owner is what
@@ -238,16 +238,22 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
       if (owner.uid === 0 || owner.uid === shared.uid) deny(`${layout.identity.user} must be its own unprivileged identity.`);
       rootOwnParent(APPS_ROOT);
       rootOwnParent(BACKUP_ROOT);
+      // The app's data parent (its HOME and external storage sit in it). Hosts set up by the legacy
+      // installer created it sovereign:sovereign 0750; executor installs make it root's 0755.
+      const dataParent = `${DATA_ROOT}/${layout.app.id}`;
+      if (lstatOrNull(fsImpl, dataParent)) rootOwnParent(dataParent);
       const trees = treesOf(layout);
+      // Everything that would refuse the hand-over is checked before the marker, so a refusal here leaves
+      // the app as it was (stopped by the plan, but not marked as moving).
+      const existing = existingTrees(layout);
+      for (const tree of existing) {
+        if (lstatOrNull(fsImpl, path.posix.dirname(tree))?.uid !== 0) deny(`${path.posix.dirname(tree)} must be owned by root before ${tree} can be handed over.`);
+      }
       removeEarlierStaging(readMarker(layout), trees);
       move = { appId: layout.app.id, user: layout.identity.user, staging: {} };
       writeMarker(move);
       const moved = [];
-      for (const tree of trees) {
-        const stat = lstatOrNull(fsImpl, tree);
-        if (!stat) continue;
-        if (stat.isSymbolicLink() || !stat.isDirectory()) deny(`${tree} is not a real directory.`);
-        if (lstatOrNull(fsImpl, path.posix.dirname(tree))?.uid !== 0) deny(`${path.posix.dirname(tree)} must be owned by root before ${tree} can be handed over.`);
+      for (const tree of existing) {
         assertNoMountInside(tree);
         const counts = handOverTree(tree, owner, shared);
         moved.push(`${tree} (${counts.directory} directories, ${counts.file + counts.copied} files${counts.copied ? `, ${counts.copied} hardlinks copied` : ''}${counts.kept ? `, ${counts.kept} hardlinks owned by others left as they were` : ''})`);

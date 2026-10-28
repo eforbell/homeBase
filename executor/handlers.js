@@ -241,10 +241,11 @@ function renderAppEnvFile({ layout, password = null, site, ingress = null, exist
 // reinstall contract, so the role password has to come from it; otherwise updates would rotate
 // credentials under a running service. Read as the app's user (the .env sits in a directory it owns).
 // Returns null when there is no existing wiring; refuses wiring that points elsewhere.
-function readExistingDatabasePassword({ layout, fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
+// duringMove: a move (also one resumed after an interruption) reads the wiring as the app's current owner.
+function readExistingDatabasePassword({ layout, fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, duringMove = false } = {}) {
   if (!layout?.database) return null;
   let identity;
-  try { identity = resolveAppIdentity(layout, { fsImpl, lookupUser }); } catch { return null; }
+  try { identity = resolveAppIdentity(layout, { fsImpl, lookupUser, duringMove }); } catch { return null; }
   const content = asUser(identity, () => readSmallFileNoFollow(fsImpl, layout.envPath));
   if (!content) return null;
   const existing = parseDotEnv(content);
