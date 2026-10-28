@@ -759,8 +759,16 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     'systemd.ensure-service': async (operation, { layout } = {}) => {
       const allowed = new Set(['postgresql.service', 'nginx.service', ...(layout?.unitNames || [])]);
       if (!allowed.has(operation.unit) || !['enable', 'restart', 'enable-and-restart', 'stop', 'disable-now'].includes(operation.action)) deny('Systemd unit or action is not allowed.');
-      // Stopping or disabling a unit that is already gone (an uninstall's re-run) is done, not an error.
-      if (['disable-now', 'stop'].includes(operation.action) && layout?.unitNames?.includes(operation.unit) && !lstatOrNull(fsImpl, `/etc/systemd/system/${operation.unit}`)) return `${operation.unit} is not installed`;
+      // An app unit whose file is gone (an uninstall's re-run) can still be running: systemd keeps a unit
+      // loaded while it has processes. So ask systemd, stop it if it is still active, and call it done only
+      // when systemd no longer knows it at all.
+      if (['disable-now', 'stop'].includes(operation.action) && layout?.unitNames?.includes(operation.unit) && !lstatOrNull(fsImpl, `/etc/systemd/system/${operation.unit}`)) {
+        const shown = await run({ binary: '/usr/bin/systemctl', args: ['show', '--property=LoadState,ActiveState', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+        const state = Object.fromEntries(String(shown?.stdout || '').split('\n').map((line) => line.trim().split('=')).filter(([key]) => key));
+        if (state.LoadState === 'not-found' && ['inactive', 'failed'].includes(state.ActiveState)) return `${operation.unit} is not installed`;
+        await run({ binary: '/usr/bin/systemctl', args: ['stop', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+        return `stopped ${operation.unit} (its unit file was already gone)`;
+      }
       const args = {
         enable: ['enable', operation.unit],
         restart: ['restart', operation.unit],

@@ -169,14 +169,28 @@ test('while a move is interrupted only the move plan runs, even plans that never
   assert.ok(ran.includes('reown-app'));
 });
 
-test('stopping an app unit that is already gone is done, so an uninstall re-run gets past it', async () => {
+test('an app unit whose file is gone is done only when systemd no longer knows it; a running one is still stopped', async () => {
   const { createBaseHandlers } = require('../executor/handlers');
+  const helm = appLayout(getAppById('helm'));
+  const withState = (shown) => {
+    const calls = [];
+    const handlers = createBaseHandlers({ fsImpl: createFakeFs(), lookupUser: users(), run: async (input) => { calls.push(input.args); return { stdout: input.args[0] === 'show' ? shown : '' }; } });
+    return { calls, stop: () => handlers['systemd.ensure-service'](op('systemd.ensure-service', { unit: 'helm-sync.service', action: 'stop' }), { layout: helm }) };
+  };
+  // An uninstall's re-run: the file and the unit are both gone.
+  const gone = withState('LoadState=not-found\nActiveState=inactive\n');
+  assert.match(await gone.stop(), /not installed/);
+  assert.deepEqual(gone.calls, [['show', '--property=LoadState,ActiveState', 'helm-sync.service']]);
+  // Its file was removed while it ran: systemd keeps it loaded, so it is stopped like any other.
+  const running = withState('LoadState=not-found\nActiveState=active\n');
+  assert.match(await running.stop(), /stopped helm-sync\.service/);
+  assert.deepEqual(running.calls.at(-1), ['stop', 'helm-sync.service']);
+  const unknown = withState('');
+  await unknown.stop();
+  assert.deepEqual(unknown.calls.at(-1), ['stop', 'helm-sync.service'], 'an unreadable state is never taken as stopped');
+  // Units Home Base doesn't write (nginx, postgres) are never judged by /etc/systemd/system.
   const calls = [];
   const handlers = createBaseHandlers({ fsImpl: createFakeFs(), lookupUser: users(), run: async (input) => { calls.push(input.args); return { stdout: '' }; } });
-  const helm = appLayout(getAppById('helm'));
-  assert.match(await handlers['systemd.ensure-service'](op('systemd.ensure-service', { unit: 'helm-sync.service', action: 'stop' }), { layout: helm }), /not installed/);
-  assert.deepEqual(calls, []);
-  // Units Home Base doesn't write (nginx, postgres) are never judged by /etc/systemd/system.
   await handlers['systemd.ensure-service'](op('systemd.ensure-service', { unit: 'nginx.service', action: 'stop' }), { layout: helm });
   assert.deepEqual(calls, [['stop', 'nginx.service']]);
 });

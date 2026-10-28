@@ -140,26 +140,42 @@ test('an interrupted move refuses every other plan until a re-run of the move fi
   assert.equal(resolveAppIdentity(SOURCE, { fsImpl, lookupUser: users() }).name, 'sovereign-source');
 });
 
-test('a copy that failed half way leaves nothing behind that blocks the re-run, and a planted temp name stops the move', async () => {
+test('a re-run removes exactly the copies an earlier attempt recorded, and nothing that merely looks like one', async () => {
   const linked = { [`${CHECKOUT}/linked.txt`]: { kind: 'file', content: 'shared inode', uid: SHARED.uid, gid: SHARED.gid, nlink: 2 } };
-  const fsImpl = installedBeforeSid002({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700, uid: 0, gid: 0 }, ...linked });
+  const state = { '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700, uid: 0, gid: 0 } };
+  // A transient rename failure: the copy is removed at once and the re-run succeeds.
+  const fsImpl = installedBeforeSid002({ ...state, ...linked });
   const rename = fsImpl.renameSync;
   let failOnce = true;
   fsImpl.renameSync = (from, to) => {
-    if (failOnce && from.endsWith('.reown-copy')) { failOnce = false; throw Object.assign(new Error('EIO'), { code: 'EIO' }); }
+    if (failOnce && from.startsWith(`${CHECKOUT}/linked.txt.reown-`)) { failOnce = false; throw Object.assign(new Error('EIO'), { code: 'EIO' }); }
     return rename(from, to);
   };
   const handlers = createMoveHandlers({ fsImpl, lookupUser: users() });
   await assert.rejects(() => handlers['filesystem.reown-app'](op(), { layout: SOURCE }), /EIO/);
-  assert.equal(fsImpl.existsSync(`${CHECKOUT}/linked.txt.reown-copy`), false, 'the half-done copy is gone');
+  assert.deepEqual([...fsImpl.entries.keys()].filter((key) => key.startsWith(`${CHECKOUT}/linked.txt.reown-`)), [], 'the half-done copy is gone');
   await handlers['filesystem.reown-app'](op(), { layout: SOURCE });
   assert.deepEqual([fsImpl.entries.get(`${CHECKOUT}/linked.txt`).uid, fsImpl.entries.get(`${CHECKOUT}/linked.txt`).nlink], [OWN, 1]);
-  // A root-owned leftover (a crash between copy and rename) is removed; anything else in the way stops the move.
-  const crashed = installedBeforeSid002({ ...linked, [`${CHECKOUT}/linked.txt.reown-copy`]: { kind: 'file', content: 'partial', uid: 0, gid: 0 } });
+  // A crash between copy and rename: the marker names the copy, so the re-run removes it.
+  const crashed = installedBeforeSid002({
+    ...state, ...linked,
+    [`${CHECKOUT}/linked.txt.reown-0123abcd`]: { kind: 'file', content: 'partial', uid: 0, gid: 0 },
+    '/var/lib/homebase-executor/moves': { kind: 'dir', mode: 0o700, uid: 0, gid: 0 },
+    '/var/lib/homebase-executor/moves/home-source': { kind: 'file', uid: 0, gid: 0, mode: 0o600, content: JSON.stringify({ appId: 'home-source', user: 'sovereign-source', copies: [`${CHECKOUT}/linked.txt.reown-0123abcd`, '/etc/passwd', `${CHECKOUT}/../../../etc/shadow`] }) },
+    '/etc/passwd': { kind: 'file', content: 'root:x:0:0', uid: 0, gid: 0 },
+  });
   await createMoveHandlers({ fsImpl: crashed, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
+  assert.equal(crashed.existsSync(`${CHECKOUT}/linked.txt.reown-0123abcd`), false);
+  assert.equal(crashed.existsSync('/etc/passwd'), true, 'only paths inside the app\'s trees');
   assert.equal(crashed.entries.get(`${CHECKOUT}/linked.txt`).content, 'shared inode');
-  const planted = installedBeforeSid002({ ...linked, [`${CHECKOUT}/linked.txt.reown-copy`]: { kind: 'file', content: 'mine', uid: SHARED.uid, gid: SHARED.gid } });
-  await assert.rejects(() => createMoveHandlers({ fsImpl: planted, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /in the way and was not left by an earlier move/);
+  // A first move: files that only look like copies are never deleted; they are handed over like any other file.
+  const first = installedBeforeSid002({
+    [`${CHECKOUT}/archive.reown-copy`]: { kind: 'file', content: 'keep me', uid: 0, gid: 0 },
+    [`${CHECKOUT}/notes.reown-1`]: { kind: 'file', content: 'mine', uid: SHARED.uid, gid: SHARED.gid },
+  });
+  await createMoveHandlers({ fsImpl: first, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
+  assert.equal(first.entries.get(`${CHECKOUT}/archive.reown-copy`).content, 'keep me');
+  assert.equal(first.entries.get(`${CHECKOUT}/notes.reown-1`).uid, OWN);
 });
 
 test('a .env that is someone else\'s hardlink keeps its mode: the private chmod is for the app\'s own file only', async () => {
