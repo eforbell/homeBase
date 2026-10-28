@@ -123,6 +123,29 @@ test('bitcoin-accounting inventories the virtualenv, reports lock drift, and not
   assert.match(noVenv.note, /No readable requirements.lock/);
 });
 
+test('a lock pinned per Python version is read for the venv\'s own interpreter, so the other pin is not drift', () => {
+  const lock = 'numpy==2.2.6; python_version < "3.11"\nnumpy==2.3.5; python_version >= "3.11"\nbackports-asyncio-runner==1.2.0; python_version < "3.11"\nrequests==2.32.4\n';
+  const app = '/opt/sovereign-home/apps/bitcoinAccounting';
+  const venv = (python, names) => reader({
+    [app]: dir,
+    [`${app}/requirements.lock`]: lock,
+    [`${app}/.venv/lib/${python}`]: dir,
+    [`${app}/.venv/lib/${python}/site-packages`]: dir,
+    ...Object.fromEntries(names.map((name) => [`${app}/.venv/lib/${python}/site-packages/${name}`, dir])),
+  })({ appId: 'bitcoin-accounting' });
+  const py310 = venv('python3.10', ['numpy-2.2.6.dist-info', 'backports_asyncio_runner-1.2.0.dist-info', 'requests-2.32.4.dist-info']);
+  assert.deepEqual(py310.drift, []);
+  assert.equal(py310.pinned, true);
+  const py312 = venv('python3.12', ['numpy-2.3.5.dist-info', 'requests-2.32.4.dist-info']);
+  assert.deepEqual(py312.drift, [], 'the 3.10-only pins do not apply');
+  // A wrong version for this interpreter is still drift.
+  assert.deepEqual(venv('python3.12', ['numpy-2.2.6.dist-info', 'requests-2.32.4.dist-info']).drift, [{ name: 'numpy', locked: '2.3.5', installed: '2.2.6' }]);
+  // Markers it doesn't understand, or no known interpreter, keep the old reading (the pin applies).
+  assert.deepEqual(parseRequirementsLock('x==1; sys_platform == "linux"\n', { pythonVersion: '3.12' }).packages, [['x', '1']]);
+  assert.deepEqual(parseRequirementsLock(lock).packages.filter(([name]) => name === 'numpy').length, 2);
+  assert.deepEqual(parseRequirementsLock('a==1; python_version == "3.10"\nb==1; python_version != "3.10"\nc==1; python_version > "3.9"\nd==1; python_version <= "3.9"\n', { pythonVersion: '3.10' }).packages.map(([name]) => name), ['a', 'c']);
+});
+
 test('missing lockfiles, planted symlinks, missing checkouts, and unmanaged apps are handled', () => {
   const missing = reader({ '/opt/sovereign-home/apps/familyDinner': dir })({ appId: 'family-dinner' });
   assert.deepEqual([missing.source, missing.inventorySource, missing.pinned], [null, null, false]);

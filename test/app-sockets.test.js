@@ -139,7 +139,7 @@ test('the executor probes a socket app at catalog paths only, with bounded repli
   t.after(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   // Point the probe at this test socket instead of /run/sovereign-apps.
   const request = (options, callback) => http.request({ ...options, socketPath: options.socketPath ? socket : undefined }, callback);
-  const probeApp = createAppProber({ request });
+  const probeApp = createAppProber({ request, hasSocket: () => true });
   await withSocketAsync('family-pulse', async () => {
     const readiness = await probeApp({ appId: 'family-pulse', probe: 'readiness' });
     assert.deepEqual([readiness.via, readiness.statusCode], ['unix', 200]);
@@ -149,7 +149,12 @@ test('the executor probes a socket app at catalog paths only, with bounded repli
   });
   assert.ok(seen.every((url) => ['/api/health', '/api/bootstrap'].includes(url)), 'paths come from the catalog');
   assert.throws(() => probeApp({ appId: 'family-pulse', probe: 'shell' }), /liveness, readiness, or onboarding/);
-  const down = await withSocketAsync('family-pulse', () => createAppProber({ request: (options, callback) => http.request({ ...options, socketPath: path.join(dir, 'missing.sock') }, callback) })({ appId: 'family-pulse', probe: 'readiness' }));
+  const down = await withSocketAsync('family-pulse', () => createAppProber({ hasSocket: () => true, request: (options, callback) => http.request({ ...options, socketPath: path.join(dir, 'missing.sock') }, callback) })({ appId: 'family-pulse', probe: 'readiness' }));
+  // Home Base updated but the app not yet: no socket, so the probe asks its loopback port as before SID-002.
+  const asked = [];
+  const notYet = await withSocketAsync('family-pulse', () => createAppProber({ hasSocket: () => false, request: (options, callback) => { asked.push(options); return http.request({ ...options, host: undefined, port: undefined, socketPath: socket }, callback); } })({ appId: 'family-pulse', probe: 'readiness' }));
+  assert.deepEqual([notYet.via, notYet.statusCode], ['tcp-until-updated', 200]);
+  assert.deepEqual([asked[0].host, asked[0].port, asked[0].socketPath], ['127.0.0.1', 3003, undefined]);
   assert.deepEqual([down.statusCode, down.error], [null, 'ENOENT']);
 });
 
@@ -168,7 +173,7 @@ test('a probe has a deadline for the whole exchange: an app trickling bytes can\
   });
   await new Promise((resolve) => server.listen(socket, resolve));
   t.after(() => { timers.forEach(clearInterval); server.closeAllConnections?.(); server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
-  const probeApp = createAppProber({ timeoutMs: 100, request: (options, callback) => http.request({ ...options, socketPath: socket }, callback) });
+  const probeApp = createAppProber({ timeoutMs: 100, hasSocket: () => true, request: (options, callback) => http.request({ ...options, socketPath: socket }, callback) });
   const started = Date.now();
   const result = await withSocketAsync('family-pulse', () => probeApp({ appId: 'family-pulse', probe: 'readiness' }));
   assert.deepEqual([result.statusCode, result.error], [null, 'deadline'], 'never reported as an answer');

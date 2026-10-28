@@ -88,7 +88,20 @@ function resolveRequirementPath(target, fromFile) {
 // errors and unpinned, so the file can never be reported as fully pinned by accident. Constraint files
 // (-c) only narrow versions and add nothing. The only editable that is not a dependency is the app
 // itself: a local path resolving to the checkout root (-e . beside a root lockfile).
-function parseRequirementsLock(text, { readInclude = null, file = 'requirements.txt', limits = INCLUDE_LIMITS } = {}) {
+// A pin's `; python_version <op> "X.Y"` marker, evaluated for the interpreter the app runs (pip does the
+// same). Anything else, or an unknown interpreter, counts as applying, as before markers were read.
+function markerApplies(marker, pythonVersion) {
+  if (!marker || !pythonVersion) return true;
+  const match = /^python_version\s*(<=|>=|==|!=|<|>)\s*["']([0-9]+(?:\.[0-9]+)*)["']$/.exec(marker.trim());
+  if (!match) return true;
+  const parts = (value) => value.split('.').map(Number);
+  const [a, b] = [parts(pythonVersion), parts(match[2])];
+  let order = 0;
+  for (let i = 0; i < Math.max(a.length, b.length) && !order; i += 1) order = Math.sign((a[i] || 0) - (b[i] || 0));
+  return { '<': order < 0, '<=': order <= 0, '>': order > 0, '>=': order >= 0, '==': order === 0, '!=': order !== 0 }[match[1]];
+}
+
+function parseRequirementsLock(text, { readInclude = null, file = 'requirements.txt', limits = INCLUDE_LIMITS, pythonVersion = null } = {}) {
   const pairs = [];
   const unpinned = [];
   const includes = [];
@@ -142,7 +155,8 @@ function parseRequirementsLock(text, { readInclude = null, file = 'requirements.
       }
       const pin = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*===?\s*([A-Za-z0-9][A-Za-z0-9.!+_-]*)(?=\s|;|$)/.exec(line);
       if (pin) {
-        pairs.push([normalizePythonName(pin[1]), pin[2]]);
+        // A pin for another Python (numpy 2.2.6 below 3.11, 2.3.5 from it) is not what this app installs.
+        if (markerApplies(line.split(';')[1], pythonVersion)) pairs.push([normalizePythonName(pin[1]), pin[2]]);
         continue;
       }
       const name = /^([A-Za-z0-9][A-Za-z0-9._-]*)/.exec(line);
