@@ -25,7 +25,7 @@ const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification, getIngressVerification } = require('./services/tailscale-verify');
 const { createIdentityResolver, createIdentityServer, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
 const { createIngressRoutes } = require('./ingress-routes');
-const { refuseUnsafeRequest } = require('./request-guard');
+const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
 const { appPublicBase, appServiceKey } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
@@ -822,8 +822,10 @@ function createApp(config) {
     return value;
   }
 
+  const guardSuiteRequest = createSuiteRequestGuard({ mode: config.requestGuards || 'off' });
   const server = http.createServer(async (req, res) => {
     try {
+      if (!guardSuiteRequest(req, res)) return;
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = url.pathname;
       const method = req.method || 'GET';
@@ -2185,6 +2187,7 @@ function createApp(config) {
         const address = server.address();
         const activePort = address && typeof address === 'object' ? address.port : config.port;
         console.log(`Home Base listening on http://${bindHost}:${activePort}`);
+        if ((config.requestGuards || 'off') !== 'off') console.log(`Home Base request guards: ${config.requestGuards}`);
         if (config.homeBaseExecutionModeMissing) console.warn(`[homebase] ${EXECUTION_MODE_UPGRADE_HINT}`);
         if (typeof callback === 'function') callback();
       });

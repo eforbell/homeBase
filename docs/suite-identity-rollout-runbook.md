@@ -177,6 +177,23 @@ Per sensitive app installed before SID-002, while it is still in local mode:
    - If the app misbehaves after the move, **Restore** the safety backup the move took. The files stay with the app's user.
    - A socket problem rolls back with a Home Base release whose catalog sets the app to `runtime.listen: 'tcp'`. The update rewrites `.env` (dropping `SOVEREIGN_LISTEN`) and nginx.
 
+## 4a. Home Base request guards (SID-003)
+
+Independent of every other section: the guards work on a host with either ingress, before or after any cutover. They refuse a request a sibling hostname's page could make on a member's behalf (D20): on Home Base's hostnames, only its own pages and top-level navigations get through, and a change must come from the exact hostname it arrives on.
+
+1. Add `HOME_BASE_REQUEST_GUARDS=report` to `/etc/sovereign-home/homebase.env` and restart `homebase`. Its log says `Home Base request guards: report`.
+2. Use Home Base as usual for a few days, from every browser and device that opens it. Then check what enforce would have refused: `journalctl -u homebase | grep 'would refuse'`. Each line names the method, the path, the reason, and the request's `Origin` and `Sec-Fetch-Site`. Home Base's own pages should cause none; an unexpected line names the page or client to fix first.
+3. Set `HOME_BASE_REQUEST_GUARDS=enforce` and restart.
+
+Requests that reach the loopback port directly, without Tailscale Serve (the installer's health probe, an SSH tunnel), are not checked by these guards; the older JSON and fetch-site check still covers their changes. An unknown value stops Home Base from starting.
+
+Verify after step 3, from a member device:
+- [ ] Home Base's pages, jobs and settings work as before.
+- [ ] A link to Home Base from another app opens it.
+- [ ] From a sibling hostname's page, a fetch, an image, a script, an iframe and a form post to Home Base are refused (`request_refused` in the response, `refused` in the log).
+
+Rollback: set `off` (or remove the line) and restart.
+
 ## 5. Cutover: Home Base identity (SID-004/005/006)
 
 1. Upgrade Home Base to the identity-capable version, **before** moving it to its socket. The directory and passkey service come up in `setup`.

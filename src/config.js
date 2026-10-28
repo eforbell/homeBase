@@ -39,6 +39,8 @@ function loadConfig() {
     bindHost: process.env.HOME_BASE_BIND_HOST || '127.0.0.1',
     // Feature-10 D1: the socket nginx asks for each request's identity. Home Base listens once the ingress
     // cutover has created its directory; 'off' disables it (development machines).
+    // SID-003: sovereignAuth's request guards, off | report | enforce (src/request-guard.js).
+    requestGuards: String(process.env.HOME_BASE_REQUEST_GUARDS ?? '').trim().toLowerCase() || 'off',
     identitySocket: process.env.HOME_BASE_IDENTITY_SOCKET === 'off' ? '' : (process.env.HOME_BASE_IDENTITY_SOCKET || '/run/homebase-identity/identity.sock'),
     // Feature-10 SID-001: this household's instance name (svc:<instance>-home, ...), unset until cutover.
     instance: String(process.env.HOME_BASE_INSTANCE || '').trim(),
