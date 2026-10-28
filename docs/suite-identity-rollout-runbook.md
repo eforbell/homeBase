@@ -158,6 +158,8 @@ Per sensitive app installed before SID-002, while it is still in local mode:
    - rewrites `.env` (0600) and every unit, then starts the app and waits for readiness.
 
    Expect a minute or two of downtime.
+
+   Known limitation: don't create mounts inside the app's folders while a move runs. The move refuses any mount it finds there, before and during the hand-over, but a root process mounting something in the instant between a folder's check and its use can still fail the move or hand the mounted folder over. Only root can mount, and the shared user can't, so this is outside what the move defends against. Recovery: unmount, then run the move again.
 3. Verify on the host:
    - [ ] every unit of the app (service, sidecars, timers) runs as `sovereign-<key>`: `systemctl show <unit> -p User --value`;
    - [ ] `sudo ls -la /run/sovereign-apps/<app id>` shows `drwxr-s--- sovereign-<key> www-data` and `srw-rw---- … app.sock`;
