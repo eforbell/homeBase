@@ -179,7 +179,7 @@
       "priority": 1,
       "estimatedLines": "+680/-130",
       "testStrategy": "Planner, publisher, and executor rendering tests (snippet in every location, per-service allowlists, per-service conflict detection); VM rehearsal of the spike-1 and spike-3 checks per hostname: every mount requested on every other hostname is refused; forged and missing headers on every route; forged X-Forwarded-For; local bypass refused; local process against the public URL; tagged host no identity; redirects stay on the hostname; D23 evaluator tests against recorded API responses: a second approved host (auto or manual), a not-approved second host (passes), this device missing from the inventory, a partial or unparseable inventory, an API error, and a 403 from read-only scopes are all handled as specified; policy warnings for a shared approver tag, a second device holding the host tag, a non-administrator tag owner, and an extra matching approver rule; on the VM with a real read-only credential, confirm which scopes listServiceHosts needs; the bootstrap path publishes only svc:<instance>-homebase in setup and refuses every other publish and tailnet-mode change until active",
-      "passes": false,
+      "passes": true,
       "implementationNotes": [
         "Host paths use the bare service key (/run/sovereign-serve/<key>.sock, sovereign-home.d/<key>--<app>.conf) so they never depend on the instance; service names and hostnames carry it",
         "The executor records the cutover in /var/lib/homebase-executor/ingress.json (root, 0600); every later gateway or app-snippet write follows that mode, and it never writes a TCP gateway over a socket one",
@@ -208,7 +208,7 @@
       "priority": 2,
       "estimatedLines": "+520/-90",
       "testStrategy": "Install-planner and executor tests for env/unit/nginx/ownership rendering; VM checks: the shared service user is refused by a sensitive app's socket and cannot read or write its checkout, .env, or backups; nested APIs, redirects, static assets, and OAuth callbacks work under the D22 contract (read-only landing, same-origin JSON POST, single-use state bound to member and hostname) for one mount-preserving and one prefix-stripping app",
-      "passes": false,
+      "passes": true,
       "implementationNotes": [
         "Sensitive apps (network.dedicatedHostname) run as sovereign-<service key>, home /var/lib/sovereign-home/<app id>/home; the checkout's owner decides who an app runs as, so installs from before SID-002 keep sovereign until the one-time move-user action (safety backup, stop, two-pass root hand-over through no-follow descriptors with the checkout last, .env and units rewritten, start). The move is one way",
         "apps/ and backups/ are root-owned 0755; each own-user app's checkout, storage, home and backup directory is 0700 and its .env 0600. identity.ensure-user refuses a user in nginx's group",
@@ -219,7 +219,7 @@
         "Rehearsed on the test VM 2026-10-28: Home Source moved in place, then switched TCP to socket; Pulse, Helm and Bitcoin Accounting installed fresh. The shared user, Home Base and other apps' users were refused at each socket; on the moved app the shared user was also denied its code, .env, data and backups; update, backup and restart worked after the move; pages, redirects, assets, nested APIs and OAuth callback routes worked from a member device for both URI styles. The D22 callback contract itself is app behavior, checked when each app enters tailnet mode",
         "Code review (PR #16) took eight external rounds, all on the root hand-over: directories are locked root 0700 before they are read; hardlinks owned by others are left alone; a root marker makes an interrupted move resumable and blocks other plans; copies are staged per tree; mounts are refused by mount table and mount ID; restore re-applies the listen mode. Accepted limitation: a root process mounting inside a tree mid-move",
         "Production rollout 2026-10-28 on both hosts, behind the old TCP gateway (no cutover). Fixed from it: probe fallback to the port until the app is updated, marker-aware lock drift, wire-once page actions (PR #17); a move keeps the existing database password, and takes a legacy shared-user data parent back for root (PR #18)",
-        "Open: Helm on DATABASE_URL instead of HELM_DATABASE_URL; a policy warning for a service no grant reaches; a bare / redirect on sensitive hostnames; sidecars on sockets; a private mount namespace for the hand-over"
+        "Open: Helm on DATABASE_URL instead of HELM_DATABASE_URL; a policy warning for a service no grant reaches; a bare / redirect on sensitive hostnames; sidecars on sockets; a private mount namespace for the hand-over; the health message for an app on its port but not yet updated still says 'socket'"
       ]
     },
     {
@@ -241,7 +241,16 @@
       "priority": 3,
       "estimatedLines": "+520/-0",
       "testStrategy": "Library unit tests driven by the conformance vectors; mutation-guard tests for cross-site form posts (text/plain), wrong Origin, and missing Origin; browser tests from a sibling hostname, checked on the server: fetch, image, script, and iframe requests refused, a framed page blocked by frame-ancestors, a Domain cookie planted with the assurance cookie's unprefixed name ignored, a top-level navigation allowed and changing nothing; the iOS web wrapper sends Sec-Fetch-* and passes; OAuth: replayed state, state from another member or hostname, missing correlation cookie, a sibling-hostname POST to the completion route, and a completion attempt from any page other than the landing page are refused; the real iOS web wrapper passes initial navigation, subresource, mutation, and callback flows before cutover",
-      "passes": false
+      "passes": false,
+      "implementationNotes": [
+        "Scope (2026-10-28): the library alone has no member to resolve until SID-004 builds the directory, so SID-003 also wires Home Base to it behind a flag, enough to prove it on the test VM. Real issuance (directory, cookies, step-up, redemption server) stays in SID-004/005",
+        "API: framework-agnostic core functions over {method, url, headers} that return a decision, with thin adapters for Node's http (Home Base) and Express (the Node apps). CommonJS, Node >= 22, no build step and no install scripts (hosts run npm ci --ignore-scripts)",
+        "Tokens: Ed25519 (per the tech stack), a fixed format 'v1.<base64url payload>.<base64url signature>' with a key ID, no algorithm field (no JWT, no algorithm negotiation). Verification keys come from the snapshot",
+        "Conformance vectors are language-neutral JSON under vectors/, so the Python port (D13, wave 3) runs the same files",
+        "Home Base wiring, behind HOME_BASE_REQUEST_GUARDS=off|report|enforce (default off): sovereignAuth as a commit-pinned git dependency; the mutation guard and resource isolation on Home Base's own routes (report logs what enforce would refuse); a preview snapshot written from a static members file standing in for the directory, replaced by SID-004; and a read-only who-am-I route showing what the request guard resolved",
+        "Proven on the test VM: Home Base installs the dependency without GitHub credentials; from a sibling service hostname, fetch, image, script, iframe and form posts to Home Base admin are refused while a top-level navigation is allowed; a member device resolves to its member end to end (Serve, nginx identity, snapshot); an app's user can read the snapshot, and the reader refuses it made writable, symlinked, re-owned or stale; the iOS wrapper sends Sec-Fetch-* and passes",
+        "Library only until SID-004/005: assurance cookie and action-token verification, the redemption client (tested against a fake Home Base socket), the OAuth callback helper, and the WebAuthn helpers. The extraction from Home Source takes storage as a parameter, fixes bugBase #147 (trust the authenticator's flags, not the chosen method) and keeps PRF; Home Source adopts it in SID-005/007"
+      ]
     },
     {
       "id": "SID-004",
