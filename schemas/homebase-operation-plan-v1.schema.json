@@ -238,6 +238,9 @@
           "$ref": "#/$defs/reownApp"
         },
         {
+          "$ref": "#/$defs/checkAppTrees"
+        },
+        {
           "$ref": "#/$defs/tmpfilesApply"
         }
       ]
@@ -1190,6 +1193,32 @@
             "id": true,
             "title": true,
             "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "checkAppTrees": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "filesystem.check-app-trees"
+            },
+            "id": true,
+            "title": true,
+            "risk": {
+              "const": "read"
+            },
             "timeoutMs": true,
             "idempotencyKey": true,
             "dependsOn": true,

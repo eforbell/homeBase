@@ -22,6 +22,10 @@ const { BACKUP_ROOT, APPS_ROOT, MOVE_STATE_ROOT } = require('../src/operations/p
 // of their tree, recorded in the marker before it is created, so a re-run removes exactly what an earlier
 // attempt left and nothing else (one marker write per tree, however many copies). Setuid and setgid bits
 // are dropped.
+//
+// Every tree must be one filesystem: a copy is renamed into place from its tree's staging directory, which
+// can't cross a mount. The move plan checks that read-only before the app stops (filesystem.check-app-trees),
+// and pass 1 checks it again before locking each directory.
 
 const NO_FOLLOW_DIRECTORY = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 const NO_FOLLOW_FILE = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
@@ -51,14 +55,35 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     if (stat.uid !== 0) withDirectory(directory, (fd) => { fsImpl.fchownSync(fd, 0, 0); fsImpl.fchmodSync(fd, 0o755); });
   };
 
+  const mountedInside = (directory, top) => deny(`${directory} is a separate filesystem mounted inside ${top}; unmount it or move it out, then move the app again.`);
+
+  // Read only: every directory under each tree is on the tree's own filesystem.
+  const assertOneFilesystem = (top) => {
+    const { dev } = fsImpl.lstatSync(top);
+    const visit = (directory) => {
+      for (const name of fsImpl.readdirSync(directory)) {
+        const child = path.posix.join(directory, name);
+        const stat = lstatOrNull(fsImpl, child);
+        if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) continue;
+        if (stat.dev !== dev) mountedInside(child, top);
+        visit(child);
+      }
+    };
+    visit(top);
+  };
+
   // Pass 1: every directory in the tree becomes root's and 0700, top down, before it is read. Returns them
   // in that order with their modes, which pass 2 gives back. A re-run finds its own locks (root, 0700) and
   // restores those, which is harmless: the top is 0700 to the app's user either way.
   const lockTree = (top) => {
     const directories = [];
+    let dev = null;
     const visit = (directory) => {
       const mode = withDirectory(directory, (fd) => {
-        const before = fsImpl.fstatSync(fd).mode & 0o777;
+        const stat = fsImpl.fstatSync(fd);
+        if (dev === null) dev = stat.dev;
+        else if (stat.dev !== dev) mountedInside(directory, top);
+        const before = stat.mode & 0o777;
         fsImpl.fchownSync(fd, 0, 0);
         fsImpl.fchmodSync(fd, 0o700);
         return before;
@@ -169,7 +194,28 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     }
   };
 
+  // The app's trees, the checkout last: its owner is what says the app has moved.
+  const treesOf = (layout) => [
+    layout.identity.home,
+    ...(layout.storage && !layout.storage.inCheckout ? [layout.storage.root] : []),
+    `${BACKUP_ROOT}/${layout.app.id}`,
+    layout.checkout,
+  ];
+  const existingTrees = (layout) => treesOf(layout).filter((tree) => {
+    const stat = lstatOrNull(fsImpl, tree);
+    if (!stat) return false;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) deny(`${tree} is not a real directory.`);
+    return true;
+  });
+
   return {
+    'filesystem.check-app-trees': async (operation, { layout } = {}) => {
+      requireLayout(layout);
+      if (!layout.identity.own) deny(`${layout.app.name} runs as the shared user by design.`);
+      const trees = existingTrees(layout);
+      trees.forEach(assertOneFilesystem);
+      return `${trees.length} of ${layout.app.name}'s trees checked: each is one filesystem`;
+    },
     'filesystem.reown-app': async (operation, { layout } = {}) => {
       requireLayout(layout);
       if (!layout.identity.own) deny(`${layout.app.name} runs as the shared user by design.`);
@@ -180,13 +226,7 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
       if (owner.uid === 0 || owner.uid === shared.uid) deny(`${layout.identity.user} must be its own unprivileged identity.`);
       rootOwnParent(APPS_ROOT);
       rootOwnParent(BACKUP_ROOT);
-      const trees = [
-        layout.identity.home,
-        ...(layout.storage && !layout.storage.inCheckout ? [layout.storage.root] : []),
-        `${BACKUP_ROOT}/${layout.app.id}`,
-        // Last: its owner is what says the app has moved.
-        layout.checkout,
-      ];
+      const trees = treesOf(layout);
       removeEarlierStaging(readMarker(layout), trees);
       move = { appId: layout.app.id, user: layout.identity.user, staging: {} };
       writeMarker(move);

@@ -31,7 +31,7 @@ PROFILE_TYPES['ingress-rollback-v1'] = new Set(['nginx.restore-tcp-gateway', 'ng
 PROFILE_TYPES['service-publish-v1'] = new Set(['tailscale.publish-service']);
 // Moving a sensitive app to its own user (SID-002): backup, stop, identity and home, the hand-over, the
 // .env and units rewritten for the new user, start.
-PROFILE_TYPES['app-move-user-v1'] = new Set(['backup.create', 'systemd.ensure-service', 'identity.ensure-user', 'filesystem.ensure-directory', 'filesystem.reown-app', 'filesystem.write-managed-file', 'systemd.apply-tmpfiles', 'systemd.daemon-reload', 'http.wait-ready']);
+PROFILE_TYPES['app-move-user-v1'] = new Set(['filesystem.check-app-trees', 'backup.create', 'systemd.ensure-service', 'identity.ensure-user', 'filesystem.ensure-directory', 'filesystem.reown-app', 'filesystem.write-managed-file', 'systemd.apply-tmpfiles', 'systemd.daemon-reload', 'http.wait-ready']);
 const PROFILE_KIND = {
   'host-bootstrap-v1': 'host-bootstrap',
   'app-install-v1': 'app-install',

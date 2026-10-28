@@ -188,6 +188,29 @@ test('a re-run removes exactly the copies an earlier attempt recorded, and nothi
   assert.equal(first.entries.get(`${CHECKOUT}/notes.reown-1`).uid, OWN);
 });
 
+test('a filesystem mounted inside a tree is refused before the app stops, and again before root locks it', async () => {
+  const mounted = () => installedBeforeSid002({
+    [`${CHECKOUT}/mnt`]: { kind: 'dir', uid: SHARED.uid, gid: SHARED.gid, dev: 2 },
+    [`${CHECKOUT}/mnt/linked.txt`]: { kind: 'file', content: 'x', uid: SHARED.uid, gid: SHARED.gid, nlink: 2, dev: 2 },
+  });
+  const check = { ...op(), id: 'check-app-trees', type: 'filesystem.check-app-trees', risk: 'read' };
+  assert.match(await createMoveHandlers({ fsImpl: installedBeforeSid002(), lookupUser: users() })['filesystem.check-app-trees'](check, { layout: SOURCE }), /each is one filesystem/);
+  const fsImpl = mounted();
+  await assert.rejects(() => createMoveHandlers({ fsImpl, lookupUser: users() })['filesystem.check-app-trees'](check, { layout: SOURCE }), /separate filesystem mounted inside \/opt\/sovereign-home\/apps\/homeSource/);
+  assert.equal(fsImpl.calls.some(([call]) => ['fchown', 'fchmod', 'lchown', 'copy'].includes(call)), false, 'the check changes nothing');
+  // Mounted after the check: pass 1 stops before locking it.
+  const late = mounted();
+  await assert.rejects(() => createMoveHandlers({ fsImpl: late, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /separate filesystem mounted inside/);
+  assert.equal(late.entries.get(`${CHECKOUT}/mnt`).uid, SHARED.uid, 'the mounted directory was never touched');
+  // The plan checks first, before its safety backup and before anything stops.
+  const { plan } = compileAction(normalizeAction({ action: 'move-user', appId: 'home-source', site: SITE }));
+  assert.equal(plan.operations[0].id, 'check-app-trees');
+  validateOperationPolicy(plan);
+  const writes = JSON.parse(JSON.stringify(plan));
+  writes.operations[0].risk = 'write';
+  assert.throws(() => validateOperationPolicy(writes));
+});
+
 test('a .env that is someone else\'s hardlink keeps its mode: the private chmod is for the app\'s own file only', async () => {
   const fsImpl = installedBeforeSid002({ [`${CHECKOUT}/.env`]: { kind: 'file', content: 'object', uid: 0, gid: 0, mode: 0o444, nlink: 2 } });
   await createMoveHandlers({ fsImpl, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
@@ -221,7 +244,7 @@ test('only a sensitive app moves, only to a distinct user that exists', async ()
 test('the move-user action compiles a policy-checked plan for sensitive apps only', () => {
   const { plan } = compileAction(normalizeAction({ action: 'move-user', appId: 'helm', site: SITE }));
   const ids = plan.operations.map((operation) => operation.id);
-  assert.equal(ids[0], 'safety-backup');
+  assert.deepEqual(ids.slice(0, 2), ['check-app-trees', 'safety-backup']);
   assert.ok(ids.indexOf('stop-service') < ids.indexOf('reown-app') && ids.indexOf('reown-app') < ids.indexOf('write-environment') && ids.indexOf('write-service') < ids.indexOf('start-service'));
   assert.equal(ids.at(-1), 'wait-ready');
   assert.equal(plan.operations.find((operation) => operation.id === 'ensure-app-user').user, 'sovereign-helm');

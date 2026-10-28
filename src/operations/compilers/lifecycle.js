@@ -106,6 +106,8 @@ function buildAppMoveUserPlan({ appId, site, generatedAt = new Date().toISOStrin
   if (!layout.identity.own) throw Object.assign(new Error(`${layout.app.name} runs as the shared user by design.`), { code: 'POLICY_DENIED' });
   const { operations, add } = sequence();
   const name = layout.app.name;
+  // Read only, before the app stops: refuse what the hand-over can't finish (a mount inside a tree).
+  add({ id: 'check-app-trees', type: 'filesystem.check-app-trees', title: `Check ${name}'s files can be handed over`, risk: 'read' });
   add(backupOperation(layout, archiveNameFor(generatedAt), 'safety-backup', `Back up ${name} before moving it to ${layout.identity.user}`));
   stopUnits(layout, add, 'stop');
   add({ id: 'ensure-app-user', type: 'identity.ensure-user', title: `Ensure the ${layout.identity.user} identity`, user: layout.identity.user });

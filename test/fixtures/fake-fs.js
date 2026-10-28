@@ -26,6 +26,8 @@ function createFakeFs(initial = {}) {
     gid: entry.gid,
     mode: entry.mode,
     nlink: entry.nlink ?? 1,
+    // Device: one filesystem unless a test mounts another (entry.dev).
+    dev: entry.dev ?? 1,
     isFile: () => entry.kind === 'file',
     isDirectory: () => entry.kind === 'dir',
     isSymbolicLink: () => entry.kind === 'link',
