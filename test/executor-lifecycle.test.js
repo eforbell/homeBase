@@ -76,13 +76,17 @@ test('backup runs entirely as sovereign, keeps secrets 0600, and never passes cr
 
 test('restore brings back env, database (as the app role), and storage while keeping live database wiring', async () => {
   const { fsImpl, calls, handlers } = harness({
-    [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: 'DATABASE_URL=postgresql://homesource:Old-pass-999@127.0.0.1:5432/homesource\nSMTP_HOST=from-backup.example\nEXTRA=1\n', uid: 1001 },
+    // Taken before SID-002: no socket, and an operator's HOST=0.0.0.0.
+    [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: 'DATABASE_URL=postgresql://homesource:Old-pass-999@127.0.0.1:5432/homesource\nSMTP_HOST=from-backup.example\nEXTRA=1\nHOST=0.0.0.0\n', uid: 1001 },
     ...done(ARCHIVE),
     [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 },
     [`${ARCHIVE}/documents.tgz`]: { kind: 'file', content: 'tgz', uid: 1001 },
   });
   await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
   const env = fsImpl.readFileSync(ENV);
+  // It listens where nginx points now, whatever the backup said.
+  assert.match(env, /^SOVEREIGN_LISTEN=unix:\/run\/sovereign-apps\/home-source\/app\.sock$/m);
+  assert.doesNotMatch(env, /^HOST=/m);
   assert.match(env, /^SMTP_HOST=from-backup\.example$/m);
   assert.match(env, /^EXTRA=1$/m);
   assert.match(env, /Live-pass-123/, 'live database wiring is preserved');

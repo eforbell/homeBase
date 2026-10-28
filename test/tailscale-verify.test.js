@@ -134,7 +134,7 @@ test('socket ingress: verified by sockets and per-service targets, never by a tc
   const run = ({ ss = listeners, unix = sockets, serve = services() } = {}) => (command) => {
     if (command.startsWith('ss -lxn')) return { ok: true, stdout: `Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port\n${unix.join('\n')}\n` };
     if (command.startsWith('tailscale status')) return { ok: true, stdout: JSON.stringify({ Self: { TailscaleIPs: ['100.64.0.1', 'fd7a:115c:a1e0::1'] } }) };
-    if (command.startsWith('ss ')) return { ok: true, stdout: `${ss.join('\n')}\n` };
+    if (command.startsWith('ss ')) return ss === null ? { ok: false, stdout: '' } : { ok: true, stdout: `State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n${ss.map((address) => `LISTEN 0 511 ${address} 0.0.0.0:*`).join('\n')}\n` };
     if (command.startsWith('tailscale serve get-config')) return { ok: true, stdout: JSON.stringify(serve) };
     return { ok: false, stdout: '' };
   };
@@ -156,6 +156,10 @@ test('socket ingress: verified by sockets and per-service targets, never by a tc
   assert.match(exposed.checks.find((check) => check.id === 'apps-loopback-only').summary, /family-pulse on 0\.0\.0\.0:3003, home-source on \[::\]:3008, helm on 100\.64\.0\.1:3011/);
   assert.doesNotMatch(exposed.checks.find((check) => check.id === 'apps-loopback-only').summary, /family-dinner|family-help/, 'loopback is fine');
   assert.equal(exposed.repairRequired, true);
+  // A listing that didn't run proves nothing (ss missing or failing), so neither listener check passes.
+  const unlisted = result(verify({ ss: null }).checks);
+  assert.equal(unlisted['no-suite-tcp-listener'], false);
+  assert.equal(unlisted['apps-loopback-only'], false);
   const stopped = verify({ unix: [] });
   assert.equal(result(stopped.checks)['service-sockets-listening'], false, 'nginx stopped: Serve still targets sockets nobody answers');
   assert.equal(stopped.repairRequired, true);

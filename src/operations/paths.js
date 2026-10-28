@@ -11,4 +11,6 @@ module.exports = Object.freeze({
   // App sockets (SID-002): /run/sovereign-apps/<app id>/app.sock, the directory <app user>:<nginx group> 2750.
   APP_SOCKET_ROOT: '/run/sovereign-apps',
   NGINX_GROUP: 'www-data',
+  // A move to an app's own user in progress (SID-002): root-only markers, one per app, removed when it finishes.
+  MOVE_STATE_ROOT: '/var/lib/homebase-executor/moves',
 });

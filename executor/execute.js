@@ -40,7 +40,7 @@ async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
     if (typeof handler !== 'function') throw new ProtocolError('POLICY_DENIED', `No executor handler is available for ${operation.type}.`);
     emit({ eventType: 'operation.started', operationId: operation.id, title: operation.title });
     try {
-      const output = await handler(operation, { secretBindings: request.secretBindings, layout });
+      const output = await handler(operation, { secretBindings: request.secretBindings, layout, planKind: request.plan.kind });
       if (output) emit({ eventType: 'operation.output', operationId: operation.id, output: redactText(output, Object.values(request.secretBindings)) });
       completed.add(operation.id);
       emit({ eventType: 'operation.completed', operationId: operation.id });

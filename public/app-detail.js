@@ -633,7 +633,7 @@
             <section id="identity" class="hb-card">
               <h2 style="margin-top:0;">Runs as</h2>
               ${identity.pendingMove ? `
-                <p class="hb-warn" style="margin:0 0 0.5rem;">Runs as the shared user <code>sovereign</code>, like the everyday apps.</p>
+                <p class="hb-warn" style="margin:0 0 0.5rem;">${identity.interrupted ? window.HB.escapeHtml(identity.problem) : 'Runs as the shared user <code>sovereign</code>, like the everyday apps.'}</p>
                 <p class="hb-muted" style="margin:0 0 0.75rem;">Its own user, <code>${window.HB.escapeHtml(identity.target)}</code>, keeps its code, settings, data, and backups out of reach of every other app. Moving is a one-time step: Home Base backs the app up, stops it, hands its files over, rewrites its settings and services, and starts it again. Expect a minute or two of downtime.</p>
                 <form class="hb-form-grid" data-action="move-user">
                   <label class="hb-label hb-check-row"><input name="dryRun" type="checkbox" checked> Preview the plan only</label>

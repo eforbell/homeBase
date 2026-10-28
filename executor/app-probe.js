@@ -29,7 +29,14 @@ function createAppProber({ request = http.request, timeoutMs = 2500 } = {}) {
     if (!PATH.test(path)) throw new ProtocolError('POLICY_DENIED', `${app.name} has an unusable ${probe} path.`);
     const target = via === 'unix' ? { socketPath: layout.listen.socket } : { host: '127.0.0.1', port: layout.port };
     return new Promise((resolve) => {
-      const done = (fields) => resolve({ appId, probe, via, configured: true, ...fields });
+      let settled = false;
+      let deadline = null;
+      const done = (fields) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        resolve({ appId, probe, via, configured: true, ...fields });
+      };
       const req = request({ ...target, path, method: 'GET', headers: { host: 'localhost' }, timeout: timeoutMs }, (res) => {
         const chunks = [];
         let size = 0;
@@ -47,6 +54,12 @@ function createAppProber({ request = http.request, timeoutMs = 2500 } = {}) {
         });
       });
       req.on('timeout', () => req.destroy(new Error(`no answer within ${timeoutMs} ms`)));
+      // The idle timeout alone lets an app trickle bytes forever; the whole exchange gets the same budget.
+      // Settled first, so the close the destroy causes can't report a half-read reply as an answer.
+      deadline = setTimeout(() => {
+        done({ statusCode: null, error: 'deadline' });
+        req.destroy(new Error(`no complete answer within ${timeoutMs} ms`));
+      }, timeoutMs);
       req.on('error', (error) => done({ statusCode: null, error: error.code || error.message }));
       req.end();
     });

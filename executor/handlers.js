@@ -15,7 +15,7 @@ const {
   appPublicBase, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
   IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
-const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
+const { applyListenEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
 // the plan target's catalog layout; see directoryFor().
@@ -234,12 +234,7 @@ function renderAppEnvFile({ layout, password = null, site, ingress = null, exist
     if (error.code === 'ENV_TEMPLATE_UNRESOLVED') deny(error.message);
     throw error;
   }
-  // Where the app listens (SID-002), always overwritten: a socket only nginx's group can reach, or
-  // loopback for apps that don't support sockets yet (never every interface, which the tailnet reaches).
-  // The other mode's key goes, so an app switching modes never keeps listening where nginx no longer points.
-  const { HOST: _host, SOVEREIGN_LISTEN: _listen, ...rest } = env;
-  const listen = layout.listen?.kind === 'unix' ? { SOVEREIGN_LISTEN: `unix:${layout.listen.socket}` } : { HOST: '127.0.0.1' };
-  return renderEnv({ ...rest, ...listen, ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) });
+  return renderEnv({ ...applyListenEnv(env, layout), ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) });
 }
 
 // The database password this install must use. Existing database wiring is kept verbatim by the
@@ -435,7 +430,8 @@ function readIngressRecord(fsImpl = fs) {
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   // Who this app runs as on this host: its own user, or sovereign until it is moved (identity.js).
-  const identityFor = (layout) => resolveAppIdentity(requireLayout(layout), { fsImpl, lookupUser });
+  // planKind: only the move plan may continue a move that was interrupted (identity.js).
+  const identityFor = (layout, planKind = null) => resolveAppIdentity(requireLayout(layout), { fsImpl, lookupUser, duringMove: planKind === 'app-move-user' });
   // The active nginx configuration, every file, as root (nginx -T). stdout only: on success nginx also
   // writes "syntax is ok" / "test is successful" to stderr, which is not configuration (and a failure
   // already throws, since run() rejects a non-zero exit).
@@ -948,7 +944,7 @@ END $$;
       await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       return 'validated and reloaded nginx';
     },
-    'filesystem.ensure-directory': async (operation, { layout } = {}) => {
+    'filesystem.ensure-directory': async (operation, { layout, planKind } = {}) => {
       if (operation.purpose === 'app-checkout-storage') {
         const storage = requireLayout(layout).storage;
         if (!storage?.inCheckout || !storage.subpaths.includes(operation.subpath)) deny('Storage subpath is not declared by this app.');
@@ -971,7 +967,7 @@ END $$;
       const rootOwned = ROOT_OWNED_DIRECTORIES.has(operation.purpose);
       // App directories belong to the app's user; sovereign-home is the shared user's own HOME.
       const shared = lookupUser('sovereign');
-      const owner = rootOwned ? null : (APP_DIRECTORIES.has(operation.purpose) ? identityFor(layout) : shared && { ...shared, own: false });
+      const owner = rootOwned ? null : (APP_DIRECTORIES.has(operation.purpose) ? identityFor(layout, planKind) : shared && { ...shared, own: false });
       if (!rootOwned && !owner) deny('The sovereign identity must exist before creating app-owned directories.');
       // Inspect before mutating: an app-planted symlink here would otherwise turn chown into a root escalation.
       const existing = lstatOrNull(fsImpl, directory);

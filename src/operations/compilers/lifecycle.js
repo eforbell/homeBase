@@ -31,7 +31,11 @@ function startUnits(layout, add) {
 
 function stopUnits(layout, add, action) {
   const verb = action === 'disable-now' ? 'Disable and stop' : 'Stop';
-  layout.timers.forEach((timer, index) => add({ id: `stop-timer-${index + 1}`, type: 'systemd.ensure-service', title: `${verb} ${timer.timerUnit}`, risk: 'destructive', unit: timer.timerUnit, action }));
+  layout.timers.forEach((timer, index) => {
+    add({ id: `stop-timer-${index + 1}`, type: 'systemd.ensure-service', title: `${verb} ${timer.timerUnit}`, risk: 'destructive', unit: timer.timerUnit, action });
+    // A run the timer already started keeps going (as whoever it started as) unless its service stops too.
+    add({ id: `stop-timer-service-${index + 1}`, type: 'systemd.ensure-service', title: `Stop ${timer.serviceUnit}`, risk: 'destructive', unit: timer.serviceUnit, action: 'stop' });
+  });
   layout.sidecars.forEach((sidecar, index) => add({ id: `stop-sidecar-${index + 1}`, type: 'systemd.ensure-service', title: `${verb} ${sidecar.name}`, risk: 'destructive', unit: sidecar.unit, action }));
   add({ id: 'stop-service', type: 'systemd.ensure-service', title: `${verb} ${layout.app.name}`, risk: 'destructive', unit: layout.service.unit, action });
 }

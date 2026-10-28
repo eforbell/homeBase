@@ -153,6 +153,28 @@ test('the executor probes a socket app at catalog paths only, with bounded repli
   assert.deepEqual([down.statusCode, down.error], [null, 'ENOENT']);
 });
 
+test('a probe has a deadline for the whole exchange: an app trickling bytes can\'t hold root\'s request open', async (t) => {
+  const http = require('node:http');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { createAppProber } = require('../executor/app-probe');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sock-'));
+  const socket = path.join(dir, 'app.sock');
+  const timers = [];
+  const server = http.createServer((req, res) => {
+    res.writeHead(200);
+    timers.push(setInterval(() => res.write('.'), 10));
+  });
+  await new Promise((resolve) => server.listen(socket, resolve));
+  t.after(() => { timers.forEach(clearInterval); server.closeAllConnections?.(); server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const probeApp = createAppProber({ timeoutMs: 100, request: (options, callback) => http.request({ ...options, socketPath: socket }, callback) });
+  const started = Date.now();
+  const result = await withSocketAsync('family-pulse', () => probeApp({ appId: 'family-pulse', probe: 'readiness' }));
+  assert.deepEqual([result.statusCode, result.error], [null, 'deadline'], 'never reported as an answer');
+  assert.ok(Date.now() - started < 1000);
+});
+
 test('readiness and health for a socket app go through the executor', async () => {
   const { waitForAppReadiness } = require('../src/services/job-runner');
   const { HealthMonitor } = require('../src/services/health-monitor');

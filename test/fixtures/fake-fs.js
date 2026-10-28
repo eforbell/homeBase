@@ -99,6 +99,8 @@ function createFakeFs(initial = {}) {
       return fd;
     },
     fstatSync: (fd) => stat(entries.get(fds.get(fd))),
+    // Tests only: which path a descriptor was opened on.
+    fdPath: (fd) => fds.get(fd),
     fchownSync: (fd, uid, gid) => {
       calls.push(['fchown', fds.get(fd), uid, gid]);
       Object.assign(entries.get(fds.get(fd)), { uid, gid });

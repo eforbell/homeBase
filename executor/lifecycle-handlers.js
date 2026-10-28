@@ -5,7 +5,7 @@ const {
   lookupSystemUser, runAsUser, readExistingDatabasePassword,
   lstatOrNull, readSmallFileNoFollow, SUPERUSER_SQL_PREAMBLE, writeFileAtomic, requireLayout, deny,
 } = require('./handlers');
-const { parseDotEnv, renderEnv, storageEnvOverrides } = require('../src/operations/env');
+const { applyListenEnv, parseDotEnv, renderEnv, storageEnvOverrides } = require('../src/operations/env');
 
 // Backup, restore, and uninstall primitives. Anything inside app-owned directories (the checkout,
 // .env, backups, storage) is read, written, or removed as the app's user (its own for a sensitive app,
@@ -19,7 +19,7 @@ const COMPLETION_MARKER = 'backup-generated-at.txt';
 const PRESERVED_DB_ENV_KEYS = ['DATABASE_URL', 'HELM_DATABASE_URL', 'DB_BACKEND', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'SQLITE_DB_PATH'];
 
 function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, now = () => new Date() } = {}) {
-  const ownerOf = (layout) => resolveAppIdentity(layout, { fsImpl, lookupUser });
+  const ownerOf = (layout, planKind = null) => resolveAppIdentity(layout, { fsImpl, lookupUser, duringMove: planKind === 'app-move-user' });
   const isRealDir = (target) => { const stat = lstatOrNull(fsImpl, target); return Boolean(stat && !stat.isSymbolicLink() && stat.isDirectory()); };
   const isRealFile = (target) => { const stat = lstatOrNull(fsImpl, target); return Boolean(stat && !stat.isSymbolicLink() && stat.isFile()); };
   const archiveDirFor = (layout, archiveName) => `${BACKUP_ROOT}/${layout.app.id}/${archiveName}`;
@@ -86,9 +86,12 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
   };
 
   return {
-    'backup.create': async (operation, { layout } = {}) => {
+    'backup.create': async (operation, { layout, planKind } = {}) => {
       requireLayout(layout);
-      const owner = ownerOf(layout);
+      const owner = ownerOf(layout, planKind);
+      // Only a re-run of an interrupted move gets here: its files are half handed over, so they can't be
+      // backed up as either user, and the first attempt's safety backup was taken before it changed anything.
+      if (owner.moving) return `skipped: ${layout.app.name}'s move was interrupted; the safety backup its first attempt took before changing anything stands`;
       // A normal backup requires the database. An uninstall's "what remains" backup asks PostgreSQL
       // (read-only, as postgres) whether the database still exists: if it does, the dump must succeed;
       // if an interrupted uninstall already dropped it, there is nothing to dump.
@@ -185,7 +188,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
           }
           // A backup taken before the catalog declared its storage env key must not point the app away from the archived root.
           Object.assign(restoredEnv, storageEnvOverrides(layout.app));
-          writeFileAtomic(fsImpl, layout.envPath, renderEnv(restoredEnv), owner.own ? 0o600 : 0o640);
+          // Nor listen where nginx no longer points (a backup from before the app's socket, or HOST=0.0.0.0).
+          writeFileAtomic(fsImpl, layout.envPath, renderEnv(applyListenEnv(restoredEnv, layout)), owner.own ? 0o600 : 0o640);
         });
         restored.push('.env');
       }
