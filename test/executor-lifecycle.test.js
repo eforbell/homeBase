@@ -188,6 +188,11 @@ test('an app unit whose file is gone is done only when systemd no longer knows i
   const unknown = withState('');
   await unknown.stop();
   assert.deepEqual(unknown.calls.at(-1), ['stop', 'helm-sync.service'], 'an unreadable state is never taken as stopped');
+  // Loaded from another unit directory: an uninstall's disable still disables it (its enablement links go).
+  const elsewhere = withState('LoadState=loaded\nActiveState=active\n');
+  const disable = createBaseHandlers({ fsImpl: createFakeFs(), lookupUser: users(), run: async (input) => { elsewhere.calls.push(input.args); return { stdout: input.args[0] === 'show' ? 'LoadState=loaded\nActiveState=active\n' : '' }; } });
+  await disable['systemd.ensure-service'](op('systemd.ensure-service', { unit: 'helm-sync.service', action: 'disable-now' }), { layout: helm });
+  assert.deepEqual(elsewhere.calls.at(-1), ['disable', '--now', 'helm-sync.service']);
   // Units Home Base doesn't write (nginx, postgres) are never judged by /etc/systemd/system.
   const calls = [];
   const handlers = createBaseHandlers({ fsImpl: createFakeFs(), lookupUser: users(), run: async (input) => { calls.push(input.args); return { stdout: '' }; } });

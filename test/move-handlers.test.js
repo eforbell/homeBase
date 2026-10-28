@@ -148,25 +148,35 @@ test('a re-run removes exactly the copies an earlier attempt recorded, and nothi
   const rename = fsImpl.renameSync;
   let failOnce = true;
   fsImpl.renameSync = (from, to) => {
-    if (failOnce && from.startsWith(`${CHECKOUT}/linked.txt.reown-`)) { failOnce = false; throw Object.assign(new Error('EIO'), { code: 'EIO' }); }
+    if (failOnce && from.startsWith(`${CHECKOUT}/.reown-staging-`)) { failOnce = false; throw Object.assign(new Error('EIO'), { code: 'EIO' }); }
     return rename(from, to);
   };
   const handlers = createMoveHandlers({ fsImpl, lookupUser: users() });
   await assert.rejects(() => handlers['filesystem.reown-app'](op(), { layout: SOURCE }), /EIO/);
-  assert.deepEqual([...fsImpl.entries.keys()].filter((key) => key.startsWith(`${CHECKOUT}/linked.txt.reown-`)), [], 'the half-done copy is gone');
+  assert.deepEqual([...fsImpl.entries.keys()].filter((key) => key.startsWith(`${CHECKOUT}/.reown-staging-`) && key.split('/').length > CHECKOUT.split('/').length + 1), [], 'the half-done copy is gone');
   await handlers['filesystem.reown-app'](op(), { layout: SOURCE });
   assert.deepEqual([fsImpl.entries.get(`${CHECKOUT}/linked.txt`).uid, fsImpl.entries.get(`${CHECKOUT}/linked.txt`).nlink], [OWN, 1]);
-  // A crash between copy and rename: the marker names the copy, so the re-run removes it.
+  assert.deepEqual([...fsImpl.entries.keys()].filter((key) => key.includes('.reown-staging-')), [], 'no staging directory is left');
+  // However many copies, the marker is written once per tree that needed one (plus once to start).
+  const many = installedBeforeSid002({ ...state, ...Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`${CHECKOUT}/l${i}`, { kind: 'file', content: `${i}`, uid: SHARED.uid, gid: SHARED.gid, nlink: 2 }])) });
+  const writes = [];
+  const open = many.openSync;
+  many.openSync = (target, flags, mode) => { if (String(target).startsWith('/var/lib/homebase-executor/moves/')) writes.push(target); return open(target, flags, mode); };
+  await createMoveHandlers({ fsImpl: many, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
+  assert.ok(writes.length >= 1 && writes.length <= 2, `${writes.length} marker writes for 50 copies`);
+  // A crash between copy and rename: the marker names the staging directory, so the re-run empties it.
+  const staging = `${CHECKOUT}/.reown-staging-0123abcd`;
   const crashed = installedBeforeSid002({
     ...state, ...linked,
-    [`${CHECKOUT}/linked.txt.reown-0123abcd`]: { kind: 'file', content: 'partial', uid: 0, gid: 0 },
+    [staging]: { kind: 'dir', mode: 0o700, uid: 0, gid: 0 },
+    [`${staging}/9f8e7d`]: { kind: 'file', content: 'partial', uid: 0, gid: 0 },
     '/var/lib/homebase-executor/moves': { kind: 'dir', mode: 0o700, uid: 0, gid: 0 },
-    '/var/lib/homebase-executor/moves/home-source': { kind: 'file', uid: 0, gid: 0, mode: 0o600, content: JSON.stringify({ appId: 'home-source', user: 'sovereign-source', copies: [`${CHECKOUT}/linked.txt.reown-0123abcd`, '/etc/passwd', `${CHECKOUT}/../../../etc/shadow`] }) },
+    '/var/lib/homebase-executor/moves/home-source': { kind: 'file', uid: 0, gid: 0, mode: 0o600, content: JSON.stringify({ appId: 'home-source', user: 'sovereign-source', staging: { [CHECKOUT]: staging, '/etc': '/etc', x: `${CHECKOUT}/../../../etc/.reown-staging-1` } }) },
     '/etc/passwd': { kind: 'file', content: 'root:x:0:0', uid: 0, gid: 0 },
   });
   await createMoveHandlers({ fsImpl: crashed, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
-  assert.equal(crashed.existsSync(`${CHECKOUT}/linked.txt.reown-0123abcd`), false);
-  assert.equal(crashed.existsSync('/etc/passwd'), true, 'only paths inside the app\'s trees');
+  assert.equal(crashed.existsSync(staging), false);
+  assert.equal(crashed.existsSync('/etc/passwd'), true, 'only staging directories at the top of the app\'s trees');
   assert.equal(crashed.entries.get(`${CHECKOUT}/linked.txt`).content, 'shared inode');
   // A first move: files that only look like copies are never deleted; they are handed over like any other file.
   const first = installedBeforeSid002({

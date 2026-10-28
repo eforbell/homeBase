@@ -766,6 +766,11 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         const shown = await run({ binary: '/usr/bin/systemctl', args: ['show', '--property=LoadState,ActiveState', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
         const state = Object.fromEntries(String(shown?.stdout || '').split('\n').map((line) => line.trim().split('=')).filter(([key]) => key));
         if (state.LoadState === 'not-found' && ['inactive', 'failed'].includes(state.ActiveState)) return `${operation.unit} is not installed`;
+        // Still loaded from another unit directory: disable means disable there too.
+        if (operation.action === 'disable-now' && state.LoadState === 'loaded') {
+          await run({ binary: '/usr/bin/systemctl', args: ['disable', '--now', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+          return `disable-now ${operation.unit}`;
+        }
         await run({ binary: '/usr/bin/systemctl', args: ['stop', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
         return `stopped ${operation.unit} (its unit file was already gone)`;
       }

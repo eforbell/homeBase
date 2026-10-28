@@ -18,13 +18,15 @@ const { BACKUP_ROOT, APPS_ROOT, MOVE_STATE_ROOT } = require('../src/operations/p
 // the app's user and directories follow bottom up, getting their modes back. A hardlinked file is copied
 // first when the shared user or the app's user owns it (a link to another app's file must never change
 // owner); one owned by anyone else (a root-owned git object, or a planted link to a system file) is left
-// exactly as it is, never copied or chowned. Each copy's temporary path is recorded in the marker before
-// the copy is made, so a re-run removes exactly what an earlier attempt left and nothing else. Setuid and
-// setgid bits are dropped.
+// exactly as it is, never copied or chowned. Copies are made in a root-only staging directory at the top
+// of their tree, recorded in the marker before it is created, so a re-run removes exactly what an earlier
+// attempt left and nothing else (one marker write per tree, however many copies). Setuid and setgid bits
+// are dropped.
 
 const NO_FOLLOW_DIRECTORY = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 const NO_FOLLOW_FILE = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
 const SPECIAL_BITS = 0o6000;
+const STAGING_PREFIX = '.reown-staging-';
 
 function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), randomName = () => crypto.randomBytes(8).toString('hex') } = {}) {
   // The move in progress: what the marker records (see writeMarker).
@@ -72,17 +74,26 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     return directories;
   };
 
-  const handOverFile = (target, stat, owner, shared) => {
+  // The tree's staging directory, made on its first copy (a sibling of every copy's target can't be used:
+  // its name would need provenance). Inside the tree, so the rename stays on one filesystem.
+  const stagingFor = (tree) => {
+    if (move.staging[tree]) return move.staging[tree];
+    const staging = path.posix.join(tree, `${STAGING_PREFIX}${randomName()}`);
+    move.staging[tree] = staging;
+    writeMarker(move);
+    fsImpl.mkdirSync(staging, { mode: 0o700 });
+    return staging;
+  };
+
+  const handOverFile = (target, stat, owner, shared, tree) => {
     if (stat.isSymbolicLink()) { fsImpl.lchownSync(target, owner.uid, owner.gid); return 'link'; }
     if (!stat.isFile()) { fsImpl.lchownSync(target, owner.uid, owner.gid); return 'other'; }
     let copied = false;
     if (stat.nlink > 1) {
       if (stat.uid !== shared.uid && stat.uid !== owner.uid) return 'kept';
-      // Its directory is root's now, so the copy and the rename can't be redirected. Recorded first, so a
-      // crash between the copy and the rename leaves a path the re-run knows is its own.
-      const temp = `${target}.reown-${randomName()}`;
-      move.copies.push(temp);
-      writeMarker(move);
+      // Its directory is root's now, so the copy and the rename can't be redirected. A crash between the
+      // copy and the rename leaves the copy in a staging directory the re-run knows is its own.
+      const temp = path.posix.join(stagingFor(tree), randomName());
       fsImpl.copyFileSync(target, temp, fs.constants.COPYFILE_EXCL);
       try { fsImpl.renameSync(temp, target); } catch (error) {
         try { fsImpl.unlinkSync(temp); } catch { /* the re-run removes it */ }
@@ -109,9 +120,11 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
         const child = path.posix.join(directory, name);
         const stat = fsImpl.lstatSync(child);
         if (stat.isDirectory() && !stat.isSymbolicLink()) continue;
-        counts[handOverFile(child, stat, owner, shared)] += 1;
+        counts[handOverFile(child, stat, owner, shared, top)] += 1;
       }
     }
+    // Every copy was renamed into place, so the staging directory is empty.
+    if (move.staging[top]) fsImpl.rmdirSync(move.staging[top]);
     for (const { directory, mode } of [...directories].reverse()) {
       withDirectory(directory, (fd) => {
         fsImpl.fchownSync(fd, owner.uid, owner.gid);
@@ -126,7 +139,7 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     const root = lstatOrNull(fsImpl, MOVE_STATE_ROOT);
     if (!root || root.isSymbolicLink() || !root.isDirectory() || root.uid !== 0) deny(`${MOVE_STATE_ROOT} must be a root-owned directory.`);
   };
-  // { appId, user, copies: [temporary copy paths, recorded before each copy is made] }
+  // { appId, user, staging: { <tree>: <its staging directory, recorded before it is created> } }
   const writeMarker = (state) => {
     stateRoot();
     writeFileAtomic(fsImpl, `${MOVE_STATE_ROOT}/${state.appId}`, `${JSON.stringify(state)}\n`, 0o600);
@@ -137,13 +150,22 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     if (stat.isSymbolicLink() || !stat.isFile() || stat.uid !== 0) deny(`${moveMarker(layout)} is not root's marker file.`);
     try { return JSON.parse(fsImpl.readFileSync(moveMarker(layout), 'utf8')); } catch { deny(`${moveMarker(layout)} is unreadable; inspect it before moving ${layout.app.name} again.`); }
   };
-  // An earlier attempt's copies: only paths it recorded, inside this app's trees, and still root's own
-  // single-link files (a copy is root's until its rename). Anything else is left alone.
-  const removeEarlierCopies = (previous, trees) => {
-    for (const temp of Array.isArray(previous?.copies) ? previous.copies : []) {
-      if (typeof temp !== 'string' || temp !== path.posix.normalize(temp) || !trees.some((tree) => temp.startsWith(`${tree}/`))) continue;
-      const stat = lstatOrNull(fsImpl, temp);
-      if (stat && stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1) fsImpl.unlinkSync(temp);
+  // An earlier attempt's staging directories: only ones it recorded, directly at the top of one of this
+  // app's trees with the staging name, still root's real directories. Their copies are root's own
+  // single-link files (a copy is root's until its rename); anything else in one stops the move.
+  const removeEarlierStaging = (previous, trees) => {
+    const recorded = previous?.staging && typeof previous.staging === 'object' ? Object.values(previous.staging) : [];
+    for (const staging of recorded) {
+      if (typeof staging !== 'string' || staging !== path.posix.normalize(staging) || !trees.includes(path.posix.dirname(staging)) || !path.posix.basename(staging).startsWith(STAGING_PREFIX)) continue;
+      const stat = lstatOrNull(fsImpl, staging);
+      if (!stat || stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== 0) continue;
+      for (const name of fsImpl.readdirSync(staging)) {
+        const copy = path.posix.join(staging, name);
+        const entry = fsImpl.lstatSync(copy);
+        if (!entry.isFile() || entry.isSymbolicLink() || entry.uid !== 0 || entry.nlink !== 1) deny(`${copy} was not left by an earlier move; inspect it before moving again.`);
+        fsImpl.unlinkSync(copy);
+      }
+      fsImpl.rmdirSync(staging);
     }
   };
 
@@ -165,8 +187,8 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
         // Last: its owner is what says the app has moved.
         layout.checkout,
       ];
-      removeEarlierCopies(readMarker(layout), trees);
-      move = { appId: layout.app.id, user: layout.identity.user, copies: [] };
+      removeEarlierStaging(readMarker(layout), trees);
+      move = { appId: layout.app.id, user: layout.identity.user, staging: {} };
       writeMarker(move);
       const moved = [];
       for (const tree of trees) {
