@@ -33,6 +33,8 @@ NODESOURCE_UNATTENDED="${HOMEBASE_NODESOURCE_UNATTENDED:-/etc/apt/apt.conf.d/52n
 
 INSTALL_DIR="${HOMEBASE_INSTALL_DIR:-/opt/sovereign-home/homebase}"
 STATE_DIR="${HOMEBASE_STATE_DIR:-/var/lib/sovereign-home/homebase}"
+# The directory snapshot (Feature-10 D18): Home Base's own, readable by every app, writable by no one else.
+IDENTITY_DIR="${HOMEBASE_IDENTITY_DIR:-/var/lib/sovereign-home/identity}"
 ENV_FILE="${HOMEBASE_ENV_FILE:-/etc/sovereign-home/homebase.env}"
 UNIT_FILE="${HOMEBASE_SYSTEMD_UNIT:-/etc/systemd/system/homebase.service}"
 RUNTIME_USER="${HOMEBASE_RUNTIME_USER:-homebase}"
@@ -890,6 +892,7 @@ else
   usermod -a -G "$EXECUTOR_GROUP" "$RUNTIME_USER"
   if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
     install -d -m 0700 -o "$RUNTIME_USER" -g "$RUNTIME_USER" "$STATE_DIR"
+    install -d -m 0755 -o "$RUNTIME_USER" -g "$RUNTIME_USER" "$IDENTITY_DIR"
     install -d -m 0755 -o root -g root "$(dirname "$ENV_FILE")"
   fi
 fi
@@ -978,7 +981,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=${STATE_DIR}
+ReadWritePaths=${STATE_DIR} -${IDENTITY_DIR}
 
 [Install]
 WantedBy=multi-user.target

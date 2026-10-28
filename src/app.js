@@ -24,6 +24,8 @@ const { getTailscalePublishingReadiness } = require('./services/tailscale-readin
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification, getIngressVerification } = require('./services/tailscale-verify');
 const { createIdentityResolver, createIdentityServer, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
+const { createPreviewDirectory } = require('./identity/preview-directory');
+const { createSnapshotReader, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
 const { appPublicBase, appServiceKey } = require('./operations/ingress-layout');
@@ -823,6 +825,33 @@ function createApp(config) {
   }
 
   const guardSuiteRequest = createSuiteRequestGuard({ mode: config.requestGuards || 'off' });
+  // SID-003 preview of the household directory (src/identity/preview-directory.js); off unless configured.
+  const previewDirectory = config.identityPreviewFile ? createPreviewDirectory({
+    membersFile: config.identityPreviewFile,
+    household: config.instance,
+    snapshotFile: config.identitySnapshotFile,
+    log: (message) => console.warn(`[homebase] ${message}`),
+  }) : null;
+  const snapshotReader = previewDirectory ? createSnapshotReader({
+    homeBaseUid: process.getuid(),
+    file: previewDirectory.snapshotFile,
+    trustedRoot: config.identitySnapshotTrustedRoot || null,
+  }) : null;
+
+  // What sovereignAuth makes of this request: the identity headers nginx sent, the snapshot Home Base
+  // published, and the member each catalog app would see. Read-only; it changes nothing.
+  function describeIdentity(req) {
+    const header = (name) => (typeof req.headers[name] === 'string' ? req.headers[name] : null);
+    const state = snapshotReader.current();
+    const snapshot = state.ok
+      ? { ok: true, household: state.snapshot.household, generation: state.snapshot.generation, ageSeconds: Math.round((Date.now() - state.snapshot.writtenAt) / 1000) }
+      : { ok: false, reason: state.reason, message: state.message };
+    const apps = state.ok ? Object.fromEntries(catalog.map((app) => {
+      const result = resolveMember(state.snapshot, req.headers, { appId: app.id });
+      return [app.id, result.member ? { memberId: result.member.memberId, role: result.member.role } : { reason: result.reason }];
+    })) : {};
+    return { preview: true, headers: { userId: header('x-sovereign-user-id'), login: header('x-sovereign-login') }, snapshot, apps };
+  }
   const server = http.createServer(async (req, res) => {
     try {
       if (!guardSuiteRequest(req, res)) return;
@@ -864,6 +893,10 @@ function createApp(config) {
         }
       }
 
+      if (method === 'GET' && pathname === '/api/identity/whoami') {
+        if (!previewDirectory) return sendJson(res, 404, { error: 'The identity preview is off (HOME_BASE_IDENTITY_PREVIEW).' });
+        return sendJson(res, 200, describeIdentity(req));
+      }
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });
       }
@@ -2192,9 +2225,14 @@ function createApp(config) {
         if (typeof callback === 'function') callback();
       });
       scheduleIngressCheck();
+      if (previewDirectory) {
+        previewDirectory.start();
+        console.log(`Home Base identity preview: publishing ${previewDirectory.snapshotFile}`);
+      }
       if (config.identitySocket) {
         const log = (message) => console.warn(`[homebase] ${message}`);
-        const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log }), log });
+        const directory = previewDirectory || undefined;
+        const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log, directory }), log });
         startIdentitySocketWhenReady({ server: identityServer, socketPath: config.identitySocket, log: (message) => console.log(`Home Base ${message}`) });
       }
     },
