@@ -1,3 +1,4 @@
+const fs = require('fs');
 const http = require('http');
 const { ProtocolError } = require('./protocol');
 const { getAppById } = require('../src/catalog');
@@ -18,13 +19,19 @@ function probePath(app, probe) {
   return app.onboarding?.statusPath || null;
 }
 
-function createAppProber({ request = http.request, timeoutMs = 2500 } = {}) {
+// An app whose catalog entry moved to a socket but that hasn't been updated since still listens on its
+// loopback port: until the socket exists, ask there (as before SID-002) instead of reporting it down.
+function socketExists(socket) {
+  try { return fs.lstatSync(socket).isSocket(); } catch { return false; }
+}
+
+function createAppProber({ request = http.request, timeoutMs = 2500, hasSocket = socketExists } = {}) {
   return function probeApp({ appId, probe }) {
     const app = getAppById(appId);
     if (!app || !PROBES.includes(probe)) throw new ProtocolError('INVALID_REQUEST', 'appId and probe must name a catalog app and liveness, readiness, or onboarding.');
     const layout = appLayout(app);
     const path = probePath(app, probe);
-    const via = layout.listen.kind;
+    const via = layout.listen.kind === 'unix' && !hasSocket(layout.listen.socket) ? 'tcp-until-updated' : layout.listen.kind;
     if (!path) return Promise.resolve({ appId, probe, via, configured: false });
     if (!PATH.test(path)) throw new ProtocolError('POLICY_DENIED', `${app.name} has an unusable ${probe} path.`);
     const target = via === 'unix' ? { socketPath: layout.listen.socket } : { host: '127.0.0.1', port: layout.port };

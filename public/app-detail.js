@@ -748,12 +748,14 @@
           </details>
         </div>
       `;
-      wireActions();
       scrollToCurrentHash();
     } catch (error) {
       renderError(error.message);
     }
   }
 
+  // Once: the listeners sit on the page root, which every load() re-renders into. Wiring inside load()
+  // added another set each time, so one click after a refresh submitted the action twice.
+  wireActions();
   load();
 }());

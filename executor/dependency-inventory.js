@@ -69,17 +69,6 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
     // reported on its own. An editable install that resolves its own dependencies (no --no-deps) has no
     // lockfile that describes it.
     const { requirements, editable, editableNoDeps } = layout.runtime.python;
-    let lock = null;
-    if (requirements && (!editable || editableNoDeps)) {
-      if (requirements.includes('..') || path.posix.isAbsolute(requirements)) throw new ProtocolError('POLICY_DENIED', 'The requirements file must be inside the checkout.');
-      const text = read(requirements);
-      lock = { file: requirements, text };
-      if (text != null) {
-        // The parser hands over canonical checkout-relative paths; refuse anything else regardless.
-        const readInclude = (relative) => (path.posix.isAbsolute(relative) || relative === '..' || relative.startsWith('../') ? null : read(relative));
-        lock.result = parsed(parseRequirementsLock, text, { readInclude, file: requirements });
-      }
-    }
     const venv = asUser(owner, () => {
       const lib = path.posix.join(checkout, '.venv', 'lib');
       if (!isDirectory(lstatOrNull(fsImpl, lib))) return null;
@@ -88,8 +77,20 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
       const sitePackages = path.posix.join(lib, pythonDir, 'site-packages');
       if (!isDirectory(lstatOrNull(fsImpl, sitePackages))) return null;
       const certifiCore = readSmallFileNoFollow(fsImpl, path.posix.join(sitePackages, 'pip', '_vendor', 'certifi', 'core.py'), 64 * 1024);
-      return { names: fsImpl.readdirSync(sitePackages), pipUsesSystemStore: returnsSystemBundle(certifiCore) };
+      return { names: fsImpl.readdirSync(sitePackages), pipUsesSystemStore: returnsSystemBundle(certifiCore), pythonVersion: pythonDir.slice('python'.length) };
     });
+    let lock = null;
+    if (requirements && (!editable || editableNoDeps)) {
+      if (requirements.includes('..') || path.posix.isAbsolute(requirements)) throw new ProtocolError('POLICY_DENIED', 'The requirements file must be inside the checkout.');
+      const text = read(requirements);
+      lock = { file: requirements, text };
+      if (text != null) {
+        // The parser hands over canonical checkout-relative paths; refuse anything else regardless.
+        const readInclude = (relative) => (path.posix.isAbsolute(relative) || relative === '..' || relative.startsWith('../') ? null : read(relative));
+        // Markers are read for the venv's own interpreter, so a lock pinned per Python version isn't drift.
+        lock.result = parsed(parseRequirementsLock, text, { readInclude, file: requirements, pythonVersion: venv?.pythonVersion || null });
+      }
+    }
     const installed = venv ? parseDistInfoNames(venv.names).packages : null;
     const locked = lock?.result?.packages || [];
     const lockErrors = lock?.result?.errors || [];

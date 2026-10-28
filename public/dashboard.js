@@ -224,7 +224,6 @@
           </section>
         </div>
       `;
-      wireEvents();
       window.HB.getJson('/api/preflight').then((preflight) => {
         const node = root.querySelector('[data-preflight-summary]');
         if (node) node.innerHTML = preflightSummary(preflight);
@@ -256,5 +255,8 @@
     }
   }
 
+  // Once: the listeners sit on the page root, which every load() re-renders into. Wiring inside load()
+  // added another set each time, so one click after a refresh submitted the action twice.
+  wireEvents();
   load();
 }());
