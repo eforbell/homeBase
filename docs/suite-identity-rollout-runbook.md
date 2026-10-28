@@ -142,7 +142,9 @@ Verify after 3.x, from a member device and from the host:
 
 ## 4. Cutover: app ownership (SID-002)
 
-Independent of section 3: it works on a host with either ingress, and can run before or after the cutover. Rehearsed on the test VM on 2026-10-28 for all four sensitive apps (one moved in place, three fresh installs).
+Independent of section 3: it works on a host with either ingress, and can run before or after the cutover. Rehearsed on the test VM on 2026-10-28 for all four sensitive apps (one moved in place, three fresh installs). Run the same day on both production hosts, before any cutover, behind the old TCP gateway.
+
+Order per host: update Home Base, then each app, then move the sensitive apps one at a time. Between the first two steps, health checks still reach an app on its old port, so a red badge then is real.
 
 What an update does by itself:
 - **Every app** listens on loopback only (`HOST=127.0.0.1`). Anything that opened an app's port directly (`http://<host>:3000/tonight`, a bookmark, a script) must use its Home Base address.
@@ -159,6 +161,8 @@ Per sensitive app installed before SID-002, while it is still in local mode:
 
    Expect a minute or two of downtime.
 
+   On a host set up by the legacy installer, the move first takes `/var/lib/sovereign-home/<app id>` back for root (0755): the installer made it the shared user's. Before Home Base included that fix, the move refused there with "… must be owned by root before … can be handed over"; `chown root:root` and `chmod 755` on that one directory, then moving again, finishes it.
+
    Known limitation: don't create mounts inside the app's folders while a move runs. The move refuses any mount it finds there, before and during the hand-over, but a root process mounting something in the instant between a folder's check and its use can still fail the move or hand the mounted folder over. Only root can mount, and the shared user can't, so this is outside what the move defends against. Recovery: unmount, then run the move again.
 3. Verify on the host:
    - [ ] every unit of the app (service, sidecars, timers) runs as `sovereign-<key>`: `systemctl show <unit> -p User --value`;
@@ -166,7 +170,8 @@ Per sensitive app installed before SID-002, while it is still in local mode:
    - [ ] `sudo -u sovereign curl --unix-socket /run/sovereign-apps/<app id>/app.sock http://localhost/<health>` fails, and the same as `www-data` answers;
    - [ ] `sudo -u sovereign` can't read the app's `.env`, list its checkout, storage or backups, or write into them;
    - [ ] nothing listens on the app's old port (`sudo ss -ltnp`), and Home Base's ingress verification shows **Apps listen only on loopback or their sockets** passing;
-   - [ ] update, backup and restart still work, and dependency caches land in the app's own home.
+   - [ ] update, backup and restart still work, and dependency caches land in the app's own home;
+   - [ ] the app still reaches its database: open a page that reads data and check its log for `password authentication failed` (a move before PR #18 could write a fresh password; an Update repairs it).
 4. Verify from a member device, on the app's service hostname: pages, the mount redirect, static assets, nested APIs, and the OAuth callback route. Checked on the VM for a prefix-stripping app (Pulse, Home Source) and a mount-preserving one (Helm, Bitcoin Accounting). The D22 callback contract itself (landing page, single-use same-origin POST) is app behavior, checked when each app enters tailnet mode (section 6).
 5. **Rollback.** The move is one way; there is no move-back action. Neither path below has been rehearsed yet (SID-008); the switch back to TCP is covered by tests only.
    - If the app misbehaves after the move, **Restore** the safety backup the move took. The files stay with the app's user.

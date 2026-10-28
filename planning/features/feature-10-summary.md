@@ -129,6 +129,29 @@ Until the household directory exists, services may be published but no app can u
 - **Fixed along the way:** Bitcoin Accounting's launcher ignored its socket (it loaded `.env` too late) and its lock had no Python 3.14 wheels; an app switching listen modes kept the other mode's setting; health-page setup links still used the host name after cutover.
 - **Follow-ups:** warn when no grant reaches a published service; redirect a sensitive hostname's bare `/` to its app; move sidecars (Pulse's MCP server) off loopback TCP.
 
+**SID-002 code review (PR #16, merged 2026-10-28).** Eight rounds of external review hardened the move's root hand-over:
+- **What changed:** directories are locked to root 0700 before they are read; hardlinks owned by anyone else are never copied or chowned; a root-only marker makes an interrupted move refuse every other plan and resume on a re-run; copies are staged once per tree; mounts inside an app's trees are refused, using the kernel's mount table and each directory's mount ID; restore re-applies the listen mode; timer services are stopped; the probe has a hard deadline.
+- **Accepted limitation:** a root process mounting inside an app's tree while its hand-over runs. The shared user can't mount; the full fix would be a private mount namespace for the hand-over. See the runbook, section 4.
+
+**SID-002 production rollout (2026-10-28, both production hosts, not cut over).** Every app was updated and the three sensitive apps on one host and Bitcoin Accounting on the other were moved to their own users, behind the old TCP gateway (sockets don't need the SID-001 cutover). It surfaced four bugs, all fixed:
+- **False health between updates:** after Home Base updated, health asked a socket the app didn't have yet. The probe now falls back to the app's port until the app is updated (PR #17).
+- **False dependency drift:** Bitcoin Accounting's lock pins numpy and contourpy per Python version, and Home Base ignored the markers. It now reads them for the venv's interpreter (PR #17).
+- **Double submits:** the app page wired its forms on every refresh, so one click after a job made two backups. Pages now wire once (PR #17).
+- **The move broke Helm's database login:** a move generated a fresh database password, which only an app with its own URL key (Helm's `HELM_DATABASE_URL`) actually used. An Update repaired it. The move now keeps the existing password and refuses without one (PR #18).
+- **The move refused legacy data parents:** the legacy installer made `/var/lib/sovereign-home/<app>` the shared user's (0750). It was fixed by hand there; the move now takes it back for root itself, and checks before writing its marker (PR #18).
+
+**Where Feature-10 stands after SID-002 (2026-10-28):**
+- **Production:** both hosts run SID-002. Every app is on loopback, the sensitive apps are on their own users and sockets, and neither host is cut over (SID-001 cutover not run; no service names published).
+- **Test VM:** cut over (instance `rehearsal`), with five services published and all five apps on SID-002. It keeps its read-only Tailscale credential for the rehearsals through SID-008.
+- **Open follow-ups:**
+  - Standardize Helm on `DATABASE_URL`: Helm reads it with a fallback to `HELM_DATABASE_URL`, then the catalog drops `urlEnvKey`.
+  - A policy warning for a published service no grant reaches.
+  - Redirect a sensitive hostname's bare `/` to its app.
+  - Sidecars on sockets.
+  - A private mount namespace for the move's hand-over.
+  - The health message for an app on its port but not yet updated still says "socket".
+- **Next:** SID-003, the sovereignAuth core library. The public repo exists and is empty. SID-003 has no dependencies; SID-004 onwards build on it.
+
 ## Review
 
 Two rounds of external plan review:
