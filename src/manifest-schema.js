@@ -23,6 +23,8 @@ const manifestSchema = {
         kind: { enum: ['node', 'python'] },
         installCommand: { type: 'string' },
         startCommand: { type: 'string' },
+        // Feature-10 SID-002: 'unix' apps read SOVEREIGN_LISTEN and serve on a socket nginx alone can reach.
+        listen: { enum: ['tcp', 'unix'] },
       },
     },
     network: {
@@ -116,6 +118,7 @@ function validateManifestEntry(entry) {
     expectString(entry.runtime.kind, 'runtime.kind');
     expectString(entry.runtime.installCommand, 'runtime.installCommand');
     expectString(entry.runtime.startCommand, 'runtime.startCommand');
+    if (entry.runtime.listen != null && !['tcp', 'unix'].includes(entry.runtime.listen)) errors.push("runtime.listen must be 'tcp' or 'unix'");
   }
   if (expectObject(entry.network, 'network')) {
     expectString(entry.network.preferredMountPath, 'network.preferredMountPath');

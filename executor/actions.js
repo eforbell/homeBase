@@ -3,7 +3,7 @@ const { ProtocolError } = require('./protocol-error');
 const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
 const { buildAppInstallPlan, buildAppAdoptPlan } = require('../src/operations/compilers/install');
 const { buildIngressCutoverPlan, buildIngressRollbackPlan, buildServicePublishPlan } = require('../src/operations/compilers/ingress');
-const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan } = require('../src/operations/compilers/lifecycle');
+const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan, buildAppMoveUserPlan } = require('../src/operations/compilers/lifecycle');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const { digestOperationPlan } = require('../src/operations/digest');
 const { getAppById } = require('../src/catalog');
@@ -19,6 +19,8 @@ const ACTIONS = Object.freeze({
   backup: { fields: ['appId'] },
   restore: { fields: ['appId', 'backupId'] },
   uninstall: { fields: ['appId', 'keepBackups'] },
+  // Feature-10 SID-002: move a sensitive app installed before it to its own user (site: its units' timezone).
+  'move-user': { fields: ['appId', 'site'] },
   // Feature-10 SID-001 socket ingress. Home Base gates each one first (D23); the executor still binds
   // service names to its own cutover record and checks app identity modes itself before a rollback.
   'ingress-cutover': { fields: ['instance', 'domain', 'legacyService'] },
@@ -71,6 +73,10 @@ function normalizeAction(request) {
     if (typeof request.keepBackups !== 'boolean') invalid('keepBackups must be true or false.');
     return { action: 'uninstall', appId: request.appId, keepBackups: request.keepBackups };
   }
+  if (request.action === 'move-user') {
+    if (!isValidSite(request.site)) invalid('site must be exactly { hostname, domain, householdTimezone } with valid values.');
+    return { action: 'move-user', appId: request.appId, site: { hostname: request.site.hostname, domain: request.site.domain, householdTimezone: request.site.householdTimezone } };
+  }
   if (typeof request.ref !== 'string' || !/^(main|[a-f0-9]{40})$/.test(request.ref)) invalid('ref must be main or a 40-character commit SHA.');
   if (!['https', 'ssh'].includes(request.transport)) invalid('transport must be https or ssh.');
   if (!isValidSite(request.site)) invalid('site must be exactly { hostname, domain, householdTimezone } with valid values.');
@@ -104,6 +110,8 @@ function compileAction(action, { generatedAt = new Date().toISOString(), adoptAl
     plan = buildAppRestorePlan({ appId: action.appId, backupId: action.backupId, generatedAt });
   } else if (action.action === 'uninstall') {
     plan = buildAppUninstallPlan({ appId: action.appId, keepBackups: action.keepBackups, generatedAt });
+  } else if (action.action === 'move-user') {
+    plan = buildAppMoveUserPlan({ appId: action.appId, site: action.site, generatedAt });
   } else {
     deny('Unsupported action.');
   }

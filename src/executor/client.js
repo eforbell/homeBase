@@ -65,6 +65,14 @@ function dependencyInventory(socketPath, { appId }, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'dependency-inventory', appId }, options);
 }
 
+function appIdentity(socketPath, { appId }, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'app-identity', appId }, options);
+}
+
+function appProbe(socketPath, { appId, probe }, options) {
+  return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'app-probe', appId, probe }, options);
+}
+
 function actionStatus(socketPath, jobId, actionRequestId, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'action-status', jobId: String(jobId), actionRequestId }, options);
 }
@@ -83,6 +91,7 @@ const ACTION_FIELD_NAMES = {
   backup: ['appId'],
   restore: ['appId', 'backupId'],
   uninstall: ['appId', 'keepBackups'],
+  'move-user': ['appId', 'site'],
   'ingress-cutover': ['instance', 'domain', 'legacyService'],
   'service-publish': ['serviceKey'],
   'ingress-rollback': [],
@@ -103,4 +112,4 @@ function planAction(socketPath, fields, options) {
   return sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'plan-action', ...actionFields(fields) }, options);
 }
 
-module.exports = { sendRequest, hello, hostStatus, foundationStatus, dependencyInventory, appUpdateStatus, actionStatus, runAction, planAction };
+module.exports = { sendRequest, hello, hostStatus, foundationStatus, dependencyInventory, appIdentity, appProbe, appUpdateStatus, actionStatus, runAction, planAction };

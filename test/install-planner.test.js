@@ -39,7 +39,7 @@ test('bitcoin accounting plan renders postgres-oriented env and readiness probes
   assert.doesNotMatch(plan.script, /pip install --upgrade pip/);
   assert.match(plan.script, /bitcoin-accounting-web-init/);
   assert.equal(plan.install.health.readinessPath, '/api/ready');
-  assert.match(plan.files['bitcoin-accounting-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/bitcoinAccounting\/.venv\/bin\/uvicorn/);
+  assert.match(plan.files['bitcoin-accounting-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/bitcoinAccounting\/\.venv\/bin\/bitcoin-accounting-web --host 127\.0\.0\.1 --port 3010$/m);
   assert.match(plan.files['bitcoin-accounting.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:\d+;/);
   assert.doesNotMatch(plan.files['bitcoin-accounting.nginx.conf'], /proxy_pass http:\/\/127\.0\.0\.1:\d+\/;/);
   assert.match(plan.files['bitcoin-accounting.nginx.conf'], /return 301 \/bitcoin-accounting\//);
@@ -517,7 +517,7 @@ test('helm plan renders HomeBase-preserved subpath, Helm env, timers, and python
   assert.match(plan.files['.env'], /HELM_AUTH_ENABLED=1/);
   assert.doesNotMatch(plan.files['.env'], /MONITOR_CONCENTRATION_CAP_PCT/);
   assert.match(plan.files['helm-web.service'], /UMask=0077/);
-  assert.match(plan.files['helm-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/uvicorn/);
+  assert.match(plan.files['helm-web.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm-web$/m);
   assert.match(plan.files['helm-sync.service'], /UMask=0077/);
   assert.match(plan.files['helm-sync.service'], /ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm sync/);
   assert.match(plan.files['helm-sync.timer'], /OnCalendar=Mon\.\.Fri 08:00 America\/New_York/);

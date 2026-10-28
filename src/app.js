@@ -7,7 +7,7 @@ const { manifestSchema, validateManifestEntry } = require('./manifest-schema');
 const { SqliteStateStore } = require('./state/sqlite-store');
 const { buildBootstrapPlan } = require('./services/bootstrap-planner');
 const { buildInstallPlan } = require('./services/install-planner');
-const { appManagement, buildExecutorInstallAction, executorManagesApp } = require('./services/executor-install');
+const { appManagement, buildExecutorInstallAction, executorManagesApp, siteFor } = require('./services/executor-install');
 const { buildBackupPlan } = require('./services/backup-planner');
 const { listBackupsFromDisk } = require('./services/backup-inventory');
 const { APPS_ROOT, BACKUP_ROOT } = require('./operations/paths');
@@ -26,7 +26,7 @@ const { getTailscalePublishVerification, getIngressVerification } = require('./s
 const { createIdentityResolver, createIdentityServer, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
 const { createIngressRoutes } = require('./ingress-routes');
 const { refuseUnsafeRequest } = require('./request-guard');
-const { appPublicBase } = require('./operations/ingress-layout');
+const { appPublicBase, appServiceKey } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
   mergeHomeBaseConfig,
@@ -39,7 +39,7 @@ const { HealthAlertNotifier } = require('./services/notifications');
 const { AppUpdateMonitor } = require('./services/app-update-monitor');
 const { normalizePathname } = require('./setup-gate');
 const { getExecutorCapabilities, canExecuteMutations } = require('./executor/capabilities');
-const { hostStatus: requestExecutorHostStatus, foundationStatus: requestExecutorFoundationStatus, dependencyInventory: requestExecutorDependencyInventory, planAction: requestExecutorPlan } = require('./executor/client');
+const { hostStatus: requestExecutorHostStatus, foundationStatus: requestExecutorFoundationStatus, dependencyInventory: requestExecutorDependencyInventory, appIdentity: requestExecutorAppIdentity, appProbe: requestExecutorAppProbe, planAction: requestExecutorPlan } = require('./executor/client');
 const {
   getAdminStatus,
   setupAdmin,
@@ -547,7 +547,8 @@ function createApp(config) {
     jobRunner,
     config: initialEffectiveConfig,
   });
-  const healthMonitor = new HealthMonitor({ catalogById });
+  // Socket apps (SID-002) are probed by the executor; Home Base's user can't reach their sockets.
+  const healthMonitor = new HealthMonitor({ catalogById, probeApp: (appId, probe) => requestExecutorAppProbe(initialEffectiveConfig.homeBaseExecutorSocket, { appId, probe }, { timeoutMs: 5_000 }) });
   const healthAlertNotifier = new HealthAlertNotifier({
     postJson: config.notificationsPostJson,
   });
@@ -868,7 +869,8 @@ function createApp(config) {
         return sendJson(res, 200, projectStateForClient(state, effectiveConfig));
       }
       if (method === 'GET' && pathname === '/api/apps/health') {
-        const installations = Object.values(state.installations || {});
+        // Setup links follow the host's ingress, like Open buttons.
+        const installations = Object.values(projectInstallationsWithCurrentUrls(state.installations, effectiveConfig, currentIngress(state.jobs, effectiveConfig)));
         const snapshot = await healthMonitor.getAppHealthSnapshot(installations, {
           force: url.searchParams.get('refresh') === '1',
         });
@@ -1764,6 +1766,58 @@ function createApp(config) {
           appId,
           dryRun: body.dryRun !== false,
         });
+      }
+      // Feature-10 SID-002: who the app runs as on this host (the executor reads it), and whether it can move.
+      const identityMatch = pathname.match(/^\/api\/apps\/([^/]+)\/identity$/);
+      if (method === 'GET' && identityMatch) {
+        const app = getAppById(identityMatch[1]);
+        if (!app) return notFound(res);
+        const sensitive = appServiceKey(app) !== 'home';
+        if (!executorManagesApp(effectiveConfig, state, app.id)) return sendJson(res, 200, { appId: app.id, sensitive, available: false, reason: 'not managed by the executor' });
+        try {
+          const identity = await requestExecutorAppIdentity(effectiveConfig.homeBaseExecutorSocket, { appId: app.id });
+          return sendJson(res, 200, { ...identity, sensitive, available: true });
+        } catch (error) {
+          return sendJson(res, 200, { appId: app.id, sensitive, available: false, reason: error.code === 'INVALID_REQUEST' ? 'the executor is older than SID-002; update it with install.sh --repair' : error.message });
+        }
+      }
+      // Feature-10 SID-002: a sensitive app installed before it moves to its own user, once, on request.
+      const moveUserMatch = pathname.match(/^\/api\/apps\/([^/]+)\/move-user\/execute$/);
+      if (method === 'POST' && moveUserMatch) {
+        const body = await parseBody(req);
+        const appId = moveUserMatch[1];
+        const app = getAppById(appId);
+        if (!app) return notFound(res);
+        const dryRun = body.dryRun !== false;
+        let auth = null;
+        if (!dryRun) {
+          if (body.confirm !== 'MOVE') {
+            recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
+            return sendJson(res, 400, { error: 'Moving an app to its own user requires confirm=MOVE.' });
+          }
+          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          if (!auth.ok) {
+            recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
+            return sendJson(res, auth.statusCode, auth.payload);
+          }
+        }
+        const refuseMove = (statusCode, error, code) => {
+          if (!dryRun) recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: 'blocked-state', reason: code, sessionTokenHash: auth?.sessionTokenHash });
+          return sendJson(res, statusCode, { error, code });
+        };
+        if (appServiceKey(app) === 'home') return refuseMove(409, `${app.name} runs as the shared user by design; only the sensitive apps have their own.`, 'SHARED_BY_DESIGN');
+        if (!(state.installations || {})[appId]) return refuseMove(409, `${app.name} is not installed.`, 'NOT_INSTALLED');
+        if (!executorManagesApp(effectiveConfig, state, appId)) return refuseMove(409, `${app.name} is not managed by the executor; adopt it first.`, 'EXECUTOR_REQUIRED');
+        const action = { action: 'move-user', appId, site: siteFor(effectiveConfig) };
+        if (dryRun) return startExecutorPreview({ res, effectiveConfig, appId, kind: 'move-user', action, jobRunner });
+        const block = appMutationBlock(stateStore, state, appId);
+        if (block) return sendJson(res, 409, block);
+        let capabilities;
+        try { capabilities = await getExecutorCapabilities(effectiveConfig.homeBaseExecutorSocket); } catch {
+          return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
+        }
+        if (!capabilities.actions?.includes('move-user')) return refuseMove(409, 'The executor does not support moving apps yet; update it with install.sh --repair.', 'EXECUTOR_INCOMPATIBLE');
+        return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-move-user', auth, start: () => jobRunner.startTypedMoveUserJob({ appId, site: action.site }) });
       }
       const backupPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup-plan$/);
       if (method === 'POST' && backupPlanMatch) {

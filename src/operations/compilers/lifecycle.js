@@ -31,7 +31,11 @@ function startUnits(layout, add) {
 
 function stopUnits(layout, add, action) {
   const verb = action === 'disable-now' ? 'Disable and stop' : 'Stop';
-  layout.timers.forEach((timer, index) => add({ id: `stop-timer-${index + 1}`, type: 'systemd.ensure-service', title: `${verb} ${timer.timerUnit}`, risk: 'destructive', unit: timer.timerUnit, action }));
+  layout.timers.forEach((timer, index) => {
+    add({ id: `stop-timer-${index + 1}`, type: 'systemd.ensure-service', title: `${verb} ${timer.timerUnit}`, risk: 'destructive', unit: timer.timerUnit, action });
+    // A run the timer already started keeps going (as whoever it started as) unless its service stops too.
+    add({ id: `stop-timer-service-${index + 1}`, type: 'systemd.ensure-service', title: `Stop ${timer.serviceUnit}`, risk: 'destructive', unit: timer.serviceUnit, action: 'stop' });
+  });
   layout.sidecars.forEach((sidecar, index) => add({ id: `stop-sidecar-${index + 1}`, type: 'systemd.ensure-service', title: `${verb} ${sidecar.name}`, risk: 'destructive', unit: sidecar.unit, action }));
   add({ id: 'stop-service', type: 'systemd.ensure-service', title: `${verb} ${layout.app.name}`, risk: 'destructive', unit: layout.service.unit, action });
 }
@@ -94,4 +98,38 @@ function buildAppUninstallPlan({ appId, keepBackups = true, generatedAt = new Da
   return planEnvelope({ kind: 'app-uninstall', target: layout.app.id, policyProfile: 'app-uninstall-v1', operations, generatedAt, catalogRevision });
 }
 
-module.exports = { archiveNameFor, buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan };
+// Moves a sensitive app installed before SID-002 from the shared user to its own (one time, on request):
+// a safety backup, stop, hand every file over, then the .env and units again as the new user, and start.
+// Re-running it after an interruption picks up where it stopped (the checkout is handed over last).
+function buildAppMoveUserPlan({ appId, site, generatedAt = new Date().toISOString(), catalogRevision } = {}) {
+  const layout = layoutFor(appId);
+  if (!layout.identity.own) throw Object.assign(new Error(`${layout.app.name} runs as the shared user by design.`), { code: 'POLICY_DENIED' });
+  const { operations, add } = sequence();
+  const name = layout.app.name;
+  // Read only, before the app stops: refuse what the hand-over can't finish (a mount inside a tree).
+  add({ id: 'check-app-trees', type: 'filesystem.check-app-trees', title: `Check ${name}'s files can be handed over`, risk: 'read' });
+  add(backupOperation(layout, archiveNameFor(generatedAt), 'safety-backup', `Back up ${name} before moving it to ${layout.identity.user}`));
+  stopUnits(layout, add, 'stop');
+  add({ id: 'ensure-app-user', type: 'identity.ensure-user', title: `Ensure the ${layout.identity.user} identity`, user: layout.identity.user });
+  add({ id: 'ensure-app-home', type: 'filesystem.ensure-directory', title: `Ensure ${layout.identity.user} home`, purpose: 'app-home' });
+  add({ id: 'reown-app', type: 'filesystem.reown-app', title: `Hand ${name}'s checkout, data and backups to ${layout.identity.user}`, risk: 'destructive', timeoutMs: 600000 });
+  add({
+    id: 'write-environment', type: 'filesystem.write-managed-file', title: `Write ${name} environment as ${layout.identity.user}`,
+    secretRefs: layout.database ? ['databasePassword'] : [], purpose: 'app-env', template: 'app-env-v1',
+    site: { hostname: site.hostname, domain: site.domain, householdTimezone: site.householdTimezone },
+  });
+  const timezone = site.householdTimezone;
+  add({ id: 'write-service', type: 'filesystem.write-managed-file', title: `Write ${name} service unit`, purpose: 'systemd-unit', template: 'app-service-v1', unit: layout.service.unit, timezone });
+  layout.sidecars.forEach((sidecar, index) => add({ id: `write-sidecar-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${sidecar.name} service unit`, purpose: 'systemd-unit', template: 'app-sidecar-service-v1', unit: sidecar.unit, timezone }));
+  layout.timers.forEach((timer, index) => add({ id: `write-timer-service-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${timer.serviceName} service unit`, purpose: 'systemd-unit', template: 'app-timer-service-v1', unit: timer.serviceUnit, timezone }));
+  if (layout.listen.kind === 'unix') {
+    add({ id: 'write-socket-tmpfiles', type: 'filesystem.write-managed-file', title: `Write ${name} socket directory entry for ${layout.identity.user}`, purpose: 'app-tmpfiles', template: 'app-tmpfiles-v1' });
+    add({ id: 'ensure-socket-directory', type: 'systemd.apply-tmpfiles', title: `Hand ${name}'s socket directory to ${layout.identity.user}` });
+  }
+  add({ id: 'reload-systemd', type: 'systemd.daemon-reload', title: 'Reload systemd units' });
+  startUnits(layout, add);
+  waitReady(layout, add);
+  return planEnvelope({ kind: 'app-move-user', target: layout.app.id, policyProfile: 'app-move-user-v1', operations, generatedAt, catalogRevision });
+}
+
+module.exports = { archiveNameFor, buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan, buildAppMoveUserPlan };

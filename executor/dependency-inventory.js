@@ -3,13 +3,14 @@ const path = require('path');
 const { ProtocolError } = require('./protocol-error');
 const { INSTALLABLE_APPS } = require('./actions');
 const { lookupSystemUser, runAsUser, lstatOrNull, readSmallFileNoFollow } = require('./handlers');
+const { resolveAppIdentity } = require('./identity');
 const { getAppById } = require('../src/catalog');
 const { appLayout } = require('../src/operations/app-layout');
 const { parseNpmLock, parseRequirementsLock, parseDistInfoNames, lockDrift } = require('../src/operations/lockfiles');
 const { evaluateFloors, REVIEWED_AT: FLOORS_REVIEWED_AT } = require('../src/operations/security-floors');
 
 // The packages one managed app runs, read from its checkout (docs/patch-visibility-plan.md, stream B).
-// Read-only and offline: the executor only reads files, as sovereign, and returns [name, version] pairs.
+// Read-only and offline: the executor only reads files, as the app's user, and returns [name, version] pairs.
 // Looking them up in an advisory database is the unprivileged web service's job, never root's.
 const LOCKFILE_LIMIT = 2 * 1024 * 1024;
 const LIST_LIMIT = 50;
@@ -17,7 +18,7 @@ const LIST_LIMIT = 50;
 // its own: a module-level DEBIAN_CA_CERTS_PATH = '/etc/ssl/certs/ca-certificates.crt', and a final
 // top-level where() returning it, which overrides the version-specific definitions above it. Only that
 // structure counts; the path in a comment or an unused string does not. This classifies the build; it
-// is not a defense against sovereign, which owns the venv and could make where() return anything.
+// is not a defense against the app's user, which owns the venv and could make where() return anything.
 const SYSTEM_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt';
 function returnsSystemBundle(source) {
   const lines = String(source || '').split(/\r?\n/);
@@ -44,12 +45,11 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
     if (!INSTALLABLE_APPS.includes(appId)) throw new ProtocolError('POLICY_DENIED', `The executor does not manage ${appId}.`);
     const layout = appLayout(getAppById(appId));
     const { checkout } = layout;
-    const sovereign = lookupUser('sovereign');
-    if (!sovereign) throw new ProtocolError('POLICY_DENIED', 'The sovereign identity does not exist.');
     if (!isDirectory(lstatOrNull(fsImpl, checkout))) throw new ProtocolError('NOT_INSTALLED', `${layout.app.name} has no checkout at ${checkout}.`);
-    // Every read happens as sovereign, which owns the checkout: the kernel, not a path check, keeps a
+    // Every read happens as the app's user, which owns the checkout: the kernel, not a path check, keeps a
     // planted symlink from pointing root at another file.
-    const read = (relative) => asUser(sovereign, () => readSmallFileNoFollow(fsImpl, path.posix.join(checkout, relative), LOCKFILE_LIMIT));
+    const owner = resolveAppIdentity(layout, { fsImpl, lookupUser });
+    const read = (relative) => asUser(owner, () => readSmallFileNoFollow(fsImpl, path.posix.join(checkout, relative), LOCKFILE_LIMIT));
     const base = { appId, collectedAt: new Date(now()).toISOString(), floorsReviewedAt: FLOORS_REVIEWED_AT };
     const parsed = (parse, ...args) => {
       try { return parse(...args); } catch (error) { throw new ProtocolError('OPERATION_FAILED', `${layout.app.name}: ${error.message}`); }
@@ -80,7 +80,7 @@ function createDependencyInventoryReader({ fsImpl = fs, lookupUser = (name) => l
         lock.result = parsed(parseRequirementsLock, text, { readInclude, file: requirements });
       }
     }
-    const venv = asUser(sovereign, () => {
+    const venv = asUser(owner, () => {
       const lib = path.posix.join(checkout, '.venv', 'lib');
       if (!isDirectory(lstatOrNull(fsImpl, lib))) return null;
       const pythonDir = fsImpl.readdirSync(lib).filter((name) => /^python3\.[0-9]+$/.test(name)).sort().at(-1);

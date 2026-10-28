@@ -372,7 +372,23 @@ function evaluateRuntimeState({ install, healthConfig, serviceProbe, livenessPro
   };
 }
 
-async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeUnits = defaultProbeUnits, probeHttp, probeHttpJson = defaultProbeHttpJson, nowIso }) {
+// A socket app (SID-002) is out of Home Base's reach by design; probeApp asks the executor to probe it
+// and gives back the executor's answer ({ statusCode, payload?, error? }).
+function executorProbe(probeApp, appId, kind) {
+  return probeApp(appId, kind).then((answer) => {
+    const statusCode = Number.isFinite(answer?.statusCode) ? answer.statusCode : null;
+    if (statusCode == null) return { status: 'failed', ok: false, message: answer?.error ? `No answer on its socket (${answer.error})` : 'No answer on its socket' };
+    return { status: statusFromHttpCode(statusCode), ok: statusCode >= 200 && statusCode < 400, statusCode, message: `HTTP ${statusCode}`, payload: answer.payload ?? null };
+  }, (error) => ({ status: 'unknown', ok: false, message: `Executor probe unavailable: ${error.message}` }));
+}
+
+async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeUnits = defaultProbeUnits, probeHttp, probeHttpJson = defaultProbeHttpJson, probeApp = null, nowIso }) {
+  const onSocket = catalogEntry?.runtime?.listen === 'unix';
+  const probe = (kind, path, { json = false } = {}) => {
+    if (!onSocket) return (json ? probeHttpJson : probeHttp)(toProbeUrl({ install, path }));
+    if (!probeApp) return Promise.resolve({ status: 'unknown', ok: false, message: 'This app listens on a socket only the executor can probe' });
+    return executorProbe(probeApp, install.appId, kind);
+  };
   const healthConfig = catalogEntry?.network?.health || null;
   const serviceProbe = probeServiceState(install?.serviceName);
   const onboardingConfig = catalogEntry?.onboarding || null;
@@ -384,13 +400,13 @@ async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, 
   let onboarding = { status: 'unknown', ok: false, message: 'No onboarding status configured', setupUrl };
 
   if (healthConfig?.livenessPath && install?.status === 'installed' && serviceProbe.ok) {
-    livenessProbe = await probeHttp(toProbeUrl({ install, path: healthConfig.livenessPath }));
+    livenessProbe = await probe('liveness', healthConfig.livenessPath);
   }
   if (healthConfig?.readinessPath && install?.status === 'installed' && serviceProbe.ok) {
-    readinessProbe = await probeHttp(toProbeUrl({ install, path: healthConfig.readinessPath }));
+    readinessProbe = await probe('readiness', healthConfig.readinessPath);
   }
   if (onboardingConfig?.statusPath && install?.status === 'installed' && serviceProbe.ok) {
-    const onboardingProbe = await probeHttpJson(toProbeUrl({ install, path: onboardingConfig.statusPath }));
+    const onboardingProbe = await probe('onboarding', onboardingConfig.statusPath, { json: true });
     const readyValue = readOnboardingReadyValue(onboardingProbe?.payload, onboardingConfig.readyWhen);
     onboarding = {
       status: readyValue == null ? 'unknown' : (readyValue ? 'ready' : 'needs-setup'),
@@ -442,8 +458,9 @@ function computeInstallationsKey(installations) {
 }
 
 class HealthMonitor {
-  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeUnits = defaultProbeUnits, probeHttp = defaultProbeHttp, probeHttpJson = defaultProbeHttpJson, ttlMs = 15000, now = () => Date.now() } = {}) {
+  constructor({ catalogById = new Map(), probeServiceState = defaultProbeServiceState, probeUnits = defaultProbeUnits, probeHttp = defaultProbeHttp, probeHttpJson = defaultProbeHttpJson, probeApp = null, ttlMs = 15000, now = () => Date.now() } = {}) {
     this.catalogById = catalogById;
+    this.probeApp = probeApp;
     this.probeServiceState = probeServiceState;
     this.probeUnits = probeUnits;
     this.probeHttp = probeHttp;
@@ -474,6 +491,7 @@ class HealthMonitor {
       probeUnits: this.probeUnits,
       probeHttp: this.probeHttp,
       probeHttpJson: this.probeHttpJson,
+      probeApp: this.probeApp,
       nowIso,
     })));
 

@@ -23,6 +23,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // SID-002: listens on the unix socket SOVEREIGN_LISTEN names (lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/pulse/',
@@ -460,8 +462,10 @@ const catalog = [
       installCommand: '.venv/bin/python -m pip install -r requirements.lock && .venv/bin/python -m pip install -e . --no-deps',
       // Typed form of installCommand for the executor.
       python: { requirements: 'requirements.lock', editable: true, editableNoDeps: true, minVersion: '3.10' },
-      startCommand: '.venv/bin/uvicorn web.app:create_app --factory --host 127.0.0.1 --port {{port}}',
+      // bitcoin-accounting-web binds the unix socket SOVEREIGN_LISTEN names (SID-002), else --host/--port.
+      startCommand: '.venv/bin/bitcoin-accounting-web --host 127.0.0.1 --port {{port}}',
       pythonVenv: '.venv',
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/bitcoin-accounting/',
@@ -550,8 +554,10 @@ const catalog = [
       installCommand: 'install -d -m 0700 .secrets && .venv/bin/python -m pip install -r requirements.lock && .venv/bin/python -m pip install -e . --no-deps',
       // Typed form of installCommand for the executor (.secrets comes from storage.paths).
       python: { requirements: 'requirements.lock', editable: true, editableNoDeps: true, minVersion: '3.11' },
-      startCommand: '.venv/bin/uvicorn schwab_helm.web.app:create_app --factory --host 127.0.0.1 --port {{port}}',
+      // helm-web binds the unix socket SOVEREIGN_LISTEN names (SID-002), else HELM_WEB_HOST:HELM_WEB_PORT.
+      startCommand: '.venv/bin/helm-web',
       pythonVenv: '.venv',
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/helm/',
@@ -686,6 +692,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // SID-002: listens on the unix socket SOVEREIGN_LISTEN names (lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     systemPackages: ['poppler-utils', 'tesseract-ocr'],
     network: {

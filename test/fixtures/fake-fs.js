@@ -25,6 +25,9 @@ function createFakeFs(initial = {}) {
     uid: entry.uid,
     gid: entry.gid,
     mode: entry.mode,
+    nlink: entry.nlink ?? 1,
+    // Device: one filesystem unless a test mounts another (entry.dev).
+    dev: entry.dev ?? 1,
     isFile: () => entry.kind === 'file',
     isDirectory: () => entry.kind === 'dir',
     isSymbolicLink: () => entry.kind === 'link',
@@ -49,6 +52,9 @@ function createFakeFs(initial = {}) {
       return entry.kind === 'link' ? entry.target : target;
     },
     readFileSync: (target) => {
+      // Like Linux: an open descriptor's mount ID (entry.mnt; one mount unless a test binds another).
+      const fdinfo = /^\/proc\/self\/fdinfo\/(\d+)$/.exec(target);
+      if (fdinfo && fds.has(Number(fdinfo[1]))) return `pos:\t0\nflags:\t0100000\nmnt_id:\t${entries.get(fds.get(Number(fdinfo[1]))).mnt ?? 1}\n`;
       const entry = entries.get(target);
       if (!entry || entry.kind !== 'file') throw enoent(target);
       return entry.content;
@@ -98,6 +104,8 @@ function createFakeFs(initial = {}) {
       return fd;
     },
     fstatSync: (fd) => stat(entries.get(fds.get(fd))),
+    // Tests only: which path a descriptor was opened on.
+    fdPath: (fd) => fds.get(fd),
     fchownSync: (fd, uid, gid) => {
       calls.push(['fchown', fds.get(fd), uid, gid]);
       Object.assign(entries.get(fds.get(fd)), { uid, gid });
@@ -120,6 +128,14 @@ function createFakeFs(initial = {}) {
       }
     },
     symlinkSync: (target, link) => { put(link, { kind: 'link', target }); },
+    // A copy is a new inode: one link, owned by the caller (root here), whatever the source's links were.
+    copyFileSync: (from, to, flags = 0) => {
+      const entry = entries.get(from);
+      if (!entry || entry.kind !== 'file') throw enoent(from);
+      if ((flags & fs.constants.COPYFILE_EXCL) && entries.has(to)) throw eexist(to);
+      calls.push(['copy', from, to]);
+      put(to, { kind: 'file', content: entry.content, mode: entry.mode, uid: 0, gid: 0, nlink: 1 });
+    },
     readlinkSync: (link) => {
       const entry = entries.get(link);
       if (!entry) throw enoent(link);
@@ -127,6 +143,14 @@ function createFakeFs(initial = {}) {
       return entry.target;
     },
     unlinkSync: (target) => { calls.push(['unlink', target]); entries.delete(target); },
+    rmdirSync: (target) => {
+      calls.push(['rmdir', target]);
+      const entry = entries.get(target);
+      if (!entry) throw enoent(target);
+      if (entry.kind !== 'dir') throw Object.assign(new Error(`ENOTDIR: ${target}`), { code: 'ENOTDIR' });
+      if ([...entries.keys()].some((key) => key.startsWith(`${target}/`))) throw Object.assign(new Error(`ENOTEMPTY: ${target}`), { code: 'ENOTEMPTY' });
+      entries.delete(target);
+    },
     rmSync: (target) => {
       calls.push(['rm', target]);
       for (const key of [...entries.keys()]) if (key === target || key.startsWith(`${target}/`)) entries.delete(key);

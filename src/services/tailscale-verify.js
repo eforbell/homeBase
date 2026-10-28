@@ -3,7 +3,7 @@ const { runCommand } = require('./tailscale-readiness');
 const { DEFAULT_MANAGED_SERVICE_ID, normalizeManagedServiceId } = require('./tailscale-policy');
 const fs = require('fs');
 const { SERVE_SOCKET_DIR, ingressServices, serveTarget, serviceSocket } = require('../operations/ingress-layout');
-const { catalog } = require('../catalog');
+const { catalog, catalogPorts } = require('../catalog');
 
 function safeJsonParse(value) {
   try {
@@ -20,7 +20,11 @@ function safeJsonParse(value) {
 function getIngressVerification({ instance, domain, run = runCommand, statFn = (target) => fs.statSync(target) }) {
   const status = safeJsonParse(run('tailscale status --json --peers=false').stdout);
   const ownAddresses = new Set((status?.Self?.TailscaleIPs || []).map((value) => String(value).toLowerCase()));
-  const listeners = String(run("ss -lnt 2>/dev/null | awk 'NR > 1 {print $4}'").stdout || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  // ss's header row proves the listing ran; without it (ss missing or failing) nothing here is known.
+  const listing = run('ss -lnt 2>/dev/null');
+  const listingRows = String(listing?.stdout || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  const listenersKnown = Boolean(listing?.ok) && /^State\s/.test(listingRows[0] || '');
+  const listeners = listenersKnown ? listingRows.slice(1).map((row) => row.split(/\s+/)[3]).filter(Boolean) : [];
   const suiteTcp = listeners.filter((address) => {
     const match = /^\[?(.+?)\]?:(\d+)$/.exec(address);
     return match && ['80', '443'].includes(match[2]) && !ownAddresses.has(match[1].toLowerCase());
@@ -32,6 +36,14 @@ function getIngressVerification({ instance, domain, run = runCommand, statFn = (
   const configured = serve?.services || {};
   const services = ingressServices({ instance, domain, apps: catalog });
   const published = services.filter((service) => configured[service.name]);
+  // App ports (SID-002): an app or sidecar listening beyond loopback is reachable from the tailnet without
+  // nginx, so identity headers sent straight to it would never be normalized.
+  const appPorts = new Map(catalog.flatMap((app) => catalogPorts(app).map((port) => [String(port), app.id])));
+  const loopback = (address) => /^(127\.|::1$|::ffff:127\.)/.test(address);
+  const exposedApps = listeners.flatMap((address) => {
+    const match = /^\[?(.+?)\]?:(\d+)$/.exec(address);
+    return match && appPorts.has(match[2]) && !loopback(match[1].toLowerCase()) ? [`${appPorts.get(match[2])} on ${address}`] : [];
+  });
   const listening = new Set(String(run('ss -lxn 2>/dev/null').stdout || '').split(/\s+/).filter((token) => token.startsWith(`${SERVE_SOCKET_DIR}/`)));
   const silent = published.filter((service) => !listening.has(serviceSocket(service.key)));
   const wrongTargets = published.filter((service) => {
@@ -43,8 +55,8 @@ function getIngressVerification({ instance, domain, run = runCommand, statFn = (
     {
       id: 'no-suite-tcp-listener',
       title: 'Nothing but Tailscale Serve listens on 80/443',
-      ok: !suiteTcp.length,
-      summary: suiteTcp.length ? `TCP listeners outside Serve: ${suiteTcp.join(', ')} (nginx must listen only on its sockets)` : 'only tailscaled answers 80/443',
+      ok: listenersKnown && !suiteTcp.length,
+      summary: !listenersKnown ? 'could not list TCP listeners (ss failed)' : (suiteTcp.length ? `TCP listeners outside Serve: ${suiteTcp.join(', ')} (nginx must listen only on its sockets)` : 'only tailscaled answers 80/443'),
     },
     {
       id: 'serve-sockets-root-only',
@@ -59,6 +71,14 @@ function getIngressVerification({ instance, domain, run = runCommand, statFn = (
       summary: wrongTargets.length
         ? `${wrongTargets.map((service) => service.name).join(', ')} target something else`
         : (tcpTargets.length ? `${tcpTargets.join(', ')} still target nginx over TCP` : (published.length ? `${published.map((service) => service.name).join(', ')} on their sockets` : 'no socket-ingress service is published yet')),
+    },
+    {
+      id: 'apps-loopback-only',
+      title: 'Apps listen only on loopback or their sockets',
+      ok: listenersKnown && !exposedApps.length,
+      summary: !listenersKnown ? 'could not list TCP listeners (ss failed)' : (exposedApps.length
+        ? `reachable from the tailnet without nginx: ${[...new Set(exposedApps)].join(', ')} (update the app so it honours HOST=127.0.0.1 or its socket)`
+        : 'no app port answers beyond loopback'),
     },
     {
       id: 'service-sockets-listening',

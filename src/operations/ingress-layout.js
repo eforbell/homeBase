@@ -187,10 +187,17 @@ function proxyLocation({ mountPath, upstream, clientMaxBodySize = null, identity
 // An app's locations (from its catalog layout), for a socket-ingress host (identity) or a TCP one.
 // preserveMountPath passes /mount/... through unchanged (proxy_pass without a URI); otherwise nginx
 // strips the mount path. Published sidecars get their own, longer (so more specific) location.
+// A socket app (SID-002) keeps the same URI behavior: 'http://unix:<sock>;' passes the request URI through,
+// 'http://unix:<sock>:/;' strips the mount path like 'http://127.0.0.1:<port>/;'.
+function appUpstream(layout) {
+  if (layout.listen?.kind === 'unix') return `http://unix:${layout.listen.socket}${layout.preserveMountPath ? '' : ':/'}`;
+  return `http://127.0.0.1:${layout.port}${layout.preserveMountPath ? '' : '/'}`;
+}
+
 function renderAppLocations(layout, { identity = true } = {}) {
   return [
     `# ${layout.app.id}`,
-    ...proxyLocation({ mountPath: layout.mountPath, upstream: `http://127.0.0.1:${layout.port}${layout.preserveMountPath ? '' : '/'}`, clientMaxBodySize: layout.clientMaxBodySize, identity }),
+    ...proxyLocation({ mountPath: layout.mountPath, upstream: appUpstream(layout), clientMaxBodySize: layout.clientMaxBodySize, identity }),
     ...layout.sidecars.filter((sidecar) => sidecar.nginx).flatMap((sidecar) => [
       `# ${sidecar.name}`,
       ...proxyLocation({ mountPath: sidecar.nginx.mountPath, upstream: `http://127.0.0.1:${sidecar.port}${sidecar.nginx.upstreamPath}`, identity }),

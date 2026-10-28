@@ -8,7 +8,7 @@ const { appServiceKey, appSnippetPath, legacyAppSnippetPath } = require('./ingre
 // root-owned catalog. Catalog values are trusted, but still validated here so a malformed entry
 // fails closed instead of reaching a root operation.
 
-const { APPS_ROOT, MIRROR_ROOT } = require('./paths');
+const { APPS_ROOT, MIRROR_ROOT, DATA_ROOT, SHARED_USER, SHARED_HOME, APP_SOCKET_ROOT } = require('./paths');
 // Postgres names that must never be managed as an app's role or database.
 const RESERVED_DB = /^(postgres|template[01]|pg_.*)$/;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;
@@ -132,6 +132,24 @@ function ingressServiceKey(app) {
   try { return appServiceKey(app); } catch (error) { return unsupported(app, error.message); }
 }
 
+// Who the app runs as (Feature-10 SID-002). A sensitive app (its own hostname) has its own user, which
+// owns its whole footprint (checkout, .env, storage, backups, caches); the rest share sovereign. This is
+// the target: an install from before SID-002 keeps the shared user until it is moved (executor/identity.js).
+function appIdentity(app, serviceKey) {
+  if (serviceKey === 'home') return { user: SHARED_USER, own: false, home: SHARED_HOME };
+  return { user: `${SHARED_USER}-${serviceKey}`, own: true, home: `${DATA_ROOT}/${app.id}/home` };
+}
+
+// How the app listens (SID-002): on a unix socket only nginx's group can reach (the app reads
+// SOVEREIGN_LISTEN), or on loopback TCP for apps that don't support sockets yet (HOST=127.0.0.1).
+function listenLayout(app) {
+  const listen = app.runtime?.listen ?? 'tcp';
+  if (listen === 'tcp') return { kind: 'tcp' };
+  if (listen !== 'unix') unsupported(app, "runtime.listen must be 'tcp' or 'unix'");
+  const directory = `${APP_SOCKET_ROOT}/${app.id}`;
+  return { kind: 'unix', directory, socket: `${directory}/app.sock`, tmpfiles: `/etc/tmpfiles.d/sovereign-app-${app.id}.conf` };
+}
+
 function validPort(port) { return Number.isInteger(port) && port >= 1024 && port <= 65535; }
 
 function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
@@ -208,6 +226,7 @@ function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
   const packages = [...new Set([...(app.systemPackages || []), ...(runtime.kind === 'python' ? PYTHON_PACKAGES : [])])];
   if (packages.some((pkg) => !/^[a-z0-9][a-z0-9+.-]{0,62}$/.test(pkg))) unsupported(app, 'system package names are malformed');
 
+  const ingressService = ingressServiceKey(app);
   const unitNames = [`${app.service.name}.service`, ...sidecars.map((sidecar) => sidecar.unit), ...timers.flatMap((timer) => [timer.serviceUnit, timer.timerUnit])];
   if (new Set(unitNames).size !== unitNames.length) unsupported(app, 'unit names must be unique');
   return {
@@ -220,6 +239,7 @@ function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
       ssh: app.repository.sshUrl ? `ssh://${String(app.repository.sshUrl).replace(':', '/')}` : null,
     },
     runtime,
+    listen: listenLayout(app),
     port,
     mountPath: app.network.preferredMountPath,
     preserveMountPath: app.network.preserveMountPath === true,
@@ -232,7 +252,8 @@ function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
     migrationArgv: app.database?.migrationCommand ? commandArgv(app, app.database.migrationCommand, { checkout, port }) : null,
     storage: storageLayout(app, checkout),
     packages,
-    ingressService: ingressServiceKey(app),
+    ingressService,
+    identity: appIdentity(app, ingressService),
     nginxSnippet: appSnippetPath(app),
     legacyNginxSnippet: legacyAppSnippetPath(app),
     unitNames,

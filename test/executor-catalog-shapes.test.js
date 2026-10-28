@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { createBaseHandlers, renderManagedFile, renderAppEnvFile } = require('../executor/handlers');
 const { isApprovedBinary } = require('../executor/spawn');
 const { createFakeFs } = require('./fixtures/fake-fs');
+const { SHARED_IDENTITY, ownIdentity, users } = require('./fixtures/users');
 const { appLayout } = require('../src/operations/app-layout');
 const { getAppById } = require('../src/catalog');
 const { buildAppInstallPlan } = require('../src/operations/compilers/install');
@@ -27,10 +28,12 @@ const SITE = { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'Amer
 function base(type, fields = {}) {
   return { id: 'test-op', type, title: 'test', risk: 'write', timeoutMs: 1000, dependsOn: [], preconditions: [], secretRefs: [], ...fields };
 }
+// Rendered for a fresh install: a sensitive app runs as its own user (SID-002), the rest as sovereign.
+const identityOf = (layout) => (layout.identity.own ? ownIdentity(layout.identity.user, layout.app.id) : SHARED_IDENTITY);
 function unit(layout, template, name, timezone = 'America/New_York') {
-  return renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template, unit: name, ...(timezone ? { timezone } : {}) }), { layout }).content;
+  return renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template, unit: name, ...(timezone ? { timezone } : {}) }), { layout, identity: identityOf(layout) }).content;
 }
-const snippet = (layout) => renderManagedFile(base('filesystem.write-managed-file', { purpose: 'nginx-snippet', template: 'app-nginx-v1' }), { layout }).content;
+const snippet = (layout) => renderManagedFile(base('filesystem.write-managed-file', { purpose: 'nginx-snippet', template: 'app-nginx-v1' }), { layout, identity: identityOf(layout) }).content;
 
 test('process units run in the household timezone; timer units carry no environment', () => {
   const service = unit(getLayout('family-dinner'), 'app-service-v1', 'family-dinner.service', 'America/Chicago');
@@ -43,7 +46,8 @@ test('process units run in the household timezone; timer units carry no environm
 
 test('helm: venv argv under the checkout, PYTHONUNBUFFERED from the unit, schedules carried over exactly', () => {
   const service = unit(HELM, 'app-service-v1', 'helm-web.service');
-  assert.match(service, /^ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/uvicorn schwab_helm\.web\.app:create_app --factory --host 127\.0\.0\.1 --port 3011$/m);
+  // helm-web reads SOVEREIGN_LISTEN from the .env and binds the socket itself (SID-002).
+  assert.match(service, /^ExecStart=\/opt\/sovereign-home\/apps\/helm\/\.venv\/bin\/helm-web$/m);
   assert.match(service, /^Environment=PYTHONUNBUFFERED=1$/m);
   assert.match(service, /^UMask=0077$/m);
   assert.doesNotMatch(service, /EnvironmentFile=/);
@@ -57,9 +61,9 @@ test('helm: venv argv under the checkout, PYTHONUNBUFFERED from the unit, schedu
 });
 
 test('mount-path-preserving apps proxy without a URI; others strip the mount path', () => {
-  assert.match(snippet(HELM), /^ {4}proxy_pass http:\/\/127\.0\.0\.1:3011;$/m);
-  assert.match(snippet(BITCOIN), /^ {4}proxy_pass http:\/\/127\.0\.0\.1:3010;$/m);
-  assert.match(snippet(PULSE), /^ {4}proxy_pass http:\/\/127\.0\.0\.1:3003\/;$/m);
+  assert.match(snippet(HELM), /^ {4}proxy_pass http:\/\/unix:\/run\/sovereign-apps\/helm\/app\.sock;$/m);
+  assert.match(snippet(BITCOIN), /^ {4}proxy_pass http:\/\/unix:\/run\/sovereign-apps\/bitcoin-accounting\/app\.sock;$/m);
+  assert.match(snippet(PULSE), /^ {4}proxy_pass http:\/\/unix:\/run\/sovereign-apps\/family-pulse\/app\.sock:\/;$/m);
 });
 
 test('bug-base publishes its MCP sidecar at its reserved port under the app mount path, like legacy', () => {
@@ -96,15 +100,15 @@ test('in-checkout storage is created after the clone, as sovereign, 0700, and ne
   const fsImpl = createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } });
   const identities = [];
   const asUser = (user, fn) => { identities.push(user); return fn(); };
-  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, asUser });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: users(), asUser });
   await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-checkout-storage', subpath: '.secrets' }), { layout: HELM });
   assert.equal(fsImpl.entries.get(`${HELM_ROOT}/.secrets`).mode, 0o700);
-  assert.deepEqual(identities, [SOVEREIGN]);
+  assert.deepEqual(identities.map(({ uid, gid }) => ({ uid, gid })), [SOVEREIGN], 'a Helm install from before SID-002 still runs as sovereign');
   // Re-running is a no-op that re-asserts the mode.
   await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-checkout-storage', subpath: '.secrets' }), { layout: HELM });
 
-  const planted = createFakeFs({ [`${HELM_ROOT}/.secrets`]: { kind: 'link', target: '/etc' } });
-  const plantedHandlers = createBaseHandlers({ fsImpl: planted, lookupUser: () => SOVEREIGN, asUser });
+  const planted = createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 }, [`${HELM_ROOT}/.secrets`]: { kind: 'link', target: '/etc' } });
+  const plantedHandlers = createBaseHandlers({ fsImpl: planted, lookupUser: users(), asUser });
   await assert.rejects(() => plantedHandlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-checkout-storage', subpath: '.secrets' }), { layout: HELM }), /not a real directory/);
   await assert.rejects(() => handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-checkout-storage', subpath: 'uploads' }), { layout: HELM }), (error) => error.code === 'POLICY_DENIED');
   await assert.rejects(() => handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-checkout-storage', subpath: 'uploads' }), { layout: getLayout('home-source') }), (error) => error.code === 'POLICY_DENIED');
@@ -114,7 +118,7 @@ test('backups archive in-checkout storage under the legacy archive names', async
   const { createLifecycleHandlers } = require('../executor/lifecycle-handlers');
   const calls = [];
   const fsImpl = createFakeFs({ '/var/lib/sovereign-home/backups': { kind: 'dir' }, [`${HELP.checkout}/uploads`]: { kind: 'dir', uid: 1001 }, [`${HELP.checkout}/.env`]: 'DATABASE_URL=postgresql://familyhelp:pw-12345678@127.0.0.1:5432/familyhelp\n' });
-  const handlers = createLifecycleHandlers({ fsImpl, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: async (input) => { calls.push(input); return { stdout: '' }; }, now: () => new Date('2026-09-25T00:00:00Z') });
+  const handlers = createLifecycleHandlers({ fsImpl, lookupUser: users(), asUser: (user, fn) => fn(), run: async (input) => { calls.push(input); return { stdout: '' }; }, now: () => new Date('2026-09-25T00:00:00Z') });
   const result = await handlers['backup.create'](base('backup.create', { archiveName: '20260925T000000Z' }), { layout: HELP });
   assert.match(result, /uploads\.tgz/);
   const tar = calls.find((call) => call.binary === '/usr/bin/tar');
@@ -131,7 +135,7 @@ test('ensure-venv builds a venv once per interpreter and rebuilds it after a Pyt
   const task = base('runtime.run-app-task', { task: 'ensure-venv' });
   const fresh = createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } });
   const first = run('3.12.3');
-  await createBaseHandlers({ fsImpl: fresh, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: first.fn })['runtime.run-app-task'](task, { layout: HELM });
+  await createBaseHandlers({ fsImpl: fresh, lookupUser: users(), asUser: (user, fn) => fn(), run: first.fn })['runtime.run-app-task'](task, { layout: HELM });
   assert.deepEqual(first.calls.map((call) => [call.binary, call.args, call.uid, call.cwd]), [
     ['/usr/bin/python3', ['-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'], 1001, HELM_ROOT],
     ['/usr/bin/python3', ['-m', 'venv', '.venv'], 1001, HELM_ROOT],
@@ -139,19 +143,19 @@ test('ensure-venv builds a venv once per interpreter and rebuilds it after a Pyt
 
   const built = { [HELM_ROOT]: { kind: 'dir', uid: 1001 }, [`${HELM_ROOT}/.venv/pyvenv.cfg`]: 'home = /usr/bin\nversion = 3.12.3\n', [`${HELM_ROOT}/.venv/bin/python`]: { kind: 'link', target: '/usr/bin/python3' } };
   const same = run('3.12.3');
-  const kept = await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: same.fn })['runtime.run-app-task'](task, { layout: HELM });
+  const kept = await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: users(), asUser: (user, fn) => fn(), run: same.fn })['runtime.run-app-task'](task, { layout: HELM });
   assert.match(kept, /ready/);
   assert.equal(same.calls.length, 1);
 
   // A patch upgrade keeps the venv: its bin/python links to /usr/bin/python3.
   const patched = run('3.12.9');
-  assert.match(await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: patched.fn })['runtime.run-app-task'](task, { layout: HELM }), /ready/);
+  assert.match(await createBaseHandlers({ fsImpl: createFakeFs(built), lookupUser: users(), asUser: (user, fn) => fn(), run: patched.fn })['runtime.run-app-task'](task, { layout: HELM }), /ready/);
   assert.equal(patched.calls.length, 1);
 
   // A minor upgrade rebuilds beside the old venv and swaps; the old one is removed only on success.
   const upgradedFs = createFakeFs(built);
   const upgraded = run('3.13.1');
-  const rebuilt = await createBaseHandlers({ fsImpl: upgradedFs, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: upgraded.fn })['runtime.run-app-task'](task, { layout: HELM });
+  const rebuilt = await createBaseHandlers({ fsImpl: upgradedFs, lookupUser: users(), asUser: (user, fn) => fn(), run: upgraded.fn })['runtime.run-app-task'](task, { layout: HELM });
   assert.deepEqual(upgraded.calls.map((call) => [call.binary.split('/').pop(), ...call.args.slice(0, 3)]), [['python3', '-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'], ['python3', '-m', 'venv', '.venv'], ['python', '-c', 'import importlib.metadata as m; print(m.version("pip"))'], ['python', '-m', 'pip', 'install'], ['python', '-m', 'pip', 'install']]);
   assert.match(rebuilt, /rebuilt virtualenv for Python 3\.13\.1 \(was 3\.12\.3\)/);
   assert.equal(upgradedFs.existsSync(`${HELM_ROOT}/.venv.previous`), false);
@@ -163,10 +167,10 @@ test('ensure-venv builds a venv once per interpreter and rebuilds it after a Pyt
     if (input.args.includes('pip')) throw Object.assign(new Error('pip: connection timed out'), { code: 'OPERATION_FAILED' });
     return { stdout: '' };
   };
-  await assert.rejects(() => createBaseHandlers({ fsImpl: rollbackFs, lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: failingPip })['runtime.run-app-task'](task, { layout: HELM }), /connection timed out/);
+  await assert.rejects(() => createBaseHandlers({ fsImpl: rollbackFs, lookupUser: users(), asUser: (user, fn) => fn(), run: failingPip })['runtime.run-app-task'](task, { layout: HELM }), /connection timed out/);
   assert.equal(rollbackFs.readFileSync(`${HELM_ROOT}/.venv/pyvenv.cfg`), 'home = /usr/bin\nversion = 3.12.3\n', 'the running app keeps its packages');
   assert.equal(rollbackFs.existsSync(`${HELM_ROOT}/.venv.previous`), false);
-  await assert.rejects(() => createBaseHandlers({ fsImpl: fresh, lookupUser: () => SOVEREIGN, run: first.fn })['runtime.run-app-task'](task, { layout: getLayout('family-dinner') }), (error) => error.code === 'POLICY_DENIED');
+  await assert.rejects(() => createBaseHandlers({ fsImpl: fresh, lookupUser: users(), run: first.fn })['runtime.run-app-task'](task, { layout: getLayout('family-dinner') }), (error) => error.code === 'POLICY_DENIED');
 });
 
 const PIP_PROBE = [`${HELM_ROOT}/.venv/bin/python`, '-c', 'import importlib.metadata as m; print(m.version("pip"))'];
@@ -181,7 +185,7 @@ test('a pip below its security floor is replaced from the hash-pinned wheel befo
   const scenario = (versions) => {
     const calls = [];
     const queue = [...versions];
-    const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => {
+    const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: users(), run: async (input) => {
       calls.push(input);
       if (input.args[0] === '-c') {
         const next = queue.shift();
@@ -202,7 +206,7 @@ test('a pip below its security floor is replaced from the hash-pinned wheel befo
 
   // A long lockfile install (helm's is ~80 packages) cannot push the summary out of the capped output.
   const noisyQueue = ['26.2.1', '26.2.2'];
-  const noisy = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => (
+  const noisy = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: users(), run: async (input) => (
     input.args[0] === '-c' ? { stdout: `${noisyQueue.shift()}\n` } : { stdout: input.args.includes('-r') ? 'Requirement already satisfied: x\n'.repeat(2000) : 'Successfully installed pip-26.2.2' }
   ) });
   const long = await noisy['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM });
@@ -224,7 +228,7 @@ test('Python dependencies install from the lockfile, then the checkout, as sover
   for (const layout of [HELM, BITCOIN]) {
     const calls = [];
     const root = layout.checkout;
-    const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [root]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, run: async (input) => { calls.push(input); return { stdout: input.args[0] === '-c' ? '26.2.2\n' : '' }; } });
+    const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [root]: { kind: 'dir', uid: 1001 } }), lookupUser: users(), run: async (input) => { calls.push(input); return { stdout: input.args[0] === '-c' ? '26.2.2\n' : '' }; } });
     await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout });
     const python = `${root}/.venv/bin/python`;
     const pip = [python, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
@@ -243,7 +247,7 @@ test('schema-file bootstrap runs once, as the app role, only on an empty databas
   const task = base('runtime.run-app-task', { task: 'bootstrap-schema' });
   const attempt = async (objects) => {
     const calls = [];
-    const result = await createBaseHandlers({ fsImpl: fsImpl(), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: async (input) => { calls.push(input); return { stdout: input.args.includes('-tA') ? `${objects}\n` : '' }; } })['runtime.run-app-task'](task, { layout: BITCOIN });
+    const result = await createBaseHandlers({ fsImpl: fsImpl(), lookupUser: users(), asUser: (user, fn) => fn(), run: async (input) => { calls.push(input); return { stdout: input.args.includes('-tA') ? `${objects}\n` : '' }; } })['runtime.run-app-task'](task, { layout: BITCOIN });
     return { calls, result };
   };
   const empty = await attempt(0);
@@ -288,6 +292,22 @@ test('policy binds unit timezones to the site, storage purposes to the layout, a
   assert.throws(() => validateOperationPolicy(noSchema), (error) => error.code === 'POLICY_DENIED');
 });
 
+test("a sensitive app's install creates its own identity and home first; shared apps and other names are refused (SID-002)", () => {
+  const helm = () => JSON.parse(JSON.stringify(buildAppInstallPlan({ appId: 'helm' })));
+  const ids = helm().operations.map((op) => op.id);
+  assert.deepEqual(ids.slice(ids.indexOf('ensure-sovereign-home'), ids.indexOf('ensure-sovereign-home') + 4), ['ensure-sovereign-home', 'ensure-app-user', 'ensure-app-home', 'ensure-install-root']);
+  assert.equal(helm().operations.find((op) => op.id === 'ensure-app-user').user, 'sovereign-helm');
+  validateOperationPolicy(helm());
+  const denied = (plan, mutate) => { mutate(plan); assert.throws(() => validateOperationPolicy(plan), (error) => error.code === 'POLICY_DENIED' || /schema/i.test(error.message)); };
+  denied(helm(), (next) => { next.operations.find((op) => op.id === 'ensure-app-user').user = 'sovereign'; });
+  denied(helm(), (next) => { next.operations.find((op) => op.id === 'ensure-app-user').user = 'sovereign-pulse'; });
+  denied(helm(), (next) => { next.operations.find((op) => op.id === 'ensure-app-user').user = 'root'; });
+  const dinner = () => JSON.parse(JSON.stringify(buildAppInstallPlan({ appId: 'family-dinner' })));
+  assert.equal(dinner().operations.some((op) => op.type === 'identity.ensure-user' || op.purpose === 'app-home'), false);
+  denied(dinner(), (next) => { next.operations.splice(3, 0, { ...next.operations[2], id: 'sneak', purpose: 'app-home' }); });
+  denied(dinner(), (next) => { next.operations.splice(3, 0, { ...next.operations[2], id: 'sneak', type: 'identity.ensure-user', user: 'sovereign-dinner', purpose: undefined }); });
+});
+
 test('files read inside sovereign directories refuse symlinks, non-files, and oversized content', () => {
   const { readSmallFileNoFollow } = require('../executor/handlers');
   const fsImpl = createFakeFs({ '/app/.env': 'A=1\n', '/app/link': { kind: 'link', target: '/etc/shadow' }, '/app/dir': { kind: 'dir' }, '/app/big': 'x'.repeat(5000) });
@@ -299,7 +319,7 @@ test('files read inside sovereign directories refuse symlinks, non-files, and ov
 });
 
 test('root-managed storage purposes are refused for apps whose storage lives in the checkout', async () => {
-  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN });
+  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: users() });
   for (const fields of [{ purpose: 'app-storage-root' }, { purpose: 'app-storage', subpath: '.secrets' }]) {
     await assert.rejects(() => handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', fields), { layout: HELM }), /keeps its storage in the checkout/);
   }
@@ -314,10 +334,10 @@ test('app tasks re-check the checkout before every spawn, and refuse unexpected 
     fsImpl.entries.set(HELM_ROOT, { kind: 'link', target: '/root', uid: 1001, gid: 1002, mode: 0o777 });
     return { stdout: '' };
   };
-  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run });
-  await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM }), /not a sovereign-owned directory/);
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: users(), run });
+  await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: HELM }), /not a directory owned by sovereign|not a real directory/);
   assert.equal(spawns, 1);
-  const noisy = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: async () => ({ stdout: 'x'.repeat(70000) }) });
+  const noisy = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: users(), asUser: (user, fn) => fn(), run: async () => ({ stdout: 'x'.repeat(70000) }) });
   await assert.rejects(() => noisy['runtime.run-app-task'](base('runtime.run-app-task', { task: 'ensure-venv' }), { layout: HELM }), /system Python version/);
 });
 
@@ -337,15 +357,15 @@ test('supported hosts: Ubuntu 22.04+, Debian 12+, and derivatives by their base 
 
 test('git sync ignores untracked files when deciding whether a checkout is dirty', async () => {
   const calls = [];
-  const fsImpl = createFakeFs({ [`${HELM_ROOT}/.git`]: { kind: 'dir', uid: 1001 }, '/etc/sovereign-home': { kind: 'dir' }, [HELM.mirror]: { kind: 'dir' } });
-  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, run: async (input) => { calls.push(input); return { stdout: '' }; } });
+  const fsImpl = createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 }, [`${HELM_ROOT}/.git`]: { kind: 'dir', uid: 1001 }, '/etc/sovereign-home': { kind: 'dir' }, [HELM.mirror]: { kind: 'dir' } });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: users(), run: async (input) => { calls.push(input); return { stdout: '' }; } });
   await handlers['git.sync'](base('git.sync', { repository: HELM.repositories.https, ref: 'main' }), { layout: HELM });
   assert.ok(calls.some((call) => call.args.join(' ') === `-C ${HELM_ROOT} status --porcelain --untracked-files=no`));
 });
 
 test('ensure-venv refuses a host Python older than the app requires, before building anything', async () => {
   const calls = [];
-  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: () => SOVEREIGN, asUser: (user, fn) => fn(), run: async (input) => { calls.push(input); return { stdout: '3.10.12\n' }; } });
+  const handlers = createBaseHandlers({ fsImpl: createFakeFs({ [HELM_ROOT]: { kind: 'dir', uid: 1001 } }), lookupUser: users(), asUser: (user, fn) => fn(), run: async (input) => { calls.push(input); return { stdout: '3.10.12\n' }; } });
   await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'ensure-venv' }), { layout: HELM }), /Helm needs Python 3\.11 or newer; this host has 3\.10\.12/);
   assert.equal(calls.length, 1, 'only the version probe ran');
   assert.equal(BITCOIN.runtime.python.minVersion, '3.10');

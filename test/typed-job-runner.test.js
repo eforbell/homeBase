@@ -99,7 +99,7 @@ test('typed jobs wait out a briefly busy executor, then run; persistent busy sti
   assert.equal(jobs[busyId].status, 'failed');
 });
 
-test('a completed adopt records the app as executor-managed, only after readiness', async () => {
+test('a completed adopt records the app as executor-managed, only after readiness (asked of the executor for a socket app)', async () => {
   const { JobRunner } = require('../src/services/job-runner');
   const jobs = {};
   const upserts = [];
@@ -112,13 +112,14 @@ test('a completed adopt records the app as executor-managed, only after readines
   const probes = [];
   const runner = new JobRunner(store, {
     runExecutorAction: async () => ({ planDigest: 'sha256:x', completedOperationIds: [] }),
-    readinessOptions: { attempts: 1, fetchImpl: async (url) => { probes.push(url); return { ok: true, status: 200 }; } },
+    probeExecutorApp: async (socket, request) => { probes.push(request); return { statusCode: 200 }; },
+    readinessOptions: { attempts: 1, fetchImpl: async () => { throw new Error('Helm is not on loopback'); } },
   });
   const site = { hostname: 'home', domain: 'example.ts.net', householdTimezone: 'America/New_York' };
   const id = runner.startTypedAdoptJob({ appId: 'helm', ref: 'main', transport: 'ssh', site });
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(jobs[id].status, 'completed');
-  assert.deepEqual(probes, ['http://127.0.0.1:3011/health']);
+  assert.deepEqual(probes, [{ appId: 'helm', probe: 'readiness' }]);
   assert.equal(upserts.length, 1);
   assert.deepEqual([upserts[0].appId, upserts[0].status, upserts[0].managedBy, upserts[0].externalUrl], ['helm', 'installed', 'executor', 'https://home.example.ts.net/helm/']);
 });

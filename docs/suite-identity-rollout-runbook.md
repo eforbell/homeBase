@@ -31,7 +31,7 @@ Record:
 - Host tags, and how the old managed service (`svc:home`) is defined.
 - Whether anything besides Serve can reach nginx or an app (LAN, loopback TCP).
 - **Operator-managed nginx sites that include `/etc/nginx/sovereign-home.d/*.conf`** (adopted hosts). The cutover refuses while one exists, because it would keep serving apps over TCP. Remove that include from your own site first (keep the site's other content), and keep a copy for rollback.
-- Which apps already support the socket listen contract (SID-002).
+- Which apps already support the socket listen contract (SID-002): Family Pulse, Home Source, Helm and Bitcoin Accounting, from their 2026-10-28 `main`. Which units run as `sovereign` and which as `sovereign-<key>` (`systemctl show <unit> -p User`).
 
 ## 2. Tailnet policy, services, and Home Base settings
 
@@ -64,6 +64,10 @@ Done in the wrong order, this host loses its approvals while a stale host keeps 
    ```
    Never use a tag that several hosts share as an approver. Any host with that tag can become an approved standby: it gets a valid certificate for the service hostname and takes all of the service's traffic when this host stops serving (spike 3b). Home Base refuses to publish a service another host already serves, but that is a second check. The policy is the boundary.
 3. **Review existing approvals** on each service's page and remove any host other than this one. Tightening approvers does not revoke approvals that already exist.
+
+**Adding a service later** (a sensitive app installed after cutover): define it, add its approver, **and** add it to the members' grant, all before publishing it (2026-10-28 rehearsal):
+- with no approver when the host first advertises it, the host waits for manual approval (adding the approver afterwards doesn't approve it);
+- with no grant, members get a DNS error, not a refusal: an address nobody is granted isn't sent to their devices at all.
 
 Grant members the addresses they use. Grants are an independent layer: a member who isn't granted an address can't reach it at all. Members who use a passkey app also need `svc:<instance>-homebase`, where all credential management happens (D21); Home Base limits non-administrators to their own credentials there.
 ```jsonc
@@ -103,7 +107,7 @@ Run from Home Base admin (`POST /api/ingress/...`; admin unlock, privileged jobs
 |---|---|---|---|
 | 3.1 | Snapshot `serve get-config --all`, `serve status --json`, `/etc/nginx` | Files saved | — |
 | 3.2 | **Cut over** (`/api/ingress/cutover`, `confirm: CUTOVER`): tmpfiles for `/run/sovereign-serve` (0700 root) and `/run/homebase-identity` (0750 homebase:www-data); the identity snippet; the socket gateway (one server block per service, no TCP listener); every installed app's snippet re-rendered as `<service>--<app>.conf`; the old managed service retired from this host | `nginx -t`; no 80/443 listener except tailscaled's on the host's tailnet addresses; Home Base logs `identity lookups on /run/homebase-identity/identity.sock` within 15 s | **Roll back** (`/api/ingress/rollback`, `confirm: ROLLBACK`) |
-| 3.3 | **Publish** each service, one at a time (`/api/ingress/services/<key>/publish`, `confirm: PUBLISH`): `homebase` first, then `home`, then each sensitive app. Home Base refuses while another host is approved. It warms the new certificate automatically (first issue takes 35–40 s) | The service shows `verified` (API) once approved | Roll back |
+| 3.3 | **Publish** each service, one at a time (`/api/ingress/services/<key>/publish`, `confirm: PUBLISH`): `homebase` first, then `home`, then each sensitive app. Home Base refuses while another host is approved. It warms the new certificate automatically (first issue takes 35–40 s; publishing straight through the executor skips this, and the first visitor waits instead) | The service shows `verified` (API) once approved | Roll back |
 | 3.4 | **Update each installed app** from Home Base (an ordinary update) | Each app's `.env` URLs (`APP_URL`, `HELM_PUBLIC_URL`, OAuth redirects, local font URLs) use its service hostname | Roll back, then update again |
 | 3.5 | Add the new OAuth callback URLs at the providers: Plaid for Pulse (`https://<instance>-pulse.<tailnet>/pulse/oauth/callback`), Google for Plan (`https://<instance>-home.<tailnet>/plan/api/google-calendar/oauth/callback`) | Linking still works | Keep the old URLs listed until the rollback window has passed |
 | 3.6 | Tell members the new addresses; update bookmarks and the iOS wrapper's start URL | — | — |
@@ -138,14 +142,35 @@ Verify after 3.x, from a member device and from the host:
 
 ## 4. Cutover: app ownership (SID-002)
 
-Per sensitive app, while the app is still in local mode:
-0. Install the app version that supports the socket listen contract. Confirm it still runs on loopback TCP before changing anything else.
-1. Create its service user. Move the checkout, `.env`, storage, backups and caches to that user; parents stay root-owned.
-2. Switch it to its socket (owner = app user, group = nginx's group, 2750; socket 0660).
-3. Verify:
-   - [ ] the shared service user can't connect to the socket, or read or write the app's files and backups;
-   - [ ] nested APIs, redirects, assets and OAuth callbacks still work.
-4. Rollback: restore the previous unit, ownership and listen settings from the snapshot.
+Independent of section 3: it works on a host with either ingress, and can run before or after the cutover. Rehearsed on the test VM on 2026-10-28 for all four sensitive apps (one moved in place, three fresh installs).
+
+What an update does by itself:
+- **Every app** listens on loopback only (`HOST=127.0.0.1`). Anything that opened an app's port directly (`http://<host>:3000/tonight`, a bookmark, a script) must use its Home Base address.
+- **A sensitive app's fresh install** runs as its own user, `sovereign-<key>`, on its socket.
+- **A sensitive app installed before SID-002** moves to its socket but keeps running as `sovereign`. Its page's **Runs as** card says so and offers the move.
+
+Per sensitive app installed before SID-002, while it is still in local mode:
+1. **Update it** from Home Base. Confirm it is healthy on its socket before going on.
+2. **Move it to its own user** (app page → Runs as → **Move to its own user**, `confirm: MOVE`; preview the plan first). The plan:
+   - takes a safety backup and stops the app;
+   - creates `sovereign-<key>` with its home under `/var/lib/sovereign-home/<app id>/home`;
+   - hands over its home, storage, backups and, last, its checkout: every directory is locked to root first, hard-linked files are copied, and setuid bits are dropped;
+   - rewrites `.env` (0600) and every unit, then starts the app and waits for readiness.
+
+   Expect a minute or two of downtime.
+
+   Known limitation: don't create mounts inside the app's folders while a move runs. The move refuses any mount it finds there, before and during the hand-over, but a root process mounting something in the instant between a folder's check and its use can still fail the move or hand the mounted folder over. Only root can mount, and the shared user can't, so this is outside what the move defends against. Recovery: unmount, then run the move again.
+3. Verify on the host:
+   - [ ] every unit of the app (service, sidecars, timers) runs as `sovereign-<key>`: `systemctl show <unit> -p User --value`;
+   - [ ] `sudo ls -la /run/sovereign-apps/<app id>` shows `drwxr-s--- sovereign-<key> www-data` and `srw-rw---- … app.sock`;
+   - [ ] `sudo -u sovereign curl --unix-socket /run/sovereign-apps/<app id>/app.sock http://localhost/<health>` fails, and the same as `www-data` answers;
+   - [ ] `sudo -u sovereign` can't read the app's `.env`, list its checkout, storage or backups, or write into them;
+   - [ ] nothing listens on the app's old port (`sudo ss -ltnp`), and Home Base's ingress verification shows **Apps listen only on loopback or their sockets** passing;
+   - [ ] update, backup and restart still work, and dependency caches land in the app's own home.
+4. Verify from a member device, on the app's service hostname: pages, the mount redirect, static assets, nested APIs, and the OAuth callback route. Checked on the VM for a prefix-stripping app (Pulse, Home Source) and a mount-preserving one (Helm, Bitcoin Accounting). The D22 callback contract itself (landing page, single-use same-origin POST) is app behavior, checked when each app enters tailnet mode (section 6).
+5. **Rollback.** The move is one way; there is no move-back action. Neither path below has been rehearsed yet (SID-008); the switch back to TCP is covered by tests only.
+   - If the app misbehaves after the move, **Restore** the safety backup the move took. The files stay with the app's user.
+   - A socket problem rolls back with a Home Base release whose catalog sets the app to `runtime.listen: 'tcp'`. The update rewrites `.env` (dropping `SOVEREIGN_LISTEN`) and nginx.
 
 ## 5. Cutover: Home Base identity (SID-004/005/006)
 

@@ -79,7 +79,7 @@ function reader(files) {
   return createDependencyInventoryReader({
     fsImpl: createFakeFs(files),
     lookupUser: (name) => (name === 'sovereign' ? SOVEREIGN : null),
-    asUser: (user, fn) => { assert.equal(user, SOVEREIGN, 'checkout reads run as sovereign'); return fn(); },
+    asUser: (user, fn) => { assert.equal(user.uid, SOVEREIGN.uid, 'checkout reads run as the app user (sovereign here, or a sensitive app not yet moved)'); return fn(); },
     now: () => Date.parse('2026-10-22T12:00:00Z'),
   });
 }

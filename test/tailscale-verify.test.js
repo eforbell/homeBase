@@ -134,14 +134,14 @@ test('socket ingress: verified by sockets and per-service targets, never by a tc
   const run = ({ ss = listeners, unix = sockets, serve = services() } = {}) => (command) => {
     if (command.startsWith('ss -lxn')) return { ok: true, stdout: `Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port\n${unix.join('\n')}\n` };
     if (command.startsWith('tailscale status')) return { ok: true, stdout: JSON.stringify({ Self: { TailscaleIPs: ['100.64.0.1', 'fd7a:115c:a1e0::1'] } }) };
-    if (command.startsWith('ss ')) return { ok: true, stdout: `${ss.join('\n')}\n` };
+    if (command.startsWith('ss ')) return ss === null ? { ok: false, stdout: '' } : { ok: true, stdout: `State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n${ss.map((address) => `LISTEN 0 511 ${address} 0.0.0.0:*`).join('\n')}\n` };
     if (command.startsWith('tailscale serve get-config')) return { ok: true, stdout: JSON.stringify(serve) };
     return { ok: false, stdout: '' };
   };
   const rootDir = { isDirectory: () => true, uid: 0, mode: 0o40700 };
   const verify = (options = {}, statFn = () => rootDir) => getIngressVerification({ instance: 'smith', domain: 'example-tailnet.ts.net', run: run(options), statFn });
   const result = (checks) => Object.fromEntries(checks.map((check) => [check.id, check.ok]));
-  assert.deepEqual(result(verify().checks), { 'no-suite-tcp-listener': true, 'serve-sockets-root-only': true, 'services-target-own-sockets': true, 'service-sockets-listening': true });
+  assert.deepEqual(result(verify().checks), { 'no-suite-tcp-listener': true, 'serve-sockets-root-only': true, 'services-target-own-sockets': true, 'apps-loopback-only': true, 'service-sockets-listening': true });
   assert.equal(verify().repairRequired, false);
   assert.equal(result(verify({ ss: [...listeners, '0.0.0.0:443'] }).checks)['no-suite-tcp-listener'], false, 'nginx back on TCP');
   assert.equal(result(verify({ ss: [...listeners, '[::]:80'] }).checks)['no-suite-tcp-listener'], false);
@@ -150,6 +150,16 @@ test('socket ingress: verified by sockets and per-service targets, never by a tc
   assert.equal(result(verify({ serve: services({ 'svc:smith-pulse': { endpoints: { 'tcp:443': 'https://unix:/run/sovereign-serve/home.sock' } } }) }).checks)['services-target-own-sockets'], false, 'a service on another service\'s socket');
   assert.equal(result(verify({ serve: services({ 'svc:home': { endpoints: { 'tcp:443': 'https+insecure://localhost:443' } } }) }).checks)['services-target-own-sockets'], false, 'the legacy service still targets TCP');
   assert.equal(result(verify({ serve: { version: '0.0.1' } }).checks)['services-target-own-sockets'], false);
+  // An app binding every interface is reachable straight from the tailnet (SID-002).
+  const exposed = verify({ ss: [...listeners, '0.0.0.0:3003', '[::]:3008', '127.0.0.1:3000', '[::1]:3002', '100.64.0.1:3011'] });
+  assert.equal(result(exposed.checks)['apps-loopback-only'], false);
+  assert.match(exposed.checks.find((check) => check.id === 'apps-loopback-only').summary, /family-pulse on 0\.0\.0\.0:3003, home-source on \[::\]:3008, helm on 100\.64\.0\.1:3011/);
+  assert.doesNotMatch(exposed.checks.find((check) => check.id === 'apps-loopback-only').summary, /family-dinner|family-help/, 'loopback is fine');
+  assert.equal(exposed.repairRequired, true);
+  // A listing that didn't run proves nothing (ss missing or failing), so neither listener check passes.
+  const unlisted = result(verify({ ss: null }).checks);
+  assert.equal(unlisted['no-suite-tcp-listener'], false);
+  assert.equal(unlisted['apps-loopback-only'], false);
   const stopped = verify({ unix: [] });
   assert.equal(result(stopped.checks)['service-sockets-listening'], false, 'nginx stopped: Serve still targets sockets nobody answers');
   assert.equal(stopped.repairRequired, true);

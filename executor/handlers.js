@@ -3,9 +3,11 @@ const crypto = require('crypto');
 const path = require('path');
 const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
+const { groupMembers, resolveAppIdentity } = require('./identity');
 const { catalog } = require('../src/catalog');
 const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
 const { MIRROR_ROOT, appLayout } = require('../src/operations/app-layout');
+const { APP_SOCKET_ROOT, NGINX_GROUP } = require('../src/operations/paths');
 const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
@@ -13,7 +15,7 @@ const {
   appPublicBase, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
   IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
-const { parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
+const { applyListenEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
 // the plan target's catalog layout; see directoryFor().
@@ -27,9 +29,13 @@ const DIRECTORY_PATHS = Object.freeze({
   'sovereign-home': '/var/lib/sovereign-home/sovereign',
 });
 // /opt/sovereign-home also holds the root executor's own code (/opt/sovereign-home/homebase). The owner
-// of a directory can rename its entries, so it must stay root-owned; only apps/ belongs to sovereign.
-const ROOT_OWNED_DIRECTORIES = new Set(['sovereign-root', 'config-root', 'nginx-snippets', 'nginx-apps']);
-const DIRECTORY_MODES = Object.freeze({ 'sovereign-home': 0o700, 'app-storage-root': 0o750, 'app-storage': 0o750 });
+// of a directory can rename its entries, so it must stay root-owned. apps/ and backups/ are root-owned
+// too (SID-002): each app's checkout and backups belong to that app's user, and the shared user must
+// not be able to rename or replace a sensitive app's.
+const ROOT_OWNED_DIRECTORIES = new Set(['sovereign-root', 'app-root', 'backup-root', 'config-root', 'nginx-snippets', 'nginx-apps']);
+// Directories an app's user owns (the rest of the non-root ones belong to the shared user).
+const APP_DIRECTORIES = new Set(['app-install', 'app-storage-root', 'app-storage', 'app-home']);
+const DIRECTORY_MODES = Object.freeze({ 'sovereign-home': 0o700, 'app-install': 0o755, 'app-storage-root': 0o750, 'app-storage': 0o750, 'app-home': 0o700 });
 // HOME for git/npm children: sovereign-writable (npm cache) without owning any root-controlled path.
 const SOVEREIGN_HOME = DIRECTORY_PATHS['sovereign-home'];
 
@@ -228,18 +234,18 @@ function renderAppEnvFile({ layout, password = null, site, ingress = null, exist
     if (error.code === 'ENV_TEMPLATE_UNRESOLVED') deny(error.message);
     throw error;
   }
-  return renderEnv(layout.runtime.kind === 'node' ? { ...env, NODE_ENV: layout.runtime.nodeEnv } : env);
+  return renderEnv({ ...applyListenEnv(env, layout), ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) });
 }
 
 // The database password this install must use. Existing database wiring is kept verbatim by the
 // reinstall contract, so the role password has to come from it; otherwise updates would rotate
-// credentials under a running service. Read as sovereign (the .env sits in a sovereign-owned
-// directory). Returns null when there is no existing wiring; refuses wiring that points elsewhere.
+// credentials under a running service. Read as the app's user (the .env sits in a directory it owns).
+// Returns null when there is no existing wiring; refuses wiring that points elsewhere.
 function readExistingDatabasePassword({ layout, fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   if (!layout?.database) return null;
-  const sovereign = lookupUser('sovereign');
-  if (!sovereign) return null;
-  const content = asUser(sovereign, () => readSmallFileNoFollow(fsImpl, layout.envPath));
+  let identity;
+  try { identity = resolveAppIdentity(layout, { fsImpl, lookupUser }); } catch { return null; }
+  const content = asUser(identity, () => readSmallFileNoFollow(fsImpl, layout.envPath));
   if (!content) return null;
   const existing = parseDotEnv(content);
   if (!hasExistingDbConfig(existing, layout.app)) return null;
@@ -262,8 +268,9 @@ const TIMEZONE = /^[A-Za-z_]+\/[A-Za-z_/-]+$/;
 // letting a planted symlink expose root-only files. Apps load .env themselves (see the runbook).
 // Environment= carries only fixed values: the household TZ (validated), PYTHONUNBUFFERED for Python
 // apps, and the catalog's simple sidecar values.
-function renderServiceUnit({ layout, description, argv, timezone, environment = [], oneshot = false }) {
+function renderServiceUnit({ layout, identity, description, argv, timezone, environment = [], oneshot = false }) {
   if (!TIMEZONE.test(timezone || '') || timezone.length > 64) deny('Service units need a valid household timezone.');
+  if (!/^sovereign(-[a-z0-9-]+)?$/.test(identity?.name || '')) deny('Service units need the app\'s identity.');
   const runtimeEnvironment = [['TZ', timezone], ...(layout.runtime.kind === 'python' ? [['PYTHONUNBUFFERED', '1']] : [])];
   return [
     '[Unit]',
@@ -272,7 +279,7 @@ function renderServiceUnit({ layout, description, argv, timezone, environment = 
     '',
     '[Service]',
     `Type=${oneshot ? 'oneshot' : 'simple'}`,
-    'User=sovereign',
+    `User=${identity.name}`,
     `WorkingDirectory=${layout.checkout}`,
     ...[...runtimeEnvironment, ...environment].map(([key, value]) => `Environment=${key}=${value}`),
     `ExecStart=${argv.join(' ')}`,
@@ -304,28 +311,30 @@ function renderTimerUnit({ timer }) {
   ].join('\n');
 }
 
-// ingress: the host's cutover record (readIngressRecord), or null on a TCP-gateway host.
-function renderManagedFile(operation, { secretBindings = {}, layout, ingress = null } = {}) {
+// ingress: the host's cutover record (readIngressRecord), or null on a TCP-gateway host. identity: who
+// the app runs as on this host (identity.js).
+function renderManagedFile(operation, { secretBindings = {}, layout, ingress = null, identity } = {}) {
   requireLayout(layout);
   const unitPath = (unit) => `/etc/systemd/system/${unit}`;
+  const unit = (fields) => renderServiceUnit({ layout, identity, ...fields });
   switch (operation.template) {
     case 'app-env-v1':
       return {
-        path: layout.envPath, mode: 0o640, owner: 'sovereign',
+        path: layout.envPath, mode: identity?.own ? 0o600 : 0o640, owner: 'app',
         render: ({ existingContent, fsImpl }) => renderAppEnvFile({ layout, password: layout.database ? secretBindings.databasePassword : null, site: operation.site, ingress, existingContent, fsImpl }),
       };
     case 'app-service-v1':
       if (operation.unit !== layout.service.unit) break;
-      return { path: unitPath(operation.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: layout.service.description, argv: layout.service.argv, timezone: operation.timezone }) };
+      return { path: unitPath(operation.unit), mode: 0o644, owner: 'root', content: unit({ description: layout.service.description, argv: layout.service.argv, timezone: operation.timezone }) };
     case 'app-sidecar-service-v1': {
       const sidecar = layout.sidecars.find((entry) => entry.unit === operation.unit);
       if (!sidecar) break;
-      return { path: unitPath(sidecar.unit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: sidecar.description, argv: sidecar.argv, timezone: operation.timezone, environment: sidecar.environment }) };
+      return { path: unitPath(sidecar.unit), mode: 0o644, owner: 'root', content: unit({ description: sidecar.description, argv: sidecar.argv, timezone: operation.timezone, environment: sidecar.environment }) };
     }
     case 'app-timer-service-v1': {
       const timer = layout.timers.find((entry) => entry.serviceUnit === operation.unit);
       if (!timer) break;
-      return { path: unitPath(timer.serviceUnit), mode: 0o644, owner: 'root', content: renderServiceUnit({ layout, description: timer.description, argv: timer.argv, timezone: operation.timezone, oneshot: true }) };
+      return { path: unitPath(timer.serviceUnit), mode: 0o644, owner: 'root', content: unit({ description: timer.description, argv: timer.argv, timezone: operation.timezone, oneshot: true }) };
     }
     case 'app-timer-v1': {
       const timer = layout.timers.find((entry) => entry.timerUnit === operation.unit);
@@ -334,6 +343,12 @@ function renderManagedFile(operation, { secretBindings = {}, layout, ingress = n
     }
     case 'app-nginx-v1':
       return { path: layout.nginxSnippet, mode: 0o644, owner: 'root', content: renderAppLocations(layout, { identity: Boolean(ingress) }), replaces: layout.legacyNginxSnippet };
+    case 'app-tmpfiles-v1':
+      // The socket directory (SID-002), recreated at every boot: only the app's user and nginx's group get
+      // in, and setgid gives the socket nginx's group. The app's user is never in that group (ensure-user).
+      if (layout.listen?.kind !== 'unix') break;
+      if (!/^sovereign(-[a-z0-9-]+)?$/.test(identity?.name || '')) deny('The socket directory needs the app\'s identity.');
+      return { path: layout.listen.tmpfiles, mode: 0o644, owner: 'root', content: `d ${APP_SOCKET_ROOT} 0755 root root -\nd ${layout.listen.directory} 2750 ${identity.name} ${NGINX_GROUP} -\n` };
     default:
       break;
   }
@@ -368,6 +383,10 @@ function rootGitEnvironment(transport, fsImpl) {
 function directoryFor(operation, layout) {
   if (Object.hasOwn(DIRECTORY_PATHS, operation.purpose)) return DIRECTORY_PATHS[operation.purpose];
   if (operation.purpose === 'app-install') return requireLayout(layout).checkout;
+  if (operation.purpose === 'app-home') {
+    if (!requireLayout(layout).identity.own) deny('Only apps with their own user have their own home.');
+    return layout.identity.home;
+  }
   if (operation.purpose === 'app-storage-root' || operation.purpose === 'app-storage') {
     const storage = requireLayout(layout).storage;
     if (!storage) deny('This app declares no storage.');
@@ -380,7 +399,6 @@ function directoryFor(operation, layout) {
   return deny('Unknown managed directory purpose.');
 }
 
-// The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
 // Does an app's .env put it in tailnet mode? Fail closed: dotenv loaders accept `export`, quotes and inline
 // comments, so any assignment of SOVEREIGN_IDENTITY_MODE to something other than empty or "local", however
 // written, counts as trusting identity headers.
@@ -396,6 +414,7 @@ function trustsIdentityHeaders(content) {
   });
 }
 
+// The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
 function readIngressRecord(fsImpl = fs) {
   const stat = lstatOrNull(fsImpl, INGRESS_STATE_PATH);
   if (!stat) return null;
@@ -410,6 +429,9 @@ function readIngressRecord(fsImpl = fs) {
 
 function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
+  // Who this app runs as on this host: its own user, or sovereign until it is moved (identity.js).
+  // planKind: only the move plan may continue a move that was interrupted (identity.js).
+  const identityFor = (layout, planKind = null) => resolveAppIdentity(requireLayout(layout), { fsImpl, lookupUser, duringMove: planKind === 'app-move-user' });
   // The active nginx configuration, every file, as root (nginx -T). stdout only: on success nginx also
   // writes "syntax is ok" / "test is successful" to stderr, which is not configuration (and a failure
   // already throws, since run() rejects a non-zero exit).
@@ -498,17 +520,34 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       await run({ binary: '/usr/bin/apt-get', args: ['install', '--yes', '--no-install-recommends', ...APT_DPKG_OPTIONS, ...missing], ...rootIdentity, timeoutMs: operation.timeoutMs, env: APT_ENV });
       return `installed ${missing.join(', ')} (${operation.packages.length - missing.length} already present)`;
     },
-    'identity.ensure-user': async (operation) => {
-      if (operation.user !== 'sovereign') deny('Only the sovereign identity may be created.');
-      const user = lookupUser('sovereign');
-      if (user) return 'sovereign identity already exists';
-      await run({ binary: '/usr/sbin/useradd', args: ['--system', '--home-dir', SOVEREIGN_HOME, '--shell', '/usr/sbin/nologin', 'sovereign'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
-      return 'created sovereign identity';
+    'identity.ensure-user': async (operation, { layout } = {}) => {
+      // The shared identity (bootstrap), or a sensitive app's own one (SID-002), named by its layout.
+      const own = Boolean(layout?.identity?.own) && operation.user === layout.identity.user;
+      if (operation.user !== 'sovereign' && !own) deny('Only the sovereign identity, or the plan target\'s own identity, may be created.');
+      const home = own ? layout.identity.home : SOVEREIGN_HOME;
+      // Never a member of nginx's group: that group can reach every app's socket.
+      const nginxGroup = groupMembers('www-data', fsImpl);
+      const assertOutsideNginx = (user) => {
+        if (nginxGroup && (user.gid === nginxGroup.gid || nginxGroup.members.includes(operation.user))) deny(`${operation.user} is in nginx's group (www-data); remove it before continuing.`);
+      };
+      const existing = lookupUser(operation.user);
+      if (existing) {
+        assertOutsideNginx(existing);
+        return `${operation.user} identity already exists`;
+      }
+      // Own identities get their own group (--user-group) and no home directory yet: app-home creates it
+      // under the app's root-owned data directory.
+      const args = own
+        ? ['--system', '--user-group', '--no-create-home', '--home-dir', home, '--shell', '/usr/sbin/nologin', operation.user]
+        : ['--system', '--home-dir', home, '--shell', '/usr/sbin/nologin', operation.user];
+      await run({ binary: '/usr/sbin/useradd', args, ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+      const created = lookupUser(operation.user);
+      if (!created) throw Object.assign(new Error(`useradd did not create ${operation.user}.`), { code: 'OPERATION_FAILED' });
+      assertOutsideNginx(created);
+      return `created ${operation.user} identity`;
     },
     'git.sync': async (operation, { layout } = {}) => {
-      requireLayout(layout);
-      const sovereign = lookupUser('sovereign');
-      if (!sovereign) deny('The sovereign identity must exist before Git synchronization.');
+      const owner = identityFor(layout);
       const transport = gitTransportForRepository(layout, operation.repository);
       if (!transport || !/^(main|[a-f0-9]{40})$/.test(operation.ref)) deny('Git operation does not match this app.');
       const { checkout: destination, mirror } = layout;
@@ -526,14 +565,14 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         await rootGit(['-C', mirror, 'fetch', '--prune', 'origin']);
       }
 
-      // 2. Sovereign updates the checkout from the local mirror only; it never touches the network or a key.
-      const env = { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, LANG: 'C', GIT_TERMINAL_PROMPT: '0' };
+      // 2. The app's user updates the checkout from the local mirror only; it never touches the network or a key.
+      const env = { PATH: '/usr/bin:/bin', HOME: owner.home, LANG: 'C', GIT_TERMINAL_PROMPT: '0' };
       // The mirror is root-owned by design (sovereign must not be able to plant config that root's fetch
       // would read), so sovereign's git gets a safe.directory exception through a managed system config.
       const currentConfig = fsImpl.existsSync(SOVEREIGN_GITCONFIG_PATH) ? fsImpl.readFileSync(SOVEREIGN_GITCONFIG_PATH, 'utf8') : null;
       if (currentConfig !== SOVEREIGN_GITCONFIG) writeFileAtomic(fsImpl, SOVEREIGN_GITCONFIG_PATH, SOVEREIGN_GITCONFIG, 0o644);
       env.GIT_CONFIG_SYSTEM = SOVEREIGN_GITCONFIG_PATH;
-      const git = (args) => run({ binary: '/usr/bin/git', args, uid: sovereign.uid, gid: sovereign.gid, timeoutMs: operation.timeoutMs, env });
+      const git = (args) => run({ binary: '/usr/bin/git', args, uid: owner.uid, gid: owner.gid, timeoutMs: operation.timeoutMs, env });
       const existingCheckout = lstatOrNull(fsImpl, path.join(destination, '.git'));
       if (!existingCheckout) {
         // ensure-install-root creates the destination first; git clones into an existing directory only when it is empty.
@@ -568,19 +607,18 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       return `synchronized ${label} repository${/^[a-f0-9]{7,40}$/.test(head) ? ` at ${head}` : ''} over ${transport}`;
     },
     'runtime.run-app-task': async (operation, { layout } = {}) => {
-      requireLayout(layout);
-      const sovereign = lookupUser('sovereign');
-      if (!sovereign) deny('The sovereign identity must exist before running app tasks.');
-      // libuv chdirs before dropping to sovereign, and sovereign owns the parent directory: refuse a
-      // checkout that is not a real sovereign-owned directory right before each spawn.
+      // Dependencies install and migrations run as the app's own user, with its own HOME (npm and pip caches).
+      const owner = identityFor(layout);
+      // libuv chdirs before dropping to the app's user, who could have swapped the checkout on an older host
+      // where it owned the parent: refuse a checkout that is not a real directory it owns right before each spawn.
       const assertCheckout = () => {
         const checkoutStat = lstatOrNull(fsImpl, layout.checkout);
-        if (!checkoutStat || checkoutStat.isSymbolicLink() || !checkoutStat.isDirectory() || checkoutStat.uid !== sovereign.uid) deny(`${layout.app.name} checkout is not a sovereign-owned directory.`);
+        if (!checkoutStat || checkoutStat.isSymbolicLink() || !checkoutStat.isDirectory() || checkoutStat.uid !== owner.uid) deny(`${layout.app.name} checkout is not a directory owned by ${owner.name}.`);
       };
       assertCheckout();
-      const env = { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, LANG: 'C', ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) };
+      const env = { PATH: '/usr/bin:/bin', HOME: owner.home, LANG: 'C', ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) };
       // Every argv is fixed by the catalog layout; the plan only names the task.
-      const runApp = ([binary, ...args], extra = {}) => assertCheckout() ?? run({ binary, args, uid: sovereign.uid, gid: sovereign.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env, ...extra });
+      const runApp = ([binary, ...args], extra = {}) => assertCheckout() ?? run({ binary, args, uid: owner.uid, gid: owner.gid, cwd: layout.checkout, timeoutMs: operation.timeoutMs, env, ...extra });
       const venvPython = `${layout.checkout}/.venv/bin/python`;
       const pip = [venvPython, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--progress-bar', 'off', '--timeout', '30', '--retries', '2'];
       // Before this venv's pip downloads anything, bring pip itself up to its security floor from the
@@ -629,7 +667,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         const [major, minor] = current.split('.').map(Number);
         const [needMajor, needMinor] = String(minVersion || '0.0').split('.').map(Number);
         if (major < needMajor || (major === needMajor && minor < needMinor)) deny(`${layout.app.name} needs Python ${minVersion} or newer; this host has ${current}.`);
-        const existing = asUser(sovereign, () => ({
+        const existing = asUser(owner, () => ({
           config: readSmallFileNoFollow(fsImpl, `${layout.checkout}/.venv/pyvenv.cfg`, 4096),
           python: Boolean(lstatOrNull(fsImpl, venvPython)),
         }));
@@ -646,7 +684,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         // the app without its packages. Venv scripts embed the .venv path, so the old one is renamed aside
         // (and back), never copied.
         const previous = `${layout.checkout}/.venv.previous`;
-        asUser(sovereign, () => {
+        asUser(owner, () => {
           if (lstatOrNull(fsImpl, previous)) fsImpl.rmSync(previous, { recursive: true, force: true });
           fsImpl.renameSync(`${layout.checkout}/.venv`, previous);
         });
@@ -654,13 +692,13 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
           await runApp(['/usr/bin/python3', '-m', 'venv', '.venv']);
           await pipInstall(runApp, collect);
         } catch (error) {
-          asUser(sovereign, () => {
+          asUser(owner, () => {
             fsImpl.rmSync(`${layout.checkout}/.venv`, { recursive: true, force: true });
             fsImpl.renameSync(previous, `${layout.checkout}/.venv`);
           });
           throw error;
         }
-        asUser(sovereign, () => fsImpl.rmSync(previous, { recursive: true, force: true }));
+        asUser(owner, () => fsImpl.rmSync(previous, { recursive: true, force: true }));
         return `rebuilt virtualenv for Python ${current} (was ${version || 'unknown'})`;
       }
       if (operation.task === 'install-dependencies') {
@@ -721,7 +759,21 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     'systemd.ensure-service': async (operation, { layout } = {}) => {
       const allowed = new Set(['postgresql.service', 'nginx.service', ...(layout?.unitNames || [])]);
       if (!allowed.has(operation.unit) || !['enable', 'restart', 'enable-and-restart', 'stop', 'disable-now'].includes(operation.action)) deny('Systemd unit or action is not allowed.');
-      if (operation.action === 'disable-now' && !lstatOrNull(fsImpl, `/etc/systemd/system/${operation.unit}`)) return `${operation.unit} is not installed`;
+      // An app unit whose file is gone (an uninstall's re-run) can still be running: systemd keeps a unit
+      // loaded while it has processes. So ask systemd, stop it if it is still active, and call it done only
+      // when systemd no longer knows it at all.
+      if (['disable-now', 'stop'].includes(operation.action) && layout?.unitNames?.includes(operation.unit) && !lstatOrNull(fsImpl, `/etc/systemd/system/${operation.unit}`)) {
+        const shown = await run({ binary: '/usr/bin/systemctl', args: ['show', '--property=LoadState,ActiveState', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+        const state = Object.fromEntries(String(shown?.stdout || '').split('\n').map((line) => line.trim().split('=')).filter(([key]) => key));
+        if (state.LoadState === 'not-found' && ['inactive', 'failed'].includes(state.ActiveState)) return `${operation.unit} is not installed`;
+        // Still loaded from another unit directory: disable means disable there too.
+        if (operation.action === 'disable-now' && state.LoadState === 'loaded') {
+          await run({ binary: '/usr/bin/systemctl', args: ['disable', '--now', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+          return `disable-now ${operation.unit}`;
+        }
+        await run({ binary: '/usr/bin/systemctl', args: ['stop', operation.unit], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+        return `stopped ${operation.unit} (its unit file was already gone)`;
+      }
       const args = {
         enable: ['enable', operation.unit],
         restart: ['restart', operation.unit],
@@ -776,15 +828,18 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     'nginx.restore-tcp-gateway': async () => {
       // Over TCP any local process can forge identity headers, so no app may still trust them. Home Base
       // refuses this too (compilers/ingress.js); here the apps' own env files decide, not the caller.
-      const sovereign = lookupUser('sovereign');
-      const trusting = !sovereign ? [] : catalog.filter((app) => {
+      const trusting = catalog.filter((app) => {
         let layout;
         try { layout = appLayout(app); } catch { return false; }
+        if (!lstatOrNull(fsImpl, layout.checkout)) return false;
+        // Each app's .env is read as that app's user. An install whose owner can't be told apart fails closed.
+        let owner;
+        try { owner = identityFor(layout); } catch { return true; }
         // An env file that is not a plain file (a symlink the app's loader would follow) can't be read here, so
         // it counts as trusting.
-        const stat = asUser(sovereign, () => lstatOrNull(fsImpl, layout.envPath));
+        const stat = asUser(owner, () => lstatOrNull(fsImpl, layout.envPath));
         if (stat && !stat.isFile()) return true;
-        const content = asUser(sovereign, () => readSmallFileNoFollow(fsImpl, layout.envPath));
+        const content = asUser(owner, () => readSmallFileNoFollow(fsImpl, layout.envPath));
         return Boolean(content) && trustsIdentityHeaders(content);
       }).map((app) => app.id);
       if (trusting.length) deny(`${trusting.join(', ')} still ${trusting.length === 1 ? 'trusts' : 'trust'} identity headers (SOVEREIGN_IDENTITY_MODE=tailnet); return ${trusting.length === 1 ? 'it' : 'them'} to local mode before restoring TCP ingress.`);
@@ -886,20 +941,31 @@ END $$;
       const moved = /transferred ([0-9]+) objects/.exec(`${result.stderr || ''}${result.stdout || ''}`);
       return moved ? `transferred ${moved[1]} objects to ${user}` : `ensured ${user} owns the objects in ${name}`;
     },
+    'systemd.apply-tmpfiles': async (operation, { layout } = {}) => {
+      const { listen } = requireLayout(layout);
+      if (listen?.kind !== 'unix') deny(`${layout.app.name} does not listen on a socket.`);
+      const owner = identityFor(layout);
+      await run({ binary: '/usr/bin/systemd-tmpfiles', args: ['--create', listen.tmpfiles], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+      const nginxGroup = groupMembers(NGINX_GROUP, fsImpl);
+      const stat = lstatOrNull(fsImpl, listen.directory);
+      if (!nginxGroup || !stat || stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== owner.uid || stat.gid !== nginxGroup.gid || (stat.mode & 0o7777) !== 0o2750) {
+        deny(`${listen.directory} is not ${owner.name}:${NGINX_GROUP} 2750 after systemd-tmpfiles; check ${listen.tmpfiles}.`);
+      }
+      return `ensured ${listen.directory} (${owner.name}:${NGINX_GROUP} 2750)`;
+    },
     'nginx.validate-and-reload': async (operation) => {
       await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       return 'validated and reloaded nginx';
     },
-    'filesystem.ensure-directory': async (operation, { layout } = {}) => {
+    'filesystem.ensure-directory': async (operation, { layout, planKind } = {}) => {
       if (operation.purpose === 'app-checkout-storage') {
         const storage = requireLayout(layout).storage;
         if (!storage?.inCheckout || !storage.subpaths.includes(operation.subpath)) deny('Storage subpath is not declared by this app.');
-        const sovereign = lookupUser('sovereign');
-        if (!sovereign) deny('The sovereign identity must exist before creating app storage.');
+        const owner = identityFor(layout);
         const target = `${layout.checkout}/${operation.subpath}`;
-        // Inside the sovereign-owned checkout, so created as sovereign: root never resolves a path there.
-        asUser(sovereign, () => {
+        // Inside the app-owned checkout, so created as the app's user: root never resolves a path there.
+        asUser(owner, () => {
           const existing = lstatOrNull(fsImpl, target);
           if (existing && (existing.isSymbolicLink() || !existing.isDirectory())) deny(`${target} is not a real directory.`);
           if (!existing) fsImpl.mkdirSync(target, { mode: 0o700 });
@@ -913,12 +979,15 @@ END $$;
       if (!fsImpl.existsSync(parent)) fsImpl.mkdirSync(parent, { recursive: true, mode: 0o755 });
       if (fsImpl.realpathSync(parent) !== parent) deny('Managed directory parent is a symlink.');
       const rootOwned = ROOT_OWNED_DIRECTORIES.has(operation.purpose);
-      const sovereign = rootOwned ? null : lookupUser('sovereign');
-      if (!rootOwned && !sovereign) deny('The sovereign identity must exist before creating app-owned directories.');
-      // Inspect before mutating: a sovereign-planted symlink here would otherwise turn chown into a root escalation.
+      // App directories belong to the app's user; sovereign-home is the shared user's own HOME.
+      const shared = lookupUser('sovereign');
+      const owner = rootOwned ? null : (APP_DIRECTORIES.has(operation.purpose) ? identityFor(layout, planKind) : shared && { ...shared, own: false });
+      if (!rootOwned && !owner) deny('The sovereign identity must exist before creating app-owned directories.');
+      // Inspect before mutating: an app-planted symlink here would otherwise turn chown into a root escalation.
       const existing = lstatOrNull(fsImpl, directory);
       if (existing && (existing.isSymbolicLink() || !existing.isDirectory())) deny('Managed directory is not a real directory.');
-      const mode = DIRECTORY_MODES[operation.purpose] || 0o755;
+      // A sensitive app's directories are private to its user (SID-002).
+      const mode = owner?.own ? 0o700 : (DIRECTORY_MODES[operation.purpose] || 0o755);
       if (!existing) fsImpl.mkdirSync(directory, { mode });
       // The owner of a sovereign-writable parent can swap this entry for a symlink at any moment, so
       // ownership and mode are applied through a no-follow directory descriptor, never by path.
@@ -926,7 +995,7 @@ END $$;
       try {
         if (!fsImpl.fstatSync(fd).isDirectory()) deny('Managed directory is not a real directory.');
         if (rootOwned) fsImpl.fchownSync(fd, 0, 0);
-        else fsImpl.fchownSync(fd, sovereign.uid, sovereign.gid);
+        else fsImpl.fchownSync(fd, owner.uid, owner.gid);
         // Also heals hosts bootstrapped before sovereign-root became root-owned.
         fsImpl.fchmodSync(fd, mode);
       } finally { fsImpl.closeSync(fd); }
@@ -936,7 +1005,9 @@ END $$;
       // App snippets and URLs follow the host's ingress mode: identity lookups and service hostnames exist
       // only once the host is cut over.
       const ingress = ['app-nginx-v1', 'app-env-v1'].includes(operation.template) ? readIngressRecord(fsImpl) : null;
-      const template = renderManagedFile(operation, { secretBindings, layout, ingress });
+      // The nginx snippet is root's and the same whoever runs the app; the .env and units need the app's user.
+      const owner = operation.template === 'app-nginx-v1' ? null : identityFor(layout);
+      const template = renderManagedFile(operation, { secretBindings, layout, ingress, identity: owner });
       if (template.owner === 'root') {
         writeFileAtomic(fsImpl, template.path, template.content, template.mode);
         // An app snippet written before SID-001 used another name; both would declare the same locations.
@@ -947,9 +1018,7 @@ END $$;
         }
         return `wrote ${operation.template}`;
       }
-      const sovereign = lookupUser('sovereign');
-      if (!sovereign) deny('The sovereign identity must exist before writing app configuration.');
-      asUser(sovereign, () => {
+      asUser(owner, () => {
         const existing = lstatOrNull(fsImpl, template.path);
         if (existing && !existing.isFile()) deny('Managed file destination is not a regular file.');
         const existingContent = existing ? (readSmallFileNoFollow(fsImpl, template.path) ?? deny('Managed file destination is not a regular file.')) : '';

@@ -28,7 +28,8 @@
         "app-adopt",
         "ingress-cutover",
         "ingress-rollback",
-        "service-publish"
+        "service-publish",
+        "app-move-user"
       ]
     },
     "target": {
@@ -55,7 +56,8 @@
         "app-adopt-v1",
         "ingress-cutover-v1",
         "ingress-rollback-v1",
-        "service-publish-v1"
+        "service-publish-v1",
+        "app-move-user-v1"
       ]
     },
     "operations": {
@@ -231,6 +233,15 @@
         },
         {
           "$ref": "#/$defs/serveRestore"
+        },
+        {
+          "$ref": "#/$defs/reownApp"
+        },
+        {
+          "$ref": "#/$defs/checkAppTrees"
+        },
+        {
+          "$ref": "#/$defs/tmpfilesApply"
         }
       ]
     },
@@ -315,7 +326,8 @@
               "const": "identity.ensure-user"
             },
             "user": {
-              "const": "sovereign"
+              "type": "string",
+              "pattern": "^sovereign(-[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?)?$"
             },
             "id": true,
             "title": true,
@@ -346,6 +358,7 @@
                 "sovereign-root",
                 "app-root",
                 "app-install",
+                "app-home",
                 "sovereign-home",
                 "backup-root",
                 "config-root",
@@ -499,7 +512,8 @@
               "enum": [
                 "app-env",
                 "systemd-unit",
-                "nginx-snippet"
+                "nginx-snippet",
+                "app-tmpfiles"
               ]
             },
             "template": {
@@ -509,7 +523,8 @@
                 "app-sidecar-service-v1",
                 "app-timer-service-v1",
                 "app-timer-v1",
-                "app-nginx-v1"
+                "app-nginx-v1",
+                "app-tmpfiles-v1"
               ]
             },
             "unit": {
@@ -1174,6 +1189,80 @@
           "properties": {
             "type": {
               "const": "tailscale.restore-serve-snapshot"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "checkAppTrees": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "filesystem.check-app-trees"
+            },
+            "id": true,
+            "title": true,
+            "risk": {
+              "const": "read"
+            },
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "reownApp": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "filesystem.reown-app"
+            },
+            "id": true,
+            "title": true,
+            "risk": true,
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true
+          }
+        }
+      ]
+    },
+    "tmpfilesApply": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "systemd.apply-tmpfiles"
             },
             "id": true,
             "title": true,

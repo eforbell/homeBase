@@ -38,6 +38,11 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
   add({ id: 'ensure-sovereign-root', type: 'filesystem.ensure-directory', title: 'Ensure root-owned Sovereign Home directory', purpose: 'sovereign-root' });
   add({ id: 'ensure-app-root', type: 'filesystem.ensure-directory', title: 'Ensure managed apps directory', purpose: 'app-root' });
   add({ id: 'ensure-sovereign-home', type: 'filesystem.ensure-directory', title: 'Ensure sovereign runtime home', purpose: 'sovereign-home' });
+  // A sensitive app runs as its own user (SID-002), with its own HOME for npm and pip caches.
+  if (layout.identity.own) {
+    add({ id: 'ensure-app-user', type: 'identity.ensure-user', title: `Ensure the ${layout.identity.user} identity`, user: layout.identity.user });
+    add({ id: 'ensure-app-home', type: 'filesystem.ensure-directory', title: `Ensure ${layout.identity.user} home`, purpose: 'app-home' });
+  }
   add({ id: 'ensure-install-root', type: 'filesystem.ensure-directory', title: `Ensure ${name} install directory`, purpose: 'app-install' });
   if (layout.packages.length) {
     add({ id: 'install-app-packages', type: 'package.ensure', title: `Install ${name} system packages`, timeoutMs: 600000, packages: layout.packages, updateCache: true });
@@ -70,6 +75,11 @@ function buildAppInstallPlan({ appId, ref = 'main', gitTransport = 'https', site
     add({ id: `write-timer-service-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${timer.serviceName} service unit`, purpose: 'systemd-unit', template: 'app-timer-service-v1', unit: timer.serviceUnit, timezone });
     add({ id: `write-timer-${index + 1}`, type: 'filesystem.write-managed-file', title: `Write ${timer.timerUnit}`, purpose: 'systemd-unit', template: 'app-timer-v1', unit: timer.timerUnit });
   });
+  // A socket app's directory exists before the app starts (SID-002), recreated at every boot.
+  if (layout.listen.kind === 'unix') {
+    add({ id: 'write-socket-tmpfiles', type: 'filesystem.write-managed-file', title: `Write ${name} socket directory entry`, purpose: 'app-tmpfiles', template: 'app-tmpfiles-v1' });
+    add({ id: 'ensure-socket-directory', type: 'systemd.apply-tmpfiles', title: `Ensure ${name} socket directory` });
+  }
   add({ id: 'ensure-nginx-apps', type: 'filesystem.ensure-directory', title: 'Ensure managed nginx app directory', purpose: 'nginx-apps' });
   add({ id: 'write-nginx', type: 'filesystem.write-managed-file', title: `Write ${name} nginx snippet`, purpose: 'nginx-snippet', template: 'app-nginx-v1' });
   // Both snippets in the same server would be duplicate locations; the legacy one is kept aside, not deleted.

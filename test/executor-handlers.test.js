@@ -10,6 +10,7 @@ const {
   GIT_DEPLOY_KEY_PATH, GIT_KNOWN_HOSTS_PATH, GITHUB_KNOWN_HOSTS, NGINX_GATEWAY_CONTENT,
 } = require('../executor/handlers');
 const { createFakeFs } = require('./fixtures/fake-fs');
+const { SHARED_IDENTITY, ownIdentity, users } = require('./fixtures/users');
 const { appLayout } = require('../src/operations/app-layout');
 const { getAppById } = require('../src/catalog');
 
@@ -68,11 +69,27 @@ test('package handler runs apt non-interactively with fixed argv and rejects pac
 
 test('identity handler permits only sovereign and never accepts caller groups', async () => {
   const calls = [];
-  const handlers = createBaseHandlers({ run: recordingRun(calls), lookupUser: () => null });
+  const created = new Set();
+  const handlers = createBaseHandlers({ run: async (input) => { calls.push(input); created.add(input.args.at(-1)); return { stdout: '' }; }, lookupUser: (name) => (created.has(name) ? users()(name) : null) });
   await handlers['identity.ensure-user'](base('identity.ensure-user', { user: 'sovereign' }), { layout: LAYOUT });
   assert.equal(calls[0].binary, '/usr/sbin/useradd');
   assert.deepEqual(calls[0].args, ['--system', '--home-dir', '/var/lib/sovereign-home/sovereign', '--shell', '/usr/sbin/nologin', 'sovereign']);
   await assert.rejects(() => handlers['identity.ensure-user'](base('identity.ensure-user', { user: 'root' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
+});
+
+test("a sensitive app's own identity: its own group, no home yet, never another app's, never in nginx's group (SID-002)", async () => {
+  const calls = [];
+  const created = new Set();
+  const run = async (input) => { calls.push(input); created.add(input.args.at(-1)); return { stdout: '' }; };
+  const handlers = createBaseHandlers({ run, lookupUser: (name) => (created.has(name) ? users()(name) : null) });
+  await handlers['identity.ensure-user'](base('identity.ensure-user', { user: 'sovereign-source' }), { layout: SOURCE });
+  assert.deepEqual(calls[0].args, ['--system', '--user-group', '--no-create-home', '--home-dir', '/var/lib/sovereign-home/home-source/home', '--shell', '/usr/sbin/nologin', 'sovereign-source']);
+  await assert.rejects(() => handlers['identity.ensure-user'](base('identity.ensure-user', { user: 'sovereign-helm' }), { layout: SOURCE }), /plan target's own identity/);
+  await assert.rejects(() => handlers['identity.ensure-user'](base('identity.ensure-user', { user: 'sovereign-source' }), { layout: LAYOUT }), /plan target's own identity/, 'a shared app has no own identity');
+  const nginxMember = createBaseHandlers({ fsImpl: createFakeFs({ '/etc/group': 'www-data:x:33:sovereign-source\n' }), run, lookupUser: users() });
+  await assert.rejects(() => nginxMember['identity.ensure-user'](base('identity.ensure-user', { user: 'sovereign-source' }), { layout: SOURCE }), /in nginx's group/);
+  const nginxPrimary = createBaseHandlers({ fsImpl: createFakeFs({ '/etc/group': 'www-data:x:1102:\n' }), run, lookupUser: users() });
+  await assert.rejects(() => nginxPrimary['identity.ensure-user'](base('identity.ensure-user', { user: 'sovereign-source' }), { layout: SOURCE }), /in nginx's group/);
 });
 
 test('managed app directories become sovereign-owned without following symlinks', async () => {
@@ -82,8 +99,32 @@ test('managed app directories become sovereign-owned without following symlinks'
   assert.deepEqual(fsImpl.calls.at(-1), ['fchown', DINNER, 1001, 1002]);
   await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'nginx-apps' }), { layout: LAYOUT });
   assert.deepEqual(fsImpl.calls.at(-1), ['fchown', '/etc/nginx/sovereign-home.d', 0, 0]);
+  // apps/ and backups/ are root-owned (SID-002): the shared user must not rename a sensitive app's checkout.
+  await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-root' }), { layout: LAYOUT });
+  assert.deepEqual(fsImpl.calls.at(-1), ['fchown', '/opt/sovereign-home/apps', 0, 0]);
+  await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'backup-root' }), { layout: LAYOUT });
+  assert.deepEqual(fsImpl.calls.at(-1), ['fchown', '/var/lib/sovereign-home/backups', 0, 0]);
   const missing = createBaseHandlers({ fsImpl, lookupUser: () => null });
-  await assert.rejects(() => missing['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-root' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
+  await assert.rejects(() => missing['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-install' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
+});
+
+test("a sensitive app's checkout, storage and home belong to its own user, 0700; a not-yet-moved install keeps sovereign", async () => {
+  const fsImpl = createFakeFs({ '/opt/sovereign-home/apps': { kind: 'dir' }, '/var/lib/sovereign-home': { kind: 'dir' } });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: users() });
+  for (const purpose of ['app-install', 'app-home', 'app-storage-root']) await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose }), { layout: SOURCE });
+  await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-storage', subpath: 'documents' }), { layout: SOURCE });
+  const owner = (target) => [fsImpl.entries.get(target).uid, fsImpl.entries.get(target).mode];
+  for (const target of ['/opt/sovereign-home/apps/homeSource', '/var/lib/sovereign-home/home-source/home', '/var/lib/sovereign-home/home-source/data', '/var/lib/sovereign-home/home-source/data/documents']) {
+    assert.deepEqual(owner(target), [1102, 0o700], target);
+  }
+  assert.deepEqual(owner('/var/lib/sovereign-home/home-source'), [0, 0o755], 'the per-app parent stays root-owned');
+  await assert.rejects(() => handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-home' }), { layout: LAYOUT }), /own user have their own home/);
+  // Installed before SID-002: the checkout is sovereign's, so updates keep running as sovereign until the move.
+  const unmoved = createFakeFs({ '/opt/sovereign-home/apps/homeSource': { kind: 'dir', uid: 1001, gid: 1002 }, '/var/lib/sovereign-home': { kind: 'dir' } });
+  await createBaseHandlers({ fsImpl: unmoved, lookupUser: users() })['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-storage-root' }), { layout: SOURCE });
+  assert.deepEqual([unmoved.entries.get('/var/lib/sovereign-home/home-source/data').uid, unmoved.entries.get('/var/lib/sovereign-home/home-source/data').mode], [1001, 0o750]);
+  const foreign = createFakeFs({ '/opt/sovereign-home/apps/homeSource': { kind: 'dir', uid: 4242 } });
+  await assert.rejects(() => createBaseHandlers({ fsImpl: foreign, lookupUser: users() })['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-install' }), { layout: SOURCE }), /belongs to uid 4242/);
 });
 
 test('the shared Sovereign Home root is returned to root so app code cannot replace Home Base itself', async () => {
@@ -345,8 +386,8 @@ test('PostgreSQL handlers send valid psql input on stdin and never place passwor
 });
 
 test('managed files have fixed destinations and never accept caller content', () => {
-  assert.equal(renderManagedFile(base('filesystem.write-managed-file', { template: 'app-env-v1' }), { layout: LAYOUT }).path, `${DINNER}/.env`);
-  const unit = renderManagedFile(base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT });
+  assert.equal(renderManagedFile(base('filesystem.write-managed-file', { template: 'app-env-v1' }), { layout: LAYOUT, identity: SHARED_IDENTITY }).path, `${DINNER}/.env`);
+  const unit = renderManagedFile(base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT, identity: SHARED_IDENTITY });
   assert.match(unit.content, /User=sovereign/);
   assert.match(unit.content, /NoNewPrivileges=yes/);
   // systemd reads EnvironmentFile= as root; Dinner loads its sovereign-owned .env via dotenv instead.
@@ -362,6 +403,10 @@ test('managed files have fixed destinations and never accept caller content', ()
   assert.match(socketSnippet.content, /include \/etc\/nginx\/sovereign-identity\.conf;/);
   assert.doesNotMatch(socketSnippet.content, /\$proxy_add_x_forwarded_for|\$host;/);
   assert.throws(() => renderManagedFile(base('filesystem.write-managed-file', { template: '../../etc/shadow' }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
+  assert.throws(() => renderManagedFile(base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT }), /need the app's identity/, 'never a unit without knowing who it runs as');
+  const own = ownIdentity('sovereign-source', 'home-source');
+  assert.equal(renderManagedFile(base('filesystem.write-managed-file', { template: 'app-env-v1' }), { layout: SOURCE, identity: own }).mode, 0o600, "a sensitive app's .env is private to its user");
+  assert.match(renderManagedFile(base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'home-source.service', timezone: 'America/New_York' }), { layout: SOURCE, identity: own }).content, /^User=sovereign-source$/m);
 });
 
 test('app env is read and written under the sovereign identity; root files are written directly', async () => {
@@ -375,7 +420,7 @@ test('app env is read and written under the sovereign identity; root files are w
   const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN, asUser });
   await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-env-v1', site: { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' } }), { secretBindings: { databasePassword: 'canary-pass' }, layout: LAYOUT });
   await handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { template: 'app-service-v1', unit: 'family-dinner.service', timezone: 'America/New_York' }), { layout: LAYOUT });
-  assert.deepEqual(identities, [SOVEREIGN]);
+  assert.deepEqual(identities.map(({ uid, gid, name }) => ({ uid, gid, name })), [{ ...SOVEREIGN, name: 'sovereign' }]);
   assert.deepEqual(opens.map(([target, who]) => [target.replace(/\.tmp-[0-9a-f]+$/, '.tmp'), who]), [
     [`${DINNER}/.env`, 'sovereign'],
     [`${DINNER}/.env.tmp`, 'sovereign'],
@@ -417,23 +462,23 @@ test('nginx gateway installs the managed site, enables it, and retires the stock
   await assert.rejects(() => broken['nginx.ensure-gateway'](base('nginx.ensure-gateway'), { layout: LAYOUT }), /Could not read the active nginx configuration/);
 });
 
-test('homeSource: storage lives outside the checkout, sovereign-owned 0750 under a root-owned parent', async () => {
+test('homeSource: storage lives outside the checkout, owned by its own user 0700 under a root-owned parent', async () => {
   const fsImpl = createFakeFs({ '/var/lib/sovereign-home': { kind: 'dir' } });
-  const handlers = createBaseHandlers({ fsImpl, lookupUser: () => SOVEREIGN });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: users() });
   await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-storage-root' }), { layout: SOURCE });
   for (const subpath of ['documents', 'thumbnails', 'exports']) {
     await handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-storage', subpath }), { layout: SOURCE });
   }
   const entry = (target) => fsImpl.entries.get(target);
   assert.deepEqual([entry('/var/lib/sovereign-home/home-source').uid, entry('/var/lib/sovereign-home/home-source').mode], [0, 0o755]);
-  assert.deepEqual([entry('/var/lib/sovereign-home/home-source/data').uid, entry('/var/lib/sovereign-home/home-source/data').mode], [1001, 0o750]);
-  assert.equal(entry('/var/lib/sovereign-home/home-source/data/documents').uid, 1001);
+  assert.deepEqual([entry('/var/lib/sovereign-home/home-source/data').uid, entry('/var/lib/sovereign-home/home-source/data').mode], [1102, 0o700]);
+  assert.equal(entry('/var/lib/sovereign-home/home-source/data/documents').uid, 1102);
   await assert.rejects(() => handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-storage', subpath: 'etc' }), { layout: SOURCE }), (error) => error.code === 'POLICY_DENIED');
   await assert.rejects(() => handlers['filesystem.ensure-directory'](base('filesystem.ensure-directory', { purpose: 'app-storage-root' }), { layout: LAYOUT }), /no storage/);
 });
 
 test('homeSource: service, sidecar, and timer units come from the catalog with fixed argv and no EnvironmentFile', () => {
-  const render = (template, unit) => renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template, unit, ...(template === 'app-timer-v1' ? {} : { timezone: 'America/New_York' }) }), { layout: SOURCE });
+  const render = (template, unit) => renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template, unit, ...(template === 'app-timer-v1' ? {} : { timezone: 'America/New_York' }) }), { layout: SOURCE, identity: ownIdentity('sovereign-source', 'home-source') });
   const service = render('app-service-v1', 'home-source.service');
   assert.equal(service.path, '/etc/systemd/system/home-source.service');
   assert.match(service.content, /^ExecStart=\/usr\/bin\/node server\.js$/m);
@@ -451,22 +496,22 @@ test('homeSource: service, sidecar, and timer units come from the catalog with f
   assert.match(timer.content, /^Unit=home-source-continuity-outbox\.service$/m);
   for (const unit of [service, sidecar, oneshot, timer]) {
     assert.doesNotMatch(unit.content, /EnvironmentFile=/);
-    if (!unit.path.endsWith('.timer')) assert.match(unit.content, /^User=sovereign$/m);
+    if (!unit.path.endsWith('.timer')) assert.match(unit.content, /^User=sovereign-source$/m);
   }
   assert.throws(() => render('app-sidecar-service-v1', 'family-dinner.service'), (error) => error.code === 'POLICY_DENIED');
   assert.throws(() => render('app-timer-v1', 'ssh.timer'), (error) => error.code === 'POLICY_DENIED');
-  const snippet = renderManagedFile(base('filesystem.write-managed-file', { purpose: 'nginx-snippet', template: 'app-nginx-v1' }), { layout: SOURCE });
+  const snippet = renderManagedFile(base('filesystem.write-managed-file', { purpose: 'nginx-snippet', template: 'app-nginx-v1' }), { layout: SOURCE, identity: ownIdentity('sovereign-source', 'home-source') });
   assert.equal(snippet.path, '/etc/nginx/sovereign-home.d/source--home-source.conf');
-  assert.match(snippet.content, /proxy_pass http:\/\/127\.0\.0\.1:3008\/;/);
+  assert.match(snippet.content, /proxy_pass http:\/\/unix:\/run\/sovereign-apps\/home-source\/app\.sock:\/;/);
   assert.match(snippet.content, /X-Forwarded-Prefix \/source;/);
 });
 
 test('homeSource: migrations, packages, units, and database names are bound to its layout', async () => {
   const calls = [];
-  const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/homeSource': { kind: 'dir', uid: 1001 } });
-  const handlers = createBaseHandlers({ fsImpl, lookupUser: (name) => (name === 'postgres' ? { uid: 999, gid: 999 } : SOVEREIGN), run: recordingRun(calls) });
+  const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/homeSource': { kind: 'dir', uid: 1102 } });
+  const handlers = createBaseHandlers({ fsImpl, lookupUser: users(), run: recordingRun(calls) });
   await handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout: SOURCE });
-  assert.deepEqual([calls[0].binary, calls[0].args, calls[0].cwd, calls[0].uid], ['/usr/bin/node', ['db/migrate.js'], '/opt/sovereign-home/apps/homeSource', 1001]);
+  assert.deepEqual([calls[0].binary, calls[0].args, calls[0].cwd, calls[0].uid, calls[0].env.HOME], ['/usr/bin/node', ['db/migrate.js'], '/opt/sovereign-home/apps/homeSource', 1102, '/var/lib/sovereign-home/home-source/home']);
   await handlers['package.ensure'](base('package.ensure', { packages: ['tesseract-ocr', 'poppler-utils'], updateCache: false }), { layout: SOURCE });
   await assert.rejects(() => handlers['package.ensure'](base('package.ensure', { packages: ['tesseract-ocr'], updateCache: false }), { layout: LAYOUT }), (error) => error.code === 'POLICY_DENIED');
   await handlers['systemd.ensure-service'](base('systemd.ensure-service', { unit: 'home-source-continuity-check.timer', action: 'enable-and-restart' }), { layout: SOURCE });
@@ -490,18 +535,20 @@ test('upload limits from the catalog reach both the executor and legacy nginx sn
 
 test('unit descriptions cannot continue onto the next line or expand specifiers', () => {
   const layout = { ...SOURCE, service: { ...SOURCE.service, description: 'Evil %n \\' } };
-  const unit = renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template: 'app-service-v1', unit: 'home-source.service', timezone: 'America/New_York' }), { layout });
+  const unit = renderManagedFile(base('filesystem.write-managed-file', { purpose: 'systemd-unit', template: 'app-service-v1', unit: 'home-source.service', timezone: 'America/New_York' }), { layout, identity: ownIdentity('sovereign-source', 'home-source') });
   assert.match(unit.content, /^Description=Evil %%n $/m);
   assert.match(unit.content, /^After=network.target postgresql.service$/m);
 });
 
-test('app tasks refuse a checkout that is not a real sovereign-owned directory', async () => {
+test("app tasks refuse a checkout that is not a real directory owned by the app's user", async () => {
   const calls = [];
   const planted = createFakeFs({ '/opt/sovereign-home/apps/homeSource': { kind: 'link', target: '/root' } });
-  const handlers = createBaseHandlers({ fsImpl: planted, lookupUser: () => SOVEREIGN, run: recordingRun(calls) });
-  await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout: SOURCE }), /not a sovereign-owned directory/);
+  const handlers = createBaseHandlers({ fsImpl: planted, lookupUser: users(), run: recordingRun(calls) });
+  await assert.rejects(() => handlers['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout: SOURCE }), /not a real directory/);
   const rootOwned = createFakeFs({ '/opt/sovereign-home/apps/homeSource': { kind: 'dir', uid: 0 } });
-  const handlers2 = createBaseHandlers({ fsImpl: rootOwned, lookupUser: () => SOVEREIGN, run: recordingRun(calls) });
-  await assert.rejects(() => handlers2['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout: SOURCE }), /not a sovereign-owned directory/);
+  const handlers2 = createBaseHandlers({ fsImpl: rootOwned, lookupUser: users(), run: recordingRun(calls) });
+  await assert.rejects(() => handlers2['runtime.run-app-task'](base('runtime.run-app-task', { task: 'migrate' }), { layout: SOURCE }), /belongs to uid 0/);
+  const dinnerRootOwned = createFakeFs({ [DINNER]: { kind: 'dir', uid: 0 } });
+  await assert.rejects(() => createBaseHandlers({ fsImpl: dinnerRootOwned, lookupUser: users(), run: recordingRun(calls) })['runtime.run-app-task'](base('runtime.run-app-task', { task: 'install-dependencies' }), { layout: LAYOUT }), /not a directory owned by sovereign/);
   assert.equal(calls.length, 0);
 });

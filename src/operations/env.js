@@ -209,6 +209,15 @@ function renderAppEnv({ app, ctx, existing = null, strict = false }) {
 // Catalog env keys whose literal default points inside the app's external storage root (e.g.
 // FP_TRANSACTION_FILES_DIR). Backups archive that root, so a restore must keep the app pointed at it
 // even when the restored .env predates the key.
+// Where the app listens (Feature-10 SID-002), never left to an old .env: a socket only nginx's group can
+// reach, or loopback for apps that don't support one (never every interface, which the tailnet reaches).
+// The other mode's key goes, so an app switching modes, or restored from an older backup, never keeps
+// listening where nginx no longer points. Returns a new object.
+function applyListenEnv(env, layout) {
+  const { HOST: _host, SOVEREIGN_LISTEN: _listen, ...rest } = env;
+  return layout.listen?.kind === 'unix' ? { ...rest, SOVEREIGN_LISTEN: `unix:${layout.listen.socket}` } : { ...rest, HOST: '127.0.0.1' };
+}
+
 function storageEnvOverrides(app) {
   const root = String(app?.storage?.absoluteRoot || '').replace(/\/+$/, '');
   if (!root) return {};
@@ -223,6 +232,7 @@ function storageEnvOverrides(app) {
 
 module.exports = {
   EnvTemplateError,
+  applyListenEnv,
   storageEnvOverrides,
   DATABASE_KEYS,
   quoteEnvValue,

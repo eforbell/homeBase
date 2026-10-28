@@ -3,7 +3,7 @@ const { getAppById } = require('../src/catalog');
 const { PROTOCOL_VERSION } = require('./protocol-version');
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 64 * 1024;
-const REQUEST_TYPES = new Set(['hello', 'host-status', 'foundation-status', 'dependency-inventory', 'app-update-status', 'action-status', 'plan-action', 'run-action']);
+const REQUEST_TYPES = new Set(['hello', 'host-status', 'foundation-status', 'dependency-inventory', 'app-identity', 'app-probe', 'app-update-status', 'action-status', 'plan-action', 'run-action']);
 
 const { ProtocolError } = require('./protocol-error');
 const { normalizeAction, ACTION_FIELDS } = require('./actions');
@@ -17,7 +17,7 @@ const BASE_KEYS = ['protocolVersion', 'requestId', 'type'];
 
 function validateRequest(request) {
   // Every field any request type takes; each type narrows this below. Action fields come from actions.js.
-  requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actor', 'issuedAt', 'actionRequestId', ...ACTION_FIELDS]));
+  requireExactKeys(request, new Set([...BASE_KEYS, 'jobId', 'actor', 'issuedAt', 'actionRequestId', 'probe', ...ACTION_FIELDS]));
   if (request.protocolVersion !== PROTOCOL_VERSION) throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported executor protocol version.');
   if (typeof request.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(request.requestId)) throw new ProtocolError('INVALID_REQUEST', 'requestId must be a UUID.');
   if (!REQUEST_TYPES.has(request.type)) throw new ProtocolError('INVALID_REQUEST', 'Unsupported request type.');
@@ -31,9 +31,15 @@ function validateRequest(request) {
     if (typeof request.jobId !== 'string' || !/^[1-9][0-9]{0,14}$/.test(request.jobId)) throw new ProtocolError('INVALID_REQUEST', 'jobId must be a positive integer string.');
     return request;
   }
-  if (request.type === 'dependency-inventory') {
+  if (request.type === 'dependency-inventory' || request.type === 'app-identity') {
     requireExactKeys(request, new Set([...BASE_KEYS, 'appId']));
     if (typeof request.appId !== 'string' || !getAppById(request.appId)) throw new ProtocolError('INVALID_REQUEST', 'appId must name a catalog app.');
+    return request;
+  }
+  if (request.type === 'app-probe') {
+    requireExactKeys(request, new Set([...BASE_KEYS, 'appId', 'probe']));
+    if (typeof request.appId !== 'string' || !getAppById(request.appId)) throw new ProtocolError('INVALID_REQUEST', 'appId must name a catalog app.');
+    if (!['liveness', 'readiness', 'onboarding'].includes(request.probe)) throw new ProtocolError('INVALID_REQUEST', 'probe must be liveness, readiness, or onboarding.');
     return request;
   }
   if (request.type === 'app-update-status') {
