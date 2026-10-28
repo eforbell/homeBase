@@ -276,6 +276,32 @@
     }
   }
 
+  async function handleMoveUser(form) {
+    if (form.dataset.submitting === 'true') return;
+    const dryRun = form.elements.dryRun.checked;
+    const resultNode = form.querySelector('[data-result]');
+    const payload = { dryRun };
+    if (!dryRun) {
+      try {
+        await window.HB.confirmInline(resultNode, 'This backs the app up, stops it, hands its files to its own user, rewrites its settings and services, and starts it again.');
+      } catch (_error) {
+        return;
+      }
+      payload.confirm = 'MOVE';
+    }
+    form.dataset.submitting = 'true';
+    resultNode.textContent = 'Submitting...';
+    try {
+      const response = await window.HB.postJson(`/api/apps/${appId}/move-user/execute`, payload);
+      resultNode.innerHTML = `Started ${dryRun ? 'move preview' : 'move'} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a>.`;
+      void waitForJobCompletion(response.jobId, resultNode, { refreshOnComplete: !dryRun });
+    } catch (error) {
+      resultNode.textContent = error.message;
+    } finally {
+      form.dataset.submitting = 'false';
+    }
+  }
+
   async function handleUninstall(form) {
     if (form.dataset.submitting === 'true') return;
     form.dataset.submitting = 'true';
@@ -385,6 +411,12 @@
         handleAbandonAdopt(abandonForm);
         return;
       }
+      const moveForm = event.target.closest('form[data-action="move-user"]');
+      if (moveForm) {
+        event.preventDefault();
+        handleMoveUser(moveForm);
+        return;
+      }
       const adoptForm = event.target.closest('form[data-action="adopt"]');
       if (adoptForm) {
         event.preventDefault();
@@ -474,7 +506,7 @@
       return;
     }
     try {
-      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload, updatesPayload, dependencies] = await Promise.all([
+      const [statePayload, catalogPayload, backupPayload, actionsPayload, config, healthPayload, updatesPayload, dependencies, identity] = await Promise.all([
         window.HB.getJson('/api/state'),
         window.HB.getJson('/api/catalog'),
         window.HB.getJson(`/api/apps/${appId}/backups`),
@@ -484,6 +516,8 @@
         window.HB.getJson('/api/apps/updates'),
         // Optional: a failed inventory must never keep the rest of the page from rendering.
         window.HB.getJson('/api/apps/dependencies').catch(() => null),
+        // Who the app runs as (Feature-10 SID-002); optional like the inventory.
+        window.HB.getJson(`/api/apps/${appId}/identity`).catch(() => null),
       ]);
       const catalogApps = Array.isArray(catalogPayload.apps) ? catalogPayload.apps : [];
       const app = catalogApps.find((item) => item.id === appId);
@@ -592,6 +626,22 @@
                 <div><button class="hb-btn hb-btn-primary" type="submit">Adopt into executor</button></div>
                 <p class="hb-muted" data-result style="margin:0;"></p>
               </form>
+            </section>
+          ` : ''}
+
+          ${install && identity?.sensitive && identity.available && identity.installed ? `
+            <section id="identity" class="hb-card">
+              <h2 style="margin-top:0;">Runs as</h2>
+              ${identity.pendingMove ? `
+                <p class="hb-warn" style="margin:0 0 0.5rem;">Runs as the shared user <code>sovereign</code>, like the everyday apps.</p>
+                <p class="hb-muted" style="margin:0 0 0.75rem;">Its own user, <code>${window.HB.escapeHtml(identity.target)}</code>, keeps its code, settings, data, and backups out of reach of every other app. Moving is a one-time step: Home Base backs the app up, stops it, hands its files over, rewrites its settings and services, and starts it again. Expect a minute or two of downtime.</p>
+                <form class="hb-form-grid" data-action="move-user">
+                  <label class="hb-label hb-check-row"><input name="dryRun" type="checkbox" checked> Preview the plan only</label>
+                  <div><button class="hb-btn hb-btn-primary" type="submit">Move to its own user</button></div>
+                  <p class="hb-muted" data-result style="margin:0;"></p>
+                </form>` : identity.runsAs ? `
+                <p class="hb-ok" style="margin:0;">Its own user, <code>${window.HB.escapeHtml(identity.runsAs)}</code>. No other app can read its code, settings, data, or backups.</p>` : `
+                <p class="hb-warn" style="margin:0;">${window.HB.escapeHtml(identity.problem || 'Home Base could not tell which user this app runs as.')}</p>`}
             </section>
           ` : ''}
 

@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const { runAction, planAction, actionStatus } = require('../executor/client');
+const { runAction, planAction, actionStatus, appProbe } = require('../executor/client');
 const { buildExecutorInstallRecord } = require('./executor-install');
 const { getAppById } = require('../catalog');
 const { BACKUP_ROOT } = require('../operations/paths');
@@ -16,19 +16,21 @@ function appendExecutorEventLog(stateStore, jobId, event, secretBindings = {}) {
   stateStore.appendJobLog(jobId, `[executor] diagnostic output${operation}${truncated}:\n${output.trim()}\n`);
 }
 
-// Readiness is probed only on loopback, at the catalog's port and readiness path.
-async function waitForAppReadiness({ app, fetchImpl = global.fetch, attempts = 30, delayMs = 1000 } = {}) {
+// Readiness is probed only on loopback, at the catalog's port and readiness path. A socket app (SID-002)
+// is out of Home Base's reach by design, so the executor asks it (probeStatus resolves to the HTTP status).
+async function waitForAppReadiness({ app, fetchImpl = global.fetch, probeStatus = null, attempts = 30, delayMs = 1000 } = {}) {
   const port = app?.network?.preferredPort;
   const readinessPath = app?.network?.health?.readinessPath;
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || !/^\/[A-Za-z0-9/_-]*$/.test(readinessPath || '')) {
+  if (!probeStatus && (!Number.isInteger(port) || port < 1 || port > 65535 || !/^\/[A-Za-z0-9/_-]*$/.test(readinessPath || ''))) {
     throw Object.assign(new Error(`${app?.name || 'App'} has no usable readiness endpoint.`), { code: 'READINESS_FAILED' });
   }
+  const statusOf = probeStatus || (async () => (await fetchImpl(`http://127.0.0.1:${port}${readinessPath}`)).status);
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetchImpl(`http://127.0.0.1:${port}${readinessPath}`);
-      if (response.ok) return;
-      lastError = new Error(`readiness returned HTTP ${response.status}`);
+      const status = await statusOf();
+      if (status >= 200 && status < 300) return;
+      lastError = new Error(status == null ? 'no answer' : `readiness returned HTTP ${status}`);
     } catch (error) { lastError = error; }
     if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
@@ -53,9 +55,10 @@ function parsePlanJson(planJson) {
 }
 
 class JobRunner {
-  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, planExecutorAction = planAction, executorActionStatus = actionStatus, busyRetry = { attempts: 6, delayMs: 10_000 }, reconcile = { intervalMs: 15_000, maxWaitMs: 3 * 60 * 60 * 1000, unknownGraceMs: 10_000 }, maintenanceRetry = { delayMs: 15_000, maxWaitMs: 20 * 60 * 1000 }, readinessOptions = {} } = {}) {
+  constructor(stateStore, { executorSocket = '/run/homebase/executor.sock', runExecutorAction = runAction, planExecutorAction = planAction, executorActionStatus = actionStatus, probeExecutorApp = appProbe, busyRetry = { attempts: 6, delayMs: 10_000 }, reconcile = { intervalMs: 15_000, maxWaitMs: 3 * 60 * 60 * 1000, unknownGraceMs: 10_000 }, maintenanceRetry = { delayMs: 15_000, maxWaitMs: 20 * 60 * 1000 }, readinessOptions = {} } = {}) {
     this.stateStore = stateStore;
     this.executorSocket = executorSocket;
+    this.probeApp = probeExecutorApp;
     this.runExecutorAction = runExecutorAction;
     this.planExecutorAction = planExecutorAction;
     this.executorActionStatus = executorActionStatus;
@@ -246,10 +249,13 @@ class JobRunner {
       return;
     }
     const app = action.appId ? getAppById(action.appId) : null;
-    if (['install', 'adopt', 'restart', 'restore'].includes(action.action)) {
+    if (['install', 'adopt', 'restart', 'restore', 'move-user'].includes(action.action)) {
       // Installed/restored only after the app answers readiness, never merely because systemd started it.
       this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
-      await waitForAppReadiness({ app, ...this.readinessOptions });
+      const viaExecutor = app.runtime?.listen === 'unix'
+        ? { probeStatus: async () => (await this.probeApp(this.executorSocket, { appId: app.id, probe: 'readiness' }, { timeoutMs: 10_000 })).statusCode }
+        : {};
+      await waitForAppReadiness({ app, ...viaExecutor, ...this.readinessOptions });
     }
     if (action.action === 'install' || action.action === 'adopt') {
       const { stateRecord } = buildExecutorInstallRecord({ appId: action.appId, ref: action.ref, config: { defaultHostname: action.site.hostname, defaultDomain: action.site.domain, householdTimezone: action.site.householdTimezone } });
@@ -329,6 +335,10 @@ class JobRunner {
 
   startTypedRestoreJob({ appId, backupId }) {
     return this.startTypedActionJob({ kind: 'restore', target: appId, action: { action: 'restore', appId, backupId } });
+  }
+
+  startTypedMoveUserJob({ appId, site }) {
+    return this.startTypedActionJob({ kind: 'move-user', target: appId, action: { action: 'move-user', appId, site } });
   }
 
   startTypedUninstallJob({ appId, keepBackups }) {

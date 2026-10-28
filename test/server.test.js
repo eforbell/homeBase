@@ -1152,6 +1152,45 @@ test('apps health onboarding setupUrl follows hostname/domain config updates', a
   }
 });
 
+test('after cutover, apps health setup links use the app\'s service hostname, like Open buttons', async () => {
+  const { SqliteStateStore } = require('../src/state/sqlite-store');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-health-cutover-url-'));
+  const stateDbPath = path.join(tempDir, 'state.sqlite3');
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'host',
+    defaultDomain: 'example.ts.net',
+    instance: 'smith',
+    gitTransport: 'https',
+  });
+
+  try {
+    await fetch(`${server.url}/api/apps/family-help/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mountPath: '/help/' }),
+    });
+    const before = await (await fetch(`${server.url}/api/apps/health`)).json();
+    assert.equal(before.byAppId['family-help'].onboarding.setupUrl, 'https://host.example.ts.net/help/setup');
+
+    const store = new SqliteStateStore(stateDbPath);
+    const { id } = store.createJob({ kind: 'ingress-cutover', target: 'smith', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
+    store.updateJob(id, { status: 'completed', finishedAt: new Date().toISOString() });
+    const after = await (await fetch(`${server.url}/api/apps/health?refresh=1`)).json();
+    assert.equal(after.byAppId['family-help'].onboarding.setupUrl, 'https://smith-home.example.ts.net/help/setup');
+    const state = await (await fetch(`${server.url}/api/state`)).json();
+    assert.equal(state.installations['family-help'].externalUrl, 'https://smith-home.example.ts.net/help/');
+  } finally {
+    await server.close();
+  }
+});
+
 test('homebase config updates are reflected in existing app launch URLs', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-config-launch-url-'));
   const server = await startServer({
@@ -2156,6 +2195,48 @@ test('executor mode routes lifecycle actions to the executor and still refuses u
     ]);
     const missing = await post('/api/apps/home-source/restore/execute', { backupDir: '/etc/shadow' });
     assert.equal(missing.body.code, 'BACKUP_NOT_FOUND');
+  } finally {
+    await server.close();
+    await new Promise((resolve) => executor.close(resolve));
+  }
+});
+
+test('a sensitive app moves to its own user only on request, with MOVE, through the executor (SID-002)', async () => {
+  const { createExecutorServer } = require('../executor/server');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-move-'));
+  const socketPath = path.join(tempDir, 'e.sock');
+  const received = [];
+  const executor = createExecutorServer({
+    logger: { info() {} }, mutationsEnabled: true,
+    runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; },
+    readAppIdentity: ({ appId }) => ({ appId, target: 'sovereign-source', own: true, installed: true, runsAs: 'sovereign', pendingMove: true }),
+  });
+  await new Promise((resolve) => executor.listen(socketPath, resolve));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const store = new SqliteStateStore(dbPath);
+  store.init();
+  const record = (appId, port) => ({ appId, name: appId, purpose: 'x', port, mountPath: '/x/', externalUrl: 'https://homebase.tailnet/x/', installRoot: '/tmp/x', serviceName: appId, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  store.upsertInstallation(record('home-source', 3008));
+  store.upsertInstallation(record('family-help', 3002));
+  const server = await startServer({ appName: 'Home Base', stateDbPath: dbPath, port: 0, serviceUser: 'sovereign', baseInstallDir: '/opt/sovereign-home/apps', baseBackupDir: path.join(tempDir, 'backups'), baseConfigDir: '/etc/sovereign-home', defaultHostname: 'homebase', defaultDomain: 'tailnet', homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socketPath });
+  try {
+    const cookie = await setupAdminCookie(server.url);
+    const post = async (appId, body) => {
+      const response = await fetch(`${server.url}/api/apps/${appId}/move-user/execute`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    };
+    const identity = await (await fetch(`${server.url}/api/apps/home-source/identity`)).json();
+    assert.deepEqual([identity.available, identity.sensitive, identity.runsAs, identity.pendingMove], [true, true, 'sovereign', true]);
+    assert.equal((await (await fetch(`${server.url}/api/apps/family-help/identity`)).json()).sensitive, false);
+    assert.equal((await post('home-source', { dryRun: false, confirm: 'EXECUTE' })).status, 400, 'MOVE, not EXECUTE');
+    assert.equal((await post('family-help', { dryRun: false, confirm: 'MOVE' })).body.code, 'SHARED_BY_DESIGN');
+    assert.equal((await post('helm', { dryRun: false, confirm: 'MOVE' })).body.code, 'NOT_INSTALLED');
+    const moved = await post('home-source', { dryRun: false, confirm: 'MOVE' });
+    assert.equal(moved.status, 202, JSON.stringify(moved.body));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(received, [{ action: 'move-user', appId: 'home-source', site: { hostname: 'homebase', domain: 'tailnet', householdTimezone: 'America/New_York' } }]);
+    const locked = await fetch(`${server.url}/api/apps/home-source/move-user/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dryRun: false, confirm: 'MOVE' }) });
+    assert.equal(locked.status, 401);
   } finally {
     await server.close();
     await new Promise((resolve) => executor.close(resolve));

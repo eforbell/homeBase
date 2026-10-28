@@ -208,7 +208,16 @@
       "priority": 2,
       "estimatedLines": "+520/-90",
       "testStrategy": "Install-planner and executor tests for env/unit/nginx/ownership rendering; VM checks: the shared service user is refused by a sensitive app's socket and cannot read or write its checkout, .env, or backups; nested APIs, redirects, static assets, and OAuth callbacks work under the D22 contract (read-only landing, same-origin JSON POST, single-use state bound to member and hostname) for one mount-preserving and one prefix-stripping app",
-      "passes": false
+      "passes": false,
+      "implementationNotes": [
+        "Sensitive apps (network.dedicatedHostname) run as sovereign-<service key>, home /var/lib/sovereign-home/<app id>/home; the checkout's owner decides who an app runs as, so installs from before SID-002 keep sovereign until the one-time move-user action (safety backup, stop, two-pass root hand-over through no-follow descriptors with the checkout last, .env and units rewritten, start). The move is one way",
+        "apps/ and backups/ are root-owned 0755; each own-user app's checkout, storage, home and backup directory is 0700 and its .env 0600. identity.ensure-user refuses a user in nginx's group",
+        "runtime.listen = unix renders SOVEREIGN_LISTEN; every other app gets HOST=127.0.0.1, and the other mode's key is removed on every render. A tmpfiles entry keeps /run/sovereign-apps/<id> at 2750 <user>:www-data across reboots. Sidecars stay on loopback TCP",
+        "Home Base can't reach a socket, so readiness waits and the health monitor (including the onboarding payload) use the executor's app-probe request; app-identity reports who an app runs as for the Runs as card",
+        "Ingress verification adds apps-loopback-only: any catalog app or sidecar port bound beyond loopback fails it",
+        "App support: familyPulse #8 and homeSource #45 (lib/listen.js, prefix-stripping), helm #67 and bitcoinAccounting #6 (listen.py, mount-preserving; the launcher loads .env before choosing where to listen). Seven Node apps were fixed to honour HOST instead of binding every interface",
+        "Rehearsed on the test VM 2026-10-28: Home Source moved in place, then switched TCP to socket; Pulse, Helm and Bitcoin Accounting installed fresh. The shared user, Home Base and other apps' users were refused at each socket; on the moved app the shared user was also denied its code, .env, data and backups; update, backup and restart worked after the move; pages, redirects, assets, nested APIs and OAuth callback routes worked from a member device for both URI styles. The D22 callback contract itself is app behavior, checked when each app enters tailnet mode"
+      ]
     },
     {
       "id": "SID-003",

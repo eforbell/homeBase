@@ -39,7 +39,7 @@ test('placeholder substitution is single-pass, so values cannot inject further p
   assert.equal(resolved.DATABASE_URL, 'postgresql://u:{{port}}@h/db');
 });
 
-test('the executor renders Family Dinner exactly like the legacy planner, plus the runtime NODE_ENV', () => {
+test('the executor renders Family Dinner exactly like the legacy planner, plus the runtime NODE_ENV and loopback HOST', () => {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -57,7 +57,8 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   const legacyFresh = env.parseDotEnv(withDeterministicRandom(() => buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: {}, config })).files['.env']);
   const password = env.parseDatabaseUrl(legacyFresh.DATABASE_URL).dbPassword;
   const executorFresh = env.parseDotEnv(renderAppEnvFile({ layout, password, site, fsImpl: noFonts }));
-  assert.deepEqual(executorFresh, { ...legacyFresh, NODE_ENV: 'production' });
+  // HOST (SID-002): apps listen on loopback only; legacy left it to each app, and most bound every interface.
+  assert.deepEqual(executorFresh, { ...legacyFresh, HOST: '127.0.0.1', NODE_ENV: 'production' });
 
   // Reinstall: operator edits, an operator-added key, stale derived values, same-role DB wiring.
   const existing = { ...legacyFresh, OPENAI_API_KEY: 'sk-operator', OPENAI_MODEL: 'operator-model', RECIPE_IMPORT_USER_AGENT: 'stale agent', PORT: '9999', CUSTOM_FLAG: 'on', SOVEREIGN_FONT_SANS_CSS_URL_LOCAL: 'https://oldhost.tailnet/_sovereign/fonts/source-sans-3.css' };
@@ -65,7 +66,7 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   fs.writeFileSync(path.join(base, 'familyDinner', '.env'), env.renderEnv(existing));
   const legacyReinstall = env.parseDotEnv(withDeterministicRandom(() => buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: {}, config })).files['.env']);
   const executorReinstall = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv(existing), fsImpl: noFonts }));
-  assert.deepEqual(executorReinstall, { ...legacyReinstall, NODE_ENV: 'production' });
+  assert.deepEqual(executorReinstall, { ...legacyReinstall, HOST: '127.0.0.1', NODE_ENV: 'production' });
   assert.equal(executorReinstall.OPENAI_API_KEY, 'sk-operator');
   assert.equal(executorReinstall.RECIPE_IMPORT_USER_AGENT, 'Home Base importer/0.1', 'non-listed defaults are re-derived');
   assert.equal(executorReinstall.PORT, '3000');
@@ -106,7 +107,8 @@ test('every catalog app: a fresh executor .env equals the legacy planner output 
       const password = layout.database ? env.resolveExistingDbContext(legacy, {}, app).dbPassword : null;
       // Secrets are random per render; the reinstall contract keeps the legacy values, as on a real host.
       const executor = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv(legacy), fsImpl: createFakeFs() }));
-      const runtimeEnv = layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {};
+      const listenEnv = layout.listen.kind === 'unix' ? { SOVEREIGN_LISTEN: `unix:${layout.listen.socket}` } : { HOST: '127.0.0.1' };
+      const runtimeEnv = { ...listenEnv, ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) };
       assert.deepEqual(executor, { ...legacy, ...runtimeEnv }, app.id);
     }
   } finally {

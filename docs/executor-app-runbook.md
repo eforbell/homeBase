@@ -26,15 +26,15 @@ The web process never sends plans, operations, paths, commands, or secrets. The 
 Run through these on every change. Each one has already been violated once and caught.
 
 - [ ] **Callers name actions, never operations.** New inputs go into `normalizeAction` as enums or strict patterns (catalog id, `main`/SHA, `https`/`ssh`, `isValidSite`), and nowhere else.
-- [ ] **Root never interprets a sovereign-controlled path by name.**
+- [ ] **Root never interprets an app-controlled path by name.**
   - Directories: `lstat`, then `open(O_DIRECTORY|O_NOFOLLOW)`, then `fchown`/`fchmod` (`filesystem.ensure-directory`).
-  - Files inside sovereign-owned directories: read and write inside `runAsUser(sovereign, ...)`, synchronous calls only.
+  - Files inside app-owned directories: read and write inside `runAsUser(<the app's user>, ...)`, synchronous calls only.
   - Root-owned destinations: `writeFileAtomic` (random temp name, `fchmod`, `fsync`, rename).
 - [ ] **Root never runs git in a sovereign-owned repository.** Its config (`core.fsmonitor`, hooks) executes code. Root works only in the root-owned mirror (`/var/lib/sovereign-home/git-mirrors/`) with `ROOT_GIT_CONFIG`. Sovereign reaches the mirror through `GIT_CONFIG_SYSTEM=/etc/sovereign-home/sovereign.gitconfig`.
-- [ ] **Untrusted code runs as `sovereign`, never root:** npm/pip installs, migrations, app scripts.
+- [ ] **Untrusted code runs as the app's user, never root:** npm/pip installs, migrations, app scripts. That is `sovereign` for shared apps and `sovereign-<service key>` for sensitive ones (SID-002); `identityFor(layout)` / `resolveAppIdentity` decide, never a hard-coded name.
 - [ ] **No `EnvironmentFile=` pointing into app directories.** systemd reads it as root before switching to `User=`. The app must load `.env` itself (see 3.1).
-- [ ] **Secrets never cross the socket or enter argv or env.** They are generated in `executor/actions.js` (`SECRET_GENERATORS`), reused on reinstall, and delivered through stdin or files written as the owner. Output is redacted in `execute.js`/`spawn.js`. One exception: the app's own database password goes to `pg_dump`/`pg_restore`/`psql` children as `PGPASSWORD`. Those children run as sovereign, which can already read the app's `.env`, and the password is passed in their `secrets` list for redaction.
-- [ ] **Shared state keeps its owner.** `/opt/sovereign-home` stays root-owned (it holds the executor's code); only `apps/` belongs to sovereign.
+- [ ] **Secrets never cross the socket or enter argv or env.** They are generated in `executor/actions.js` (`SECRET_GENERATORS`), reused on reinstall, and delivered through stdin or files written as the owner. Output is redacted in `execute.js`/`spawn.js`. One exception: the app's own database password goes to `pg_dump`/`pg_restore`/`psql` children as `PGPASSWORD`. Those children run as the app's user, which can already read the app's `.env`, and the password is passed in their `secrets` list for redaction.
+- [ ] **Shared state keeps its owner.** `/opt/sovereign-home`, `apps/` and `backups/` are root-owned 0755 (`/opt/sovereign-home` holds the executor's code). Each checkout, storage leaf and per-app backup directory belongs to its app's user.
 - [ ] **Fail closed and say why.** Unknown field → `INVALID_REQUEST`. Not allowed → `POLICY_DENIED` with operator guidance. Never fall back to legacy shell execution (`rejectLegacyExecution`).
 - [ ] **Don't re-harden the executor unit.** `NoNewPrivileges`, `RestrictSUIDSGID`, `ProtectHome` and a strict `UMask` break apt/dpkg and buy nothing for a process that starts units (see `SECURITY.md`).
 
@@ -61,6 +61,9 @@ Run through these on every change. Each one has already been violated once and c
 | Timers (`onCalendar`, `onBootSec`, `onUnitActiveSec`, `randomizedDelaySec`) | yes | oneshot service + timer; calendars carried over exactly (including an explicit timezone) |
 | Upload limit (`network.clientMaxBodySize`, e.g. `55M`) | yes | rendered as `client_max_body_size` |
 | Mount-path-preserving proxying (`network.preserveMountPath`) | yes | helm, bitcoin-accounting: `proxy_pass` without a URI |
+| Own service user (sensitive apps: `network.dedicatedHostname`) | yes | family-pulse, home-source, helm, bitcoin-accounting run as `sovereign-<service key>` (home `/var/lib/sovereign-home/<app id>/home`, never in nginx's group). Checkout, storage, backups and caches are 0700 and `.env` 0600 under that user. The checkout's owner decides who the app runs as, so an install from before SID-002 keeps `sovereign` until the one-time **Move to its own user** action (`move-user`) hands it over |
+| Unix-socket listening (`runtime.listen: 'unix'`) | yes | the four sensitive apps. `.env` gets `SOVEREIGN_LISTEN=unix:/run/sovereign-apps/<id>/app.sock`; a tmpfiles entry keeps the directory `2750 <app user>:www-data` across reboots; nginx proxies to `http://unix:<socket>` (`:/` when it strips the mount). Home Base can't reach the socket, so readiness and health go through the executor's `app-probe` request |
+| Loopback TCP listening (the default) | yes | every other app: `.env` gets `HOST=127.0.0.1`. Ingress verification fails (`apps-loopback-only`) when any app or sidecar port answers beyond loopback. Sidecars stay on loopback TCP (family-pulse-mcp, bug-base-mcp) |
 | Household timezone | yes | every process unit gets `Environment=TZ=<householdTimezone>` (the host clock may be UTC, as on erebor) |
 | Custom `upstreamPath` / `extraProxyHeaders` on an app | **no** | no catalog app uses them |
 | SQLite databases | **won't do** | bitcoin-accounting is Postgres-only under Home Base (decision 2026-09-24) |
@@ -76,6 +79,7 @@ Fill this in before writing code. Record the answers in the PR description.
 | Runtime kind and install command | `catalog.runtime` | Node (`npm ci --omit=dev`) exists. Python/venv needs new closed task types |
 | Start command and every other entry point (sidecars, timers, migrate) | `catalog.runtime/sidecars/timers/database.migrationCommand` | Each becomes a structured argv in a unit template, never a shell string |
 | Does **every** entry point load `.env` itself (dotenv or equivalent)? | the app repo: `server.js`, `bin/*`, `db/migrate.js` | Executor units have no `EnvironmentFile=`. If not, fix the app first |
+| Where does it listen? Does it honour `HOST`, and (sensitive apps) `SOVEREIGN_LISTEN`? | the app's `listen()` call | An app that binds every interface is reachable from the tailnet around nginx (see 3.4) |
 | Readiness endpoint | `catalog.network.health.readinessPath` | "Installed" is recorded only after readiness passes |
 | apt packages | `catalog.systemPackages` | Must be added to the package policy allowlist explicitly |
 | Database: engine, name, user, `urlEnvKey`, SQLite option | `catalog.database` | Role/database ops are per-app policy, and DB wiring is reused on reinstall |
@@ -92,6 +96,9 @@ Evidence: a completed survey table.
 1. **Env loading.** Every entry point loads `.env` from its working directory. Dinner and homeSource do this with `require('dotenv').config()` on line 1.
 2. **Readiness** returns non-2xx until the database is reachable and migrations have run.
 3. **Migrations** are idempotent and runnable repeatedly as the app user.
+4. **Listening.** The app listens on `HOST`, defaulting to `127.0.0.1`, never `0.0.0.0` on its own. A socket app binds the path `SOVEREIGN_LISTEN=unix:<path>` names itself: it replaces a stale socket (only a socket; any other file is an error), makes it 0660 for nginx's group, and keeps every path unchanged (nginx decides whether the mount is stripped). Reference implementations: familyPulse and homeSource `lib/listen.js`, helm `schwab_helm/web/listen.py`, bitcoinAccounting `web/listen.py`.
+   - The launcher must load `.env` **before** it decides where to listen. bitcoinAccounting's loaded it only when the app was imported, so it ignored the socket and started on TCP.
+   - A socket has no peer address. Anything keyed on the client address (rate limits) must read it from `X-Forwarded-For`, trusting only the last hop, which Serve sets (Express `trust proxy` 1).
 
 Evidence: grep output (or a code reference) for each entry point.
 
@@ -115,6 +122,7 @@ Storage paths (`storage.absoluteRoot`):
 Executor-specific rules:
 - Render with `strict: true`. An unresolved placeholder refuses the install (`ENV_TEMPLATE_UNRESOLVED`); it never writes `''`.
 - The context must provide every placeholder the app uses. Site values (`hostname`, `domain`, `householdTimezone`) arrive in the action and ride inside the plan's `app-env` step, where policy validates them (`isValidSite`).
+- Where the app listens is always overwritten: `SOVEREIGN_LISTEN` for socket apps, `HOST=127.0.0.1` otherwise, and the other mode's key is removed so an app switching modes never stays where nginx no longer points.
 - `NODE_ENV` is written into `.env` (Node apps read it after dotenv loads). Settings the interpreter needs **before** it starts (`TZ`, `PYTHONUNBUFFERED`) go into the unit as fixed `Environment=` lines instead; `.env` is loaded too late for them.
 - Database passwords are reused from existing wiring (`readExisting…Password` via `resolveExistingDbContext`). Wiring for a different role or database is refused, not overwritten.
 - `{{secretN}}` values are generated fresh each render as *candidates*; rule 3 keeps existing ones.
@@ -169,7 +177,7 @@ For each new or changed handler:
    Drive the **web API**, not the socket: `POST /api/admin/setup`, then `POST /api/bootstrap/execute`, then `POST /api/apps/<id>/execute`, each with `{dryRun:false, confirm:'EXECUTE'}`. Then check:
    - the job completes, and `planJson.digestVerified` is true
    - readiness passes directly and through `https://127.0.0.1/<mount>/` (nginx gateway)
-   - every unit runs as `sovereign` (`ps -o user= -C node`)
+   - every unit runs as the app's user: `sovereign`, or `sovereign-<service key>` for a sensitive app (`ps -o user= -C node`)
    - a reinstall keeps operator `.env` edits and the DB password, and re-derives derived keys
    - no generated secret appears in `home-base.sqlite3` or `journalctl -u homebase -u homebase-executor`
    - update status goes up-to-date, then behind 1 after an upstream push, then up-to-date after reinstalling
@@ -318,7 +326,7 @@ The rest is the install plan: git sync repoints `origin` at the root-owned mirro
 The design was approved with conditions; the conditions (early-disconnect reconciliation, atomic repair quiescing, resumable uninstall, the production upgrade step) are met. These are the agreed follow-ups, in priority order:
 
 1. **Retire legacy-sudo mode.** Freeze it (fixes only). Add a typed `adopt` action that takes over an existing legacy install (re-own the checkout, rewrite units without `EnvironmentFile=`, reuse `.env` through `env.js`). Migrate production app by app once Python compiles (helm is on production), then delete the legacy planners, sudo routes, and `runCommand`. Target: one release after Python support.
-2. **Backup authenticity.** Every app shares the `sovereign` user, so any compromised app can rewrite any app's backups. Record each archive's sha256 in the root-owned journal when it is created, and check it in `backup.verify`. Longer term: one uid per app. `lookupUser('sovereign')` is the seam to plan for before Python apps arrive.
+2. **Backup authenticity.** The shared-user apps share `sovereign`, so any of them can rewrite the others' backups. The sensitive apps have their own uid since SID-002 (Feature-10), with 0700 backup directories. Record each archive's sha256 in the root-owned journal when it is created, and check it in `backup.verify`.
 3. **Borrowed identity.** `runAsUser` changes the whole process's euid, and it is safe only because everything inside it is synchronous. Move sovereign-side file work into a small helper process spawned with a uid, so the kernel enforces the identity.
 4. **Bind previews to runs** for destructive actions: pass the previewed plan's digest (minus timestamps) and refuse a mismatch. Set `catalogRevision` from the release version.
 5. **Durability details.** Replay protection that survives an executor restart (check the journal's requestId before running). Distinguish "pruned" from "never started". Serialize typed jobs in the web process instead of retrying `EXECUTOR_BUSY`. Show the journal entry (via `action-status`) on the job page instead of telling operators to `sudo cat` it.

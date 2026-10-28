@@ -139,7 +139,8 @@ test('startup reconciliation settles jobs that finished while Home Base was down
   store.createJob({ kind: 'install', target: 'x', status: 'running', dryRun: false, planJson: JSON.stringify({ steps: [] }) });
   const runner = new JobRunner(store, {
     reconcile: { intervalMs: 5, maxWaitMs: 500 },
-    readinessOptions: { attempts: 1, fetchImpl: async () => ({ ok: true, status: 200 }) },
+    readinessOptions: { attempts: 1 },
+    probeExecutorApp: async () => ({ statusCode: 200 }),
     executorActionStatus: async (socket, jobId, requestId) => (String(jobId) === '1' && requestId === 'nonce-1' ? { status: 'completed', plan: { operations: [] }, completedOperationIds: [] } : { status: 'unknown' }),
   });
   assert.deepEqual(runner.reconcileTypedJobs(), [1, 2], 'legacy (untyped) jobs are left alone');
@@ -294,7 +295,8 @@ test('after a restart, a job that never reached the executor is submitted instea
   const submitted = [];
   const runner = new JobRunner(store, {
     reconcile: { intervalMs: 5, maxWaitMs: 500, unknownGraceMs: 10 },
-    readinessOptions: { attempts: 1, fetchImpl: async () => ({ ok: true, status: 200 }) },
+    readinessOptions: { attempts: 1 },
+    probeExecutorApp: async () => ({ statusCode: 200 }),
     executorActionStatus: async () => ({ status: 'unknown' }),
     runExecutorAction: async (socket, fields, { onEvent }) => {
       submitted.push([fields.jobId, fields.requestId]);

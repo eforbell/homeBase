@@ -121,6 +121,14 @@ Without an API credential, the administrator confirms the same list from the con
 
 Until the household directory exists, services may be published but no app can use tailnet identity.
 
+**SID-002 rehearsal (2026-10-28, test VM).** All four sensitive apps ended up on their own users and sockets, reached from a member device through their own service hostnames:
+- **Moved in place:** Home Source, installed before SID-002, was moved to `sovereign-source` and then switched from TCP to its socket. Afterwards the shared user couldn't read its code, `.env`, data or backups, or write into its checkout; update, backup and restart still worked.
+- **Fresh installs:** Pulse, Helm and Bitcoin Accounting came up on their own users. Only nginx and the app's own user could connect to each socket; the shared user, Home Base and the other apps' users were refused.
+- **Both URI styles:** pages, the mount redirect, assets, nested APIs and the OAuth callback routes worked for prefix-stripping (Pulse, Home Source) and mount-preserving (Helm, Bitcoin Accounting) apps. The D22 callback contract itself is app behavior and is checked as each app enters tailnet mode.
+- **Loopback:** most apps had bound every interface, so any device the policy let through could reach them around nginx. Every app now listens on loopback, and a new verification check fails when one doesn't.
+- **Fixed along the way:** Bitcoin Accounting's launcher ignored its socket (it loaded `.env` too late) and its lock had no Python 3.14 wheels; an app switching listen modes kept the other mode's setting; health-page setup links still used the host name after cutover.
+- **Follow-ups:** warn when no grant reaches a published service; redirect a sensitive hostname's bare `/` to its app; move sidecars (Pulse's MCP server) off loopback TCP.
+
 ## Review
 
 Two rounds of external plan review:

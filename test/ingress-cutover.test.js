@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createBaseHandlers, NGINX_GATEWAY_CONTENT, INGRESS_STATE_PATH } = require('../executor/handlers');
 const { createFakeFs } = require('./fixtures/fake-fs');
+const { users } = require('./fixtures/users');
 const { buildIngressCutoverPlan, buildIngressRollbackPlan } = require('../src/operations/compilers/ingress');
 const { buildAppInstallPlan } = require('../src/operations/compilers/install');
 const { validateOperationPolicy } = require('../src/operations/policy');
@@ -16,7 +17,7 @@ function base(type, fields = {}) {
 }
 
 // systemd-tmpfiles creates the socket directory the way the tmpfiles.d entry says; nginx -T prints `dump`.
-function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700 } = {}) {
+function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookupUser, asUser } = {}) {
   // Present on every host: the executor's state directory (its job journal lives there) and tmpfiles.d.
   const fsImpl = createFakeFs({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700 }, '/etc/tmpfiles.d': { kind: 'dir' }, '/etc/nginx/sites-enabled': { kind: 'dir' }, '/etc/nginx/sites-available': { kind: 'dir' }, ...files });
   const calls = [];
@@ -26,7 +27,7 @@ function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700 } = {})
     if (input.binary === '/usr/sbin/nginx') return { stdout: dump, stderr: '' };
     return { stdout: '' };
   };
-  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run }) };
+  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
 }
 
 const cutover = (fields = {}) => base('nginx.ensure-socket-gateway', { instance: 'smith', domain: DOMAIN, ...fields });
@@ -121,8 +122,8 @@ test('app snippets follow the ingress mode: TCP before cutover, identity after, 
     [D]: { kind: 'dir' },
     // Installed before SID-001 (old name) and after it (new name), both rendered for the TCP gateway.
     [`${D}/family-dinner.conf`]: '# family-dinner (old name)\nlocation /dinner/ { proxy_pass http://127.0.0.1:3000/; }\n',
-    '/opt/sovereign-home/apps/familyDinner': { kind: 'dir' },
-  });
+    '/opt/sovereign-home/apps/familyDinner': { kind: 'dir', uid: 1001 },
+  }, { lookupUser: users(), asUser: (_user, fn) => fn() });
   const write = (layoutApp) => handlers['filesystem.write-managed-file'](base('filesystem.write-managed-file', { purpose: 'nginx-snippet', template: 'app-nginx-v1' }), { layout: require('../src/operations/app-layout').appLayout(require('../src/catalog').getAppById(layoutApp)) });
   await write('home-source');
   assert.doesNotMatch(fsImpl.readFileSync(`${D}/source--home-source.conf`), /sovereign-identity/, 'a pre-cutover install must not call a lookup the TCP gateway lacks');
@@ -141,6 +142,14 @@ test('rollback refuses while any app reads identity from headers, by its own .en
   const handlers = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: () => ({ uid: 1001, gid: 1002 }), asUser: (user, fn) => { reads.push(user.uid); return fn(); } });
   await assert.rejects(() => handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' })), /family-pulse still trusts identity headers \(SOVEREIGN_IDENTITY_MODE=tailnet\)/);
   assert.ok(reads.length > 0 && reads.every((uid) => uid === 1001), 'app files are read as sovereign, never as root');
+});
+
+test('rollback refuses when it cannot tell who owns an installed app', async () => {
+  const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/familyDinner': { kind: 'dir', uid: 1001 }, '/opt/sovereign-home/apps/familyDinner/.env': 'SOVEREIGN_IDENTITY_MODE=local\n' });
+  const nobody = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: () => null, asUser: (_user, fn) => fn() });
+  await assert.rejects(() => nobody['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' })), /family-dinner still trusts identity headers/);
+  const known = harness({ '/etc/nginx/sovereign-home.d': { kind: 'dir' }, '/opt/sovereign-home/apps/familyDinner': { kind: 'dir', uid: 1001 }, '/opt/sovereign-home/apps/familyDinner/.env': 'SOVEREIGN_IDENTITY_MODE=local\n' }, { lookupUser: users(), asUser: (_user, fn) => fn() });
+  assert.match(await known.handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' })), /restored the TCP nginx gateway/);
 });
 
 test('rollback reads the identity mode the way dotenv loaders do, and fails closed', async () => {

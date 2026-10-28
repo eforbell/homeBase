@@ -43,7 +43,7 @@ test('executor hello reports protocol v2 actions and stays mutation-disabled by 
     assert.equal(PROTOCOL_VERSION, 2);
     assert.deepEqual(response.capabilities.protocolVersions, [2]);
     assert.equal(response.capabilities.mutationsEnabled, false);
-    assert.deepEqual(response.capabilities.actions, ['bootstrap', 'install', 'adopt', 'restart', 'backup', 'restore', 'uninstall', 'ingress-cutover', 'service-publish', 'ingress-rollback']);
+    assert.deepEqual(response.capabilities.actions, ['bootstrap', 'install', 'adopt', 'restart', 'backup', 'restore', 'uninstall', 'move-user', 'ingress-cutover', 'service-publish', 'ingress-rollback']);
     assert.deepEqual([...response.capabilities.installableApps].sort(), require('../src/catalog').catalog.map((app) => app.id).sort());
   });
 });
@@ -256,6 +256,22 @@ test('dependency-inventory accepts exactly one catalog app id', async () => {
   }, { readDependencyInventory: async (input) => { seen.push(input); return { appId: input.appId, source: 'package-lock.json', packages: [] }; } });
   await withExecutor(async (socketPath) => {
     await assert.rejects(() => dependencyInventory(socketPath, { appId: 'family-dinner' }), (error) => error.code === 'POLICY_DENIED');
+  });
+});
+
+test('app-identity and app-probe take a catalog app, and app-probe only a named probe (SID-002)', async () => {
+  const seen = [];
+  await withExecutor(async (socketPath) => {
+    const send = (fields) => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), ...fields });
+    assert.equal((await send({ type: 'app-identity', appId: 'helm' })).runsAs, 'sovereign-helm');
+    assert.equal((await send({ type: 'app-probe', appId: 'helm', probe: 'readiness' })).statusCode, 200);
+    for (const bad of [{ type: 'app-identity', appId: '../etc' }, { type: 'app-identity', appId: 'helm', probe: 'readiness' }, { type: 'app-probe', appId: 'helm' }, { type: 'app-probe', appId: 'helm', probe: 'shell' }, { type: 'app-probe', appId: 'helm', probe: 'readiness', path: '/admin' }]) {
+      await assert.rejects(() => send(bad), (error) => error.code === 'INVALID_REQUEST', JSON.stringify(bad));
+    }
+    assert.deepEqual(seen, [['identity', 'helm'], ['probe', 'helm', 'readiness']]);
+  }, {
+    readAppIdentity: ({ appId }) => { seen.push(['identity', appId]); return { appId, runsAs: 'sovereign-helm' }; },
+    probeApp: async ({ appId, probe }) => { seen.push(['probe', appId, probe]); return { appId, probe, statusCode: 200 }; },
   });
 });
 

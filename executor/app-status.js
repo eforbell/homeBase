@@ -3,7 +3,8 @@ const path = require('path');
 const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
 const { getAppById } = require('../src/catalog');
-const { lookupSystemUser, rootGitEnvironment, ROOT_GIT_CONFIG, SOVEREIGN_HOME } = require('./handlers');
+const { lookupSystemUser, rootGitEnvironment, ROOT_GIT_CONFIG } = require('./handlers');
+const { resolveAppIdentity } = require('./identity');
 const { appLayout } = require('../src/operations/app-layout');
 const { INSTALLABLE_APPS } = require('./actions');
 const { MIRROR_ROOT } = require('../src/operations/paths');
@@ -11,8 +12,8 @@ const { MIRROR_ROOT } = require('../src/operations/paths');
 const SHA = /^[0-9a-f]{40}$/;
 
 // Reports how an installed checkout compares with its upstream branch. Root refreshes only the
-// root-owned mirror; sovereign reads the checkout's HEAD. Root never runs git inside the
-// sovereign-owned checkout, whose config could otherwise execute code as root.
+// root-owned mirror; the app's user reads the checkout's HEAD. Root never runs git inside the
+// app-owned checkout, whose config could otherwise execute code as root.
 function createAppUpdateStatusChecker({ run = runApproved, fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl) } = {}) {
   return async function checkAppUpdateStatus({ appId, transport, ref }) {
     // Only apps the executor manages: root should not clone mirrors for anything else.
@@ -21,9 +22,8 @@ function createAppUpdateStatusChecker({ run = runApproved, fsImpl = fs, lookupUs
     const { mirror, checkout } = layout;
     const repository = layout.repositories[transport];
     if (!repository) throw new ProtocolError('POLICY_DENIED', `${appId} has no ${transport} repository.`);
-    const sovereign = lookupUser('sovereign');
-    if (!sovereign) throw new ProtocolError('POLICY_DENIED', 'The sovereign identity does not exist.');
     if (!fsImpl.existsSync(path.join(checkout, '.git'))) throw new ProtocolError('NOT_INSTALLED', `${layout.app.name} has no checkout at ${checkout}.`);
+    const owner = resolveAppIdentity(layout, { fsImpl, lookupUser });
 
     const rootEnv = rootGitEnvironment(transport, fsImpl);
     const rootGit = (args) => run({ binary: '/usr/bin/git', args: [...ROOT_GIT_CONFIG, ...args], uid: 0, gid: 0, timeoutMs: 60000, env: rootEnv });
@@ -35,7 +35,7 @@ function createAppUpdateStatusChecker({ run = runApproved, fsImpl = fs, lookupUs
       await rootGit(['-C', mirror, 'fetch', '--prune', 'origin']);
     }
 
-    const local = await run({ binary: '/usr/bin/git', args: ['-C', checkout, 'rev-parse', 'HEAD'], uid: sovereign.uid, gid: sovereign.gid, timeoutMs: 10000, env: { PATH: '/usr/bin:/bin', HOME: SOVEREIGN_HOME, LANG: 'C' } });
+    const local = await run({ binary: '/usr/bin/git', args: ['-C', checkout, 'rev-parse', 'HEAD'], uid: owner.uid, gid: owner.gid, timeoutMs: 10000, env: { PATH: '/usr/bin:/bin', HOME: owner.home, LANG: 'C' } });
     const localHeadSha = String(local.stdout || '').trim();
     if (!SHA.test(localHeadSha)) throw new ProtocolError('OPERATION_FAILED', 'Checkout HEAD is not a commit.');
 
