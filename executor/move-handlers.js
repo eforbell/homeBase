@@ -23,14 +23,17 @@ const { BACKUP_ROOT, APPS_ROOT, MOVE_STATE_ROOT } = require('../src/operations/p
 // attempt left and nothing else (one marker write per tree, however many copies). Setuid and setgid bits
 // are dropped.
 //
-// Every tree must be one filesystem: a copy is renamed into place from its tree's staging directory, which
-// can't cross a mount. The move plan checks that read-only before the app stops (filesystem.check-app-trees),
-// and pass 1 checks it again before locking each directory.
+// Every tree must be one mount: a copy is renamed into place from its tree's staging directory, and Linux
+// refuses a rename across mount points, bind mounts of the same filesystem included. The kernel's mount
+// table (/proc/self/mountinfo) is the authority: the move plan checks it read-only before the app stops
+// (filesystem.check-app-trees), the hand-over again before each tree, and pass 1 also refuses a directory
+// on another device.
 
 const NO_FOLLOW_DIRECTORY = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 const NO_FOLLOW_FILE = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
 const SPECIAL_BITS = 0o6000;
 const STAGING_PREFIX = '.reown-staging-';
+const MOUNT_TABLE = '/proc/self/mountinfo';
 
 function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl), randomName = () => crypto.randomBytes(8).toString('hex') } = {}) {
   // The move in progress: what the marker records (see writeMarker).
@@ -55,21 +58,19 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     if (stat.uid !== 0) withDirectory(directory, (fd) => { fsImpl.fchownSync(fd, 0, 0); fsImpl.fchmodSync(fd, 0o755); });
   };
 
-  const mountedInside = (directory, top) => deny(`${directory} is a separate filesystem mounted inside ${top}; unmount it or move it out, then move the app again.`);
+  const mountedInside = (directory, top) => deny(`Something is mounted at ${directory}, inside ${top}; unmount it or move it out, then move the app again.`);
 
-  // Read only: every directory under each tree is on the tree's own filesystem.
-  const assertOneFilesystem = (top) => {
-    const { dev } = fsImpl.lstatSync(top);
-    const visit = (directory) => {
-      for (const name of fsImpl.readdirSync(directory)) {
-        const child = path.posix.join(directory, name);
-        const stat = lstatOrNull(fsImpl, child);
-        if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) continue;
-        if (stat.dev !== dev) mountedInside(child, top);
-        visit(child);
-      }
-    };
-    visit(top);
+  // Mount points, from the kernel (field 5 of each line, octal-escaped). Unreadable means unknown: refuse.
+  const mountPoints = () => {
+    let table;
+    try { table = String(fsImpl.readFileSync(MOUNT_TABLE, 'utf8')); } catch { deny(`${MOUNT_TABLE} is unreadable, so mounts inside the app can't be ruled out.`); }
+    return table.split('\n').map((line) => line.split(' ')[4]).filter(Boolean)
+      .map((point) => point.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8))));
+  };
+  // Nothing is mounted inside the tree (the tree itself may be, or sit inside, a mount).
+  const assertNoMountInside = (top, points = mountPoints()) => {
+    const inside = points.find((point) => point.startsWith(`${top}/`));
+    if (inside) mountedInside(inside, top);
   };
 
   // Pass 1: every directory in the tree becomes root's and 0700, top down, before it is read. Returns them
@@ -213,8 +214,9 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
       requireLayout(layout);
       if (!layout.identity.own) deny(`${layout.app.name} runs as the shared user by design.`);
       const trees = existingTrees(layout);
-      trees.forEach(assertOneFilesystem);
-      return `${trees.length} of ${layout.app.name}'s trees checked: each is one filesystem`;
+      const points = mountPoints();
+      for (const tree of trees) assertNoMountInside(tree, points);
+      return `${trees.length} of ${layout.app.name}'s trees checked: nothing is mounted inside them`;
     },
     'filesystem.reown-app': async (operation, { layout } = {}) => {
       requireLayout(layout);
@@ -236,6 +238,7 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
         if (!stat) continue;
         if (stat.isSymbolicLink() || !stat.isDirectory()) deny(`${tree} is not a real directory.`);
         if (lstatOrNull(fsImpl, path.posix.dirname(tree))?.uid !== 0) deny(`${path.posix.dirname(tree)} must be owned by root before ${tree} can be handed over.`);
+        assertNoMountInside(tree);
         const counts = handOverTree(tree, owner, shared);
         moved.push(`${tree} (${counts.directory} directories, ${counts.file + counts.copied} files${counts.copied ? `, ${counts.copied} hardlinks copied` : ''}${counts.kept ? `, ${counts.kept} hardlinks owned by others left as they were` : ''})`);
       }

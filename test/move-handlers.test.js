@@ -14,6 +14,8 @@ const CHECKOUT = '/opt/sovereign-home/apps/homeSource';
 const SHARED = { uid: 1001, gid: 1002 };
 const OWN = 1102;
 const SITE = { hostname: 'homebase', domain: 'example.ts.net', householdTimezone: 'America/New_York' };
+// The kernel's mount table: the root filesystem and one that is not inside any app tree.
+const MOUNTS = '22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n30 22 0:25 / /run rw,nosuid shared:5 - tmpfs tmpfs rw\n';
 const op = (fields = {}) => ({ id: 'reown-app', type: 'filesystem.reown-app', title: 't', risk: 'destructive', timeoutMs: 1000, dependsOn: [], preconditions: [], secretRefs: [], ...fields });
 
 // Home Source as installed before SID-002: every file is sovereign's, and so are apps/ and backups/.
@@ -36,6 +38,7 @@ function installedBeforeSid002(extra = {}) {
     '/var/lib/sovereign-home/backups/home-source': mine({ kind: 'dir', mode: 0o755 }),
     '/var/lib/sovereign-home/backups/home-source/20260924T101010Z': mine({ kind: 'dir', mode: 0o755 }),
     '/var/lib/sovereign-home/backups/home-source/20260924T101010Z/database.dump': mine({ kind: 'file', content: 'dump', mode: 0o600 }),
+    '/proc/self/mountinfo': { kind: 'file', content: MOUNTS },
     ...extra,
   });
 }
@@ -188,20 +191,34 @@ test('a re-run removes exactly the copies an earlier attempt recorded, and nothi
   assert.equal(first.entries.get(`${CHECKOUT}/notes.reown-1`).uid, OWN);
 });
 
-test('a filesystem mounted inside a tree is refused before the app stops, and again before root locks it', async () => {
-  const mounted = () => installedBeforeSid002({
+test('anything mounted inside a tree is refused before the app stops, bind mounts of the same filesystem included', async () => {
+  const check = { ...op(), id: 'check-app-trees', type: 'filesystem.check-app-trees', risk: 'read' };
+  assert.match(await createMoveHandlers({ fsImpl: installedBeforeSid002(), lookupUser: users() })['filesystem.check-app-trees'](check, { layout: SOURCE }), /nothing is mounted inside them/);
+  // A bind mount: same device, so only the mount table shows it. Its name has a space (octal-escaped).
+  const bound = installedBeforeSid002({
+    [`${CHECKOUT}/my data`]: { kind: 'dir', uid: SHARED.uid, gid: SHARED.gid },
+    '/proc/self/mountinfo': { kind: 'file', content: `${MOUNTS}41 22 8:1 /srv/x ${CHECKOUT}/my\\040data rw - ext4 /dev/sda1 rw\n` },
+  });
+  const readdir = bound.readdirSync;
+  let walked = 0;
+  bound.readdirSync = (target) => { walked += 1; return readdir(target); };
+  await assert.rejects(() => createMoveHandlers({ fsImpl: bound, lookupUser: users() })['filesystem.check-app-trees'](check, { layout: SOURCE }), /Something is mounted at \/opt\/sovereign-home\/apps\/homeSource\/my data, inside/);
+  assert.equal(bound.calls.some(([call]) => ['fchown', 'fchmod', 'lchown', 'copy'].includes(call)), false, 'the check changes nothing');
+  assert.equal(walked, 0, 'and never walks the tree, so a raced symlink has nothing to follow');
+  // Mounted after the check: the hand-over reads the table again before the tree, and changes nothing in it.
+  await assert.rejects(() => createMoveHandlers({ fsImpl: bound, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /Something is mounted at/);
+  assert.equal(bound.entries.get(CHECKOUT).uid, SHARED.uid);
+  // Another device the table somehow misses: pass 1 still stops before locking it.
+  const late = installedBeforeSid002({
     [`${CHECKOUT}/mnt`]: { kind: 'dir', uid: SHARED.uid, gid: SHARED.gid, dev: 2 },
     [`${CHECKOUT}/mnt/linked.txt`]: { kind: 'file', content: 'x', uid: SHARED.uid, gid: SHARED.gid, nlink: 2, dev: 2 },
   });
-  const check = { ...op(), id: 'check-app-trees', type: 'filesystem.check-app-trees', risk: 'read' };
-  assert.match(await createMoveHandlers({ fsImpl: installedBeforeSid002(), lookupUser: users() })['filesystem.check-app-trees'](check, { layout: SOURCE }), /each is one filesystem/);
-  const fsImpl = mounted();
-  await assert.rejects(() => createMoveHandlers({ fsImpl, lookupUser: users() })['filesystem.check-app-trees'](check, { layout: SOURCE }), /separate filesystem mounted inside \/opt\/sovereign-home\/apps\/homeSource/);
-  assert.equal(fsImpl.calls.some(([call]) => ['fchown', 'fchmod', 'lchown', 'copy'].includes(call)), false, 'the check changes nothing');
-  // Mounted after the check: pass 1 stops before locking it.
-  const late = mounted();
-  await assert.rejects(() => createMoveHandlers({ fsImpl: late, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /separate filesystem mounted inside/);
+  await assert.rejects(() => createMoveHandlers({ fsImpl: late, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /Something is mounted at/);
   assert.equal(late.entries.get(`${CHECKOUT}/mnt`).uid, SHARED.uid, 'the mounted directory was never touched');
+  // An unreadable mount table proves nothing.
+  const blind = installedBeforeSid002();
+  blind.entries.delete('/proc/self/mountinfo');
+  await assert.rejects(() => createMoveHandlers({ fsImpl: blind, lookupUser: users() })['filesystem.check-app-trees'](check, { layout: SOURCE }), /mountinfo is unreadable/);
   // The plan checks first, before its safety backup and before anything stops.
   const { plan } = compileAction(normalizeAction({ action: 'move-user', appId: 'home-source', site: SITE }));
   assert.equal(plan.operations[0].id, 'check-app-trees');
