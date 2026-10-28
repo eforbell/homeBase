@@ -823,7 +823,6 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
           : Promise.resolve(null),
       ]);
       root.innerHTML = renderPage(config, status, preflight, adminStatus, tailscale, publishPlan, verification);
-      wireEvents();
       // Loaded after the page renders: the executor simulates an apt upgrade, which takes a few seconds.
       if (page === 'status') {
         loadFoundation();
@@ -849,5 +848,8 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
     }
   }
 
+  // Once: the listeners sit on the page root, which every load() re-renders into. Wiring inside load()
+  // added another set each time, so one click after a refresh submitted the action twice.
+  wireEvents();
   load();
 }());
