@@ -208,10 +208,11 @@ test('anything mounted inside a tree is refused before the app stops, bind mount
   // Mounted after the check: the hand-over reads the table again before the tree, and changes nothing in it.
   await assert.rejects(() => createMoveHandlers({ fsImpl: bound, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /Something is mounted at/);
   assert.equal(bound.entries.get(CHECKOUT).uid, SHARED.uid);
-  // Another device the table somehow misses: pass 1 still stops before locking it.
+  // A bind mount made while the hand-over runs (after the table was read): pass 1 sees the directory's own
+  // mount ID differ from the tree's and stops before locking it.
   const late = installedBeforeSid002({
-    [`${CHECKOUT}/mnt`]: { kind: 'dir', uid: SHARED.uid, gid: SHARED.gid, dev: 2 },
-    [`${CHECKOUT}/mnt/linked.txt`]: { kind: 'file', content: 'x', uid: SHARED.uid, gid: SHARED.gid, nlink: 2, dev: 2 },
+    [`${CHECKOUT}/mnt`]: { kind: 'dir', uid: SHARED.uid, gid: SHARED.gid, mnt: 7 },
+    [`${CHECKOUT}/mnt/linked.txt`]: { kind: 'file', content: 'x', uid: SHARED.uid, gid: SHARED.gid, nlink: 2, mnt: 7 },
   });
   await assert.rejects(() => createMoveHandlers({ fsImpl: late, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /Something is mounted at/);
   assert.equal(late.entries.get(`${CHECKOUT}/mnt`).uid, SHARED.uid, 'the mounted directory was never touched');

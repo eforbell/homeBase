@@ -26,8 +26,9 @@ const { BACKUP_ROOT, APPS_ROOT, MOVE_STATE_ROOT } = require('../src/operations/p
 // Every tree must be one mount: a copy is renamed into place from its tree's staging directory, and Linux
 // refuses a rename across mount points, bind mounts of the same filesystem included. The kernel's mount
 // table (/proc/self/mountinfo) is the authority: the move plan checks it read-only before the app stops
-// (filesystem.check-app-trees), the hand-over again before each tree, and pass 1 also refuses a directory
-// on another device.
+// (filesystem.check-app-trees), the hand-over again before each tree, and pass 1 compares each directory's
+// own mount (the kernel's mnt_id for the descriptor root opened) with its tree's before changing it, so a
+// mount made while the hand-over runs is refused too.
 
 const NO_FOLLOW_DIRECTORY = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 const NO_FOLLOW_FILE = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
@@ -58,6 +59,14 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     if (stat.uid !== 0) withDirectory(directory, (fd) => { fsImpl.fchownSync(fd, 0, 0); fsImpl.fchmodSync(fd, 0o755); });
   };
 
+  // The mount an open descriptor is on, as the kernel reports it. Unknown means it can't be ruled out: refuse.
+  const mountIdOf = (fd) => {
+    let info = '';
+    try { info = String(fsImpl.readFileSync(`/proc/self/fdinfo/${fd}`, 'utf8')); } catch { /* refused below */ }
+    const match = /^mnt_id:\s*(\d+)\s*$/m.exec(info);
+    if (!match) deny('The kernel did not say which mount a directory is on, so mounts inside the app can\'t be ruled out.');
+    return Number(match[1]);
+  };
   const mountedInside = (directory, top) => deny(`Something is mounted at ${directory}, inside ${top}; unmount it or move it out, then move the app again.`);
 
   // Mount points, from the kernel (field 5 of each line, octal-escaped). Unreadable means unknown: refuse.
@@ -78,12 +87,13 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
   // restores those, which is harmless: the top is 0700 to the app's user either way.
   const lockTree = (top) => {
     const directories = [];
-    let dev = null;
+    let mount = null;
     const visit = (directory) => {
       const mode = withDirectory(directory, (fd) => {
         const stat = fsImpl.fstatSync(fd);
-        if (dev === null) dev = stat.dev;
-        else if (stat.dev !== dev) mountedInside(directory, top);
+        const here = mountIdOf(fd);
+        if (mount === null) mount = here;
+        else if (here !== mount) mountedInside(directory, top);
         const before = stat.mode & 0o777;
         fsImpl.fchownSync(fd, 0, 0);
         fsImpl.fchmodSync(fd, 0o700);

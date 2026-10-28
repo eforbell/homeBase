@@ -52,6 +52,9 @@ function createFakeFs(initial = {}) {
       return entry.kind === 'link' ? entry.target : target;
     },
     readFileSync: (target) => {
+      // Like Linux: an open descriptor's mount ID (entry.mnt; one mount unless a test binds another).
+      const fdinfo = /^\/proc\/self\/fdinfo\/(\d+)$/.exec(target);
+      if (fdinfo && fds.has(Number(fdinfo[1]))) return `pos:\t0\nflags:\t0100000\nmnt_id:\t${entries.get(fds.get(Number(fdinfo[1]))).mnt ?? 1}\n`;
       const entry = entries.get(target);
       if (!entry || entry.kind !== 'file') throw enoent(target);
       return entry.content;
