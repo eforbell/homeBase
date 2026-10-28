@@ -22,6 +22,7 @@ const { BACKUP_ROOT, APPS_ROOT, MOVE_STATE_ROOT } = require('../src/operations/p
 const NO_FOLLOW_DIRECTORY = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 const NO_FOLLOW_FILE = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
 const SPECIAL_BITS = 0o6000;
+const COPY_SUFFIX = '.reown-copy';
 
 function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUser(name, fsImpl) } = {}) {
   const withDirectory = (target, fn) => {
@@ -72,10 +73,19 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     let copied = false;
     if (stat.nlink > 1) {
       if (stat.uid !== shared.uid && stat.uid !== owner.uid) return 'kept';
-      // Its directory is root's now, so the copy and the rename can't be redirected.
-      const temp = `${target}.reown-${process.pid}`;
+      // Its directory is root's now, so the copy and the rename can't be redirected. Only root can create
+      // entries here, so a root-owned temp left by an earlier attempt is that attempt's and goes first.
+      const temp = `${target}${COPY_SUFFIX}`;
+      const leftover = lstatOrNull(fsImpl, temp);
+      if (leftover) {
+        if (leftover.uid !== 0 || !leftover.isFile() || leftover.nlink !== 1) deny(`${temp} is in the way and was not left by an earlier move.`);
+        fsImpl.unlinkSync(temp);
+      }
       fsImpl.copyFileSync(target, temp, fs.constants.COPYFILE_EXCL);
-      fsImpl.renameSync(temp, target);
+      try { fsImpl.renameSync(temp, target); } catch (error) {
+        try { fsImpl.unlinkSync(temp); } catch { /* the re-run removes it */ }
+        throw error;
+      }
       copied = true;
     }
     const fd = fsImpl.openSync(target, NO_FOLLOW_FILE);
@@ -95,8 +105,11 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
     for (const { directory } of directories) {
       for (const name of fsImpl.readdirSync(directory)) {
         const child = path.posix.join(directory, name);
-        const stat = fsImpl.lstatSync(child);
-        if (stat.isDirectory() && !stat.isSymbolicLink()) continue;
+        const stat = lstatOrNull(fsImpl, child);
+        // Gone already: an earlier attempt's copy that its source's hand-over replaced.
+        if (!stat || (stat.isDirectory() && !stat.isSymbolicLink())) continue;
+        // An earlier attempt's copy (only root creates entries in a locked directory): its source is copied again.
+        if (name.endsWith(COPY_SUFFIX) && stat.uid === 0 && stat.isFile() && stat.nlink === 1) { fsImpl.unlinkSync(child); continue; }
         counts[handOverFile(child, stat, owner, shared)] += 1;
       }
     }
@@ -145,11 +158,16 @@ function createMoveHandlers({ fsImpl = fs, lookupUser = (name) => lookupSystemUs
         moved.push(`${tree} (${counts.directory} directories, ${counts.file + counts.copied} files${counts.copied ? `, ${counts.copied} hardlinks copied` : ''}${counts.kept ? `, ${counts.kept} hardlinks owned by others left as they were` : ''})`);
       }
       if (!lstatOrNull(fsImpl, layout.checkout)) deny(`${layout.app.name} has no checkout at ${layout.checkout}; install it instead.`);
-      // The .env is the app's secrets: private to its user, like a fresh install writes it.
+      // The .env is the app's secrets: private to its user, like a fresh install writes it. Only the app's
+      // own single-link file: a hardlink left as it was above is someone else's inode (the plan's next step
+      // writes a fresh .env anyway).
       const env = lstatOrNull(fsImpl, layout.envPath);
       if (env?.isFile()) {
         const fd = fsImpl.openSync(layout.envPath, NO_FOLLOW_FILE);
-        try { fsImpl.fchmodSync(fd, 0o600); } finally { fsImpl.closeSync(fd); }
+        try {
+          const current = fsImpl.fstatSync(fd);
+          if (current.isFile() && current.nlink === 1 && current.uid === owner.uid) fsImpl.fchmodSync(fd, 0o600);
+        } finally { fsImpl.closeSync(fd); }
       }
       // Every file is the app's now: other plans may run again.
       fsImpl.rmSync(moveMarker(layout), { force: true });

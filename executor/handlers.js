@@ -759,7 +759,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     'systemd.ensure-service': async (operation, { layout } = {}) => {
       const allowed = new Set(['postgresql.service', 'nginx.service', ...(layout?.unitNames || [])]);
       if (!allowed.has(operation.unit) || !['enable', 'restart', 'enable-and-restart', 'stop', 'disable-now'].includes(operation.action)) deny('Systemd unit or action is not allowed.');
-      if (operation.action === 'disable-now' && !lstatOrNull(fsImpl, `/etc/systemd/system/${operation.unit}`)) return `${operation.unit} is not installed`;
+      // Stopping or disabling a unit that is already gone (an uninstall's re-run) is done, not an error.
+      if (['disable-now', 'stop'].includes(operation.action) && layout?.unitNames?.includes(operation.unit) && !lstatOrNull(fsImpl, `/etc/systemd/system/${operation.unit}`)) return `${operation.unit} is not installed`;
       const args = {
         enable: ['enable', operation.unit],
         restart: ['restart', operation.unit],

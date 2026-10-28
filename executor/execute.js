@@ -2,6 +2,7 @@ const { ProtocolError } = require('./protocol');
 const { redactText } = require('../src/operations/redact');
 const { getAppById } = require('../src/catalog');
 const { appLayout } = require('../src/operations/app-layout');
+const { moveInterrupted: defaultMoveInterrupted } = require('./identity');
 
 const MAX_FAILURE_OUTPUT_CHARS = 8 * 1024;
 
@@ -25,12 +26,17 @@ function getFailureOutput(error, secrets) {
 
 // This dispatcher is intentionally injected by the privileged runtime.  It never
 // receives unvalidated JSON and it never exposes the secret binding object in events.
-async function executePlan(request, { handlers = {}, emit = () => {} } = {}) {
+async function executePlan(request, { handlers = {}, emit = () => {}, moveInterrupted = defaultMoveInterrupted } = {}) {
   const completed = new Set();
   // App operations resolve every path, unit, and name from the target's catalog layout. Host plans
   // (bootstrap, ingress cutover/rollback, service publish) target local-host and have none; policy ties
   // every host profile to that target.
   const layout = request.plan.target === 'local-host' ? null : appLayout(getAppById(request.plan.target));
+  // A move to the app's own user that was interrupted leaves its files split between users: only a re-run
+  // of the move may touch the app (identity.js), including plans that never ask who it runs as (restart).
+  if (layout?.identity?.own && request.plan.kind !== 'app-move-user' && moveInterrupted(layout)) {
+    throw new ProtocolError('POLICY_DENIED', `Moving ${layout.app.name} to ${layout.identity.user} was interrupted; run "Move to its own user" again to finish it.`);
+  }
   for (const operation of request.plan.operations) {
     if (operation.dependsOn.some((id) => !completed.has(id))) {
       throw new ProtocolError('INVALID_PLAN', `Operation dependencies are incomplete for ${operation.id}.`);

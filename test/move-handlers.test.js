@@ -140,6 +140,35 @@ test('an interrupted move refuses every other plan until a re-run of the move fi
   assert.equal(resolveAppIdentity(SOURCE, { fsImpl, lookupUser: users() }).name, 'sovereign-source');
 });
 
+test('a copy that failed half way leaves nothing behind that blocks the re-run, and a planted temp name stops the move', async () => {
+  const linked = { [`${CHECKOUT}/linked.txt`]: { kind: 'file', content: 'shared inode', uid: SHARED.uid, gid: SHARED.gid, nlink: 2 } };
+  const fsImpl = installedBeforeSid002({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700, uid: 0, gid: 0 }, ...linked });
+  const rename = fsImpl.renameSync;
+  let failOnce = true;
+  fsImpl.renameSync = (from, to) => {
+    if (failOnce && from.endsWith('.reown-copy')) { failOnce = false; throw Object.assign(new Error('EIO'), { code: 'EIO' }); }
+    return rename(from, to);
+  };
+  const handlers = createMoveHandlers({ fsImpl, lookupUser: users() });
+  await assert.rejects(() => handlers['filesystem.reown-app'](op(), { layout: SOURCE }), /EIO/);
+  assert.equal(fsImpl.existsSync(`${CHECKOUT}/linked.txt.reown-copy`), false, 'the half-done copy is gone');
+  await handlers['filesystem.reown-app'](op(), { layout: SOURCE });
+  assert.deepEqual([fsImpl.entries.get(`${CHECKOUT}/linked.txt`).uid, fsImpl.entries.get(`${CHECKOUT}/linked.txt`).nlink], [OWN, 1]);
+  // A root-owned leftover (a crash between copy and rename) is removed; anything else in the way stops the move.
+  const crashed = installedBeforeSid002({ ...linked, [`${CHECKOUT}/linked.txt.reown-copy`]: { kind: 'file', content: 'partial', uid: 0, gid: 0 } });
+  await createMoveHandlers({ fsImpl: crashed, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
+  assert.equal(crashed.entries.get(`${CHECKOUT}/linked.txt`).content, 'shared inode');
+  const planted = installedBeforeSid002({ ...linked, [`${CHECKOUT}/linked.txt.reown-copy`]: { kind: 'file', content: 'mine', uid: SHARED.uid, gid: SHARED.gid } });
+  await assert.rejects(() => createMoveHandlers({ fsImpl: planted, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE }), /in the way and was not left by an earlier move/);
+});
+
+test('a .env that is someone else\'s hardlink keeps its mode: the private chmod is for the app\'s own file only', async () => {
+  const fsImpl = installedBeforeSid002({ [`${CHECKOUT}/.env`]: { kind: 'file', content: 'object', uid: 0, gid: 0, mode: 0o444, nlink: 2 } });
+  await createMoveHandlers({ fsImpl, lookupUser: users() })['filesystem.reown-app'](op(), { layout: SOURCE });
+  const entry = fsImpl.entries.get(`${CHECKOUT}/.env`);
+  assert.deepEqual([entry.uid, entry.nlink, entry.mode & 0o777], [0, 2, 0o444]);
+});
+
 test('a symlink planted in place of a directory stops the move before anything is handed over', async () => {
   // The shared user swaps a directory for a symlink just as root opens it.
   const planted = installedBeforeSid002();

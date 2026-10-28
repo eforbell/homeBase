@@ -156,6 +156,31 @@ test('lifecycle plans validate, and destructive operations exist only where an o
   assert.throws(() => validateOperationPolicy(relabelled), /kind does not match/);
 });
 
+test('while a move is interrupted only the move plan runs, even plans that never ask who the app runs as', async () => {
+  const { executePlan } = require('../executor/execute');
+  const { buildAppMoveUserPlan } = require('../src/operations/compilers/lifecycle');
+  const ran = [];
+  const handlers = new Proxy({}, { get: () => async (operation) => { ran.push(operation.id); } });
+  const interrupted = (layout) => layout.app.id === 'helm';
+  await assert.rejects(() => executePlan({ plan: buildAppRestartPlan({ appId: 'helm' }), secretBindings: {} }, { handlers, moveInterrupted: interrupted }), /was interrupted; run "Move to its own user" again/);
+  assert.deepEqual(ran, [], 'nothing started');
+  await executePlan({ plan: buildAppRestartPlan({ appId: 'family-dinner' }), secretBindings: {} }, { handlers, moveInterrupted: interrupted });
+  await executePlan({ plan: buildAppMoveUserPlan({ appId: 'helm', site: { hostname: 'h', domain: 'example.ts.net', householdTimezone: 'America/New_York' } }), secretBindings: {} }, { handlers, moveInterrupted: interrupted });
+  assert.ok(ran.includes('reown-app'));
+});
+
+test('stopping an app unit that is already gone is done, so an uninstall re-run gets past it', async () => {
+  const { createBaseHandlers } = require('../executor/handlers');
+  const calls = [];
+  const handlers = createBaseHandlers({ fsImpl: createFakeFs(), lookupUser: users(), run: async (input) => { calls.push(input.args); return { stdout: '' }; } });
+  const helm = appLayout(getAppById('helm'));
+  assert.match(await handlers['systemd.ensure-service'](op('systemd.ensure-service', { unit: 'helm-sync.service', action: 'stop' }), { layout: helm }), /not installed/);
+  assert.deepEqual(calls, []);
+  // Units Home Base doesn't write (nginx, postgres) are never judged by /etc/systemd/system.
+  await handlers['systemd.ensure-service'](op('systemd.ensure-service', { unit: 'nginx.service', action: 'stop' }), { layout: helm });
+  assert.deepEqual(calls, [['stop', 'nginx.service']]);
+});
+
 test('executePlan hands every app plan kind its catalog layout, and bootstrap none', async () => {
   const { executePlan } = require('../executor/execute');
   const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
