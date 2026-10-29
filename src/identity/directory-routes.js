@@ -2,7 +2,7 @@
 // route matrix land (SID-005, SID-006), the administrator acts through a passphrase session opened by their
 // own tailnet identity (src/admin-auth.js), which exists only in setup and recovery. So in this story the
 // directory is edited during setup, and active Home Base refuses every edit until passkeys arrive.
-const { getAdminStatus, openSession, verifyPassphrase } = require('../admin-auth');
+const { PASSPHRASE_CHANGED, getAdminStatus, openSession, verifyPassphrase } = require('../admin-auth');
 
 function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parseBody, recordAdminAudit }) {
   const fail = (res, error, audit) => {
@@ -59,8 +59,11 @@ function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parse
       }
       try {
         const admin = directory.enterRecovery(caller);
-        openSession(res, stateStore, admin.user_id);
-        sendJson(res, 200, { ok: true, state: 'recovery' });
+        if (!openSession(res, stateStore, admin.user_id, credential.passphraseHash)) {
+          sendJson(res, PASSPHRASE_CHANGED.statusCode, PASSPHRASE_CHANGED.payload);
+        } else {
+          sendJson(res, 200, { ok: true, state: 'recovery' });
+        }
       } catch (error) {
         fail(res, error, audit);
       }

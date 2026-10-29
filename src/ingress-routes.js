@@ -38,8 +38,8 @@ function createIngressRoutes({
   const controlFor = (config) => { const client = apiFor(config); return controlFactory({ config, api: client, apiProblem: client ? null : apiProblem }); };
 
   // executes: false for a record that runs nothing on the host (a confirmation): an unlocked admin session is
-  // enough, even on a plan-only host. duringBootstrap: allowed while the household directory is in setup or
-  // recovery, which need the cutover and Home Base's own service (runbook 2.5); every other service waits.
+  // enough, even on a plan-only host. duringBootstrap: allowed while the household directory is in setup,
+  // which needs the cutover and Home Base's own service (runbook 2.5); everything else waits for active.
   async function authorize(req, res, config, { action, target, executes = true, duringBootstrap = false }) {
     const auth = await requireAdmin(req, stateStore, executes
       ? { privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs === true, executionModeMissing: config.homeBaseExecutionModeMissing === true, duringBootstrap }
@@ -179,7 +179,7 @@ function createIngressRoutes({
       const body = await parseBody(req);
       const target = 'local-host';
       if (body.confirm !== 'ROLLBACK') { sendJson(res, 400, { error: 'Rolling back ingress requires confirm=ROLLBACK.' }); return true; }
-      const auth = await authorize(req, res, config, { action: 'ingress-rollback', target, duringBootstrap: true });
+      const auth = await authorize(req, res, config, { action: 'ingress-rollback', target });
       if (!auth) return true;
       const trusting = appsInTailnetMode(state.installations);
       if (trusting.length) { refuse(res, { action: 'ingress-rollback', target, auth, error: `Return ${trusting.join(', ')} to local mode before restoring TCP ingress.`, code: 'APPS_IN_TAILNET_MODE' }); return true; }

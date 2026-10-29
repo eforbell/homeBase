@@ -170,6 +170,8 @@ test('active: unlock refuses, the administrator\'s passphrase opens recovery, an
   const founder = (await parent.get('/api/directory')).body.members[0];
   assert.equal((await parent.post(`/api/directory/members/${founder.memberId}`, { name: 'X' })).body.code, 'BOOTSTRAP_STATE');
   assert.equal((await parent.post('/api/directory/credentials/yubi-1/revoke')).status, 200, 'revoking is what recovery is for');
+  assert.equal((await parent.post('/api/ingress/rollback', { confirm: 'ROLLBACK' })).body.code, 'BOOTSTRAP_INCOMPLETE', 'no host action in recovery');
+  assert.equal((await parent.post('/api/ingress/services/homebase/publish', { confirm: 'PUBLISH' })).body.code, 'BOOTSTRAP_INCOMPLETE');
   const audit = app.directory && (await parent.get('/api/admin/audit')).body.entries.map((entry) => `${entry.action}:${entry.outcome}`);
   assert.ok(audit.includes('directory-recovery:entered'));
   assert.ok(audit.includes('directory-recovery:refused'));
@@ -193,4 +195,29 @@ test('with the directory off, nothing changes: the passphrase alone unlocks and 
   assert.equal((await anyone.get('/api/admin/status')).body.unlocked, true);
   assert.equal((await anyone.get('/api/directory')).status, 404);
   assert.equal((await anyone.get('/api/identity/whoami')).status, 404);
+});
+
+test('an unlock in flight when root resets the passphrase opens no session', async (t) => {
+  const { getAdminStatus, hashPassphrase, unlockAdmin } = require('../src/admin-auth');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-race-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stateStore = new SqliteStateStore(path.join(root, 'state.sqlite3'));
+  stateStore.init();
+  stateStore.setAdminCredential({ passphraseHash: hashPassphrase(PASSPHRASE), createdAt: 'x', updatedAt: 'x' });
+  // The identity lookup is where the request waits; the reset lands meanwhile.
+  const directory = {
+    caller: async () => { stateStore.setAdminCredential({ passphraseHash: hashPassphrase('reset by root'), createdAt: 'x', updatedAt: 'x' }); stateStore.deleteAllAdminSessions(); return { userId: '1001', login: 'parent@example.com' }; },
+    claim: () => ({ user_id: '1001' }),
+    isAdministrator: () => true,
+    state: () => 'setup',
+  };
+  const headers = {};
+  const res = { setHeader: (name, value) => { headers[name.toLowerCase()] = value; } };
+  const result = await unlockAdmin({ headers: {} }, res, { passphrase: PASSPHRASE }, stateStore, { directory });
+  assert.equal(result.statusCode, 409);
+  assert.equal(result.payload.code, 'PASSPHRASE_CHANGED');
+  assert.equal(headers['set-cookie'], undefined);
+  assert.equal(stateStore.getAdminSession('anything'), null);
+  const status = await getAdminStatus({ headers: { cookie: '' } }, stateStore, { directory: { ...directory, caller: async () => ({ userId: '1001' }) } });
+  assert.equal(status.unlocked, false);
 });

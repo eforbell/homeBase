@@ -7,6 +7,11 @@ function getAutoBootstrapDecision({ config, latestBootstrapJob }) {
   if (config.homeBaseEnablePrivilegedJobs === false) {
     return { shouldStart: false, reason: 'privileged-jobs-disabled' };
   }
+  // With the household directory on, a privileged plan needs the administrator (D16; a hardware key every
+  // time from SID-006), which an unattended start can never be.
+  if (config.directory) {
+    return { shouldStart: false, reason: 'household-directory' };
+  }
   // Auto-bootstrap runs the legacy sudo plan; executor hosts bootstrap through the typed executor.
   if (config.homeBaseExecutionMode === 'executor') {
     return { shouldStart: false, reason: 'executor-mode' };

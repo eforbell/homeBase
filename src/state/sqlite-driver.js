@@ -681,6 +681,22 @@ elif op == "set_admin_credential":
     conn.commit()
     emit({"ok": True})
 
+elif op == "create_admin_session" and payload["record"].get("expectPassphraseHash"):
+    # Only while the passphrase that opened it is still the one stored: a root reset that replaced it (and
+    # ended every session) while the request was in flight must not be undone by the session it creates.
+    record = payload["record"]
+    cursor = conn.execute(
+        """
+        INSERT INTO homebase_admin_sessions (token_hash, created_at, expires_at, user_id)
+        SELECT ?, ?, ?, ? WHERE EXISTS (
+          SELECT 1 FROM homebase_admin_credentials WHERE id = 1 AND passphrase_hash = ?
+        )
+        """,
+        (record["tokenHash"], record["createdAt"], record["expiresAt"], record.get("userId"), record["expectPassphraseHash"]),
+    )
+    conn.commit()
+    emit({"ok": cursor.rowcount == 1})
+
 elif op == "create_admin_session":
     record = payload["record"]
     conn.execute(

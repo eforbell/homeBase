@@ -78,12 +78,17 @@ function setSessionCookie(res, token) {
   res.setHeader('Set-Cookie', `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`);
 }
 
-function openSession(res, stateStore, userId = null) {
+// With expectPassphraseHash, only if that passphrase is still the stored one; returns whether it opened.
+function openSession(res, stateStore, userId = null, expectPassphraseHash = null) {
   const token = makeSessionToken();
   const nowIso = new Date().toISOString();
-  stateStore.createAdminSession({ tokenHash: hashToken(token), createdAt: nowIso, expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(), userId });
+  const result = stateStore.createAdminSession({ tokenHash: hashToken(token), createdAt: nowIso, expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(), userId, expectPassphraseHash });
+  if (expectPassphraseHash && !result?.ok) return false;
   setSessionCookie(res, token);
+  return true;
 }
+
+const PASSPHRASE_CHANGED = { statusCode: 409, payload: { error: 'The admin passphrase changed while this request was in flight; unlock again.', code: 'PASSPHRASE_CHANGED' } };
 
 function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
@@ -101,12 +106,13 @@ async function setupAdmin(req, res, body, stateStore, { directory = null } = {})
   const owner = await sessionOwner(req, directory);
   if (!owner.ok) return owner;
   const nowIso = new Date().toISOString();
+  const passphraseHash = hashPassphrase(passphrase);
   stateStore.setAdminCredential({
-    passphraseHash: hashPassphrase(passphrase),
+    passphraseHash,
     createdAt: nowIso,
     updatedAt: nowIso,
   });
-  openSession(res, stateStore, owner.userId);
+  if (!openSession(res, stateStore, owner.userId, passphraseHash)) return PASSPHRASE_CHANGED;
   return { statusCode: 200, payload: { ok: true } };
 }
 
@@ -121,7 +127,7 @@ async function unlockAdmin(req, res, body, stateStore, { directory = null } = {}
   }
   const owner = await sessionOwner(req, directory);
   if (!owner.ok) return owner;
-  openSession(res, stateStore, owner.userId);
+  if (!openSession(res, stateStore, owner.userId, credential.passphraseHash)) return PASSPHRASE_CHANGED;
   return { statusCode: 200, payload: { ok: true } };
 }
 
@@ -154,19 +160,21 @@ async function rotateAdmin(req, res, body, stateStore, { directory = null } = {}
   }
 
   const nowIso = new Date().toISOString();
+  const passphraseHash = hashPassphrase(newPassphrase);
   stateStore.setAdminCredential({
-    passphraseHash: hashPassphrase(newPassphrase),
+    passphraseHash,
     createdAt: credential.createdAt || nowIso,
     updatedAt: nowIso,
   });
   stateStore.deleteAllAdminSessions();
-  openSession(res, stateStore, status.userId || null);
+  if (!openSession(res, stateStore, status.userId || null, passphraseHash)) return PASSPHRASE_CHANGED;
   return { statusCode: 200, payload: { ok: true } };
 }
 
 const EXECUTION_MODE_UPGRADE_HINT = 'HOME_BASE_ENABLE_PRIVILEGED_JOBS is set but HOME_BASE_EXECUTION_MODE is not in this process\'s environment. Home Base reads only the environment systemd provides (it does not read a .env file): add HOME_BASE_EXECUTION_MODE=legacy-sudo to the file named by EnvironmentFile= in `systemctl cat homebase`, then restart the service.';
 
-// duringBootstrap: the few host actions setup and recovery need (the cutover and Home Base's own service).
+// duringBootstrap: the few host actions setup needs (the cutover and Home Base's own service). Recovery
+// permits none: only re-enrolling and revoking (D16).
 async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false, directory = null, duringBootstrap = false } = {}) {
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const sessionTokenHash = token ? hashToken(token) : null;
@@ -178,7 +186,7 @@ async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled =
     return { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' }, sessionTokenHash };
   }
   // No privileged plan or config change until the administrator's credentials are in place (D16).
-  if (directory && !duringBootstrap && status.directoryState !== 'active') {
+  if (directory && status.directoryState !== 'active' && !(duringBootstrap && status.directoryState === 'setup')) {
     return { ok: false, statusCode: 409, payload: { error: `Home Base is in ${status.directoryState}: privileged plans and setting changes wait until the administrator's credentials are enrolled.`, code: 'BOOTSTRAP_INCOMPLETE' }, sessionTokenHash };
   }
   if (!privilegedJobsEnabled) {
@@ -203,6 +211,7 @@ module.exports = {
   getAdminStatus,
   hashPassphrase,
   openSession,
+  PASSPHRASE_CHANGED,
   verifyPassphrase,
   setupAdmin,
   unlockAdmin,

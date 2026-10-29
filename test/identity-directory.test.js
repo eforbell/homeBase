@@ -202,9 +202,13 @@ test('a login is never the person: a new account with a member\'s login is unkno
   assert.equal(directory.isAdministrator(impostor.userId), false);
   assert.throws(() => directory.addMember(actor, { userId: '3001', role: 'kid' }), { code: 'NOT_SEEN' }, 'IDs come from identity lookups, never typed in');
 
-  // The founder's identity provider renamed them: same stable ID, new login.
+  // The founder's identity provider renamed them: same stable ID, new login. The lookup (a GET) only notes
+  // it; the background tick records it.
+  const generation = context.published().generation;
   assert.deepEqual(directory.lookup(FOUNDER.userId, { ...FOUNDER, login: 'parent@new.example' }), { admitted: true });
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.published().generation, generation, 'nothing written from the request path');
+  directory.syncLogins();
   assert.equal(context.published().members[0].login, 'parent@new.example');
   assert.equal(directory.isAdministrator(FOUNDER.userId), true);
   // Now the old login is free, and the account holding it can be added as itself.
@@ -319,4 +323,63 @@ test('a directory that can\'t publish admits nobody', (t) => {
   fs.chmodSync(path.dirname(context.snapshotFile), 0o755);
   assert.equal(directory.lookup(FOUNDER.userId, FOUNDER), null);
   assert.match(context.logs.at(-1), /not published/);
+});
+
+test('a login change waits out recovery, which permits only re-enrolling and revoking', (t) => {
+  const context = fixture(t);
+  const directory = activeDirectory(context);
+  directory.enterRecovery(FOUNDER);
+  directory.publish();
+  directory.lookup(FOUNDER.userId, { ...FOUNDER, login: 'parent@new.example' });
+  const generation = context.published().generation;
+  directory.syncLogins();
+  assert.equal(context.published().generation, generation);
+  directory.addCredential({ userId: FOUNDER.userId, credentialId: 'yubi-2', kind: 'hardware' });
+  directory.activate({ userId: FOUNDER.userId, credentialId: 'yubi-2' });
+  directory.syncLogins();
+  assert.equal(context.published().members[0].login, 'parent@new.example');
+});
+
+test('publishing is one step across processes: a publisher that read an older generation never replaces a newer one', (t) => {
+  const context = fixture(t);
+  const directory = context.make();
+  directory.claim(FOUNDER);
+  const logs = [];
+  // A second publisher (the root CLI) commits a change while the first is inside its locked read. It can't
+  // publish meanwhile; the first writes what it read, and the next publish writes the newer generation.
+  let raced = false;
+  const first = createDirectory({
+    dbPath: context.dbPath, catalog: CATALOG, household: 'smith', snapshotFile: context.snapshotFile, log: (line) => logs.push(line),
+    store: (() => {
+      const store = createDirectoryStore(context.dbPath);
+      return { ...store, load() { const data = store.load(); if (!raced) { raced = true; second.reset({ passphraseHash: 'salt:hash' }); } return data; } };
+    })(),
+  });
+  const second = createDirectory({ dbPath: context.dbPath, catalog: CATALOG, household: 'smith', snapshotFile: context.snapshotFile, lockWaitMs: 200, log: (line) => logs.push(line) });
+  const before = context.published();
+  first.publish();
+  assert.match(logs.join('\n'), /holds the snapshot lock/, 'the racing publisher waited, then gave up');
+  assert.equal(context.published().generation, before.generation);
+  first.publish();
+  assert.equal(context.published().generation, before.generation + 1);
+  assert.equal(context.published().global_epoch, before.global_epoch + 1);
+
+  // A database older than what is published (restored by hand) publishes nothing and admits nobody.
+  fs.writeFileSync(context.snapshotFile, JSON.stringify({ generation: 9_999 }));
+  first.publish();
+  assert.equal(context.published().generation, 9_999);
+  assert.equal(first.lookup(FOUNDER.userId, FOUNDER), null);
+  assert.match(logs.at(-1), /newer than the database/);
+});
+
+test('a lock left by a publisher that died is taken over', (t) => {
+  const context = fixture(t);
+  const directory = context.make();
+  const lock = `${context.snapshotFile}.lock`;
+  fs.writeFileSync(lock, '');
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(lock, old, old);
+  directory.claim(FOUNDER);
+  assert.equal(context.published().members.length, 1);
+  assert.equal(fs.existsSync(lock), false);
 });

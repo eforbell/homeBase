@@ -25,6 +25,8 @@ const GRANT_MS = 15 * 60_000;
 const CANDIDATE_LIMIT = 50;
 const CANDIDATE_MS = 24 * 60 * 60_000;
 const ATTEMPTS = 5;
+const LOCK_WAIT_MS = 10_000;
+const LOCK_STALE_MS = 30_000;
 const ROLES = new Set(['parent', 'kid']);
 const STATUSES = new Set(['active', 'disabled']);
 const KINDS = new Set(['synced', 'device-bound', 'hardware']);
@@ -61,13 +63,13 @@ function toRow(member) {
 }
 
 // catalog: [{ id, identity?: { defaultAccess: 'administrator' } }]. Operator apps default to administrators.
-function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, now = Date.now, log = () => {}, store = createDirectoryStore(dbPath) }) {
+function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, now = Date.now, log = () => {}, store = createDirectoryStore(dbPath), lockWaitMs = LOCK_WAIT_MS }) {
   if (!household) throw new Error('the household directory needs HOME_BASE_INSTANCE');
   const file = path.resolve(snapshotFile);
   const appIds = new Set(catalog.map((app) => app.id));
   const operatorApps = new Set(catalog.filter((app) => app.identity?.defaultAccess === 'administrator').map((app) => app.id));
   const candidates = new Map();
-  const loginUpdates = new Set();
+  const observedLogins = new Map();
   let published = new Map();
 
   const iso = () => new Date(now()).toISOString();
@@ -110,12 +112,43 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     };
   }
 
+  // Home Base and the root CLI both publish. The lock makes read-then-write one step across processes, so a
+  // publisher that read generation N can't replace N+1 written meanwhile. A lock left by a process that died
+  // is taken over after 30 s.
+  function withPublishLock(work) {
+    const lock = `${file}.lock`;
+    const started = Date.now();
+    for (;;) {
+      try {
+        fs.closeSync(fs.openSync(lock, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600));
+        break;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        let age = 0;
+        try { age = Date.now() - fs.lstatSync(lock).mtimeMs; } catch { continue; }
+        if (age > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue; }
+        if (Date.now() - started > lockWaitMs) throw new Error('another publisher holds the snapshot lock');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
+    }
+    try {
+      return work();
+    } finally {
+      fs.rmSync(lock, { force: true });
+    }
+  }
+
   // Writes what the database holds. If it can't, nobody is admitted until it can: the last good snapshot
   // ages out after 120 s and apps fall back to "no member" (fail closed).
   function publish() {
     try {
-      const data = load();
-      writeSnapshot(snapshotOf(data), { file });
+      const data = withPublishLock(() => {
+        const current = load();
+        const onDisk = publishedGeneration(file);
+        if (onDisk > current.household.generation) throw new Error(`the published generation ${onDisk} is newer than the database's ${current.household.generation}`);
+        writeSnapshot(snapshotOf(current), { file });
+        return current;
+      });
       published = new Map(data.members.map((member) => [member.user_id, member]));
       return data;
     } catch (error) {
@@ -387,34 +420,36 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     });
   }
 
-  // A member's login changed at the identity provider; the stable user ID is the same person.
-  function noteLogin(userId, login) {
-    if (loginUpdates.has(userId)) return;
-    loginUpdates.add(userId);
-    setImmediate(() => {
+  // A member's login changed at the identity provider; the stable user ID is the same person. Observed by
+  // the identity lookup and recorded here, by the background tick, so no request changes the directory
+  // (D20). Recovery permits only re-enrolling and revoking, so it waits until recovery ends.
+  function syncLogins() {
+    for (const [userId, login] of [...observedLogins]) {
       try {
         change((data) => {
+          if (data.household.state === 'recovery') return { change: {}, value: null };
+          observedLogins.delete(userId);
           const member = data.members.find((entry) => entry.user_id === userId);
           if (!member || member.login === login) return { change: {}, value: null };
           if (data.members.some((entry) => entry.login === login)) refuse(409, 'LOGIN_HELD', `${login} is still recorded for another member`);
           return { change: { members: [toRow({ ...member, login, updated_at: iso() })], audit: [{ action: 'member-login', target: member.member_id, outcome: 'updated' }] }, value: null };
         });
       } catch (error) {
+        observedLogins.delete(userId);
         log(`directory: login of member with user ID ${userId} not updated (${error.message})`);
-      } finally {
-        loginUpdates.delete(userId);
       }
-    });
+    }
   }
 
   // The identity endpoint's question (D1), answered from the last published snapshot. Accounts that
-  // aren't members are remembered for a day so the administrator can add them without typing an ID, and a
-  // member's changed login is recorded. Both come from tailscaled's answer for the caller's own connection,
-  // so whichever request carries them (a sibling's navigation included) records only the truth.
+  // aren't members are remembered (in memory, for a day) so the administrator can add them without typing an
+  // ID, and a member's changed login is noted for syncLogins. Both come from tailscaled's answer for the
+  // caller's own connection, so whichever request carries them records only the truth, and nothing persists
+  // until an administrator adds the member or the background tick records the login.
   function lookup(userId, identity = {}) {
     const member = published.get(userId);
     if (member) {
-      if (identity.login && identity.login !== member.login) noteLogin(userId, identity.login);
+      if (identity.login && identity.login !== member.login) observedLogins.set(userId, identity.login);
       return { admitted: member.status === 'active' };
     }
     if (identity.login) {
@@ -466,12 +501,12 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
 
   function start() {
     publish();
-    return setInterval(publish, PUBLISH_MS).unref();
+    return setInterval(() => { syncLogins(); publish(); }, PUBLISH_MS).unref();
   }
 
   return {
     activate, addCredential, addMember, claim, consumeGrant, describe, enterRecovery, init, isAdministrator, issueGrant,
-    lookup, memberStatus, publish, reset, revokeCredential, start, state, updateMember, snapshotFile: file,
+    lookup, memberStatus, publish, reset, revokeCredential, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }
 
