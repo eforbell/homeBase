@@ -113,6 +113,7 @@ test('setup allows editing the directory but no privileged plan, setting change,
   const config = await parent.post('/api/homebase/config', { hostname: 'elsewhere' });
   assert.equal(config.status, 409);
   assert.equal(config.body.code, 'BOOTSTRAP_INCOMPLETE');
+  assert.match(config.body.error, /in setup/);
   const publish = await parent.post('/api/ingress/services/home/publish', { confirm: 'PUBLISH' });
   assert.equal(publish.body.code, 'BOOTSTRAP_INCOMPLETE');
   const homebase = await parent.post('/api/ingress/services/homebase/publish', { confirm: 'PUBLISH' });

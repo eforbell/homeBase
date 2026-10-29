@@ -1060,7 +1060,8 @@ function createApp(config) {
         const auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: true });
         if (!auth.ok) {
           recordAdminAudit(stateStore, { action: 'homebase-config', target: 'homebase', dryRun: false, outcome: 'blocked-auth', reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
-          return sendJson(res, auth.statusCode, { ...auth.payload, error: auth.statusCode === 401 ? 'Admin unlock is required to change Home Base settings.' : 'Set up the admin passphrase before changing Home Base settings.' });
+          const error = auth.payload?.code ? auth.payload.error : (auth.statusCode === 401 ? 'Admin unlock is required to change Home Base settings.' : 'Set up the admin passphrase before changing Home Base settings.');
+          return sendJson(res, auth.statusCode, { ...auth.payload, error });
         }
         const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
         const parsed = validateHomeBaseConfigPatch(body, current);
