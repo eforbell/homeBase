@@ -152,10 +152,11 @@ Until the household directory exists, services may be published but no app can u
   - The health message for an app on its port but not yet updated still says "socket".
 - **Next:** SID-003, the sovereignAuth core library. The public repo exists and is empty. SID-003 has no dependencies; SID-004 onwards build on it.
 
-**SID-003, the sovereignAuth core library (passing, 2026-10-29).** sovereignAuth #1-#5 hold the request guards, the snapshot reader and identity, token, assurance and step-up verification, the redemption client, the OAuth callback helper and the WebAuthn helpers, with conformance vectors for a later Python port. Home Base wires the guards and an identity preview behind flags (`HOME_BASE_REQUEST_GUARDS`, `HOME_BASE_IDENTITY_PREVIEW`, both off by default) and pins the library at 8e64765. Every PR had a Codex security review until it came back clean.
+**SID-003, the sovereignAuth core library (passing, 2026-10-29).** sovereignAuth #1-#5 hold the request guards, the snapshot reader and identity, token, assurance and step-up verification, the redemption client, the OAuth callback helper and the WebAuthn helpers, with conformance vectors for a later Python port. Home Base wires the guards and an identity preview behind flags (`HOME_BASE_REQUEST_GUARDS`, `HOME_BASE_IDENTITY_PREVIEW`, both off by default) and pins the library at `v0.1.0` (8e64765). Every PR had a Codex security review until it came back clean.
 - **Proven on the test VM in enforce mode:** a credential-free install; a member resolved end to end; every sibling-hostname request refused in Home Base's log while a top-level link opens; tossed cookies ignored by the library's check; the iOS wrapper passes.
 - **Found along the way:** a cached answer could bypass resource isolation (fixed with `Vary`); a Referer can't tell same-origin pages apart, so the OAuth boundary is the origin; `@simplewebauthn/server` fetches CRL URLs from client certificates for some formats, which Home Source was exposed to (bugBase #151, fixed in homeSource #46).
-- **Moved on:** the iOS OAuth callback check and WebKit runs (SID-007), real-authenticator WebAuthn (SID-005), the health-check webhook (SID-006).
+- **Fixed at close-out:** `GET /api/apps/health` sent health-alert webhooks, so a sibling hostname's top-level navigation could send one. The GET now only reads; alerts go out from a background check every 5 minutes while they are on.
+- **Moved on:** the iOS OAuth callback check and WebKit runs (SID-007), real-authenticator WebAuthn (SID-005).
 - **Next:** SID-004, the Home Base directory, replacing the preview members file.
 
 ## Review

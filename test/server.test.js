@@ -1049,7 +1049,7 @@ test('health alert test endpoint posts to configured webhook target', async () =
   }
 });
 
-test('apps health endpoint still responds when webhook delivery fails', async () => {
+test('the health endpoint and the background alert check both survive a failing webhook', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-failure-'));
   const dbPath = path.join(tempDir, 'state.sqlite3');
   const server = await startServer({
@@ -1102,6 +1102,82 @@ test('apps health endpoint still responds when webhook delivery fails', async ()
     assert.equal(res.status, 200);
     const payload = await res.json();
     assert.equal(payload.byAppId['family-help'].runtimeStatus, 'service-down');
+    const result = await server.app.checkHealthAlerts();
+    assert.deepEqual([result.sent, result.failed, result.errors[0].error], [0, 1, 'webhook offline']);
+  } finally {
+    await server.close();
+  }
+});
+
+test('health alerts go out from the background check, never from GET /api/apps/health', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-background-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const posted = [];
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    notificationsPostJson: async (url, body) => {
+      posted.push({ url, body });
+    },
+  });
+
+  try {
+    new SqliteStateStore(dbPath).upsertInstallation({
+      appId: 'family-help',
+      name: 'Family Help',
+      purpose: 'Household task intake',
+      port: 3002,
+      mountPath: '/help/',
+      externalUrl: 'https://homebase.tailnet/help/',
+      installRoot: '/opt/sovereign-home/apps/family-help',
+      serviceName: 'definitely-not-a-real-service',
+      ref: 'main',
+      status: 'installed',
+      plannedAt: '2026-04-18T12:00:00.000Z',
+      updatedAt: '2026-04-18T12:00:00.000Z',
+    });
+    const configure = (healthAlertsEnabled) => fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        hostname: 'homebase',
+        domain: 'tailnet',
+        gitTransport: 'https',
+        healthAlertsEnabled,
+        healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
+      }),
+    });
+    const adminCookie = await adminCookieFor(server.url);
+
+    // Alerts off: the check probes nothing and sends nothing.
+    assert.equal((await configure(false)).status, 200);
+    assert.deepEqual(await server.app.checkHealthAlerts(), { enabled: false, sent: 0, skipped: 0 });
+
+    // Alerts on and the app down: reading health, even refreshed, still sends nothing.
+    assert.equal((await configure(true)).status, 200);
+    for (const query of ['', '?refresh=1']) {
+      const res = await fetch(`${server.url}/api/apps/health${query}`);
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).byAppId['family-help'].runtimeStatus, 'service-down');
+    }
+    assert.deepEqual(posted, []);
+
+    // The background check sends the alert once, then the cooldown holds it.
+    assert.equal((await server.app.checkHealthAlerts()).sent, 1);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].url, 'https://alerts.example.test/hook');
+    assert.equal(posted[0].body.event, 'app-health-critical');
+    assert.equal((await server.app.checkHealthAlerts()).sent, 0);
+    assert.equal(posted.length, 1);
+
   } finally {
     await server.close();
   }
