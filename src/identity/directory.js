@@ -17,7 +17,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { DEFAULT_SNAPSHOT_PATH, writeSnapshot } = require('sovereign-auth');
+const { DEFAULT_SNAPSHOT_PATH, parseSnapshot } = require('sovereign-auth');
 const { createDirectoryStore } = require('./directory-store');
 
 const PUBLISH_MS = 30_000;
@@ -25,8 +25,6 @@ const GRANT_MS = 15 * 60_000;
 const CANDIDATE_LIMIT = 50;
 const CANDIDATE_MS = 24 * 60 * 60_000;
 const ATTEMPTS = 5;
-const LOCK_WAIT_MS = 10_000;
-const LOCK_STALE_MS = 30_000;
 const ROLES = new Set(['parent', 'kid']);
 const STATUSES = new Set(['active', 'disabled']);
 const KINDS = new Set(['synced', 'device-bound', 'hardware']);
@@ -63,7 +61,7 @@ function toRow(member) {
 }
 
 // catalog: [{ id, identity?: { defaultAccess: 'administrator' } }]. Operator apps default to administrators.
-function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, now = Date.now, log = () => {}, store = createDirectoryStore(dbPath), lockWaitMs = LOCK_WAIT_MS }) {
+function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, now = Date.now, log = () => {}, store = createDirectoryStore(dbPath) }) {
   if (!household) throw new Error('the household directory needs HOME_BASE_INSTANCE');
   const file = path.resolve(snapshotFile);
   const appIds = new Set(catalog.map((app) => app.id));
@@ -112,45 +110,22 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     };
   }
 
-  // Home Base and the root CLI both publish. The lock makes read-then-write one step across processes, so a
-  // publisher that read generation N can't replace N+1 written meanwhile. A lock left by a process that died
-  // is taken over after 30 s.
-  function withPublishLock(work) {
-    const lock = `${file}.lock`;
-    const started = Date.now();
-    for (;;) {
-      try {
-        fs.closeSync(fs.openSync(lock, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600));
-        break;
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        let age = 0;
-        try { age = Date.now() - fs.lstatSync(lock).mtimeMs; } catch { continue; }
-        if (age > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue; }
-        if (Date.now() - started > lockWaitMs) throw new Error('another publisher holds the snapshot lock');
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-      }
-    }
-    try {
-      return work();
-    } finally {
-      fs.rmSync(lock, { force: true });
-    }
-  }
-
   // Writes what the database holds. If it can't, nobody is admitted until it can: the last good snapshot
   // ages out after 120 s and apps fall back to "no member" (fail closed).
   function publish() {
     try {
-      const data = withPublishLock(() => {
-        const current = load();
-        const onDisk = publishedGeneration(file);
-        if (onDisk > current.household.generation) throw new Error(`the published generation ${onDisk} is newer than the database's ${current.household.generation}`);
-        writeSnapshot(snapshotOf(current), { file });
-        return current;
-      });
-      published = new Map(data.members.map((member) => [member.user_id, member]));
-      return data;
+      for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
+        const data = load();
+        const snapshot = snapshotOf(data);
+        parseSnapshot(snapshot);
+        const result = store.publish({ expectGeneration: data.household.generation, file, body: `${JSON.stringify(snapshot, null, 2)}\n` });
+        if (result.ok) {
+          published = new Map(data.members.map((member) => [member.user_id, member]));
+          return data;
+        }
+        if (result.newerOnDisk) throw new Error(`the published generation ${result.newerOnDisk} is newer than the database's ${data.household.generation}`);
+      }
+      throw new Error('the directory kept changing');
     } catch (error) {
       published = new Map();
       log(`directory: snapshot not published (${error.message})`);
@@ -164,16 +139,18 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
 
   // build(data) returns { change, value } from what it read, or throws a DirectoryError. The change is
   // committed only if nothing else changed the directory meanwhile; otherwise it is rebuilt from a fresh read.
-  function change(build) {
+  // expectPassphraseHash: the change also needs the passphrase it was authorized by to be the stored one.
+  function change(build, { expectPassphraseHash } = {}) {
     for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
       const data = load();
       const { change: delta, value } = build(data);
       if (!Object.keys(delta).length) return value;
-      const result = store.commit({ expectGeneration: data.household.generation, now: iso(), ...delta });
+      const result = store.commit({ expectGeneration: data.household.generation, now: iso(), ...delta, ...(expectPassphraseHash ? { expectPassphraseHash } : {}) });
       if (result.ok) {
         publish();
         return value;
       }
+      if (result.passphraseChanged) refuse(409, 'PASSPHRASE_CHANGED', 'The admin passphrase changed while this request was in flight; unlock again.');
       if (result.integrity) refuse(409, 'CONFLICT', `That would give two members the same login or user ID (${result.integrity}).`);
     }
     return refuse(409, 'BUSY', 'The directory kept changing; try again.');
@@ -215,8 +192,8 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     };
   }
 
-  // The passphrase was verified by the caller. Returns the member the session belongs to.
-  function claim(caller) {
+  // The passphrase (passphraseHash) was verified by the caller. Returns the member the session belongs to.
+  function claim(caller, { passphraseHash } = {}) {
     return change((data) => {
       const { state, pending_administrator_login: pending } = data.household;
       if (state === 'active') refuse(409, 'RECOVERY_ONLY', 'Home Base is active: the passphrase opens recovery only.');
@@ -239,11 +216,11 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         },
         value: founder,
       };
-    });
+    }, { expectPassphraseHash: passphraseHash });
   }
 
-  // The passphrase was verified by the caller. Every assurance cookie and session stops working.
-  function enterRecovery(caller) {
+  // The passphrase (passphraseHash) was verified by the caller. Every assurance cookie and session stops working.
+  function enterRecovery(caller, { passphraseHash } = {}) {
     return change((data) => {
       const admin = requireAdministrator(data, caller.userId);
       if (data.household.state === 'recovery') return { change: {}, value: admin };
@@ -256,7 +233,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         },
         value: admin,
       };
-    });
+    }, { expectPassphraseHash: passphraseHash });
   }
 
   // Called by the passkey service after a fresh ceremony with credentialId (SID-005).
@@ -449,7 +426,9 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   function lookup(userId, identity = {}) {
     const member = published.get(userId);
     if (member) {
+      // The latest observation wins, including one back to the recorded login.
       if (identity.login && identity.login !== member.login) observedLogins.set(userId, identity.login);
+      else observedLogins.delete(userId);
       return { admitted: member.status === 'active' };
     }
     if (identity.login) {

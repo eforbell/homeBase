@@ -94,6 +94,11 @@ class SqliteStateStore {
     return runSqliteOp(this.dbPath, 'get_admin_credential');
   }
 
+  // The first passphrase only: false when one is already stored (a concurrent setup or root's reset).
+  createAdminCredentialIfAbsent(record) {
+    return runSqliteOp(this.dbPath, 'create_admin_credential_if_absent', { record }).ok;
+  }
+
   setAdminCredential(record) {
     return runSqliteOp(this.dbPath, 'set_admin_credential', { record });
   }

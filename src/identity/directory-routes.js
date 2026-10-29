@@ -58,7 +58,7 @@ function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parse
         return true;
       }
       try {
-        const admin = directory.enterRecovery(caller);
+        const admin = directory.enterRecovery(caller, { passphraseHash: credential.passphraseHash });
         if (!openSession(res, stateStore, admin.user_id, credential.passphraseHash)) {
           sendJson(res, PASSPHRASE_CHANGED.statusCode, PASSPHRASE_CHANGED.payload);
         } else {

@@ -3,12 +3,18 @@
 // change was computed from (compare and swap) and bumps the generation in the same transaction. So a rule
 // checked on what was read ("the administrator keeps a hardware key") still holds when the write lands,
 // whether the other writer is Home Base or the root CLI.
+//
+// Publishing is the same lock's business: publish renames the snapshot into place inside a transaction that
+// holds SQLite's write lock and checks the generation it was built from, so no publisher can replace a newer
+// snapshot with an older one. The operating system releases that lock when a process dies.
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const PYTHON_SCRIPT = `
 import json
+import os
+import secrets
 import sqlite3
 import sys
 
@@ -107,6 +113,11 @@ elif op == "commit":
         current = conn.execute("SELECT generation FROM identity_household WHERE id = 1").fetchone()
         if current is None or current["generation"] != payload["expectGeneration"]:
             return {"ok": False, "conflict": True}
+        # A change made on the strength of the passphrase holds only while that passphrase is still stored.
+        if "expectPassphraseHash" in payload:
+            stored = conn.execute("SELECT passphrase_hash FROM homebase_admin_credentials WHERE id = 1").fetchone()
+            if stored is None or stored["passphrase_hash"] != payload["expectPassphraseHash"]:
+                return {"ok": False, "passphraseChanged": True}
         generation = payload["expectGeneration"] + 1
         household = payload.get("household") or {}
         for name in ("state", "global_epoch", "pending_administrator_login"):
@@ -148,6 +159,49 @@ elif op == "commit":
     conn.execute("COMMIT" if result["ok"] else "ROLLBACK")
     emit(result)
 
+elif op == "publish":
+    # payload: expectGeneration, file, body (the snapshot JSON, already checked by the library's parser).
+    path = payload["file"]
+    directory = os.path.dirname(path)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = conn.execute("SELECT generation FROM identity_household WHERE id = 1").fetchone()
+        if current is None or current["generation"] != payload["expectGeneration"]:
+            result = {"ok": False, "conflict": True}
+        else:
+            try:
+                with open(path, "rb") as existing:
+                    on_disk = json.loads(existing.read()).get("generation", 0)
+            except (FileNotFoundError, ValueError, AttributeError):
+                on_disk = 0
+            if isinstance(on_disk, int) and on_disk > payload["expectGeneration"]:
+                result = {"ok": False, "newerOnDisk": on_disk}
+            else:
+                # As the library's writeSnapshot: a new file beside it (no symlink followed, no name reused),
+                # synced, renamed over it, the directory synced.
+                temp = os.path.join(directory, f".{os.path.basename(path)}.{os.getpid()}.{secrets.token_hex(6)}")
+                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+                try:
+                    os.write(fd, payload["body"].encode("utf-8"))
+                    os.fchmod(fd, 0o644)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                try:
+                    os.rename(temp, path)
+                except BaseException:
+                    os.unlink(temp)
+                    raise
+                dir_fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+                result = {"ok": True}
+    finally:
+        conn.execute("ROLLBACK")
+    emit(result)
+
 else:
     raise SystemExit(f"Unsupported directory store op: {op}")
 `;
@@ -165,6 +219,7 @@ function createDirectoryStore(dbPath) {
     init: ({ generation, now }) => run(dbPath, 'init', { generation, now }),
     load: () => run(dbPath, 'load'),
     commit: (change) => run(dbPath, 'commit', change),
+    publish: (snapshot) => run(dbPath, 'publish', snapshot),
   };
 }
 

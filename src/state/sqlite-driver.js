@@ -681,6 +681,15 @@ elif op == "set_admin_credential":
     conn.commit()
     emit({"ok": True})
 
+elif op == "create_admin_credential_if_absent":
+    record = payload["record"]
+    cursor = conn.execute(
+        "INSERT INTO homebase_admin_credentials (id, passphrase_hash, created_at, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+        (record["passphraseHash"], record["createdAt"], record["updatedAt"]),
+    )
+    conn.commit()
+    emit({"ok": cursor.rowcount == 1})
+
 elif op == "create_admin_session" and payload["record"].get("expectPassphraseHash"):
     # Only while the passphrase that opened it is still the one stored: a root reset that replaced it (and
     # ended every session) while the request was in flight must not be undone by the session it creates.

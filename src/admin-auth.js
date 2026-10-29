@@ -41,13 +41,20 @@ async function holdsSession(req, session, directory) {
   return Boolean(caller && caller.userId === session.userId && directory.isAdministrator(session.userId));
 }
 
-// The member a passphrase session will belong to, or a refusal. Only after the passphrase checked out.
-async function sessionOwner(req, directory) {
-  if (!directory) return { ok: true, userId: null };
+// Who is asking, before anything is written: the one wait, so everything after it is decided on fresh reads.
+async function identify(req, directory) {
+  if (!directory) return { ok: true, caller: null };
   const caller = await directory.caller(req);
   if (!caller) return { ok: false, statusCode: 403, payload: { error: 'Home Base could not tell which tailnet account is asking.', code: 'NO_IDENTITY' } };
+  return { ok: true, caller };
+}
+
+// The member a passphrase session will belong to, or a refusal. The claim commits only while passphraseHash
+// is still the stored passphrase, so a root reset in between wins.
+function sessionOwner(directory, caller, passphraseHash) {
+  if (!directory) return { ok: true, userId: null };
   try {
-    return { ok: true, userId: directory.claim(caller).user_id };
+    return { ok: true, userId: directory.claim(caller, { passphraseHash }).user_id };
   } catch (error) {
     if (!error.statusCode) throw error;
     return { ok: false, statusCode: error.statusCode, payload: { error: error.message, code: error.code } };
@@ -103,15 +110,15 @@ async function setupAdmin(req, res, body, stateStore, { directory = null } = {})
   if (passphrase.length < 8) {
     return { statusCode: 400, payload: { error: 'Admin passphrase must be at least 8 characters.' } };
   }
-  const owner = await sessionOwner(req, directory);
-  if (!owner.ok) return owner;
+  const identified = await identify(req, directory);
+  if (!identified.ok) return identified;
   const nowIso = new Date().toISOString();
   const passphraseHash = hashPassphrase(passphrase);
-  stateStore.setAdminCredential({
-    passphraseHash,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  });
+  if (!stateStore.createAdminCredentialIfAbsent({ passphraseHash, createdAt: nowIso, updatedAt: nowIso })) {
+    return { statusCode: 409, payload: { error: 'Admin credential is already configured.' } };
+  }
+  const owner = sessionOwner(directory, identified.caller, passphraseHash);
+  if (!owner.ok) return owner;
   if (!openSession(res, stateStore, owner.userId, passphraseHash)) return PASSPHRASE_CHANGED;
   return { statusCode: 200, payload: { ok: true } };
 }
@@ -125,7 +132,9 @@ async function unlockAdmin(req, res, body, stateStore, { directory = null } = {}
   if (!verifyPassphrase(passphrase, credential.passphraseHash)) {
     return { statusCode: 403, payload: { error: 'Invalid admin passphrase.' } };
   }
-  const owner = await sessionOwner(req, directory);
+  const identified = await identify(req, directory);
+  if (!identified.ok) return identified;
+  const owner = sessionOwner(directory, identified.caller, credential.passphraseHash);
   if (!owner.ok) return owner;
   if (!openSession(res, stateStore, owner.userId, credential.passphraseHash)) return PASSPHRASE_CHANGED;
   return { statusCode: 200, payload: { ok: true } };

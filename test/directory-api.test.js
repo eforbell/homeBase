@@ -221,3 +221,40 @@ test('an unlock in flight when root resets the passphrase opens no session', asy
   const status = await getAdminStatus({ headers: { cookie: '' } }, stateStore, { directory: { ...directory, caller: async () => ({ userId: '1001' }) } });
   assert.equal(status.unlocked, false);
 });
+
+test('a first-time setup in flight when root resets keeps root\'s passphrase and opens nothing', async (t) => {
+  const { hashPassphrase, setupAdmin, verifyPassphrase } = require('../src/admin-auth');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-race-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stateStore = new SqliteStateStore(path.join(root, 'state.sqlite3'));
+  stateStore.init();
+  const directory = {
+    caller: async () => { stateStore.setAdminCredential({ passphraseHash: hashPassphrase('set by root'), createdAt: 'x', updatedAt: 'x' }); return { userId: '1001', login: 'parent@example.com' }; },
+    claim: () => { throw new Error('must not claim'); },
+    isAdministrator: () => true,
+    state: () => 'setup',
+  };
+  const headers = {};
+  const result = await setupAdmin({ headers: {} }, { setHeader: (name, value) => { headers[name] = value; } }, { passphrase: PASSPHRASE }, stateStore, { directory });
+  assert.equal(result.statusCode, 409);
+  assert.equal(verifyPassphrase('set by root', stateStore.getAdminCredential().passphraseHash), true);
+  assert.equal(Object.keys(headers).length, 0);
+});
+
+test('recovery requested on a passphrase root replaces mid-request is refused, and Home Base stays active', async (t) => {
+  const { hashPassphrase } = require('../src/admin-auth');
+  let duringLookup = null;
+  const { app, base, dbPath } = await startServer(t, {
+    identityWhois: async (addr) => { if (duringLookup) { const run = duringLookup; duringLookup = null; run(); } if (!PEERS[addr]) throw new Error('no such peer'); return PEERS[addr]; },
+  });
+  const parent = client(base, PARENT);
+  await parent.post('/api/admin/setup', { passphrase: PASSPHRASE });
+  app.directory.addCredential({ userId: '1001', credentialId: 'synced-1', kind: 'synced' });
+  app.directory.addCredential({ userId: '1001', credentialId: 'yubi-1', kind: 'hardware' });
+  app.directory.activate({ userId: '1001', credentialId: 'yubi-1' });
+  duringLookup = () => new SqliteStateStore(dbPath).setAdminCredential({ passphraseHash: hashPassphrase('set by root'), createdAt: 'x', updatedAt: 'x' });
+  const recovery = await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE });
+  assert.equal(recovery.status, 409);
+  assert.equal(recovery.body.code, 'PASSPHRASE_CHANGED');
+  assert.equal(app.directory.state(), 'active');
+});

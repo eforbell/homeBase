@@ -160,6 +160,15 @@ Until the household directory exists, services may be published but no app can u
 - **Moved on:** the iOS OAuth callback check and WebKit runs (SID-007), real-authenticator WebAuthn (SID-005).
 - **Next:** SID-004, the Home Base directory, replacing the preview members file.
 
+**SID-004, the household directory (passing, 2026-10-29).** Home Base keeps the directory behind `HOME_BASE_DIRECTORY` (off by default) and publishes it as the snapshot, replacing the preview.
+- **Members:** keyed on the stable user ID, added only from accounts Home Base has seen, so nobody types an ID and a new account with a member's login stays unknown. Helm and Bitcoin Accounting go to the administrator unless granted.
+- **Bootstrap:** setup records the first tailnet identity to bring the passphrase as administrator; active needs D11 and a hardware ceremony; the passphrase while active opens recovery only, which ends every session and cookie and allows only re-enrolling and revoking. Admin sessions belong to the administrator's tailnet identity. No privileged plan or setting change runs in setup or recovery.
+- **Consistency:** every change is one compare-and-swap commit, so the administrator keeps D11 even against the root CLI; the snapshot is written inside SQLite's write lock against the generation it was built from, so it never goes back. Passphrase-based changes and sessions commit only while that passphrase is still stored, so a root reset always wins.
+- **Reset:** `sudo homebase admin reset [--administrator <login>]` returns to setup, revokes administrator credentials and sessions and bumps the global epoch, writing as the Home Base user.
+- **Proven on the test VM:** founder recorded from a member device; revocation reached an app in about 3 s; recovery and its limits; a stolen session cookie useless without the identity; apps refuse the snapshot 120 s after Home Base stops.
+- **Waiting on SID-005/006:** enrollment ceremonies call the directory's addCredential, activate and consumeGrant; active Home Base has no admin session until passkeys arrive, so directory edits there are tested but not reachable; administrator grants need the every-time hardware check.
+- **Next:** SID-005, the passkey service.
+
 ## Review
 
 Two rounds of external plan review:

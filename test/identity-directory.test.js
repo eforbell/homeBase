@@ -345,24 +345,30 @@ test('publishing is one step across processes: a publisher that read an older ge
   const directory = context.make();
   directory.claim(FOUNDER);
   const logs = [];
-  // A second publisher (the root CLI) commits a change while the first is inside its locked read. It can't
-  // publish meanwhile; the first writes what it read, and the next publish writes the newer generation.
-  let raced = false;
+  const second = context.make();
+  // The first publisher has built its snapshot from generation N when the root CLI commits N+1 and publishes.
+  const attempts = [];
   const first = createDirectory({
     dbPath: context.dbPath, catalog: CATALOG, household: 'smith', snapshotFile: context.snapshotFile, log: (line) => logs.push(line),
     store: (() => {
       const store = createDirectoryStore(context.dbPath);
-      return { ...store, load() { const data = store.load(); if (!raced) { raced = true; second.reset({ passphraseHash: 'salt:hash' }); } return data; } };
+      return {
+        ...store,
+        publish(snapshot) {
+          if (!attempts.length) second.reset({ passphraseHash: 'salt:hash' });
+          const result = store.publish(snapshot);
+          attempts.push([snapshot.expectGeneration, result.ok]);
+          return result;
+        },
+      };
     })(),
   });
-  const second = createDirectory({ dbPath: context.dbPath, catalog: CATALOG, household: 'smith', snapshotFile: context.snapshotFile, lockWaitMs: 200, log: (line) => logs.push(line) });
   const before = context.published();
   first.publish();
-  assert.match(logs.join('\n'), /holds the snapshot lock/, 'the racing publisher waited, then gave up');
-  assert.equal(context.published().generation, before.generation);
-  first.publish();
+  assert.deepEqual(attempts, [[before.generation, false], [before.generation + 1, true]], 'refused, then rebuilt from the newer read');
   assert.equal(context.published().generation, before.generation + 1);
   assert.equal(context.published().global_epoch, before.global_epoch + 1);
+  assert.deepEqual(logs, []);
 
   // A database older than what is published (restored by hand) publishes nothing and admits nobody.
   fs.writeFileSync(context.snapshotFile, JSON.stringify({ generation: 9_999 }));
@@ -372,14 +378,21 @@ test('publishing is one step across processes: a publisher that read an older ge
   assert.match(logs.at(-1), /newer than the database/);
 });
 
-test('a lock left by a publisher that died is taken over', (t) => {
+test('the latest login observation wins, including one back to the recorded login', (t) => {
   const context = fixture(t);
   const directory = context.make();
-  const lock = `${context.snapshotFile}.lock`;
-  fs.writeFileSync(lock, '');
-  const old = new Date(Date.now() - 60_000);
-  fs.utimesSync(lock, old, old);
   directory.claim(FOUNDER);
-  assert.equal(context.published().members.length, 1);
-  assert.equal(fs.existsSync(lock), false);
+  directory.lookup(FOUNDER.userId, { ...FOUNDER, login: 'parent@new.example' });
+  directory.lookup(FOUNDER.userId, FOUNDER);
+  directory.syncLogins();
+  assert.equal(context.published().members[0].login, FOUNDER.login);
+});
+
+test('a claim made on a passphrase root has since replaced is refused', (t) => {
+  const context = fixture(t);
+  const directory = context.make();
+  context.stateStore.setAdminCredential({ passphraseHash: 'salt:new', createdAt: 'x', updatedAt: 'x' });
+  assert.throws(() => directory.claim(FOUNDER, { passphraseHash: 'salt:old' }), { code: 'PASSPHRASE_CHANGED' });
+  assert.equal(directory.describe().members.length, 0, 'no founder recorded');
+  assert.equal(directory.claim(FOUNDER, { passphraseHash: 'salt:new' }).user_id, FOUNDER.userId);
 });
