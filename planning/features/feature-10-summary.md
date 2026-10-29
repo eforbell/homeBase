@@ -156,7 +156,7 @@ Until the household directory exists, services may be published but no app can u
 - **Proven on the test VM in enforce mode:** a credential-free install; a member resolved end to end; every sibling-hostname request refused in Home Base's log while a top-level link opens; tossed cookies ignored by the library's check; the iOS wrapper passes.
 - **Found along the way:** a cached answer could bypass resource isolation (fixed with `Vary`); a Referer can't tell same-origin pages apart, so the OAuth boundary is the origin; `@simplewebauthn/server` fetches CRL URLs from client certificates for some formats, which Home Source was exposed to (bugBase #151, fixed in homeSource #46).
 - **Fixed at close-out:** `GET /api/apps/health` sent health-alert webhooks, so a sibling hostname's top-level navigation could send one. The GET now only reads; alerts go out from a background check every 5 minutes while they are on. Likewise `GET /api/apps/updates` returns stored statuses and the update check is a POST.
-- **Open follow-up:** health-alert and service-host alert links are built from the configured hostname, so after cutover they still point at the legacy host instead of Home Base's service hostname.
+- **Open follow-up:** health-alert links are built from the configured hostname, so after cutover they still point at the legacy host instead of Home Base's service hostname (service-host alerts already carry the cutover URL).
 - **Moved on:** the iOS OAuth callback check and WebKit runs (SID-007), real-authenticator WebAuthn (SID-005).
 - **Next:** SID-004, the Home Base directory, replacing the preview members file.
 
