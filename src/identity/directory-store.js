@@ -22,7 +22,7 @@ db_path = sys.argv[1]
 op = sys.argv[2]
 payload = json.loads(sys.stdin.read() or "{}")
 
-conn = sqlite3.connect(db_path, isolation_level=None, timeout=10)
+conn = sqlite3.connect(db_path, isolation_level=None, timeout=5)
 conn.row_factory = sqlite3.Row
 conn.execute("PRAGMA foreign_keys = ON")
 
@@ -172,7 +172,7 @@ elif op == "publish":
             try:
                 with open(path, "rb") as existing:
                     on_disk = json.loads(existing.read()).get("generation", 0)
-            except (FileNotFoundError, ValueError, AttributeError):
+            except (OSError, ValueError, AttributeError):
                 on_disk = 0
             if isinstance(on_disk, int) and on_disk > payload["expectGeneration"]:
                 result = {"ok": False, "newerOnDisk": on_disk}
@@ -182,15 +182,18 @@ elif op == "publish":
                 temp = os.path.join(directory, f".{os.path.basename(path)}.{os.getpid()}.{secrets.token_hex(6)}")
                 fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
                 try:
-                    os.write(fd, payload["body"].encode("utf-8"))
-                    os.fchmod(fd, 0o644)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                try:
+                    try:
+                        os.write(fd, payload["body"].encode("utf-8"))
+                        os.fchmod(fd, 0o644)
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
                     os.rename(temp, path)
                 except BaseException:
-                    os.unlink(temp)
+                    try:
+                        os.unlink(temp)
+                    except FileNotFoundError:
+                        pass
                     raise
                 dir_fd = os.open(directory, os.O_RDONLY)
                 try:

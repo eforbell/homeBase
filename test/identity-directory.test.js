@@ -396,3 +396,18 @@ test('a claim made on a passphrase root has since replaced is refused', (t) => {
   assert.equal(directory.describe().members.length, 0, 'no founder recorded');
   assert.equal(directory.claim(FOUNDER, { passphraseHash: 'salt:new' }).user_id, FOUNDER.userId);
 });
+
+test('a snapshot write that fails leaves no temporary file behind', (t) => {
+  const context = fixture(t);
+  const directory = context.make();
+  directory.claim(FOUNDER);
+  const dir = path.dirname(context.snapshotFile);
+  const before = fs.readdirSync(dir).sort();
+  // The rename fails once the target is a directory; the temporary file was already written and synced.
+  fs.rmSync(context.snapshotFile);
+  fs.mkdirSync(context.snapshotFile);
+  fs.writeFileSync(path.join(context.snapshotFile, 'keep'), '');
+  directory.publish();
+  assert.match(context.logs.at(-1), /not published/);
+  assert.deepEqual(fs.readdirSync(dir).sort(), before);
+});
