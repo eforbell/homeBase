@@ -23,9 +23,11 @@ const { HOST_CA_BUNDLE, assessPemBundle, storeTrust } = require('./operations/di
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification, getIngressVerification } = require('./services/tailscale-verify');
-const { createIdentityResolver, createIdentityServer, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
+const { canonicalAddress, createIdentityResolver, createIdentityServer, createWhoisIdentity, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
+const { createPreviewDirectory } = require('./identity/preview-directory');
+const { createSnapshotReader, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
-const { refuseUnsafeRequest } = require('./request-guard');
+const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
 const { appPublicBase, appServiceKey } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
@@ -822,8 +824,55 @@ function createApp(config) {
     return value;
   }
 
+  const guardSuiteRequest = createSuiteRequestGuard({ mode: config.requestGuards || 'off' });
+  // SID-003 preview of the household directory (src/identity/preview-directory.js); off unless configured.
+  const previewDirectory = config.identityPreviewFile ? createPreviewDirectory({
+    membersFile: config.identityPreviewFile,
+    household: config.instance,
+    snapshotFile: config.identitySnapshotFile,
+    ownerUid: config.identityPreviewOwnerUid ?? 0,
+    trustedRoot: config.identitySnapshotTrustedRoot || null,
+    log: (message) => console.warn(`[homebase] ${message}`),
+  }) : null;
+  const snapshotReader = previewDirectory ? createSnapshotReader({
+    homeBaseUid: process.getuid(),
+    file: previewDirectory.snapshotFile,
+    trustedRoot: config.identitySnapshotTrustedRoot || null,
+  }) : null;
+
+  // Who is asking, and what sovereignAuth makes of it. The caller comes from tailscaled, by the address Serve
+  // put in X-Forwarded-For (Serve overwrites any the client sent, spike 3), never from X-Sovereign-*: before
+  // cutover Serve's legacy route reaches Home Base without nginx, so anyone on the tailnet could send those.
+  // They are only compared with the caller, so a forged one reveals nothing about another member.
+  // Read-only; it changes nothing.
+  const whoisCaller = previewDirectory ? createWhoisIdentity({
+    whois: config.identityWhois,
+    status: config.identityStatus,
+    log: (message) => console.warn(`[homebase] ${message}`),
+  }) : null;
+  async function describeIdentity(req) {
+    const header = (name) => (typeof req.headers[name] === 'string' ? req.headers[name] : null);
+    const forwardedFor = header('x-forwarded-for') || '';
+    const addr = forwardedFor.includes(',') ? null : canonicalAddress(forwardedFor);
+    const caller = addr ? await whoisCaller(addr) : null;
+    const sent = { userId: header('x-sovereign-user-id'), login: header('x-sovereign-login') };
+    let ingressHeaders = 'differ';
+    if (!sent.userId && !sent.login) ingressHeaders = 'absent';
+    else if (caller && sent.userId === caller.userId && sent.login === caller.login) ingressHeaders = 'match';
+    const state = snapshotReader.current();
+    const snapshot = state.ok
+      ? { ok: true, household: state.snapshot.household, generation: state.snapshot.generation, ageSeconds: Math.round((Date.now() - state.snapshot.writtenAt) / 1000) }
+      : { ok: false, reason: state.reason, message: state.message };
+    const callerHeaders = caller ? { 'x-sovereign-user-id': caller.userId, 'x-sovereign-login': caller.login } : {};
+    const apps = state.ok ? Object.fromEntries(catalog.map((app) => {
+      const result = resolveMember(state.snapshot, callerHeaders, { appId: app.id });
+      return [app.id, result.member ? { memberId: result.member.memberId, role: result.member.role } : { reason: result.reason }];
+    })) : {};
+    return { preview: true, caller: caller && { userId: caller.userId, login: caller.login }, ingressHeaders, snapshot, apps };
+  }
   const server = http.createServer(async (req, res) => {
     try {
+      if (!guardSuiteRequest(req, res)) return;
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = url.pathname;
       const method = req.method || 'GET';
@@ -862,6 +911,10 @@ function createApp(config) {
         }
       }
 
+      if (method === 'GET' && pathname === '/api/identity/whoami') {
+        if (!previewDirectory) return sendJson(res, 404, { error: 'The identity preview is off (HOME_BASE_IDENTITY_PREVIEW).' });
+        return sendJson(res, 200, await describeIdentity(req));
+      }
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });
       }
@@ -2185,13 +2238,19 @@ function createApp(config) {
         const address = server.address();
         const activePort = address && typeof address === 'object' ? address.port : config.port;
         console.log(`Home Base listening on http://${bindHost}:${activePort}`);
+        if ((config.requestGuards || 'off') !== 'off') console.log(`Home Base request guards: ${config.requestGuards}`);
         if (config.homeBaseExecutionModeMissing) console.warn(`[homebase] ${EXECUTION_MODE_UPGRADE_HINT}`);
         if (typeof callback === 'function') callback();
       });
       scheduleIngressCheck();
+      if (previewDirectory) {
+        previewDirectory.start();
+        console.log(`Home Base identity preview: publishing ${previewDirectory.snapshotFile}`);
+      }
       if (config.identitySocket) {
         const log = (message) => console.warn(`[homebase] ${message}`);
-        const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log }), log });
+        const directory = previewDirectory || undefined;
+        const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log, directory }), log });
         startIdentitySocketWhenReady({ server: identityServer, socketPath: config.identitySocket, log: (message) => console.log(`Home Base ${message}`) });
       }
     },

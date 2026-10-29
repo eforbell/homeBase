@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { canonicalAddress, createIdentityResolver, createIdentityServer, listenIdentitySocket, startIdentitySocketWhenReady } = require('../src/identity/identity-endpoint');
+const { canonicalAddress, createIdentityResolver, createIdentityServer, createWhoisIdentity, listenIdentitySocket, startIdentitySocketWhenReady } = require('../src/identity/identity-endpoint');
 
 const KID = { Node: { ID: 7, StableID: 'nKid1CNTRL', Tags: [] }, UserProfile: { ID: 4242, LoginName: 'kid@example.com', DisplayName: 'Kid Ö' } };
 const TAGGED = { Node: { ID: 8, StableID: 'nSrv1CNTRL', Tags: ['tag:server'] }, UserProfile: { ID: 1, LoginName: 'tagged-devices', DisplayName: 'Tagged Devices' } };
@@ -30,12 +30,21 @@ test('an admitted member on a user-owned device gets their stable user ID', asyn
 
 test('no identity: tagged devices, unknown peers, login mismatch, not admitted, no directory', async () => {
   assert.equal(await resolver().resolve(ask('100.64.0.8', 'tagged-devices')), null);
+  assert.equal(await resolver({ directory: { lookup: () => ({ admitted: true }) } }).resolve(ask('100.64.0.8', 'tagged-devices')), null, 'tagged, even if the directory admitted its user');
   assert.equal(await resolver().resolve(ask('100.64.0.9')), null);
   assert.equal(await resolver().resolve(ask('100.64.0.5', 'parent@example.com')), null, 'whois must agree with Serve');
   assert.equal(await resolver({ directory: { lookup: () => ({ admitted: false }) } }).resolve(ask('100.64.0.5')), null);
   assert.equal(await createIdentityResolver({ whois: async () => KID, status: async () => STATUS })(ask('100.64.0.5')), null, 'until SID-004 nobody is admitted');
   assert.equal(await resolver({ whois: async () => ({ ...KID, UserProfile: { ...KID.UserProfile, ID: 0 } }) }).resolve(ask('100.64.0.5')), null);
   assert.equal(await resolver({ whois: async () => ({ Node: KID.Node }) }).resolve(ask('100.64.0.5')), null);
+});
+
+test('whois identity alone: who an address is, with no login check and no admission', async () => {
+  const identify = createWhoisIdentity({ whois: async (addr) => ({ '100.64.0.5': KID, '100.64.0.8': TAGGED })[addr] || Promise.reject(new Error('no such peer')), status: async () => STATUS });
+  assert.deepEqual(await identify('100.64.0.5'), { userId: '4242', login: 'kid@example.com', name: 'Kid Ö' });
+  assert.equal(await identify('100.64.0.8'), null, 'tagged');
+  assert.equal(await identify('100.64.0.1'), null, 'the host itself');
+  assert.equal(await identify('100.64.0.9'), null, 'unknown');
 });
 
 test("the host's own addresses never get an identity, however they are written (IPv4 and IPv6)", async () => {

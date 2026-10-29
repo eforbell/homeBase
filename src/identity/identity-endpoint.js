@@ -45,8 +45,10 @@ function canonicalAddress(value) {
 // Until there is a directory, nobody is admitted.
 const NO_DIRECTORY = Object.freeze({ lookup: () => null });
 
-function createIdentityResolver({ whois = tailscaleWhois, status = tailscaleStatus, directory = NO_DIRECTORY, now = Date.now, log = () => {} } = {}) {
-  const cache = new Map();
+// Who a tailnet address is, from tailscaled alone: { userId, login, name }, or null for the host's own
+// addresses (spike 3), tagged devices (D2), a failed lookup or an ID that isn't one. Neither the login
+// check nor admission happens here.
+function createWhoisIdentity({ whois = tailscaleWhois, status = tailscaleStatus, now = Date.now, log = () => {} } = {}) {
   let self = { addresses: null, at: -Infinity };
 
   async function selfAddresses() {
@@ -58,7 +60,7 @@ function createIdentityResolver({ whois = tailscaleWhois, status = tailscaleStat
     return self.addresses;
   }
 
-  async function lookup(addr, serveLogin) {
+  return async function identify(addr) {
     let addresses;
     try { addresses = await selfAddresses(); } catch (error) {
       // Without the host's own addresses the self guard cannot run, so nobody gets an identity.
@@ -77,14 +79,25 @@ function createIdentityResolver({ whois = tailscaleWhois, status = tailscaleStat
     if (Array.isArray(node.Tags) && node.Tags.length) return null;
     const userId = profile.ID;
     if (!(Number.isSafeInteger(userId) && userId > 0) && !(typeof userId === 'string' && /^[A-Za-z0-9]{1,64}$/.test(userId))) return null;
-    if (typeof profile.LoginName !== 'string' || profile.LoginName !== serveLogin) {
+    if (typeof profile.LoginName !== 'string') return null;
+    return { userId: String(userId), login: profile.LoginName, name: String(profile.DisplayName || '') };
+  };
+}
+
+function createIdentityResolver({ whois = tailscaleWhois, status = tailscaleStatus, directory = NO_DIRECTORY, now = Date.now, log = () => {} } = {}) {
+  const cache = new Map();
+  const identify = createWhoisIdentity({ whois, status, now, log });
+
+  async function lookup(addr, serveLogin) {
+    const identity = await identify(addr);
+    if (!identity) return null;
+    if (identity.login !== serveLogin) {
       log(`identity: whois login for ${addr} does not match Serve's; no identity`);
       return null;
     }
-    const id = String(userId);
-    const member = directory.lookup(id);
+    const member = directory.lookup(identity.userId);
     if (!member?.admitted) return null;
-    return { userId: id, login: profile.LoginName, name: String(profile.DisplayName || '') };
+    return identity;
   }
 
   // The answer for one lookup request's headers, or null for "no identity".
@@ -164,4 +177,4 @@ function startIdentitySocketWhenReady({ server, socketPath, intervalMs = 15_000,
   return () => { if (timer) clearInterval(timer); };
 }
 
-module.exports = { IDENTITY_PATH, canonicalAddress, runJson, createIdentityResolver, createIdentityServer, listenIdentitySocket, startIdentitySocketWhenReady };
+module.exports = { IDENTITY_PATH, canonicalAddress, runJson, createIdentityResolver, createWhoisIdentity, createIdentityServer, listenIdentitySocket, startIdentitySocketWhenReady };
