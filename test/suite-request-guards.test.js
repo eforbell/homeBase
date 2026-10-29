@@ -47,7 +47,7 @@ function call(base, pathname, { method = 'GET', headers = {}, body } = {}) {
       res.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(text); } catch {}
-        resolve({ status: res.statusCode, payload });
+        resolve({ status: res.statusCode, payload, cacheControl: res.headers['cache-control'] ?? null, vary: res.headers.vary ?? null });
       });
     });
     req.on('error', reject);
@@ -116,10 +116,28 @@ test('off (the default) and report change no answer', async (t) => {
   }
 });
 
+// Home Base caches its scripts, styles and images, so a response cached for its own page must not be handed to
+// a sibling hostname's <script> without passing the guard again.
+test('enforce: cacheable responses through Serve vary on fetch metadata', async (t) => {
+  const server = await startServer('enforce');
+  t.after(() => server.close());
+  const script = await call(server.url, '/theme.js', { headers: via(HOMEBASE, { 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'script' }) });
+  assert.equal(script.status, 200);
+  assert.equal(script.cacheControl, 'public, max-age=300');
+  assert.equal(script.vary, 'Sec-Fetch-Site, Sec-Fetch-Mode, Sec-Fetch-Dest');
+  assert.equal((await call(server.url, '/theme.js')).vary, null, 'straight to loopback is no browser, so nothing to vary on');
+});
+
 test('report logs what enforce would refuse, once per request, without the query', () => {
   const logs = [];
   const guard = createSuiteRequestGuard({ mode: 'report', log: (line) => logs.push(line) });
-  const res = { writeHead: () => assert.fail('report never answers'), end: () => assert.fail('report never answers') };
+  const headers = {};
+  const res = {
+    getHeader: (name) => headers[name.toLowerCase()],
+    setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+    writeHead: () => assert.fail('report never answers'),
+    end: () => assert.fail('report never answers'),
+  };
   assert.equal(guard({ method: 'GET', url: '/api/apps/health?refresh=1', headers: via(HOMEBASE) }, res), true);
   assert.equal(guard({ method: 'GET', url: '/', headers: via('bad host') }, res), true);
   assert.equal(guard({ method: 'GET', url: '/', headers: {} }, res), true);
@@ -127,6 +145,7 @@ test('report logs what enforce would refuse, once per request, without the query
     '[sovereign-auth] would refuse GET /api/apps/health: fetch_metadata_missing (origin -, sec-fetch-site -)',
     '[homebase] would refuse GET /: forwarded host is not a hostname',
   ]);
+  assert.equal(headers.vary, 'Sec-Fetch-Site, Sec-Fetch-Mode, Sec-Fetch-Dest', 'report varies too, so the log sees every request');
 });
 
 test('an unknown mode stops Home Base from starting', () => {

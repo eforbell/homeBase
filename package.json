@@ -17,6 +17,6 @@
   "dependencies": {
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "sovereign-auth": "github:eforbell/sovereignAuth#4ee01a84bd32da5efa6b263e94da68e1a4c42b87"
+    "sovereign-auth": "github:eforbell/sovereignAuth#cc19cdc4eaace9e573fe2d9685f30ed56f19d659"
   }
 }
