@@ -38,11 +38,12 @@ function createIngressRoutes({
   const controlFor = (config) => { const client = apiFor(config); return controlFactory({ config, api: client, apiProblem: client ? null : apiProblem }); };
 
   // executes: false for a record that runs nothing on the host (a confirmation): an unlocked admin session is
-  // enough, even on a plan-only host.
-  async function authorize(req, res, config, { action, target, executes = true }) {
+  // enough, even on a plan-only host. duringBootstrap: allowed while the household directory is in setup or
+  // recovery, which need the cutover and Home Base's own service (runbook 2.5); every other service waits.
+  async function authorize(req, res, config, { action, target, executes = true, duringBootstrap = false }) {
     const auth = await requireAdmin(req, stateStore, executes
-      ? { privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs === true, executionModeMissing: config.homeBaseExecutionModeMissing === true }
-      : { privilegedJobsEnabled: true });
+      ? { privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs === true, executionModeMissing: config.homeBaseExecutionModeMissing === true, duringBootstrap }
+      : { privilegedJobsEnabled: true, duringBootstrap });
     if (!auth.ok) {
       recordAdminAudit(stateStore, { action, target, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
       sendJson(res, auth.statusCode, auth.payload);
@@ -120,7 +121,7 @@ function createIngressRoutes({
       const body = await parseBody(req);
       const target = 'local-host';
       if (body.confirm !== 'CUTOVER') { sendJson(res, 400, { error: 'The ingress cutover requires confirm=CUTOVER.' }); return true; }
-      const auth = await authorize(req, res, config, { action: 'ingress-cutover', target });
+      const auth = await authorize(req, res, config, { action: 'ingress-cutover', target, duringBootstrap: true });
       if (!auth) return true;
       const control = controlFor(config);
       const setup = control.configured();
@@ -138,7 +139,7 @@ function createIngressRoutes({
     if (method === 'POST' && confirmMatch) {
       const body = await parseBody(req);
       const key = confirmMatch[1];
-      const auth = await authorize(req, res, config, { action: 'ingress-confirm', target: key, executes: false });
+      const auth = await authorize(req, res, config, { action: 'ingress-confirm', target: key, executes: false, duringBootstrap: key === 'homebase' });
       if (!auth) return true;
       if (apiFor(config) || apiProblem) { refuse(res, { action: 'ingress-confirm', target: key, auth, error: apiProblem ? `The Tailscale API credential is configured but unusable (${apiProblem}); fix it, or remove it to confirm hosts by hand.` : 'An API credential is configured, so service hosts are verified automatically.', code: 'CONFIRMATION_NOT_USED' }); return true; }
       try {
@@ -156,7 +157,7 @@ function createIngressRoutes({
       const body = await parseBody(req);
       const key = publishMatch[1];
       if (body.confirm !== 'PUBLISH') { sendJson(res, 400, { error: 'Publishing a service requires confirm=PUBLISH.' }); return true; }
-      const auth = await authorize(req, res, config, { action: 'service-publish', target: key });
+      const auth = await authorize(req, res, config, { action: 'service-publish', target: key, duringBootstrap: key === 'homebase' });
       if (!auth) return true;
       const control = controlFor(config);
       const { entry } = await control.service(key);
@@ -178,7 +179,7 @@ function createIngressRoutes({
       const body = await parseBody(req);
       const target = 'local-host';
       if (body.confirm !== 'ROLLBACK') { sendJson(res, 400, { error: 'Rolling back ingress requires confirm=ROLLBACK.' }); return true; }
-      const auth = await authorize(req, res, config, { action: 'ingress-rollback', target });
+      const auth = await authorize(req, res, config, { action: 'ingress-rollback', target, duringBootstrap: true });
       if (!auth) return true;
       const trusting = appsInTailnetMode(state.installations);
       if (trusting.length) { refuse(res, { action: 'ingress-rollback', target, auth, error: `Return ${trusting.join(', ')} to local mode before restoring TCP ingress.`, code: 'APPS_IN_TAILNET_MODE' }); return true; }

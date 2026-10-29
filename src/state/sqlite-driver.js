@@ -135,6 +135,10 @@ if op == "init":
     installation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(installations)")}
     if "managed_by" not in installation_columns:
         conn.execute("ALTER TABLE installations ADD COLUMN managed_by TEXT")
+    # Feature-10 SID-004: with the household directory on, a session belongs to one tailnet identity.
+    session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(homebase_admin_sessions)")}
+    if "user_id" not in session_columns:
+        conn.execute("ALTER TABLE homebase_admin_sessions ADD COLUMN user_id TEXT")
     conn.commit()
     emit({"ok": True})
 
@@ -682,16 +686,18 @@ elif op == "create_admin_session":
     conn.execute(
         """
         INSERT INTO homebase_admin_sessions (
-          token_hash, created_at, expires_at
-        ) VALUES (?, ?, ?)
+          token_hash, created_at, expires_at, user_id
+        ) VALUES (?, ?, ?, ?)
         ON CONFLICT(token_hash) DO UPDATE SET
           created_at=excluded.created_at,
-          expires_at=excluded.expires_at
+          expires_at=excluded.expires_at,
+          user_id=excluded.user_id
         """,
         (
             record["tokenHash"],
             record["createdAt"],
             record["expiresAt"],
+            record.get("userId"),
         ),
     )
     conn.commit()
@@ -699,7 +705,7 @@ elif op == "create_admin_session":
 
 elif op == "get_admin_session":
     row = conn.execute(
-        "SELECT token_hash, created_at, expires_at FROM homebase_admin_sessions WHERE token_hash = ?",
+        "SELECT token_hash, created_at, expires_at, user_id FROM homebase_admin_sessions WHERE token_hash = ?",
         (payload["tokenHash"],),
     ).fetchone()
     if row is None:
@@ -709,6 +715,7 @@ elif op == "get_admin_session":
             "tokenHash": row["token_hash"],
             "createdAt": row["created_at"],
             "expiresAt": row["expires_at"],
+            "userId": row["user_id"],
         })
 
 elif op == "delete_admin_session":

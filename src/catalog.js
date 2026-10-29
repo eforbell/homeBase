@@ -467,6 +467,8 @@ const catalog = [
       pythonVenv: '.venv',
       listen: 'unix',
     },
+    // Feature-10: a single-operator app; members get it only when the administrator grants it (SID-004).
+    identity: { defaultAccess: 'administrator' },
     network: {
       preferredMountPath: '/bitcoin-accounting/',
       // Sensitive app (Feature-10 D4): its own hostname, svc:<instance>-<mount name>.
@@ -559,6 +561,8 @@ const catalog = [
       pythonVenv: '.venv',
       listen: 'unix',
     },
+    // Feature-10: a single-operator app; members get it only when the administrator grants it (SID-004).
+    identity: { defaultAccess: 'administrator' },
     network: {
       preferredMountPath: '/helm/',
       // Sensitive app (Feature-10 D4): its own hostname, svc:<instance>-<mount name>.

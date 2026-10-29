@@ -41,8 +41,8 @@ function canonicalAddress(value) {
   return new URL(`http://[${text}]/`).hostname.slice(1, -1).toLowerCase();
 }
 
-// directory.lookup(userId) → { admitted: true } for members the administrator admitted (SID-004).
-// Until there is a directory, nobody is admitted.
+// directory.lookup(userId, { login, name }) → { admitted: true } for members the administrator admitted
+// (SID-004). Until there is a directory, nobody is admitted.
 const NO_DIRECTORY = Object.freeze({ lookup: () => null });
 
 // Who a tailnet address is, from tailscaled alone: { userId, login, name }, or null for the host's own
@@ -95,7 +95,7 @@ function createIdentityResolver({ whois = tailscaleWhois, status = tailscaleStat
       log(`identity: whois login for ${addr} does not match Serve's; no identity`);
       return null;
     }
-    const member = directory.lookup(identity.userId);
+    const member = directory.lookup(identity.userId, identity);
     if (!member?.admitted) return null;
     return identity;
   }

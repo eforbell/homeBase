@@ -196,6 +196,8 @@ Rollback: set `off` (or remove the line) and restart.
 
 ## 5. Cutover: Home Base identity (SID-004/005/006)
 
+The household directory is on with `HOME_BASE_DIRECTORY=on` in `/etc/sovereign-home/homebase.env` (it needs `HOME_BASE_INSTANCE`); its log says `Home Base household directory: publishing …`. It replaces the SID-003 preview: remove `HOME_BASE_IDENTITY_PREVIEW`. Until the passkey service ships (SID-005), Home Base can't leave `setup` once the directory is on, and setup runs no privileged plan or setting change. Keep it off on production hosts until then; on the rehearsal host, turn it off again to run plans.
+
 1. Upgrade Home Base to the identity-capable version, **before** moving it to its socket. The directory and passkey service come up in `setup`.
 2. Move Home Base admin to its socket (it is already reachable at `svc:<instance>-homebase`). Keep `:3080` as a redirect for the transition period.
 3. The founder unlocks with the passphrase. Their tailnet identity is recorded as the administrator. Then they enroll:
@@ -203,7 +205,7 @@ Rollback: set `off` (or remove the line) and restart.
    - an attested hardware key (keyring);
    - a second attested hardware key (offline spare).
 4. Home Base moves to `active`. Confirm the passphrase now opens only a recovery session.
-5. Add members (stable user IDs, parent/kid) and set app access.
+5. Add members (stable user IDs, parent/kid) and set app access. A member is added from an account that opened any suite hostname in the last day, so nobody types a user ID: ask them to open Home Base first. Trading and Bitcoin accounting go to the administrator unless granted.
 6. Members with sensitive apps enroll through a 15-minute enrollment grant, on the Home Base hostname. Credentials can't be enrolled or revoked anywhere else.
 
 Verify:
@@ -213,6 +215,8 @@ Verify:
 - [ ] Revoking a credential refuses its cookie within one snapshot interval.
 - [ ] Recovery: the passphrase while active revokes sessions and allows only re-enrollment.
 - [ ] `homebase admin reset` returns to `setup` (rehearsal host only).
+
+**Reset (root shell).** When the administrator has lost their credentials and the passphrase, or recovery itself is stuck: `sudo homebase admin reset`. It asks for a new passphrase and a typed `RESET`, then revokes every administrator credential and session, moves the global epoch (every assurance cookie stops working) and returns Home Base to `setup`, audited. The administrator stays the same tailnet account; when that account is gone, `sudo homebase admin reset --administrator <login>` lets that login become the founder instead (the old administrator is demoted when it does).
 
 Rollback: return every app to local mode (section 6) first. Then restore the previous Home Base version and its Serve target.
 
