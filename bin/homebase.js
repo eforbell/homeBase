@@ -42,27 +42,45 @@ function loadEnvFile(file, env) {
   }
 }
 
-// A line from the terminal without echo, or from stdin when it isn't one.
-function promptHidden(question) {
-  return new Promise((resolve, reject) => {
-    const input = process.stdin;
-    process.stderr.write(question);
-    if (!input.isTTY) {
-      let data = '';
-      const onData = (chunk) => {
-        data += chunk;
-        const at = data.indexOf('\n');
-        if (at >= 0) {
-          input.off('data', onData);
-          input.pause();
-          resolve(data.slice(0, at).replace(/\r$/, ''));
-        }
-      };
-      input.setEncoding('utf8');
-      input.on('data', onData);
-      input.once('error', reject);
-      return;
+// Lines piped on stdin (no terminal), read once and handed out in order; null after the input ends.
+function createLineReader(input) {
+  const lines = [];
+  const waiting = [];
+  let buffer = '';
+  let ended = false;
+  const flush = () => {
+    while (waiting.length && (lines.length || ended)) waiting.shift()(lines.length ? lines.shift() : null);
+  };
+  input.setEncoding('utf8');
+  input.on('data', (chunk) => {
+    buffer += chunk;
+    let at;
+    while ((at = buffer.indexOf('\n')) >= 0) {
+      lines.push(buffer.slice(0, at).replace(/\r$/, ''));
+      buffer = buffer.slice(at + 1);
     }
+    flush();
+  });
+  input.on('end', () => {
+    if (buffer) lines.push(buffer);
+    buffer = '';
+    ended = true;
+    flush();
+  });
+  return () => new Promise((resolve) => { waiting.push(resolve); flush(); });
+}
+
+let pipedLine = null;
+
+// A line from the terminal without echo, or the next line piped on stdin. Null when the input ended.
+function promptHidden(question) {
+  const input = process.stdin;
+  process.stderr.write(question);
+  if (!input.isTTY) {
+    pipedLine = pipedLine || createLineReader(input);
+    return pipedLine().then((line) => { process.stderr.write('\n'); return line; });
+  }
+  return new Promise((resolve) => {
     let value = '';
     input.setRawMode(true);
     input.setEncoding('utf8');
@@ -105,7 +123,7 @@ async function main(argv, { env = process.env, prompt = promptHidden, isRoot = (
   const config = loadConfig(env);
   if (!config.directory) { out('The household directory is off (HOME_BASE_DIRECTORY); there is nothing to reset.'); return 1; }
 
-  const passphrase = await prompt('New admin passphrase: ');
+  const passphrase = await prompt('New admin passphrase: ') ?? '';
   if (passphrase.length < 8) { out('The passphrase must be at least 8 characters.'); return 1; }
   if (await prompt('Repeat it: ') !== passphrase) { out('The passphrases differ; nothing changed.'); return 1; }
   const who = args.administratorLogin ? `${args.administratorLogin} as the next administrator` : 'the same administrator';
@@ -145,4 +163,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, parseArgs };
+module.exports = { createLineReader, main, parseArgs };

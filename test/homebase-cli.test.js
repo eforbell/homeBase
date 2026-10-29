@@ -89,3 +89,17 @@ test('reset --administrator records the next founder\'s login', async (t) => {
   assert.equal(directory.describe().pendingAdministratorLogin, 'new@example.com');
   assert.throws(() => directory.claim(FOUNDER), { code: 'NOT_ADMINISTRATOR' });
 });
+
+test('piped answers are read line by line, however they arrive, and running out of them changes nothing', async () => {
+  const { PassThrough } = require('stream');
+  const { createLineReader } = require('../bin/homebase');
+  const input = new PassThrough();
+  const next = createLineReader(input);
+  input.write('first passphrase\nfirst passphrase\nRE');
+  assert.equal(await next(), 'first passphrase');
+  assert.equal(await next(), 'first passphrase');
+  const third = next();
+  input.end('SET\r\n');
+  assert.equal(await third, 'RESET');
+  assert.equal(await next(), null);
+});
