@@ -922,22 +922,21 @@ function createApp(config) {
         return sendJson(res, 200, projectStateForClient(state, effectiveConfig));
       }
       if (method === 'GET' && pathname === '/api/apps/health') {
-        // Setup links follow the host's ingress, like Open buttons.
-        const installations = Object.values(projectInstallationsWithCurrentUrls(state.installations, effectiveConfig, currentIngress(state.jobs, effectiveConfig)));
-        const snapshot = await healthMonitor.getAppHealthSnapshot(installations, {
+        // Reads only: alerts go out from the background check (scheduleHealthAlerts), because a sibling
+        // hostname's top-level navigation reaches this GET too (D20).
+        const snapshot = await healthMonitor.getAppHealthSnapshot(healthInstallations(state, effectiveConfig), {
           force: url.searchParams.get('refresh') === '1',
         });
-        try {
-          await healthAlertNotifier.notifySnapshot(snapshot, effectiveConfig);
-        } catch (error) {
-          console.warn(`[homebase] health alert notify failed: ${error.message}`);
-        }
         return sendJson(res, 200, snapshot);
       }
+      // Reads the stored statuses only: a scan fetches every app's remote and writes what it finds, so it runs
+      // in the background (every 30 minutes) or from the POST below, never from a GET (D20).
       if (method === 'GET' && pathname === '/api/apps/updates') {
-        const installations = Object.values(state.installations || {});
-        const snapshot = await appUpdateMonitor.getSnapshot(installations, {
-          force: url.searchParams.get('refresh') === '1',
+        return sendJson(res, 200, { byAppId: appUpdateMonitor.buildSnapshotByApp() });
+      }
+      if (method === 'POST' && pathname === '/api/apps/updates/refresh') {
+        const snapshot = await appUpdateMonitor.getSnapshot(Object.values(state.installations || {}), {
+          force: true,
           gitConfig: {
             serviceUser: effectiveConfig.serviceUser || 'sovereign',
             gitTransport: effectiveConfig.gitTransport || 'https',
@@ -950,9 +949,7 @@ function createApp(config) {
             baseInstallDir: effectiveConfig.baseInstallDir,
           },
         });
-        return sendJson(res, 200, {
-          byAppId: snapshot,
-        });
+        return sendJson(res, 200, { byAppId: snapshot });
       }
       if (method === 'POST' && pathname === '/api/alerts/test') {
         try {
@@ -2213,6 +2210,39 @@ function createApp(config) {
     }
   });
 
+  // Setup links follow the host's ingress, like Open buttons.
+  function healthInstallations(state, effective) {
+    return Object.values(projectInstallationsWithCurrentUrls(state.installations, effective, currentIngress(state.jobs, effective)));
+  }
+
+  // Health alerts are sent from here, not from GET /api/apps/health, so they go out whether or not anyone has
+  // the status page open, and no request can send one. Apps are probed only while alerts are on. One check at
+  // a time: the notifier records a send only once delivery finishes, so overlapping checks would send twice.
+  let healthAlertCheck = null;
+  function checkHealthAlerts() {
+    if (!healthAlertCheck) {
+      healthAlertCheck = runHealthAlertCheck().finally(() => { healthAlertCheck = null; });
+    }
+    return healthAlertCheck;
+  }
+
+  async function runHealthAlertCheck() {
+    try {
+      const effective = mergeHomeBaseConfig(config, stateStore.getHomeBaseConfig() || {});
+      if (!effective.healthAlertsEnabled || !effective.healthAlertsWebhookUrl) return { enabled: false, sent: 0, skipped: 0 };
+      const snapshot = await healthMonitor.getAppHealthSnapshot(healthInstallations(stateStore.loadState(), effective));
+      return await healthAlertNotifier.notifySnapshot(snapshot, effective);
+    } catch (error) {
+      console.warn(`[homebase] health alert check failed: ${error.message}`);
+      return { enabled: true, sent: 0, skipped: 0, error: error.message };
+    }
+  }
+
+  function scheduleHealthAlerts() {
+    setTimeout(checkHealthAlerts, config.healthAlertCheckDelayMs ?? 60_000).unref();
+    setInterval(checkHealthAlerts, config.healthAlertCheckIntervalMs ?? 5 * 60_000).unref();
+  }
+
   // D23: re-check every published service's hosts daily (and shortly after start), not only when an
   // administrator opens the Network page.
   function scheduleIngressCheck() {
@@ -2232,6 +2262,7 @@ function createApp(config) {
 
   return {
     server,
+    checkHealthAlerts,
     listen(callback) {
       const bindHost = config.bindHost || '127.0.0.1';
       server.listen(config.port, bindHost, () => {
@@ -2243,6 +2274,7 @@ function createApp(config) {
         if (typeof callback === 'function') callback();
       });
       scheduleIngressCheck();
+      scheduleHealthAlerts();
       if (previewDirectory) {
         previewDirectory.start();
         console.log(`Home Base identity preview: publishing ${previewDirectory.snapshotFile}`);

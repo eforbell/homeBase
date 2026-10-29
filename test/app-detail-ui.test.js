@@ -16,7 +16,8 @@ test('app detail UI exposes backup and restore execution without window.prompt',
   assert.match(source, /\/api\/apps\/\$\{appId\}\/backup\/execute/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/restart\/execute/);
   assert.match(source, /\/api\/apps\/\$\{appId\}\/uninstall\/execute/);
-  assert.match(source, /\/api\/apps\/updates\?refresh=1/);
+  assert.match(source, /postJson\('\/api\/apps\/updates\/refresh'\)/);
+  assert.doesNotMatch(source, /updates\?refresh=1/);
   assert.match(source, /window\.HB\.confirmInline/);
   assert.match(source, /Restore will overwrite/);
   assert.match(source, /form\.dataset\.submitting/);

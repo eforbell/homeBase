@@ -177,7 +177,7 @@
     if (submitButton) submitButton.disabled = true;
     if (resultNode) resultNode.textContent = 'Checking...';
     try {
-      const payload = await window.HB.getJson('/api/apps/updates?refresh=1');
+      const payload = await window.HB.postJson('/api/apps/updates/refresh');
       const updateStatus = payload?.byAppId?.[appId] || null;
       const summary = updateStatusSummary(updateStatus);
       const statusNode = root.querySelector('[data-update-status]');

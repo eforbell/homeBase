@@ -1049,7 +1049,7 @@ test('health alert test endpoint posts to configured webhook target', async () =
   }
 });
 
-test('apps health endpoint still responds when webhook delivery fails', async () => {
+test('the health endpoint and the background alert check both survive a failing webhook', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-failure-'));
   const dbPath = path.join(tempDir, 'state.sqlite3');
   const server = await startServer({
@@ -1102,6 +1102,91 @@ test('apps health endpoint still responds when webhook delivery fails', async ()
     assert.equal(res.status, 200);
     const payload = await res.json();
     assert.equal(payload.byAppId['family-help'].runtimeStatus, 'service-down');
+    const result = await server.app.checkHealthAlerts();
+    assert.deepEqual([result.sent, result.failed, result.errors[0].error], [0, 1, 'webhook offline']);
+
+    // A state database that can't be read is a logged failure, not a rejection a timer would leave unhandled.
+    fs.writeFileSync(dbPath, 'not a database');
+    const broken = await server.app.checkHealthAlerts();
+    assert.equal(broken.sent, 0);
+    assert.equal(typeof broken.error, 'string');
+  } finally {
+    await server.close();
+  }
+});
+
+test('health alerts go out from the background check, never from GET /api/apps/health', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-alert-background-'));
+  const dbPath = path.join(tempDir, 'state.sqlite3');
+  const posted = [];
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: dbPath,
+    port: 0,
+    serviceUser: 'sovereign',
+    baseInstallDir: '/opt/sovereign-home/apps',
+    baseBackupDir: '/var/lib/sovereign-home/backups',
+    baseConfigDir: '/etc/sovereign-home',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+    notificationsPostJson: async (url, body) => {
+      await new Promise((resolve) => setTimeout(resolve, 50)); // a webhook still answering when the next check starts
+      posted.push({ url, body });
+    },
+  });
+
+  try {
+    new SqliteStateStore(dbPath).upsertInstallation({
+      appId: 'family-help',
+      name: 'Family Help',
+      purpose: 'Household task intake',
+      port: 3002,
+      mountPath: '/help/',
+      externalUrl: 'https://homebase.tailnet/help/',
+      installRoot: '/opt/sovereign-home/apps/family-help',
+      serviceName: 'definitely-not-a-real-service',
+      ref: 'main',
+      status: 'installed',
+      plannedAt: '2026-04-18T12:00:00.000Z',
+      updatedAt: '2026-04-18T12:00:00.000Z',
+    });
+    const configure = (healthAlertsEnabled) => fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        hostname: 'homebase',
+        domain: 'tailnet',
+        gitTransport: 'https',
+        healthAlertsEnabled,
+        healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
+        tailscaleManagedServiceId: 'svc:test',
+      }),
+    });
+    const adminCookie = await adminCookieFor(server.url);
+
+    // Alerts off: the check probes nothing and sends nothing.
+    assert.equal((await configure(false)).status, 200);
+    assert.deepEqual(await server.app.checkHealthAlerts(), { enabled: false, sent: 0, skipped: 0 });
+
+    // Alerts on and the app down: reading health, even refreshed, still sends nothing.
+    assert.equal((await configure(true)).status, 200);
+    for (const query of ['', '?refresh=1']) {
+      const res = await fetch(`${server.url}/api/apps/health${query}`);
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).byAppId['family-help'].runtimeStatus, 'service-down');
+    }
+    assert.deepEqual(posted, []);
+
+    // The background check sends the alert once, even with two checks overlapping, then the cooldown holds it.
+    const [first, second] = await Promise.all([server.app.checkHealthAlerts(), server.app.checkHealthAlerts()]);
+    assert.equal(first.sent, 1);
+    assert.equal(second, first);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].url, 'https://alerts.example.test/hook');
+    assert.equal(posted[0].body.event, 'app-health-critical');
+    assert.equal((await server.app.checkHealthAlerts()).sent, 0);
+    assert.equal(posted.length, 1);
+
   } finally {
     await server.close();
   }
@@ -1440,7 +1525,7 @@ test('app actions endpoint documents currently supported operations', async () =
   }
 });
 
-test('apps update endpoint returns status by app id when persisted', async () => {
+test('apps update GET returns stored status without scanning, and the POST refresh scans', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-status-'));
   const dbPath = path.join(tempDir, 'state.sqlite3');
   const store = new SqliteStateStore(dbPath);
@@ -1468,7 +1553,7 @@ test('apps update endpoint returns status by app id when persisted', async () =>
     behindCount: 2,
     localHeadSha: 'aaa111',
     remoteHeadSha: 'bbb222',
-    lastCheckedAt: new Date().toISOString(),
+    lastCheckedAt: '2026-04-03T00:00:00.000Z', // long stale: a GET used to rescan it
     lastError: '',
   });
 
@@ -1485,11 +1570,21 @@ test('apps update endpoint returns status by app id when persisted', async () =>
   });
 
   try {
-    const res = await fetch(`${server.url}/api/apps/updates`);
-    const payload = await res.json();
-    assert.equal(payload.byAppId['family-help'].status, 'update-available');
-    assert.equal(payload.byAppId['family-help'].canUpdate, true);
-    assert.equal(payload.byAppId['family-help'].behindCount, 2);
+    // GET reads what is stored, refresh parameter or not: no fetch, nothing written (D20).
+    for (const query of ['', '?refresh=1']) {
+      const res = await fetch(`${server.url}/api/apps/updates${query}`);
+      const payload = await res.json();
+      assert.equal(payload.byAppId['family-help'].status, 'update-available');
+      assert.equal(payload.byAppId['family-help'].canUpdate, true);
+      assert.equal(payload.byAppId['family-help'].behindCount, 2);
+      assert.equal(payload.byAppId['family-help'].lastCheckedAt, '2026-04-03T00:00:00.000Z');
+    }
+    assert.equal(store.listAppUpdateStatuses().find((entry) => entry.appId === 'family-help').lastCheckedAt, '2026-04-03T00:00:00.000Z');
+
+    // The refresh is a POST, behind the mutation guard, and it does check again.
+    const refreshed = await fetch(`${server.url}/api/apps/updates/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(refreshed.status, 200);
+    assert.notEqual((await refreshed.json()).byAppId['family-help'].lastCheckedAt, '2026-04-03T00:00:00.000Z');
   } finally {
     await server.close();
   }
