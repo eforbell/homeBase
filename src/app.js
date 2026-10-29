@@ -23,7 +23,7 @@ const { HOST_CA_BUNDLE, assessPemBundle, storeTrust } = require('./operations/di
 const { getTailscalePublishingReadiness } = require('./services/tailscale-readiness');
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification, getIngressVerification } = require('./services/tailscale-verify');
-const { createIdentityResolver, createIdentityServer, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
+const { canonicalAddress, createIdentityResolver, createIdentityServer, createWhoisIdentity, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
 const { createPreviewDirectory } = require('./identity/preview-directory');
 const { createSnapshotReader, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
@@ -830,6 +830,8 @@ function createApp(config) {
     membersFile: config.identityPreviewFile,
     household: config.instance,
     snapshotFile: config.identitySnapshotFile,
+    ownerUid: config.identityPreviewOwnerUid ?? 0,
+    trustedRoot: config.identitySnapshotTrustedRoot || null,
     log: (message) => console.warn(`[homebase] ${message}`),
   }) : null;
   const snapshotReader = previewDirectory ? createSnapshotReader({
@@ -838,19 +840,35 @@ function createApp(config) {
     trustedRoot: config.identitySnapshotTrustedRoot || null,
   }) : null;
 
-  // What sovereignAuth makes of this request: the identity headers nginx sent, the snapshot Home Base
-  // published, and the member each catalog app would see. Read-only; it changes nothing.
-  function describeIdentity(req) {
+  // Who is asking, and what sovereignAuth makes of it. The caller comes from tailscaled, by the address Serve
+  // put in X-Forwarded-For (Serve overwrites any the client sent, spike 3), never from X-Sovereign-*: before
+  // cutover Serve's legacy route reaches Home Base without nginx, so anyone on the tailnet could send those.
+  // They are only compared with the caller, so a forged one reveals nothing about another member.
+  // Read-only; it changes nothing.
+  const whoisCaller = previewDirectory ? createWhoisIdentity({
+    whois: config.identityWhois,
+    status: config.identityStatus,
+    log: (message) => console.warn(`[homebase] ${message}`),
+  }) : null;
+  async function describeIdentity(req) {
     const header = (name) => (typeof req.headers[name] === 'string' ? req.headers[name] : null);
+    const forwardedFor = header('x-forwarded-for') || '';
+    const addr = forwardedFor.includes(',') ? null : canonicalAddress(forwardedFor);
+    const caller = addr ? await whoisCaller(addr) : null;
+    const sent = { userId: header('x-sovereign-user-id'), login: header('x-sovereign-login') };
+    let ingressHeaders = 'differ';
+    if (!sent.userId && !sent.login) ingressHeaders = 'absent';
+    else if (caller && sent.userId === caller.userId && sent.login === caller.login) ingressHeaders = 'match';
     const state = snapshotReader.current();
     const snapshot = state.ok
       ? { ok: true, household: state.snapshot.household, generation: state.snapshot.generation, ageSeconds: Math.round((Date.now() - state.snapshot.writtenAt) / 1000) }
       : { ok: false, reason: state.reason, message: state.message };
+    const callerHeaders = caller ? { 'x-sovereign-user-id': caller.userId, 'x-sovereign-login': caller.login } : {};
     const apps = state.ok ? Object.fromEntries(catalog.map((app) => {
-      const result = resolveMember(state.snapshot, req.headers, { appId: app.id });
+      const result = resolveMember(state.snapshot, callerHeaders, { appId: app.id });
       return [app.id, result.member ? { memberId: result.member.memberId, role: result.member.role } : { reason: result.reason }];
     })) : {};
-    return { preview: true, headers: { userId: header('x-sovereign-user-id'), login: header('x-sovereign-login') }, snapshot, apps };
+    return { preview: true, caller: caller && { userId: caller.userId, login: caller.login }, ingressHeaders, snapshot, apps };
   }
   const server = http.createServer(async (req, res) => {
     try {
@@ -895,7 +913,7 @@ function createApp(config) {
 
       if (method === 'GET' && pathname === '/api/identity/whoami') {
         if (!previewDirectory) return sendJson(res, 404, { error: 'The identity preview is off (HOME_BASE_IDENTITY_PREVIEW).' });
-        return sendJson(res, 200, describeIdentity(req));
+        return sendJson(res, 200, await describeIdentity(req));
       }
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });

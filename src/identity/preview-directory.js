@@ -8,15 +8,19 @@
 // Those members are admitted by the identity endpoint (so nginx sends their headers) and published in the
 // snapshot apps read (D18), rewritten every 30 s like the real one. It holds no credentials and no keys, so
 // nothing can be stepped up against it. SID-004 replaces this file with the directory.
+//
+// The members file is read with the snapshot's own rules, owned by root this time: root owns it and every
+// directory above it, nothing on the way is a symlink or writable by anyone else. Otherwise whoever could
+// write it could add themselves, and Home Base would publish them as trusted.
 
 const fs = require('fs');
 const path = require('path');
-const { DEFAULT_SNAPSHOT_PATH, parseSnapshot, writeSnapshot } = require('sovereign-auth');
+const { DEFAULT_SNAPSHOT_PATH, parseSnapshot, readOwnedFile, writeSnapshot } = require('sovereign-auth');
 
 const PUBLISH_MS = 30_000;
 
-function readPreviewMembers(file) {
-  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+function readPreviewMembers(file, { ownerUid = 0, trustedRoot = null } = {}) {
+  const data = JSON.parse(readOwnedFile(file, { uid: ownerUid, trustedRoot }));
   if (!Array.isArray(data?.members)) throw new Error(`${file} must hold { "members": [...] }`);
   return data.members.map((member) => ({
     user_id: String(member.user_id ?? ''),
@@ -40,7 +44,8 @@ function publishedGeneration(file) {
   }
 }
 
-function createPreviewDirectory({ membersFile, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, now = Date.now, log = () => {} }) {
+// ownerUid and trustedRoot exist for tests, which can't write files as root.
+function createPreviewDirectory({ membersFile, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, ownerUid = 0, trustedRoot = null, now = Date.now, log = () => {} }) {
   const file = path.resolve(snapshotFile);
   let generation = publishedGeneration(file);
   let members = [];
@@ -49,7 +54,7 @@ function createPreviewDirectory({ membersFile, household, snapshotFile = DEFAULT
   // snapshot ages out after 120 s and apps fall back to "no member" (fail closed).
   function publish() {
     try {
-      const next = readPreviewMembers(membersFile);
+      const next = readPreviewMembers(membersFile, { ownerUid, trustedRoot });
       const data = {
         format: 1,
         household: household || 'preview',
