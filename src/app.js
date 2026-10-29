@@ -929,10 +929,14 @@ function createApp(config) {
         });
         return sendJson(res, 200, snapshot);
       }
+      // Reads the stored statuses only: a scan fetches every app's remote and writes what it finds, so it runs
+      // in the background (every 30 minutes) or from the POST below, never from a GET (D20).
       if (method === 'GET' && pathname === '/api/apps/updates') {
-        const installations = Object.values(state.installations || {});
-        const snapshot = await appUpdateMonitor.getSnapshot(installations, {
-          force: url.searchParams.get('refresh') === '1',
+        return sendJson(res, 200, { byAppId: appUpdateMonitor.buildSnapshotByApp() });
+      }
+      if (method === 'POST' && pathname === '/api/apps/updates/refresh') {
+        const snapshot = await appUpdateMonitor.getSnapshot(Object.values(state.installations || {}), {
+          force: true,
           gitConfig: {
             serviceUser: effectiveConfig.serviceUser || 'sovereign',
             gitTransport: effectiveConfig.gitTransport || 'https',
@@ -945,9 +949,7 @@ function createApp(config) {
             baseInstallDir: effectiveConfig.baseInstallDir,
           },
         });
-        return sendJson(res, 200, {
-          byAppId: snapshot,
-        });
+        return sendJson(res, 200, { byAppId: snapshot });
       }
       if (method === 'POST' && pathname === '/api/alerts/test') {
         try {
@@ -2214,11 +2216,20 @@ function createApp(config) {
   }
 
   // Health alerts are sent from here, not from GET /api/apps/health, so they go out whether or not anyone has
-  // the status page open, and no request can send one. Apps are probed only while alerts are on.
-  async function checkHealthAlerts() {
-    const effective = mergeHomeBaseConfig(config, stateStore.getHomeBaseConfig() || {});
-    if (!effective.healthAlertsEnabled || !effective.healthAlertsWebhookUrl) return { enabled: false, sent: 0, skipped: 0 };
+  // the status page open, and no request can send one. Apps are probed only while alerts are on. One check at
+  // a time: the notifier records a send only once delivery finishes, so overlapping checks would send twice.
+  let healthAlertCheck = null;
+  function checkHealthAlerts() {
+    if (!healthAlertCheck) {
+      healthAlertCheck = runHealthAlertCheck().finally(() => { healthAlertCheck = null; });
+    }
+    return healthAlertCheck;
+  }
+
+  async function runHealthAlertCheck() {
     try {
+      const effective = mergeHomeBaseConfig(config, stateStore.getHomeBaseConfig() || {});
+      if (!effective.healthAlertsEnabled || !effective.healthAlertsWebhookUrl) return { enabled: false, sent: 0, skipped: 0 };
       const snapshot = await healthMonitor.getAppHealthSnapshot(healthInstallations(stateStore.loadState(), effective));
       return await healthAlertNotifier.notifySnapshot(snapshot, effective);
     } catch (error) {

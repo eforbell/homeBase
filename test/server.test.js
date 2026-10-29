@@ -1104,6 +1104,12 @@ test('the health endpoint and the background alert check both survive a failing 
     assert.equal(payload.byAppId['family-help'].runtimeStatus, 'service-down');
     const result = await server.app.checkHealthAlerts();
     assert.deepEqual([result.sent, result.failed, result.errors[0].error], [0, 1, 'webhook offline']);
+
+    // A state database that can't be read is a logged failure, not a rejection a timer would leave unhandled.
+    fs.writeFileSync(dbPath, 'not a database');
+    const broken = await server.app.checkHealthAlerts();
+    assert.equal(broken.sent, 0);
+    assert.equal(typeof broken.error, 'string');
   } finally {
     await server.close();
   }
@@ -1124,6 +1130,7 @@ test('health alerts go out from the background check, never from GET /api/apps/h
     defaultHostname: 'homebase',
     defaultDomain: 'tailnet',
     notificationsPostJson: async (url, body) => {
+      await new Promise((resolve) => setTimeout(resolve, 50)); // a webhook still answering when the next check starts
       posted.push({ url, body });
     },
   });
@@ -1170,8 +1177,10 @@ test('health alerts go out from the background check, never from GET /api/apps/h
     }
     assert.deepEqual(posted, []);
 
-    // The background check sends the alert once, then the cooldown holds it.
-    assert.equal((await server.app.checkHealthAlerts()).sent, 1);
+    // The background check sends the alert once, even with two checks overlapping, then the cooldown holds it.
+    const [first, second] = await Promise.all([server.app.checkHealthAlerts(), server.app.checkHealthAlerts()]);
+    assert.equal(first.sent, 1);
+    assert.equal(second, first);
     assert.equal(posted.length, 1);
     assert.equal(posted[0].url, 'https://alerts.example.test/hook');
     assert.equal(posted[0].body.event, 'app-health-critical');
@@ -1516,7 +1525,7 @@ test('app actions endpoint documents currently supported operations', async () =
   }
 });
 
-test('apps update endpoint returns status by app id when persisted', async () => {
+test('apps update GET returns stored status without scanning, and the POST refresh scans', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-update-status-'));
   const dbPath = path.join(tempDir, 'state.sqlite3');
   const store = new SqliteStateStore(dbPath);
@@ -1544,7 +1553,7 @@ test('apps update endpoint returns status by app id when persisted', async () =>
     behindCount: 2,
     localHeadSha: 'aaa111',
     remoteHeadSha: 'bbb222',
-    lastCheckedAt: new Date().toISOString(),
+    lastCheckedAt: '2026-04-03T00:00:00.000Z', // long stale: a GET used to rescan it
     lastError: '',
   });
 
@@ -1561,11 +1570,21 @@ test('apps update endpoint returns status by app id when persisted', async () =>
   });
 
   try {
-    const res = await fetch(`${server.url}/api/apps/updates`);
-    const payload = await res.json();
-    assert.equal(payload.byAppId['family-help'].status, 'update-available');
-    assert.equal(payload.byAppId['family-help'].canUpdate, true);
-    assert.equal(payload.byAppId['family-help'].behindCount, 2);
+    // GET reads what is stored, refresh parameter or not: no fetch, nothing written (D20).
+    for (const query of ['', '?refresh=1']) {
+      const res = await fetch(`${server.url}/api/apps/updates${query}`);
+      const payload = await res.json();
+      assert.equal(payload.byAppId['family-help'].status, 'update-available');
+      assert.equal(payload.byAppId['family-help'].canUpdate, true);
+      assert.equal(payload.byAppId['family-help'].behindCount, 2);
+      assert.equal(payload.byAppId['family-help'].lastCheckedAt, '2026-04-03T00:00:00.000Z');
+    }
+    assert.equal(store.listAppUpdateStatuses().find((entry) => entry.appId === 'family-help').lastCheckedAt, '2026-04-03T00:00:00.000Z');
+
+    // The refresh is a POST, behind the mutation guard, and it does check again.
+    const refreshed = await fetch(`${server.url}/api/apps/updates/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(refreshed.status, 200);
+    assert.notEqual((await refreshed.json()).byAppId['family-help'].lastCheckedAt, '2026-04-03T00:00:00.000Z');
   } finally {
     await server.close();
   }
