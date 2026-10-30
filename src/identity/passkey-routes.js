@@ -17,6 +17,19 @@ const { policyFor } = require('sovereign-auth');
 const { DirectoryError } = require('./directory');
 
 const PREFIX = '/_sovereign/auth/';
+// Ceremony refusals (wire contract, section 11) in words a member can act on; the reason code stays in the
+// audit and in the answer.
+const REASONS = {
+  untrusted_attestation: 'it proved its maker with a certificate Home Base does not trust (only pinned vendors such as Yubico count as hardware keys)',
+  unsupported_attestation: 'it answered with an attestation format Home Base does not accept; register it without "hardware key" ticked',
+  unknown_challenge: 'that prompt was already used or has expired; start again',
+  expired: 'the prompt expired; start again',
+  unknown_credential: 'that passkey is not one Home Base offered for this',
+  insufficient_kind: 'this needs an attested hardware key, and that passkey is not one',
+  cross_origin: 'it was answered from inside another page',
+  not_verified: 'the passkey\'s answer did not verify',
+};
+const ceremonyError = (what, reason) => `${what} was not accepted: ${REASONS[reason] || reason} (${reason}).`;
 const ADMIN_WINDOW_SECONDS = policyFor('open-admin').window_seconds;
 
 function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJson, parseBody, recordAdminAudit, adminStatus }) {
@@ -28,18 +41,26 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
     return true;
   }
 
-  // The passphrase session in setup and recovery, opened by this caller's tailnet identity.
-  async function holdsPassphraseSession(req, standing) {
+  // The passphrase session in setup and recovery, opened by this caller's tailnet identity: its passphrase
+  // hash, which the commit must still find stored (a root reset in between refuses it), or null. Only a
+  // passphrase session counts here, never the passkey check that opens active Home Base.
+  async function passphraseSession(req, standing) {
     const status = await adminStatus(req);
-    return status.unlocked === true && status.userId === standing.member.userId;
+    if (!(status.unlocked === true && status.via === 'passphrase' && status.userId === standing.member.userId)) return null;
+    return stateStore.getAdminCredential()?.passphraseHash || null;
   }
 
-  // What this caller may enroll with now: { ok, via } or { ok: false, statusCode, code, error }.
+  // What the authorization saw, which every commit it leads to requires unchanged.
+  const expectOf = (standing) => ({ state: standing.state, globalEpoch: standing.globalEpoch, epoch: standing.member.epoch });
+  const moved = (before, after) => !after || after.state !== before.state || after.globalEpoch !== before.globalEpoch || after.member.epoch !== before.epoch;
+
+  // What this caller may enroll with now: { ok, via, passphraseHash } or { ok: false, statusCode, code, error }.
   async function enrollAuthority(req, standing, check, grant) {
     if (standing.state !== 'active') {
       if (!standing.member.administrator) return { ok: false, statusCode: 409, code: 'BOOTSTRAP_STATE', error: `Only the administrator enrolls while Home Base is in ${standing.state}.` };
-      if (!(await holdsPassphraseSession(req, standing))) return { ok: false, statusCode: 401, code: 'ADMIN_UNLOCK_REQUIRED', error: 'Unlock Home Base with the passphrase first.' };
-      return { ok: true, via: 'passphrase' };
+      const passphraseHash = await passphraseSession(req, standing);
+      if (!passphraseHash) return { ok: false, statusCode: 401, code: 'ADMIN_UNLOCK_REQUIRED', error: 'Unlock Home Base with the passphrase first.' };
+      return { ok: true, via: 'passphrase', passphraseHash };
     }
     if (standing.member.administrator) {
       return { ok: false, statusCode: 409, code: 'ADMINISTRATOR_CREDENTIAL', error: 'Administrator passkeys change in recovery for now; every-time hardware checks for them come next.' };
@@ -72,6 +93,12 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
       return true;
     }
     const route = `${method} ${pathname.slice(PREFIX.length)}`;
+    if (method !== 'GET' && method !== 'POST') {
+      sendJson(res, 404, { error: 'Not found.' });
+      return true;
+    }
+    // The body first: everything the decision rests on is read after it, not while a client holds it back.
+    const body = method === 'POST' ? await parseBody(req) : null;
     const caller = await binding.caller(req);
     const standing = caller ? directory.standing(caller.userId) : null;
     if (!standing || standing.member.status !== 'active') {
@@ -80,18 +107,14 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
     }
     const target = standing.member.memberId;
     const check = passkeys.currentCheck(req.headers, { site: here, standing });
-    const activation = async () => standing.state !== 'active' && standing.member.administrator && standing.meetsAdministratorRule && (await holdsPassphraseSession(req, standing));
+    // Activation's authority: setup or recovery, the administrator's rule met, and their passphrase session.
+    const activation = async () => (standing.state !== 'active' && standing.member.administrator && standing.meetsAdministratorRule ? passphraseSession(req, standing) : null);
 
     try {
       if (route === 'GET status') {
-        sendJson(res, 200, describe(standing, check, await activation()));
+        sendJson(res, 200, describe(standing, check, Boolean(await activation())));
         return true;
       }
-      if (method !== 'POST') {
-        sendJson(res, 404, { error: 'Not found.' });
-        return true;
-      }
-      const body = await parseBody(req);
 
       if (route === 'POST enroll/options' || route === 'POST enroll/finish') {
         const authority = await enrollAuthority(req, standing, check, body.grant);
@@ -101,11 +124,11 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
           return true;
         }
         const result = await passkeys.enrollFinish({ site: here, standing, label: body.label, hardware: body.hardware === true, response: body.response });
-        if (!result.ok) return refusal(res, 400, 'CEREMONY_REFUSED', `The passkey was not accepted (${result.reason}).`, 'passkey-enroll', target);
+        if (!result.ok) return refusal(res, 400, 'CEREMONY_REFUSED', ceremonyError('The passkey', result.reason), 'passkey-enroll', target);
         if (authority.via === 'grant' && !directory.consumeGrant(standing.member.memberId, String(body.grant).trim())) {
           return refusal(res, 403, 'INVALID_GRANT', 'That enrollment code is not valid; ask the administrator for a new one.', 'passkey-enroll', target);
         }
-        const stored = directory.addCredential(result.credential);
+        const stored = directory.addCredential({ ...result.credential, expect: expectOf(standing), expectPassphraseHash: authority.passphraseHash || null });
         audit('passkey-enroll', target, `enrolled ${stored.kind}`);
         sendJson(res, 201, { ok: true, credentialId: stored.credential_id, kind: stored.kind, label: stored.label, askedForHardware: body.hardware === true });
         return true;
@@ -114,8 +137,13 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
       if (route === 'POST check/options' || route === 'POST check/finish') {
         const purpose = body.purpose === 'activate' ? 'activate' : 'step-up';
         const kind = purpose === 'activate' || body.kind === 'hardware' ? 'hardware' : 'any';
-        if (purpose === 'activate' && !(await activation())) {
+        const activationHash = purpose === 'activate' ? await activation() : null;
+        if (purpose === 'activate' && !activationHash) {
           return refusal(res, 409, 'CANNOT_ACTIVATE', 'Activation needs Home Base in setup or recovery, the administrator\'s passphrase session, and two passkeys including an attested hardware key.', 'passkey-activate', target);
+        }
+        // Setup and recovery are the administrator's alone (D16): nobody else checks in, or changes anything.
+        if (standing.state !== 'active' && !standing.member.administrator) {
+          return refusal(res, 409, 'BOOTSTRAP_STATE', `Home Base is in ${standing.state}: only the administrator uses passkeys here until it is finished.`, `passkey-${purpose}`, target);
         }
         const usable = standing.credentials.filter((credential) => credential.usable && (kind === 'any' || credential.kind === 'hardware'));
         if (!usable.length) return refusal(res, 409, 'NO_CREDENTIAL', kind === 'hardware' ? 'You have no attested hardware key enrolled.' : 'You have no passkey enrolled yet.');
@@ -124,10 +152,15 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
           return true;
         }
         const result = await passkeys.checkFinish({ site: here, standing, purpose, kind, response: body.response });
-        if (!result.ok) return refusal(res, 400, 'CEREMONY_REFUSED', `The check was not accepted (${result.reason}).`, `passkey-${purpose}`, target);
-        if (purpose === 'activate') directory.activate({ userId: standing.member.userId, credentialId: result.credentialId });
-        // Read again: activation and the assertion just moved the generation (and maybe the kind).
+        if (!result.ok) return refusal(res, 400, 'CEREMONY_REFUSED', ceremonyError('The check', result.reason), `passkey-${purpose}`, target);
+        if (purpose === 'activate') {
+          directory.activate({ userId: standing.member.userId, credentialId: result.credentialId, expect: expectOf(standing), expectPassphraseHash: activationHash });
+        }
+        // Read again: activation and the assertion just moved the generation. A recovery, reset or
+        // revocation since the authorization means no cookie: it would carry epochs this check never saw.
         const now = directory.standing(standing.member.userId);
+        const expected = purpose === 'activate' ? { ...expectOf(standing), state: 'active' } : expectOf(standing);
+        if (moved(expected, now)) return refusal(res, 409, 'STALE', 'Home Base changed while this was in progress; start again.', `passkey-${purpose}`, target);
         res.setHeader('Set-Cookie', passkeys.issueCookie({ site: here, standing: now, credentialId: result.credentialId, kind: result.kind, windowSeconds: ADMIN_WINDOW_SECONDS }));
         audit(`passkey-${purpose}`, target, purpose === 'activate' ? 'active' : `checked ${result.kind}`);
         sendJson(res, 200, { ok: true, kind: result.kind, state: now.state });
@@ -136,7 +169,7 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
 
       if (route === 'POST credentials/revoke') {
         if (!passkeys.meets(check, 'manage-own-credential')) return refusal(res, 401, 'RECENT_CHECK_REQUIRED', 'Check with one of your passkeys first (within the last 5 minutes).', 'passkey-revoke', target);
-        directory.revokeOwnCredential(standing.member.userId, String(body.credentialId || ''));
+        directory.revokeOwnCredential(standing.member.userId, String(body.credentialId || ''), { expect: expectOf(standing) });
         // Revoking bumped the member's epoch, so this cookie is spent as well.
         res.setHeader('Set-Cookie', passkeys.clearCookieHeader());
         sendJson(res, 200, { ok: true });

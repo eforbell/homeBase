@@ -183,6 +183,15 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     if (!allowed.includes(data.household.state)) refuse(409, 'BOOTSTRAP_STATE', `${what} is not possible while Home Base is in ${data.household.state}.`);
   }
 
+  // A passkey ceremony is authorized when it starts and committed after an await; expect (what the
+  // authorization saw: { state, globalEpoch, epoch }) must still hold in the commit's own read, so a
+  // recovery, reset, revocation or activation in between refuses it rather than being undone by it.
+  function requireUnchanged(data, member, expect) {
+    if (!expect) return;
+    const moved = data.household.state !== expect.state || data.household.global_epoch !== expect.globalEpoch || member.epoch !== expect.epoch;
+    if (moved) refuse(409, 'STALE', 'Home Base changed while this was in progress; start again.');
+  }
+
   function newMember(identity, fields = {}) {
     const at = iso();
     return {
@@ -245,11 +254,13 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     }, { expectPassphraseHash: passphraseHash });
   }
 
-  // Called by the passkey service after a fresh ceremony with credentialId (SID-005).
-  function activate({ userId, credentialId }) {
+  // Called by the passkey service after a fresh ceremony with credentialId (SID-005), with expect and the
+  // passphrase hash its authorization saw.
+  function activate({ userId, credentialId, expect = null, expectPassphraseHash = null }) {
     return change((data) => {
       requireState(data, ['setup', 'recovery'], 'Activation');
       const admin = requireAdministrator(data, userId);
+      requireUnchanged(data, admin, expect);
       const credentials = credentialsOf(data, admin.member_id);
       const used = credentials.find((credential) => credential.credential_id === credentialId);
       if (!used || used.kind !== 'hardware') refuse(409, 'HARDWARE_CEREMONY_REQUIRED', 'Activation needs a fresh ceremony with one of the administrator\'s attested hardware keys.');
@@ -263,16 +274,18 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         },
         value: { state: 'active' },
       };
-    });
+    }, expectPassphraseHash ? { expectPassphraseHash } : {});
   }
 
   // Records an enrolled credential (the passkey service verified the ceremony and says what the
   // authenticator proved: its key, flags and, for hardware, the root). In setup and recovery only the
   // administrator enrolls.
-  function addCredential({ userId, credentialId, kind, label = '', publicKey = null, counter = 0, transports = [], aaguid = null, deviceType = null, backedUp = true, root = null }) {
+  // expect and expectPassphraseHash: what the enrollment's authorization saw (requireUnchanged).
+  function addCredential({ userId, credentialId, kind, label = '', publicKey = null, counter = 0, transports = [], aaguid = null, deviceType = null, backedUp = true, root = null, expect = null, expectPassphraseHash = null }) {
     if (!KINDS.has(kind)) refuse(400, 'INVALID', `Unknown credential kind ${kind}.`);
     return change((data) => {
       const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active') || refuse(404, 'NOT_FOUND', 'No such member.');
+      requireUnchanged(data, member, expect);
       if (data.household.state !== 'active' && !member.administrator) refuse(409, 'BOOTSTRAP_STATE', `Only the administrator enrolls while Home Base is in ${data.household.state}.`);
       if (data.credentials.some((credential) => credential.credential_id === credentialId)) refuse(409, 'CONFLICT', 'That credential is already enrolled.');
       const record = {
@@ -283,17 +296,21 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         change: { credentials: [record], deleteGrants: [member.member_id], audit: [{ action: 'credential-enroll', target: member.member_id, outcome: kind }] },
         value: record,
       };
-    });
+    }, expectPassphraseHash ? { expectPassphraseHash } : {});
   }
 
   // While active the administrator keeps D11 (transactionally: the check and the write are one commit).
   // Setup and recovery may revoke anything; that is what recovery is for.
-  function revokeCredential(actor, credentialId) {
+  // hardwareEveryTime: the actor passed an every-time hardware check for this (manage-admin-credential). An
+  // admin session is not one, so until those checks exist (SID-005's next slice) administrator credentials
+  // change only in setup and recovery.
+  function revokeCredential(actor, credentialId, { hardwareEveryTime = false } = {}) {
     return change((data) => {
       requireAdministrator(data, actor.userId);
       const credential = data.credentials.find((entry) => entry.credential_id === credentialId && !entry.revoked_at) || refuse(404, 'NOT_FOUND', 'No such credential.');
       const member = memberById(data, credential.member_id);
       if (data.household.state === 'active' && member.administrator) {
+        if (!hardwareEveryTime) refuse(409, 'ADMINISTRATOR_CREDENTIAL', 'Administrator passkeys change in recovery for now; every-time hardware checks for them come next.');
         const remaining = credentialsOf(data, member.member_id).filter((entry) => entry.credential_id !== credentialId);
         if (!meetsCredentialRule(remaining)) refuse(409, 'LAST_ADMINISTRATOR_CREDENTIAL', 'The administrator must keep at least two credentials, including an attested hardware key. Enroll a replacement first.');
       }
@@ -311,9 +328,11 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   // A member removes one of their own credentials (the passkey service checked them recently). An
   // administrator's credentials are administrator business while active (manage-admin-credential), and a
   // member's last usable credential stays: without it they would need a new enrollment grant.
-  function revokeOwnCredential(userId, credentialId) {
+  function revokeOwnCredential(userId, credentialId, { expect = null } = {}) {
     return change((data) => {
+      requireState(data, ['active'], 'Removing a passkey');
       const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active') || refuse(404, 'NOT_FOUND', 'No such member.');
+      requireUnchanged(data, member, expect);
       if (member.administrator) refuse(409, 'ADMINISTRATOR_CREDENTIAL', 'The administrator\'s credentials are removed from the directory, not here.');
       const own = credentialsOf(data, member.member_id);
       const credential = own.find((entry) => entry.credential_id === credentialId) || refuse(404, 'NOT_FOUND', 'No such credential.');

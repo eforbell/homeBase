@@ -98,7 +98,9 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   }
 
   // Returns { ok, credentialId, kind } or { ok: false, reason }. Whatever a verified assertion showed is
-  // stored, even when it is refused for its kind, so a credential that fell never climbs back.
+  // stored, even when it is refused for its kind, so a credential that fell never climbs back. The kind
+  // returned is the stored one after that merge, never the assertion's alone: a finish that verified while
+  // another one demoted the credential gets the demoted kind, and is refused if the check needed hardware.
   async function checkFinish({ site, standing, purpose, kind, response }) {
     const result = await webauthnFor(site.rpID).verifyAuthentication({
       hostname: site.hostname,
@@ -108,8 +110,11 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       credentials: directory.credentialsFor(standing.member.userId),
       response,
     });
-    if (result.update) directory.recordAssertion(standing.member.userId, result.credentialId, result.update);
-    return result;
+    if (!result.update) return result;
+    const stored = directory.recordAssertion(standing.member.userId, result.credentialId, result.update);
+    if (!result.ok) return result;
+    if (kind === 'hardware' && stored.kind !== 'hardware') return { ok: false, reason: 'insufficient_kind', credentialId: result.credentialId };
+    return { ...result, kind: stored.kind };
   }
 
   // The cookie for a ceremony that just ran on site.hostname. It lives as long as the longest window that

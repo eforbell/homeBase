@@ -132,8 +132,11 @@ test('active: the administrator keeps D11, checked and written in one transactio
   const context = fixture(t);
   const directory = activeDirectory(context);
   const actor = { userId: FOUNDER.userId };
-  assert.throws(() => directory.revokeCredential(actor, 'yubi-1'), { code: 'LAST_ADMINISTRATOR_CREDENTIAL' });
-  assert.throws(() => directory.revokeCredential(actor, 'synced-1'), { code: 'LAST_ADMINISTRATOR_CREDENTIAL' });
+  // With the every-time hardware check those changes will need; the admin session alone changes nothing.
+  const everyTime = { hardwareEveryTime: true };
+  assert.throws(() => directory.revokeCredential(actor, 'synced-1'), { code: 'ADMINISTRATOR_CREDENTIAL' });
+  assert.throws(() => directory.revokeCredential(actor, 'yubi-1', everyTime), { code: 'LAST_ADMINISTRATOR_CREDENTIAL' });
+  assert.throws(() => directory.revokeCredential(actor, 'synced-1', everyTime), { code: 'LAST_ADMINISTRATOR_CREDENTIAL' });
   directory.addCredential({ userId: FOUNDER.userId, credentialId: 'yubi-2', kind: 'hardware' });
   directory.addCredential({ userId: FOUNDER.userId, credentialId: 'synced-2', kind: 'synced' });
   assert.throws(() => directory.revokeCredential(KID, 'yubi-1'), { code: 'NOT_ADMINISTRATOR' });
@@ -148,13 +151,13 @@ test('active: the administrator keeps D11, checked and written in one transactio
       return {
         ...store,
         commit(change) {
-          if (racing) { racing = false; directory.revokeCredential(actor, 'yubi-1'); directory.revokeCredential(actor, 'synced-1'); }
+          if (racing) { racing = false; directory.revokeCredential(actor, 'yubi-1', everyTime); directory.revokeCredential(actor, 'synced-1', everyTime); }
           return store.commit(change);
         },
       };
     })(),
   });
-  assert.throws(() => racer.revokeCredential(actor, 'yubi-2'), { code: 'LAST_ADMINISTRATOR_CREDENTIAL' });
+  assert.throws(() => racer.revokeCredential(actor, 'yubi-2', everyTime), { code: 'LAST_ADMINISTRATOR_CREDENTIAL' });
   const live = directory.describe().members[0].credentials.filter((credential) => !credential.revokedAt).map((credential) => credential.credentialId);
   assert.deepEqual(live.sort(), ['synced-2', 'yubi-2']);
 });
@@ -410,4 +413,42 @@ test('a snapshot write that fails leaves no temporary file behind', (t) => {
   directory.publish();
   assert.match(context.logs.at(-1), /not published/);
   assert.deepEqual(fs.readdirSync(dir).sort(), before);
+});
+
+test('a passkey ceremony commits only if what authorized it still holds when it lands', (t) => {
+  const context = fixture(t);
+  const directory = context.make();
+  directory.claim(FOUNDER);
+  const seen = () => {
+    const standing = directory.standing(FOUNDER.userId);
+    return { state: standing.state, globalEpoch: standing.globalEpoch, epoch: standing.member.epoch };
+  };
+  context.stateStore.setAdminCredential({ passphraseHash: 'first:hash', createdAt: 'x', updatedAt: 'x' });
+
+  // An enrollment authorized in setup, landing after root's reset changed the passphrase, is refused.
+  const setupView = seen();
+  directory.reset({ passphraseHash: 'second:hash' });
+  assert.throws(() => directory.addCredential({ userId: FOUNDER.userId, credentialId: 'late', kind: 'synced', expect: setupView, expectPassphraseHash: 'first:hash' }), { code: 'STALE' });
+  directory.addCredential({ userId: FOUNDER.userId, credentialId: 'synced-1', kind: 'synced', expect: seen(), expectPassphraseHash: 'second:hash' });
+  directory.addCredential({ userId: FOUNDER.userId, credentialId: 'yubi-1', kind: 'hardware', expect: seen() });
+
+  // An activation authorized before another activation and a recovery doesn't undo the recovery.
+  const before = seen();
+  directory.activate({ userId: FOUNDER.userId, credentialId: 'yubi-1', expect: before });
+  directory.enterRecovery(FOUNDER);
+  assert.equal(directory.state(), 'recovery');
+  assert.throws(() => directory.activate({ userId: FOUNDER.userId, credentialId: 'yubi-1', expect: before }), { code: 'STALE' });
+  assert.equal(directory.state(), 'recovery');
+
+  // A member's enrollment authorized by a check that a revocation has since spent is refused.
+  directory.activate({ userId: FOUNDER.userId, credentialId: 'yubi-1', expect: seen() });
+  const candidate = directory.lookup(KID.userId, KID);
+  assert.equal(candidate, null);
+  directory.addMember({ userId: FOUNDER.userId }, { userId: KID.userId, role: 'kid' });
+  directory.addCredential({ userId: KID.userId, credentialId: 'kid-1', kind: 'synced' });
+  const kidStanding = directory.standing(KID.userId);
+  const kidView = { state: kidStanding.state, globalEpoch: kidStanding.globalEpoch, epoch: kidStanding.member.epoch };
+  directory.revokeCredential({ userId: FOUNDER.userId }, 'kid-1');
+  assert.throws(() => directory.addCredential({ userId: KID.userId, credentialId: 'kid-2', kind: 'synced', expect: kidView }), { code: 'STALE' });
+  assert.throws(() => directory.revokeOwnCredential(KID.userId, 'kid-1', { expect: kidView }), { code: 'STALE' });
 });

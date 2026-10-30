@@ -6,8 +6,11 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 const { parseSnapshot, verifyToken } = require('sovereign-auth');
 const { createApp } = require('../src/app');
+const { createPasskeys } = require('../src/identity/passkeys');
+const { loadSigningKey } = require('../src/identity/signing-key');
 const { SqliteStateStore } = require('../src/state/sqlite-store');
 const { attestationFixture, createAuthenticator } = require('./support/authenticator');
 
@@ -268,4 +271,86 @@ test('active: a member enrolls with the administrator\'s grant, adds and removes
 
   // The administrator's own passkeys don't change here while active.
   assert.equal((await parent.enroll(createAuthenticator())).body.code, 'ADMINISTRATOR_CREDENTIAL');
+});
+
+// A POST whose headers go now and whose body goes when the test says: what a client holding its body back
+// looks like to Home Base.
+function heldPost(base, { addr, cookies, url }) {
+  const target = new URL(url, base);
+  const req = http.request({ host: target.hostname, port: target.port, path: target.pathname, method: 'POST', headers: {
+    'x-forwarded-for': addr, 'x-forwarded-host': HOMEBASE, 'content-type': 'application/json', cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; '),
+  } });
+  const answered = new Promise((resolve, reject) => {
+    req.on('response', (res) => {
+      let text = '';
+      res.on('data', (chunk) => { text += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
+    });
+    req.on('error', reject);
+  });
+  req.flushHeaders();
+  return { release: (body) => { req.end(JSON.stringify(body)); return answered; } };
+}
+
+test('authority is decided after the body arrives: a request held back across activation finds Home Base active', async (t) => {
+  const { base } = await startServer(t);
+  const parent = browser(base, PARENT);
+  await parent.post('/api/admin/setup', { passphrase: PASSPHRASE });
+  const phone = createAuthenticator();
+  const yubikey = createAuthenticator({ kind: 'hardware' });
+  await parent.enroll(phone, { label: 'Phone' });
+  await parent.enroll(yubikey, { label: 'YubiKey', hardware: true });
+  assert.equal((await parent.check(phone)).status, 200, 'a setup check: the cookie a later passkey session would accept');
+  const held = heldPost(base, { addr: PARENT, cookies: parent.cookies, url: '/_sovereign/auth/enroll/options' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal((await parent.check(yubikey, { purpose: 'activate' })).body.state, 'active');
+  const late = await held.release({ label: 'Late key' });
+  assert.equal(late.status, 409);
+  assert.equal(late.body.code, 'ADMINISTRATOR_CREDENTIAL', 'judged as active, where administrator passkeys don\'t change');
+});
+
+test('recovery is the administrator\'s alone: members neither check in nor change passkeys, and admin credentials change only there', async (t) => {
+  const { app, base, parent } = await activeHousehold(t);
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const memberId = (await parent.post('/api/directory/members', { userId: '1002', role: 'kid' })).body.memberId;
+  const { code } = (await parent.post(`/api/directory/members/${memberId}/grant`)).body;
+  const kid = browser(base, KID);
+  const tablet = createAuthenticator();
+  const laptop = createAuthenticator();
+  await kid.enroll(tablet, { label: 'Tablet', grant: code });
+  await kid.check(tablet);
+  await kid.enroll(laptop, { label: 'Laptop' });
+
+  // Active: the admin session doesn't change administrator credentials, from the directory either.
+  const adminKeys = (await parent.get('/_sovereign/auth/status')).body.credentials;
+  const refused = await parent.post(`/api/directory/credentials/${adminKeys[0].credentialId}/revoke`);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.code, 'ADMINISTRATOR_CREDENTIAL');
+
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  const checked = await kid.check(tablet);
+  assert.equal(checked.status, 409);
+  assert.equal(checked.body.code, 'BOOTSTRAP_STATE');
+  assert.equal((await kid.post('/_sovereign/auth/credentials/revoke', { credentialId: (await kid.get('/_sovereign/auth/status')).body.credentials[0].credentialId })).status, 401, 'the old check ended with the global epoch');
+  assert.equal((await parent.post(`/api/directory/credentials/${adminKeys[0].credentialId}/revoke`)).status, 200, 'recovery is where they change');
+});
+
+test('a check gets the kind the credential has after its update is stored, not the one its assertion verified with', async (t) => {
+  const { app, root } = await activeHousehold(t);
+  const yubikey = createAuthenticator({ kind: 'hardware' });
+  const site = { hostname: HOMEBASE, rpID: DOMAIN };
+  // A directory where another finish demotes the credential between this finish's read and its write.
+  const demoting = { ...app.directory, recordAssertion: (userId, credentialId, update) => app.directory.recordAssertion(userId, credentialId, { ...update, kind: 'synced', backedUp: true, deviceType: 'multiDevice' }) };
+  const passkeys = createPasskeys({ directory: demoting, signingKey: loadSigningKey(path.join(root, 'test-key.pem'), { create: true }), household: 'smith', roots: attestationFixture().roots });
+  // Enroll this hardware key straight into the directory, then check with it through the demoting store.
+  const enrollPasskeys = createPasskeys({ directory: app.directory, signingKey: loadSigningKey(path.join(root, 'test-key.pem')), household: 'smith', roots: attestationFixture().roots });
+  const standing = app.directory.standing('1001');
+  const options = await enrollPasskeys.enrollOptions({ site, standing, label: 'Second YubiKey', hardware: true });
+  const enrolled = await enrollPasskeys.enrollFinish({ site, standing, label: 'Second YubiKey', hardware: true, response: yubikey.register(options, { origin: ORIGIN }) });
+  // Enrolling in active is the routes' to refuse; the directory takes it with the every-time check the next slice adds.
+  app.directory.addCredential(enrolled.credential);
+  const hardwareOptions = await passkeys.checkOptions({ site, standing, purpose: 'step-up', kind: 'hardware' });
+  const refused = await passkeys.checkFinish({ site, standing, purpose: 'step-up', kind: 'hardware', response: yubikey.authenticate(hardwareOptions, { origin: ORIGIN }) });
+  assert.deepEqual([refused.ok, refused.reason], [false, 'insufficient_kind']);
+  assert.equal(app.directory.credentialsFor('1001').find((credential) => credential.id === yubikey.id).kind, 'synced');
 });
