@@ -196,17 +196,19 @@ Rollback: set `off` (or remove the line) and restart.
 
 ## 5. Cutover: Home Base identity (SID-004/005/006)
 
-The household directory is on with `HOME_BASE_DIRECTORY=on` in `/etc/sovereign-home/homebase.env` (it needs `HOME_BASE_INSTANCE`); its log says `Home Base household directory: publishing …`. It replaces the SID-003 preview: remove `HOME_BASE_IDENTITY_PREVIEW`. Until the passkey service ships (SID-005), Home Base can't leave `setup` once the directory is on, and setup runs no privileged plan or setting change. Keep it off on production hosts until then; on the rehearsal host, turn it off again to run plans.
+The household directory is on with `HOME_BASE_DIRECTORY=on` in `/etc/sovereign-home/homebase.env` (it needs `HOME_BASE_INSTANCE`); its log says `Home Base household directory: publishing …`. It replaces the SID-003 preview: remove `HOME_BASE_IDENTITY_PREVIEW`. Setup runs no privileged plan or setting change, and every page says so until it is finished. Passkeys (SID-005) run only on Home Base's own hostname, so the host must be cut over to per-service sockets (section 3) first. Keep the directory off on production hosts until SID-005 and SID-006 are complete.
+
+Home Base signs assurance cookies with an Ed25519 key it creates beside its database (`identity-signing-key.pem`, mode 600, the Home Base user's). Losing it only ends sessions: a new one is made and everyone checks again.
 
 1. Upgrade Home Base to the identity-capable version, **before** moving it to its socket. The directory and passkey service come up in `setup`.
 2. Move Home Base admin to its socket (it is already reachable at `svc:<instance>-homebase`). Keep `:3080` as a redirect for the transition period.
-3. The founder unlocks with the passphrase. Their tailnet identity is recorded as the administrator. Then they enroll:
+3. The founder unlocks with the passphrase on Admin. Their tailnet identity is recorded as the administrator. Then, under **Passkeys**, they register:
    - a synced passkey (daily);
-   - an attested hardware key (keyring);
+   - an attested hardware key (keyring), with **It's a hardware security key** ticked: the key is asked to prove its maker, and only a chain to a vendor root pinned in sovereignAuth counts as hardware;
    - a second attested hardware key (offline spare).
-4. Home Base moves to `active`. Confirm the passphrase now opens only a recovery session.
+4. **Finish setup with my hardware key** runs a fresh ceremony with a hardware key and moves Home Base to `active`. That ceremony is also the first passkey check: admin stays open for 8 hours from it. Confirm the passphrase now opens only recovery (**Enter recovery** on Admin). Afterwards, **Check with a passkey** on Admin opens admin, and **Lock admin** ends it in that browser. Until every-time hardware checks arrive, administrator passkeys are added and removed in recovery only.
 5. Add members (stable user IDs, parent/kid) and set app access. A member is added from an account that opened any suite hostname in the last day, so nobody types a user ID: ask them to open Home Base first. Trading and Bitcoin accounting go to the administrator unless granted.
-6. Members with sensitive apps enroll through a 15-minute enrollment grant, on the Home Base hostname. Credentials can't be enrolled or revoked anywhere else.
+6. Members with sensitive apps enroll through a 15-minute enrollment grant (`POST /api/directory/members/<member id>/grant` gives the code), on the Home Base hostname: they open Admin there, enter the code and register a passkey. More passkeys, and removing one, need a check with a passkey in the last 5 minutes. Credentials can't be enrolled or revoked anywhere else: `/_sovereign/auth/` is a 404 on every other hostname.
 
 Verify:
 - [ ] A privileged plan asks for the hardware key every time, and a token for one plan can't run another.

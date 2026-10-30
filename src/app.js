@@ -48,6 +48,7 @@ const { getExecutorCapabilities, canExecuteMutations } = require('./executor/cap
 const { hostStatus: requestExecutorHostStatus, foundationStatus: requestExecutorFoundationStatus, dependencyInventory: requestExecutorDependencyInventory, appIdentity: requestExecutorAppIdentity, appProbe: requestExecutorAppProbe, planAction: requestExecutorPlan } = require('./executor/client');
 const {
   getAdminStatus,
+  passphraseSession,
   setupAdmin,
   unlockAdmin,
   lockAdmin,
@@ -548,7 +549,7 @@ function createApp(config) {
   const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit }) : null;
   const passkeyRoutes = directory ? createPasskeyRoutes({
     directory, passkeys, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
-    adminStatus: (req) => getAdminStatus(req, stateStore, adminOptions),
+    passphraseSession: (req) => passphraseSession(req, stateStore, adminOptions),
   }) : null;
   // Passkeys run on Home Base's own service hostname only, so only once the host is cut over: the hostname
   // the request came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain.

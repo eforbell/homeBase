@@ -32,7 +32,8 @@ const REASONS = {
 const ceremonyError = (what, reason) => `${what} was not accepted: ${REASONS[reason] || reason} (${reason}).`;
 const ADMIN_WINDOW_SECONDS = policyFor('open-admin').window_seconds;
 
-function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJson, parseBody, recordAdminAudit, adminStatus }) {
+// passphraseSession(req): admin-auth's passphraseSession, bound to this Home Base.
+function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf }) {
   const audit = (action, target, outcome, reason) => recordAdminAudit(stateStore, { action, target, outcome, reason });
 
   function refusal(res, statusCode, code, error, action, target) {
@@ -41,13 +42,13 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
     return true;
   }
 
-  // The passphrase session in setup and recovery, opened by this caller's tailnet identity: its passphrase
-  // hash, which the commit must still find stored (a root reset in between refuses it), or null. Only a
-  // passphrase session counts here, never the passkey check that opens active Home Base.
+  // The passphrase session in setup and recovery, opened by this caller's tailnet identity: the passphrase
+  // hash it was checked against, which the commit must still find stored (a rotation or root reset in
+  // between refuses it), or null. Only a passphrase session counts here, never the passkey check that
+  // opens active Home Base.
   async function passphraseSession(req, standing) {
-    const status = await adminStatus(req);
-    if (!(status.unlocked === true && status.via === 'passphrase' && status.userId === standing.member.userId)) return null;
-    return stateStore.getAdminCredential()?.passphraseHash || null;
+    const session = await sessionOf(req);
+    return session && session.userId === standing.member.userId ? session.passphraseHash : null;
   }
 
   // What the authorization saw, which every commit it leads to requires unchanged.

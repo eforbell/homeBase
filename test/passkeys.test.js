@@ -25,7 +25,10 @@ const PARENT = '100.64.0.1';
 const KID = '100.64.0.2';
 const PASSPHRASE = 'correct horse battery';
 
-async function startServer(t, { cutOver = true } = {}) {
+// whois: the stub's answer for an address, or a test's own in its place (one that pauses, say).
+const PEER_WHOIS = async (addr) => { if (!PEERS[addr]) throw new Error('no such peer'); return PEERS[addr]; };
+
+async function startServer(t, { cutOver = true, whois = PEER_WHOIS } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-passkeys-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const identityDir = path.join(root, 'identity');
@@ -52,7 +55,7 @@ async function startServer(t, { cutOver = true } = {}) {
     defaultDomain: DOMAIN,
     directory: true,
     passkeyRoots: attestationFixture().roots,
-    identityWhois: async (addr) => { if (!PEERS[addr]) throw new Error('no such peer'); return PEERS[addr]; },
+    identityWhois: whois,
     identityStatus: async () => ({ Self: { TailscaleIPs: ['100.64.0.100'] } }),
   });
   await new Promise((resolve) => app.listen(resolve));
@@ -353,4 +356,39 @@ test('a check gets the kind the credential has after its update is stored, not t
   const refused = await passkeys.checkFinish({ site, standing, purpose: 'step-up', kind: 'hardware', response: yubikey.authenticate(hardwareOptions, { origin: ORIGIN }) });
   assert.deepEqual([refused.ok, refused.reason], [false, 'insufficient_kind']);
   assert.equal(app.directory.credentialsFor('1001').find((credential) => credential.id === yubikey.id).kind, 'synced');
+});
+
+test('a passphrase rotated while a setup enrollment waits on the identity lookup refuses that enrollment', async (t) => {
+  // Lets `skip` lookups through, then holds the next one until released.
+  const gate = { armed: false, skip: 0 };
+  const whois = async (addr) => {
+    if (gate.armed && gate.skip-- === 0) {
+      gate.armed = false;
+      gate.reached();
+      await gate.released;
+    }
+    return PEER_WHOIS(addr);
+  };
+  const { base } = await startServer(t, { whois });
+  const parent = browser(base, PARENT);
+  await parent.post('/api/admin/setup', { passphrase: PASSPHRASE });
+  const phone = createAuthenticator();
+  const started = await parent.post('/_sovereign/auth/enroll/options', { label: 'Phone' });
+  const response = phone.register(started.body.options, { origin: ORIGIN });
+
+  let release;
+  const reached = new Promise((resolve) => { gate.reached = resolve; });
+  gate.released = new Promise((resolve) => { release = resolve; });
+  Object.assign(gate, { armed: true, skip: 1 });
+  // The finish's first lookup names the caller; its second checks the passphrase session, and waits.
+  const finishing = parent.post('/_sovereign/auth/enroll/finish', { label: 'Phone', response });
+  await reached;
+  const other = browser(base, PARENT);
+  for (const [name, value] of parent.cookies) other.cookies.set(name, value);
+  assert.equal((await other.post('/api/admin/rotate', { currentPassphrase: PASSPHRASE, newPassphrase: 'a brand new passphrase' })).status, 200);
+  release();
+  const finished = await finishing;
+  assert.equal(finished.status, 409);
+  assert.equal(finished.body.code, 'PASSPHRASE_CHANGED');
+  assert.deepEqual((await other.get('/_sovereign/auth/status')).body.credentials, []);
 });

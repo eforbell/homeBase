@@ -62,27 +62,40 @@ function sessionOwner(directory, caller, passphraseHash) {
   }
 }
 
-async function getAdminStatus(req, stateStore, { directory = null } = {}) {
+async function getAdminStatus(req, stateStore, options = {}) {
+  return (await readAdminStatus(req, stateStore, options)).status;
+}
+
+// For a passkey ceremony in setup or recovery (SID-005): the caller's passphrase session, with the hash it
+// was checked against, read before the identity lookup's wait. The ceremony's commit requires that hash to
+// still be stored, so a rotation or reset during the wait refuses it. Null without a passphrase session.
+async function passphraseSession(req, stateStore, options = {}) {
+  const { status, passphraseHash } = await readAdminStatus(req, stateStore, options);
+  return status.unlocked && status.via === 'passphrase' ? { userId: status.userId, passphraseHash } : null;
+}
+
+async function readAdminStatus(req, stateStore, { directory = null } = {}) {
+  const status = (value) => ({ status: value, passphraseHash: credential?.passphraseHash || null });
   const credential = stateStore.getAdminCredential();
   const configured = Boolean(credential && credential.passphraseHash);
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const locked = { configured, unlocked: false, sessionExpiresAt: null, ...(directory ? { directoryState: directory.state() } : {}) };
   if (directory && locked.directoryState === 'active') {
     const passkey = configured ? await directory.passkeySession(req) : null;
-    return passkey ? { ...locked, unlocked: true, sessionExpiresAt: passkey.expiresAt, userId: passkey.userId, via: 'passkey' } : locked;
+    return status(passkey ? { ...locked, unlocked: true, sessionExpiresAt: passkey.expiresAt, userId: passkey.userId, via: 'passkey' } : locked);
   }
   if (!configured || !token) {
-    return locked;
+    return status(locked);
   }
   const nowIso = new Date().toISOString();
   stateStore.pruneAdminSessions(nowIso);
   const session = stateStore.getAdminSession(hashToken(token));
   if (!session || session.expiresAt <= nowIso) {
     if (session) stateStore.deleteAdminSession(hashToken(token));
-    return locked;
+    return status(locked);
   }
-  if (!(await holdsSession(req, session, directory))) return locked;
-  return { ...locked, unlocked: true, sessionExpiresAt: session.expiresAt, userId: session.userId || null, via: 'passphrase' };
+  if (!(await holdsSession(req, session, directory))) return status(locked);
+  return status({ ...locked, unlocked: true, sessionExpiresAt: session.expiresAt, userId: session.userId || null, via: 'passphrase' });
 }
 
 function setSessionCookie(res, token) {
@@ -226,6 +239,7 @@ module.exports = {
   EXECUTION_MODE_UPGRADE_HINT,
   getAdminStatus,
   hashPassphrase,
+  passphraseSession,
   openSession,
   PASSPHRASE_CHANGED,
   verifyPassphrase,
