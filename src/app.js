@@ -318,7 +318,7 @@ function joinExternalPath(baseUrl, mountPath) {
 // What every page needs to know about socket ingress (not secret): the instance, whether this host is cut
 // over, and its two main addresses.
 function ingressSummary(state, config) {
-  const ingress = currentIngress(state.jobs, config);
+  const ingress = currentIngress(state.ingressJobs, config);
   if (!ingress) return { instance: config.instance || null, cutOver: false };
   return { instance: ingress.instance, cutOver: true, homebaseUrl: `https://${ingress.instance}-homebase.${ingress.domain}/`, appsUrl: `https://${ingress.instance}-home.${ingress.domain}/` };
 }
@@ -336,7 +336,7 @@ function projectInstallationsWithCurrentUrls(installations = {}, config = {}, in
 function projectStateForClient(state, config) {
   return {
     ...state,
-    installations: projectInstallationsWithCurrentUrls(state.installations || {}, config, currentIngress(state.jobs, config)),
+    installations: projectInstallationsWithCurrentUrls(state.installations || {}, config, currentIngress(state.ingressJobs, config)),
   };
 }
 
@@ -669,7 +669,7 @@ function createApp(config) {
     }
     const lastPublishedJob = stateStore.getLatestCompletedRealJobByKind('tailscale-publish');
     // A host cut over to socket ingress is verified by its sockets, not by a tcp:443 listener.
-    const cutOver = Boolean(currentIngress(stateStore.loadState().jobs, effectiveConfig));
+    const cutOver = Boolean(currentIngress(stateStore.loadState().ingressJobs, effectiveConfig));
     const value = cutOver ? getIngressVerification({ instance: effectiveConfig.instance, domain: String(effectiveConfig.defaultDomain || '').toLowerCase(), run: effectiveConfig.tailscaleRunCommand }) : getTailscalePublishVerification({
       hostname: effectiveConfig.defaultHostname || 'homebase',
       domain: effectiveConfig.defaultDomain || 'tailnet',
@@ -988,7 +988,7 @@ function createApp(config) {
       if (method === 'GET' && pathname === '/api/network/tailscale') {
         const readiness = getTailscaleReadiness(effectiveConfig, { force: url.searchParams.get('refresh') === '1' });
         // After cutover there is no single managed service to look for; each address has its own (see /api/ingress).
-        if (currentIngress(state.jobs, effectiveConfig) && readiness?.readiness?.state === 'authenticated-unpublished') {
+        if (currentIngress(state.ingressJobs, effectiveConfig) && readiness?.readiness?.state === 'authenticated-unpublished') {
           return sendJson(res, 200, { ...readiness, readiness: { state: 'published', label: 'Per-service sockets', summary: 'Each address is its own Tailscale Service on a private nginx socket; see Identity-safe ingress for each one.', blockers: [] } });
         }
         return sendJson(res, 200, readiness);
@@ -1070,7 +1070,7 @@ function createApp(config) {
         }
         // A cut-over host is bound to its instance and tailnet domain (the executor's cutover record); these
         // fields would only make Home Base and the executor disagree about every address.
-        if (currentIngress(state.jobs, effectiveConfig)) {
+        if (currentIngress(state.ingressJobs, effectiveConfig)) {
           const locked = ['hostname', 'domain', 'tailscaleManagedServiceId'].filter((field) => parsed.value[field] !== current[field]);
           if (locked.length) return sendJson(res, 409, { error: `${locked.join(', ')} cannot change while this host uses per-service sockets; roll back ingress first.`, code: 'INGRESS_LOCKED' });
         }
@@ -1082,7 +1082,7 @@ function createApp(config) {
         recordAdminAudit(stateStore, { action: 'homebase-config', target: 'homebase', dryRun: false, outcome: 'completed', sessionTokenHash: auth.sessionTokenHash });
         const updatedConfig = mergeHomeBaseConfig(config, persisted);
         const updatedState = stateStore.loadState();
-        const updatedInstallations = projectInstallationsWithCurrentUrls(updatedState.installations || {}, updatedConfig, currentIngress(updatedState.jobs, updatedConfig));
+        const updatedInstallations = projectInstallationsWithCurrentUrls(updatedState.installations || {}, updatedConfig, currentIngress(updatedState.ingressJobs, updatedConfig));
         for (const installation of Object.values(updatedInstallations)) {
           stateStore.upsertInstallation({
             ...installation,
@@ -1332,7 +1332,7 @@ function createApp(config) {
         let auth = null;
 
         // The single-service plan targets nginx over TCP, which a cut-over host no longer has.
-        if (currentIngress(state.jobs, effectiveConfig)) {
+        if (currentIngress(state.ingressJobs, effectiveConfig)) {
           return sendJson(res, 409, { error: 'This host uses per-service sockets; publish each service from Identity-safe ingress instead.', code: 'INGRESS_CUT_OVER' });
         }
         const plan = getTailscalePublishPlanCached(effectiveConfig, { force: true });
@@ -2225,7 +2225,7 @@ function createApp(config) {
 
   // Setup links follow the host's ingress, like Open buttons.
   function healthInstallations(state, effective) {
-    return Object.values(projectInstallationsWithCurrentUrls(state.installations, effective, currentIngress(state.jobs, effective)));
+    return Object.values(projectInstallationsWithCurrentUrls(state.installations, effective, currentIngress(state.ingressJobs, effective)));
   }
 
   // Health alerts are sent from here, not from GET /api/apps/health, so they go out whether or not anyone has

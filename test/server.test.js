@@ -1267,6 +1267,11 @@ test('after cutover, apps health setup links use the app\'s service hostname, li
     const store = new SqliteStateStore(stateDbPath);
     const { id } = store.createJob({ kind: 'ingress-cutover', target: 'smith', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
     store.updateJob(id, { status: 'completed', finishedAt: new Date().toISOString() });
+    // Later jobs push the cutover out of the recent-jobs list; Open links must not fall back to the host name.
+    for (let i = 0; i < 25; i += 1) {
+      const later = store.createJob({ kind: 'backup', target: 'family-help', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
+      store.updateJob(later.id, { status: 'completed', finishedAt: new Date().toISOString() });
+    }
     const after = await (await fetch(`${server.url}/api/apps/health?refresh=1`)).json();
     assert.equal(after.byAppId['family-help'].onboarding.setupUrl, 'https://smith-home.example.ts.net/help/setup');
     const state = await (await fetch(`${server.url}/api/state`)).json();

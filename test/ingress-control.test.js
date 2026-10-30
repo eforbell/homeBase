@@ -278,7 +278,7 @@ test('routes: two overlapping publishes cannot share one confirmation, and a cla
 });
 
 test('daily check: a published service that loses verification is reported; nothing before cutover', async (t) => {
-  const cutOver = { jobs: [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }] };
+  const cutOver = { ingressJobs: [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }] };
   const clean = await routes(t);
   assert.equal(await clean.handle.checkServices(clean.config, { jobs: [] }), null);
   assert.deepEqual((await clean.handle.checkServices(clean.config, cutOver)).problems, []);
@@ -290,7 +290,7 @@ test('daily check: a published service that loses verification is reported; noth
 });
 
 test('daily check: when Serve or this host cannot be read, the check is incomplete, never clean', async (t) => {
-  const cutOver = { jobs: [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }] };
+  const cutOver = { ingressJobs: [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }] };
   const { handle, config } = await routes(t);
   const serveDown = async (args) => { if (args[0] === 'serve') throw new Error('timed out'); return cli()(args); };
   const blind = createIngressRoutes({
@@ -348,6 +348,14 @@ test('after cutover: config locks the address fields, readiness reflects service
   const store = new SqliteStateStore(stateDbPath);
   const { id } = store.createJob({ kind: 'ingress-cutover', target: 'local-host', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
   store.updateJob(id, { status: 'completed', finishedAt: new Date().toISOString() });
+  // Plenty of other jobs since: the cutover is long out of the recent-jobs list, and still counts.
+  for (let i = 0; i < 25; i += 1) {
+    const later = store.createJob({ kind: 'install', target: 'family-help', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
+    store.updateJob(later.id, { status: 'completed', finishedAt: new Date().toISOString() });
+  }
+  const dryRollback = store.createJob({ kind: 'ingress-rollback', target: 'local-host', status: 'queued', dryRun: true, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
+  store.updateJob(dryRollback.id, { status: 'completed', finishedAt: new Date().toISOString() });
+  assert.equal(store.loadState().jobs.some((job) => job.id === id), false, 'the cutover is no longer among the recent jobs');
 
   assert.deepEqual((await json('/api/homebase/config')).body.ingress, { instance: 'smith', cutOver: true, homebaseUrl: 'https://smith-homebase.example-tailnet.ts.net/', appsUrl: 'https://smith-home.example-tailnet.ts.net/' });
   assert.equal((await json('/api/network/tailscale')).body.readiness.label, 'Per-service sockets');

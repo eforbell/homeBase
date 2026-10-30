@@ -79,7 +79,7 @@ function createIngressRoutes({
   // Every published service must still be verified (or confirmed and in date). Null when not cut over.
   let lastCheck = null;
   async function checkServices(config, state) {
-    if (!currentIngress(state.jobs, config)) return null;
+    if (!currentIngress(state.ingressJobs, config)) return null;
     const status = await controlFor(config).status();
     const problems = (status.services || [])
       .filter((entry) => entry.published && !['verified', 'confirmed'].includes(entry.verification?.state))
@@ -109,7 +109,7 @@ function createIngressRoutes({
       sendJson(res, 200, {
         ...status,
         services,
-        cutOver: Boolean(currentIngress(state.jobs, config)),
+        cutOver: Boolean(currentIngress(state.ingressJobs, config)),
         apiCredential: apiFor(config) ? 'configured' : (apiProblem ? `unusable: ${apiProblem}` : 'none'),
         dailyCheck: lastCheck,
         setup: status.configured ? setupSheet({ instance: status.instance, services, installedAppIds, administratorLogin: config.administratorLogin }) : null,

@@ -46,7 +46,8 @@ function endpointsMatch(actual, key) {
 }
 
 // The host's socket ingress as Home Base knows it: cut over when the latest completed ingress job is a
-// cutover rather than a rollback, and an instance is configured. Null otherwise.
+// cutover rather than a rollback, and an instance is configured. Null otherwise. Pass the state's ingressJobs,
+// never its jobs: those are only the 20 most recent, and a cutover soon falls out of them.
 function currentIngress(jobs = [], config = {}) {
   if (!config.instance) return null;
   const latest = (jobs || [])
