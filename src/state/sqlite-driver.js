@@ -211,6 +211,13 @@ elif op == "load_state":
             "SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY id DESC"
         )
     ]
+    # Whether the host is cut over comes from its last real ingress job, however long ago it ran.
+    ingress_jobs = [
+        serialize_job(row)
+        for row in conn.execute(
+            "SELECT * FROM jobs WHERE kind IN ('ingress-cutover', 'ingress-rollback') AND status = 'completed' AND dry_run = 0 ORDER BY finished_at DESC, id DESC LIMIT 1"
+        )
+    ]
     backups = [
         {
             "id": row["id"],
@@ -236,6 +243,7 @@ elif op == "load_state":
         "installations": installations,
         "jobs": jobs,
         "activeJobs": active_jobs,
+        "ingressJobs": ingress_jobs,
         "backups": backups,
     })
 
