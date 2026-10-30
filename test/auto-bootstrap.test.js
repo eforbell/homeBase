@@ -71,3 +71,12 @@ test('auto-bootstrap decision retries a failed bootstrap job', () => {
   assert.equal(decision.retryOfJobId, 9);
   assert.equal(decision.dryRun, false);
 });
+
+test('auto-bootstrap never runs with the household directory on: privileged plans need the administrator', () => {
+  const decision = getAutoBootstrapDecision({
+    config: { homeBaseAutoBootstrap: true, homeBaseEnablePrivilegedJobs: true, homeBaseExecutionMode: 'legacy-sudo', directory: true },
+    latestBootstrapJob: null,
+  });
+  assert.equal(decision.shouldStart, false);
+  assert.equal(decision.reason, 'household-directory');
+});

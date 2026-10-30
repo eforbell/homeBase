@@ -24,7 +24,8 @@ const { getTailscalePublishingReadiness } = require('./services/tailscale-readin
 const { getTailscalePublishPlan } = require('./services/tailscale-publisher');
 const { getTailscalePublishVerification, getIngressVerification } = require('./services/tailscale-verify');
 const { canonicalAddress, createIdentityResolver, createIdentityServer, createWhoisIdentity, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
-const { createPreviewDirectory } = require('./identity/preview-directory');
+const { createDirectory } = require('./identity/directory');
+const { createDirectoryRoutes } = require('./identity/directory-routes');
 const { createSnapshotReader, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
@@ -340,8 +341,8 @@ function projectStateForClient(state, config) {
 }
 
 
-async function requireAdminForJobRead(req, stateStore) {
-  const status = await getAdminStatus(req, stateStore);
+async function requireAdminForJobRead(req, stateStore, adminOptions = {}) {
+  const status = await getAdminStatus(req, stateStore, adminOptions);
   if (!status.configured) {
     return { ok: false, statusCode: 409, payload: { error: 'Admin setup is required before viewing job history.' } };
   }
@@ -503,7 +504,34 @@ function createApp(config) {
   const hostCaBundlePath = config.hostCaBundlePath || HOST_CA_BUNDLE;
   stateStore.init();
   const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
-  const ingressRoutes = createIngressRoutes({ stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome });
+
+  // Feature-10 SID-004: the household directory (src/identity/directory.js), on when HOME_BASE_DIRECTORY is.
+  // Who is asking comes from tailscaled, by the address Serve put in X-Forwarded-For (Serve overwrites any
+  // the client sent, spike 3), never from X-Sovereign-*: before cutover Serve's legacy route reaches Home Base
+  // without nginx, so anyone on the tailnet could send those.
+  const warn = (message) => console.warn(`[homebase] ${message}`);
+  const whoisCaller = config.directory ? createWhoisIdentity({ whois: config.identityWhois, status: config.identityStatus, log: warn }) : null;
+  async function callerOf(req) {
+    const forwardedFor = typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'] : '';
+    const addr = forwardedFor.includes(',') ? null : canonicalAddress(forwardedFor);
+    return addr ? whoisCaller(addr) : null;
+  }
+  const directory = config.directory ? createDirectory({
+    dbPath: config.stateDbPath,
+    catalog: getCatalog(),
+    household: config.instance,
+    snapshotFile: config.identitySnapshotFile,
+    log: warn,
+  }) : null;
+  if (directory) directory.init();
+  const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state } : null;
+  const adminOptions = directoryBinding ? { directory: directoryBinding } : {};
+  const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit }) : null;
+  const ingressRoutes = createIngressRoutes({
+    stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
+    adminStatus: (req, store) => getAdminStatus(req, store, adminOptions),
+    requireAdmin: (req, store, options) => requireAdminForExecute(req, store, { ...adminOptions, ...options }),
+  });
   try {
     jobRunner.reconcileStaleUpdateJobs();
     jobRunner.failInterruptedLegacyJobs();
@@ -825,36 +853,18 @@ function createApp(config) {
   }
 
   const guardSuiteRequest = createSuiteRequestGuard({ mode: config.requestGuards || 'off' });
-  // SID-003 preview of the household directory (src/identity/preview-directory.js); off unless configured.
-  const previewDirectory = config.identityPreviewFile ? createPreviewDirectory({
-    membersFile: config.identityPreviewFile,
-    household: config.instance,
-    snapshotFile: config.identitySnapshotFile,
-    ownerUid: config.identityPreviewOwnerUid ?? 0,
-    trustedRoot: config.identitySnapshotTrustedRoot || null,
-    log: (message) => console.warn(`[homebase] ${message}`),
-  }) : null;
-  const snapshotReader = previewDirectory ? createSnapshotReader({
+  // What sovereignAuth makes of the published snapshot, read back the way an app reads it.
+  const snapshotReader = directory ? createSnapshotReader({
     homeBaseUid: process.getuid(),
-    file: previewDirectory.snapshotFile,
+    file: directory.snapshotFile,
     trustedRoot: config.identitySnapshotTrustedRoot || null,
   }) : null;
 
-  // Who is asking, and what sovereignAuth makes of it. The caller comes from tailscaled, by the address Serve
-  // put in X-Forwarded-For (Serve overwrites any the client sent, spike 3), never from X-Sovereign-*: before
-  // cutover Serve's legacy route reaches Home Base without nginx, so anyone on the tailnet could send those.
-  // They are only compared with the caller, so a forged one reveals nothing about another member.
-  // Read-only; it changes nothing.
-  const whoisCaller = previewDirectory ? createWhoisIdentity({
-    whois: config.identityWhois,
-    status: config.identityStatus,
-    log: (message) => console.warn(`[homebase] ${message}`),
-  }) : null;
+  // Who is asking (callerOf above), and what sovereignAuth makes of it. X-Sovereign-* headers are only
+  // compared with the caller, so a forged one reveals nothing about another member. Read-only.
   async function describeIdentity(req) {
     const header = (name) => (typeof req.headers[name] === 'string' ? req.headers[name] : null);
-    const forwardedFor = header('x-forwarded-for') || '';
-    const addr = forwardedFor.includes(',') ? null : canonicalAddress(forwardedFor);
-    const caller = addr ? await whoisCaller(addr) : null;
+    const caller = await callerOf(req);
     const sent = { userId: header('x-sovereign-user-id'), login: header('x-sovereign-login') };
     let ingressHeaders = 'differ';
     if (!sent.userId && !sent.login) ingressHeaders = 'absent';
@@ -868,8 +878,9 @@ function createApp(config) {
       const result = resolveMember(state.snapshot, callerHeaders, { appId: app.id });
       return [app.id, result.member ? { memberId: result.member.memberId, role: result.member.role } : { reason: result.reason }];
     })) : {};
-    return { preview: true, caller: caller && { userId: caller.userId, login: caller.login }, ingressHeaders, snapshot, apps };
+    return { caller: caller && { userId: caller.userId, login: caller.login }, ingressHeaders, snapshot, apps };
   }
+  const stoppers = [];
   const server = http.createServer(async (req, res) => {
     try {
       if (!guardSuiteRequest(req, res)) return;
@@ -912,9 +923,10 @@ function createApp(config) {
       }
 
       if (method === 'GET' && pathname === '/api/identity/whoami') {
-        if (!previewDirectory) return sendJson(res, 404, { error: 'The identity preview is off (HOME_BASE_IDENTITY_PREVIEW).' });
+        if (!directory) return sendJson(res, 404, { error: 'The household directory is off (HOME_BASE_DIRECTORY).' });
         return sendJson(res, 200, await describeIdentity(req));
       }
+      if (directoryRoutes && await directoryRoutes({ req, res, method, pathname })) return;
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });
       }
@@ -963,12 +975,12 @@ function createApp(config) {
         return sendJson(res, 200, await getPreflight(effectiveConfig, { force: url.searchParams.get('refresh') === '1' }));
       }
       if (method === 'GET' && pathname === '/api/homebase/foundation') {
-        const adminStatus = await getAdminStatus(req, stateStore);
+        const adminStatus = await getAdminStatus(req, stateStore, adminOptions);
         const foundation = await getFoundationStatus(effectiveConfig, { force: adminStatus.unlocked && url.searchParams.get('refresh') === '1' });
         return sendJson(res, 200, adminStatus.unlocked ? foundation : redactFoundationStatus(foundation));
       }
       if (method === 'GET' && pathname === '/api/apps/dependencies') {
-        const adminStatus = await getAdminStatus(req, stateStore);
+        const adminStatus = await getAdminStatus(req, stateStore, adminOptions);
         const inventory = await getDependencyInventory(effectiveConfig, Object.values(state.installations || {}), { force: adminStatus.unlocked && url.searchParams.get('refresh') === '1' });
         return sendJson(res, 200, projectDependencyInventory(inventory, { admin: adminStatus.unlocked, hostTrust: readHostTrust() }));
       }
@@ -992,13 +1004,13 @@ function createApp(config) {
         }));
       }
       if (method === 'GET' && pathname === '/api/jobs') {
-        const auth = await requireAdminForJobRead(req, stateStore);
+        const auth = await requireAdminForJobRead(req, stateStore, adminOptions);
         if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         return sendJson(res, 200, { jobs: state.jobs || [] });
       }
       const jobMatch = pathname.match(/^\/api\/jobs\/(\d+)$/);
       if (method === 'GET' && jobMatch) {
-        const auth = await requireAdminForJobRead(req, stateStore);
+        const auth = await requireAdminForJobRead(req, stateStore, adminOptions);
         if (!auth.ok) return sendJson(res, auth.statusCode, auth.payload);
         const job = stateStore.getJob(Number(jobMatch[1]));
         if (!job) return notFound(res);
@@ -1011,16 +1023,16 @@ function createApp(config) {
         return sendJson(res, 200, { ...toClientHomeBaseConfig(config, homeBaseConfigOverride), ingress: ingressSummary(state, effectiveConfig) });
       }
       if (method === 'GET' && pathname === '/api/admin/status') {
-        return sendJson(res, 200, await getAdminStatus(req, stateStore));
+        return sendJson(res, 200, await getAdminStatus(req, stateStore, adminOptions));
       }
       if (method === 'POST' && pathname === '/api/admin/setup') {
         const body = await parseBody(req);
-        const result = await setupAdmin(req, res, body, stateStore);
+        const result = await setupAdmin(req, res, body, stateStore, adminOptions);
         return sendJson(res, result.statusCode, result.payload);
       }
       if (method === 'POST' && pathname === '/api/admin/unlock') {
         const body = await parseBody(req);
-        const result = await unlockAdmin(req, res, body, stateStore);
+        const result = await unlockAdmin(req, res, body, stateStore, adminOptions);
         return sendJson(res, result.statusCode, result.payload);
       }
       if (method === 'POST' && pathname === '/api/admin/lock') {
@@ -1029,11 +1041,11 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/admin/rotate') {
         const body = await parseBody(req);
-        const result = await rotateAdmin(req, res, body, stateStore);
+        const result = await rotateAdmin(req, res, body, stateStore, adminOptions);
         return sendJson(res, result.statusCode, result.payload);
       }
       if (method === 'GET' && pathname === '/api/admin/audit') {
-        const status = await getAdminStatus(req, stateStore);
+        const status = await getAdminStatus(req, stateStore, adminOptions);
         if (!status.configured) return sendJson(res, 409, { error: 'Admin credential is not configured yet.' });
         if (!status.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required to view audit history.' });
         const limitRaw = Number(url.searchParams.get('limit') || 50);
@@ -1045,10 +1057,11 @@ function createApp(config) {
         const body = await parseBody(req);
         // Host settings re-project every app's URLs: administrator only (bugBase #150). Nothing runs on the
         // host, so plan-only hosts can still save.
-        const auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: true });
+        const auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: true });
         if (!auth.ok) {
           recordAdminAudit(stateStore, { action: 'homebase-config', target: 'homebase', dryRun: false, outcome: 'blocked-auth', reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
-          return sendJson(res, auth.statusCode, { ...auth.payload, error: auth.statusCode === 401 ? 'Admin unlock is required to change Home Base settings.' : 'Set up the admin passphrase before changing Home Base settings.' });
+          const error = auth.payload?.code ? auth.payload.error : (auth.statusCode === 401 ? 'Admin unlock is required to change Home Base settings.' : 'Set up the admin passphrase before changing Home Base settings.');
+          return sendJson(res, auth.statusCode, { ...auth.payload, error });
         }
         const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
         const parsed = validateHomeBaseConfigPatch(body, current);
@@ -1118,7 +1131,7 @@ function createApp(config) {
         // ownership the executor's own code depends on. Executor hosts update via install.sh --repair.
         if (body.dryRun === false && effectiveConfig.homeBaseExecutionMode === 'executor') return rejectLegacyExecution(res);
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-update-self',
@@ -1163,7 +1176,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'homebase-install-self',
@@ -1246,7 +1259,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'bootstrap-execute',
@@ -1355,7 +1368,7 @@ function createApp(config) {
         }
 
         if (!dryRun) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'tailscale-publish-execute',
@@ -1448,7 +1461,7 @@ function createApp(config) {
         if (body.confirm !== 'DISCARD') {
           return sendJson(res, 400, { error: 'Discarding a saved plan requires confirm=DISCARD.' });
         }
-        const adminStatus = await getAdminStatus(req, stateStore);
+        const adminStatus = await getAdminStatus(req, stateStore, adminOptions);
         if (!adminStatus.configured) return sendJson(res, 409, { error: 'Admin setup is required before discarding a saved plan.' });
         if (!adminStatus.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required before discarding a saved plan.' });
         stateStore.deleteInstallation(appId);
@@ -1510,7 +1523,7 @@ function createApp(config) {
         if (!app) return notFound(res);
         if (appManagement(effectiveConfig, state, appId) !== 'adopting') return sendJson(res, 409, { error: `${app.name} has no unfinished adopt to abandon.`, code: 'ADOPT_NOT_APPLICABLE' });
         if (body.confirm !== 'ABANDON') return sendJson(res, 400, { error: 'Abandoning an adopt requires confirm=ABANDON.' });
-        const adminStatus = await getAdminStatus(req, stateStore);
+        const adminStatus = await getAdminStatus(req, stateStore, adminOptions);
         if (!adminStatus.configured) return sendJson(res, 409, { error: 'Admin setup is required before abandoning an adopt.' });
         if (!adminStatus.unlocked) return sendJson(res, 401, { error: 'Admin unlock is required before abandoning an adopt.' });
         const busy = (stateStore.listUnfinishedJobs() || []).find((job) => job.target === appId && !job.dryRun);
@@ -1557,7 +1570,7 @@ function createApp(config) {
             recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
             return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
           }
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
             return sendJson(res, auth.statusCode, auth.payload);
@@ -1610,7 +1623,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-install-execute',
@@ -1739,7 +1752,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restart-execute',
@@ -1845,7 +1858,7 @@ function createApp(config) {
             recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
             return sendJson(res, 400, { error: 'Moving an app to its own user requires confirm=MOVE.' });
           }
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
             return sendJson(res, auth.statusCode, auth.payload);
@@ -1910,7 +1923,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-backup-execute',
@@ -2018,7 +2031,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-uninstall-execute',
@@ -2106,7 +2119,7 @@ function createApp(config) {
           });
         }
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restore-execute',
@@ -2263,6 +2276,7 @@ function createApp(config) {
   return {
     server,
     checkHealthAlerts,
+    directory,
     listen(callback) {
       const bindHost = config.bindHost || '127.0.0.1';
       server.listen(config.port, bindHost, () => {
@@ -2275,16 +2289,21 @@ function createApp(config) {
       });
       scheduleIngressCheck();
       scheduleHealthAlerts();
-      if (previewDirectory) {
-        previewDirectory.start();
-        console.log(`Home Base identity preview: publishing ${previewDirectory.snapshotFile}`);
+      if (config.identityPreviewRetired) console.warn('[homebase] HOME_BASE_IDENTITY_PREVIEW is no longer read: the household directory replaced the preview (HOME_BASE_DIRECTORY=on).');
+      if (directory) {
+        stoppers.push(((timer) => () => clearInterval(timer))(directory.start()));
+        console.log(`Home Base household directory: publishing ${directory.snapshotFile}`);
       }
       if (config.identitySocket) {
         const log = (message) => console.warn(`[homebase] ${message}`);
-        const directory = previewDirectory || undefined;
-        const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log, directory }), log });
-        startIdentitySocketWhenReady({ server: identityServer, socketPath: config.identitySocket, log: (message) => console.log(`Home Base ${message}`) });
+        const identityServer = createIdentityServer({ resolve: createIdentityResolver({ log, directory: directory || undefined, whois: config.identityWhois, status: config.identityStatus }), log });
+        stoppers.push(startIdentitySocketWhenReady({ server: identityServer, socketPath: config.identitySocket, log: (message) => console.log(`Home Base ${message}`) }));
+        stoppers.push(() => identityServer.close());
       }
+    },
+    // Stops what listen() started besides the HTTP server (tests).
+    stop() {
+      for (const stopper of stoppers.splice(0)) stopper();
     },
   };
 }

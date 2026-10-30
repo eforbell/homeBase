@@ -52,6 +52,7 @@ function installerEnv(tempDir, fixture, overrides = {}) {
     HOMEBASE_STATE_DIR: path.join(tempDir, 'var', 'homebase'),
     HOMEBASE_ENV_FILE: path.join(tempDir, 'etc', 'homebase.env'),
     HOMEBASE_SYSTEMD_UNIT: path.join(tempDir, 'systemd', 'homebase.service'),
+    HOMEBASE_CLI_FILE: path.join(tempDir, 'sbin', 'homebase'),
     HOMEBASE_LEGACY_SUDOERS_FILE: path.join(tempDir, 'sudoers.d', 'homebase'),
     HOMEBASE_APT_SOURCES_DIR: path.join(tempDir, 'apt', 'sources.list.d'),
     HOMEBASE_NODESOURCE_UNATTENDED: path.join(tempDir, 'apt', 'apt.conf.d', '52nodesource-unattended'),
@@ -130,6 +131,10 @@ test('installer verifies and installs a release with hardened defaults', () => {
   assert.match(runtimeEnv, /HOME_BASE_ENABLE_PRIVILEGED_JOBS=1/);
   assert.match(runtimeEnv, /HOME_BASE_AUTO_BOOTSTRAP=0/);
   assert.match(runtimeEnv, /HOME_BASE_EXECUTOR_SOCKET=/);
+
+  const cli = fs.readFileSync(env.HOMEBASE_CLI_FILE, 'utf8');
+  assert.match(cli, new RegExp(`^#!/bin/sh\\nexec \\S+ ${env.HOMEBASE_INSTALL_DIR}/bin/homebase\\.js "\\$@"\\n$`));
+  assert.equal(fs.statSync(env.HOMEBASE_CLI_FILE).mode & 0o777, 0o755);
 
   const service = fs.readFileSync(env.HOMEBASE_SYSTEMD_UNIT, 'utf8');
   assert.match(service, /NoNewPrivileges=true/);

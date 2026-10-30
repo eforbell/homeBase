@@ -37,6 +37,8 @@ STATE_DIR="${HOMEBASE_STATE_DIR:-/var/lib/sovereign-home/homebase}"
 IDENTITY_DIR="${HOMEBASE_IDENTITY_DIR:-/var/lib/sovereign-home/identity}"
 ENV_FILE="${HOMEBASE_ENV_FILE:-/etc/sovereign-home/homebase.env}"
 UNIT_FILE="${HOMEBASE_SYSTEMD_UNIT:-/etc/systemd/system/homebase.service}"
+# Root's command line (bin/homebase.js), e.g. `homebase admin reset` (Feature-10 SID-004).
+CLI_FILE="${HOMEBASE_CLI_FILE:-/usr/local/sbin/homebase}"
 RUNTIME_USER="${HOMEBASE_RUNTIME_USER:-homebase}"
 LEGACY_SUDOERS_FILE="${HOMEBASE_LEGACY_SUDOERS_FILE:-/etc/sudoers.d/homebase}"
 EXECUTOR_SOCKET_UNIT="${HOMEBASE_EXECUTOR_SOCKET_UNIT:-/etc/systemd/system/homebase-executor.socket}"
@@ -989,6 +991,15 @@ EOF
 fi
 
 write_executor_units "$INSTALL_DIR"
+
+# Runs the root-owned code in INSTALL_DIR as root, like the executor; it drops to the runtime user itself
+# before writing Home Base's files. Tests write it only where they say.
+if [ "$TEST_MODE" != '1' ] || [ -n "${HOMEBASE_CLI_FILE:-}" ]; then
+  install -d -m 0755 "$(dirname "$CLI_FILE")"
+  printf '#!/bin/sh\nexec %s %s/bin/homebase.js "$@"\n' "$NODE_BIN" "$INSTALL_DIR" > "${CLI_FILE}.tmp"
+  chmod 0755 "${CLI_FILE}.tmp"
+  mv -f "${CLI_FILE}.tmp" "$CLI_FILE"
+fi
 
 if [ "$TEST_MODE" != '1' ]; then
   if [ "$REPAIR_EXECUTOR" -eq 0 ]; then
