@@ -355,6 +355,14 @@
         }, adminUnlock.querySelector('[data-result]'), adminUnlock);
         return;
       }
+      const adminRecovery = event.target.closest('form[data-action="admin-recovery"]');
+      if (adminRecovery) {
+        event.preventDefault();
+        triggerHomebaseAction('/api/directory/recovery', {
+          passphrase: adminRecovery.elements.passphrase.value,
+        }, adminRecovery.querySelector('[data-result]'), adminRecovery);
+        return;
+      }
       const adminLock = event.target.closest('form[data-action="admin-lock"]');
       if (adminLock) {
         event.preventDefault();
@@ -443,27 +451,52 @@
     `;
   }
 
+  // With the household directory on, what the lock means depends on the bootstrap state (D16): the
+  // passphrase opens setup and recovery, and only a passkey check opens active Home Base.
+  function adminLockStatus(adminStatus) {
+    const state = adminStatus.directoryState;
+    if (!adminStatus.configured) return { text: 'Not configured', ok: false };
+    if (state === 'active') return adminStatus.unlocked ? { text: 'Active · unlocked with a passkey check', ok: true } : { text: 'Active · locked: check with a passkey below', ok: false };
+    if (state === 'setup' || state === 'recovery') {
+      const what = state === 'setup' ? 'Setup' : 'Recovery';
+      return adminStatus.unlocked
+        ? { text: `${what} · unlocked with the passphrase: only passkeys and the directory can change until setup is finished`, ok: false }
+        : { text: `${what} · locked`, ok: false };
+    }
+    return adminStatus.unlocked ? { text: 'Configured + unlocked', ok: true } : { text: 'Configured but locked', ok: false };
+  }
+
   function renderAdminPage(adminStatus) {
+    const lock = adminLockStatus(adminStatus);
+    const active = adminStatus.directoryState === 'active';
     return `
       <div class="hb-stack">
         ${renderOverviewCard({
           title: 'Admin',
           description: 'Execution lock posture and destructive-action audit for Home Base.',
-          statusLine: `Status: ${adminStatus.configured ? (adminStatus.unlocked ? 'Configured + unlocked' : 'Configured but locked') : 'Not configured'}`,
+          statusLine: `Status: ${lock.text}`,
         })}
+        ${adminStatus.directoryState ? '<section class="hb-card" data-passkeys><p class="hb-muted" style="margin:0;">Loading passkeys…</p></section>' : ''}
         <section class="hb-card">
           <h2 style="margin-top:0;">Admin execution lock</h2>
           <p class="hb-muted" style="margin:0.4rem 0 0.8rem;">
-            Status: ${adminStatus.configured ? (adminStatus.unlocked ? '<span class="hb-ok">Configured + unlocked</span>' : '<span class="hb-warn">Configured but locked</span>') : '<span class="hb-warn">Not configured</span>'}
+            Status: <span class="${lock.ok ? 'hb-ok' : 'hb-warn'}">${window.HB.escapeHtml(lock.text)}</span>
           </p>
           ${adminStatus.unlocked && adminStatus.sessionExpiresAt ? `<p class="hb-muted" style="margin:0 0 0.8rem;">Session expires: ${window.HB.escapeHtml(window.HB.formatTimestamp(adminStatus.sessionExpiresAt))}</p>` : ''}
           ${adminStatus.configured ? `
             <div class="hb-grid hb-grid-2">
+              ${active ? `
+              <form class="hb-form-grid" data-action="admin-recovery">
+                <label class="hb-label">Passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="current-password"></label>
+                <button class="hb-btn" type="submit">Enter recovery</button>
+                <p class="hb-muted" style="margin:0;">Only if your passkeys are lost: recovery ends every session and passkey check, and allows only replacing and removing administrator passkeys.</p>
+                <p class="hb-muted" data-result style="margin:0;"></p>
+              </form>` : `
               <form class="hb-form-grid" data-action="admin-unlock">
                 <label class="hb-label">Passphrase <input class="hb-input" name="passphrase" type="password" autocomplete="current-password"></label>
                 <button class="hb-btn" type="submit">Unlock admin</button>
                 <p class="hb-muted" data-result style="margin:0;"></p>
-              </form>
+              </form>`}
               <form class="hb-form-grid" data-action="admin-lock">
                 <p class="hb-muted" style="margin:0;">Lock the current admin session before leaving shared terminals.</p>
                 <button class="hb-btn" type="submit">Lock admin</button>
@@ -829,6 +862,11 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
         loadDependencies();
       }
       if (page === 'network') loadIngress();
+      const passkeysNode = root.querySelector('[data-passkeys]');
+      if (passkeysNode && window.HBPasskeys) {
+        window.HBPasskeys.wire(passkeysNode);
+        window.HBPasskeys.mount(passkeysNode);
+      }
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');
         window.HB.getJson('/api/admin/audit?limit=10').then((payload) => {

@@ -31,9 +31,10 @@ function makeSessionToken() {
 }
 
 // Feature-10 SID-004. With the household directory on (directory = { caller(req), claim(caller),
-// isAdministrator(userId), state() }), the passphrase alone opens nothing: a session is opened by the
-// administrator's tailnet identity, recorded on it, and good only from that identity. Active Home Base has
-// no passphrase sessions; the passphrase opens recovery there (src/identity/directory-routes.js).
+// isAdministrator(userId), state(), passkeySession(req) }), the passphrase alone opens nothing: a session is
+// opened by the administrator's tailnet identity, recorded on it, and good only from that identity. Active
+// Home Base has no passphrase sessions; the passphrase opens recovery there (src/identity/directory-routes.js),
+// and admin is the administrator's passkey check on Home Base's hostname (SID-005, passkeySession).
 async function holdsSession(req, session, directory) {
   if (!directory) return true;
   if (!session.userId || directory.state() === 'active') return false;
@@ -66,6 +67,10 @@ async function getAdminStatus(req, stateStore, { directory = null } = {}) {
   const configured = Boolean(credential && credential.passphraseHash);
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const locked = { configured, unlocked: false, sessionExpiresAt: null, ...(directory ? { directoryState: directory.state() } : {}) };
+  if (directory && locked.directoryState === 'active') {
+    const passkey = configured ? await directory.passkeySession(req) : null;
+    return passkey ? { ...locked, unlocked: true, sessionExpiresAt: passkey.expiresAt, userId: passkey.userId, via: 'passkey' } : locked;
+  }
   if (!configured || !token) {
     return locked;
   }
@@ -77,7 +82,7 @@ async function getAdminStatus(req, stateStore, { directory = null } = {}) {
     return locked;
   }
   if (!(await holdsSession(req, session, directory))) return locked;
-  return { ...locked, unlocked: true, sessionExpiresAt: session.expiresAt, userId: session.userId || null };
+  return { ...locked, unlocked: true, sessionExpiresAt: session.expiresAt, userId: session.userId || null, via: 'passphrase' };
 }
 
 function setSessionCookie(res, token) {
@@ -146,6 +151,8 @@ async function lockAdmin(req, res, stateStore) {
     stateStore.deleteAdminSession(hashToken(token));
   }
   clearSessionCookie(res);
+  // Active Home Base's admin session is the passkey check's cookie (SID-005): locking ends it in this browser.
+  res.appendHeader('Set-Cookie', '__Host-sv_assurance=; Secure; HttpOnly; Path=/; SameSite=Strict; Max-Age=0');
   return { statusCode: 200, payload: { ok: true } };
 }
 

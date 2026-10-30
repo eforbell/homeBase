@@ -17,7 +17,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { DEFAULT_SNAPSHOT_PATH, parseSnapshot } = require('sovereign-auth');
+const { DEFAULT_SNAPSHOT_PATH, mergeCredentialUpdate, parseSnapshot } = require('sovereign-auth');
 const { createDirectoryStore } = require('./directory-store');
 
 const PUBLISH_MS = 30_000;
@@ -60,8 +60,18 @@ function toRow(member) {
   return { ...member, administrator: member.administrator ? 1 : 0, apps: member.apps == null ? null : JSON.stringify(member.apps) };
 }
 
+// A stored credential as sovereignAuth's ceremonies take it (only ones enrolled with a key can be used).
+function forCeremony(row) {
+  return {
+    id: row.credential_id, publicKey: row.public_key, counter: row.counter, transports: row.transports ? JSON.parse(row.transports) : [],
+    kind: row.kind, root: row.root, deviceType: row.device_type, backedUp: row.backed_up !== 0, label: row.label,
+  };
+}
+
 // catalog: [{ id, identity?: { defaultAccess: 'administrator' } }]. Operator apps default to administrators.
-function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, now = Date.now, log = () => {}, store = createDirectoryStore(dbPath) }) {
+// keys: the public keys that verify assurance cookies and action tokens ({ kid, public_key }), published in
+// the snapshot so apps can check them.
+function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, keys = [], now = Date.now, log = () => {}, store = createDirectoryStore(dbPath) }) {
   if (!household) throw new Error('the household directory needs HOME_BASE_INSTANCE');
   const file = path.resolve(snapshotFile);
   const appIds = new Set(catalog.map((app) => app.id));
@@ -95,8 +105,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
       generation: data.household.generation,
       written_at: iso(),
       global_epoch: data.household.global_epoch,
-      // Signing keys arrive with the passkey service (SID-005); until then nothing can be stepped up.
-      keys: [],
+      keys,
       members: data.members.map((member) => ({
         user_id: member.user_id,
         member_id: member.member_id,
@@ -257,15 +266,19 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     });
   }
 
-  // Records an enrolled credential (SID-005 verifies the ceremony). In setup and recovery only the
+  // Records an enrolled credential (the passkey service verified the ceremony and says what the
+  // authenticator proved: its key, flags and, for hardware, the root). In setup and recovery only the
   // administrator enrolls.
-  function addCredential({ userId, credentialId, kind, label = '' }) {
+  function addCredential({ userId, credentialId, kind, label = '', publicKey = null, counter = 0, transports = [], aaguid = null, deviceType = null, backedUp = true, root = null }) {
     if (!KINDS.has(kind)) refuse(400, 'INVALID', `Unknown credential kind ${kind}.`);
     return change((data) => {
       const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active') || refuse(404, 'NOT_FOUND', 'No such member.');
       if (data.household.state !== 'active' && !member.administrator) refuse(409, 'BOOTSTRAP_STATE', `Only the administrator enrolls while Home Base is in ${data.household.state}.`);
       if (data.credentials.some((credential) => credential.credential_id === credentialId)) refuse(409, 'CONFLICT', 'That credential is already enrolled.');
-      const record = { credential_id: credentialId, member_id: member.member_id, kind, label: String(label), orphaned: 0, created_at: iso(), revoked_at: null };
+      const record = {
+        credential_id: credentialId, member_id: member.member_id, kind, label: String(label), orphaned: 0, created_at: iso(), revoked_at: null,
+        public_key: publicKey, counter: Number(counter) || 0, transports: JSON.stringify(transports || []), aaguid, device_type: deviceType, backed_up: backedUp === false ? 0 : 1, root, last_used_at: null,
+      };
       return {
         change: { credentials: [record], deleteGrants: [member.member_id], audit: [{ action: 'credential-enroll', target: member.member_id, outcome: kind }] },
         value: record,
@@ -293,6 +306,64 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         value: { revoked: credentialId },
       };
     });
+  }
+
+  // A member removes one of their own credentials (the passkey service checked them recently). An
+  // administrator's credentials are administrator business while active (manage-admin-credential), and a
+  // member's last usable credential stays: without it they would need a new enrollment grant.
+  function revokeOwnCredential(userId, credentialId) {
+    return change((data) => {
+      const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active') || refuse(404, 'NOT_FOUND', 'No such member.');
+      if (member.administrator) refuse(409, 'ADMINISTRATOR_CREDENTIAL', 'The administrator\'s credentials are removed from the directory, not here.');
+      const own = credentialsOf(data, member.member_id);
+      const credential = own.find((entry) => entry.credential_id === credentialId) || refuse(404, 'NOT_FOUND', 'No such credential.');
+      if (own.length === 1) refuse(409, 'LAST_CREDENTIAL', 'That is your only passkey: add another one before removing it.');
+      return {
+        change: {
+          credentials: [{ ...credential, orphaned: credential.orphaned ? 1 : 0, revoked_at: iso() }],
+          members: [toRow({ ...member, epoch: member.epoch + 1, updated_at: iso() })],
+          audit: [{ action: 'credential-revoke', target: member.member_id, outcome: 'by the member' }],
+        },
+        value: { revoked: credentialId },
+      };
+    });
+  }
+
+  // A member's usable credentials, as the ceremonies take them.
+  function credentialsFor(userId) {
+    const data = load();
+    const member = data.members.find((entry) => entry.user_id === userId);
+    return member ? credentialsOf(data, member.member_id).filter((row) => row.public_key).map(forCeremony) : [];
+  }
+
+  // Stores what a verified assertion showed (sovereignAuth's update), merged so that the kind only falls and
+  // the counter only rises whichever finish lands first: change() is the compare-and-swap that retries.
+  function recordAssertion(userId, credentialId, update) {
+    return change((data) => {
+      const member = data.members.find((entry) => entry.user_id === userId) || refuse(404, 'NOT_FOUND', 'No such member.');
+      const row = credentialsOf(data, member.member_id).find((entry) => entry.credential_id === credentialId) || refuse(404, 'NOT_FOUND', 'No such credential.');
+      const merged = mergeCredentialUpdate(forCeremony(row), update);
+      const next = { ...row, kind: merged.kind, counter: merged.counter, device_type: merged.deviceType, backed_up: merged.backedUp ? 1 : 0, last_used_at: iso() };
+      const audit = merged.kind === row.kind ? [] : [{ action: 'credential-kind', target: member.member_id, outcome: `${row.kind} to ${merged.kind}` }];
+      return { change: { credentials: [next], audit }, value: forCeremony(next) };
+    });
+  }
+
+  // What a check is decided on, read fresh: the member (with the administrator flag), the household's state
+  // and global epoch. Null for anyone who isn't a member.
+  function standing(userId) {
+    const data = load();
+    const member = data.members.find((entry) => entry.user_id === userId);
+    if (!member) return null;
+    return {
+      member: { userId: member.user_id, memberId: member.member_id, login: member.login, name: member.name, role: member.role, status: member.status, epoch: member.epoch, administrator: member.administrator },
+      state: data.household.state,
+      globalEpoch: data.household.global_epoch,
+      credentials: data.credentials.filter((row) => row.member_id === member.member_id && usable(row)).map((row) => ({
+        credentialId: row.credential_id, label: row.label, kind: row.kind, createdAt: row.created_at, lastUsedAt: row.last_used_at, usable: Boolean(row.public_key),
+      })),
+      meetsAdministratorRule: member.administrator && meetsCredentialRule(credentialsOf(data, member.member_id)),
+    };
   }
 
   function validApps(apps) {
@@ -466,7 +537,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         apps: appsFor(member),
         appsDefault: member.apps == null,
         credentials: data.credentials.filter((credential) => credential.member_id === member.member_id).map((credential) => ({
-          credentialId: credential.credential_id, kind: credential.kind, label: credential.label, orphaned: credential.orphaned, createdAt: credential.created_at, revokedAt: credential.revoked_at,
+          credentialId: credential.credential_id, kind: credential.kind, label: credential.label, orphaned: credential.orphaned, createdAt: credential.created_at, lastUsedAt: credential.last_used_at || null, revokedAt: credential.revoked_at,
         })),
         grantExpiresAt: data.grants.find((grant) => grant.member_id === member.member_id)?.expires_at || null,
       })),
@@ -484,8 +555,8 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
 
   return {
-    activate, addCredential, addMember, claim, consumeGrant, describe, enterRecovery, init, isAdministrator, issueGrant,
-    lookup, memberStatus, publish, reset, revokeCredential, start, state, syncLogins, updateMember, snapshotFile: file,
+    activate, addCredential, addMember, claim, consumeGrant, credentialsFor, describe, enterRecovery, init, isAdministrator, issueGrant,
+    lookup, memberStatus, publish, recordAssertion, reset, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }
 

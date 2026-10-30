@@ -125,10 +125,36 @@
     `;
   }
 
+  // Feature-10 (D16): while Home Base is in setup or recovery, most of it refuses to act, so every page says
+  // so and where to finish. With the household directory off, /api/directory is a 404 and nothing shows.
+  async function showBootstrapBanner() {
+    let directory;
+    try {
+      directory = await window.HB.getJson('/api/directory');
+    } catch (_error) {
+      return;
+    }
+    const messages = {
+      setup: 'Home Base is in <strong>setup</strong>. Until the administrator registers two passkeys, one of them a hardware security key, and finishes setup, plans and setting changes are refused.',
+      recovery: 'Home Base is in <strong>recovery</strong>. Every session has ended; only replacing and removing administrator passkeys works until it is finished with a hardware key.',
+    };
+    const main = document.getElementById('app');
+    if (!messages[directory.state] || !main) return;
+    const banner = document.createElement('div');
+    banner.className = 'hb-card';
+    banner.setAttribute('role', 'status');
+    banner.style.cssText = 'border-color:var(--yellow);margin-bottom:1rem;';
+    banner.innerHTML = `<p style="margin:0;">${messages[directory.state]} ${activePage === 'admin' ? 'Use Passkeys below.' : '<a href="/admin">Finish on Admin</a>.'}</p>`;
+    main.prepend(banner);
+    // The page's own render replaces main's contents; keep the banner on top of whatever it draws.
+    new MutationObserver(() => { if (main.firstElementChild !== banner) main.prepend(banner); }).observe(main, { childList: true });
+  }
+
   document.body.appendChild(sidebar);
   document.body.appendChild(bottom);
   document.body.appendChild(moreSheet);
   refreshPreflightStatus();
+  showBootstrapBanner();
 
   function toggleMoreSheet() {
     moreSheet.classList.toggle('hidden');

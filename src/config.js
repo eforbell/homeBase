@@ -46,6 +46,8 @@ function loadConfig(env = process.env) {
     // The SID-003 preview's members file, which the directory replaced; only to say so at startup.
     identityPreviewRetired: Boolean(String(env.HOME_BASE_IDENTITY_PREVIEW || '').trim()),
     identitySnapshotFile: env.HOME_BASE_IDENTITY_SNAPSHOT || '/var/lib/sovereign-home/identity/snapshot.json',
+    // SID-005: the key that signs assurance cookies and action tokens; Home Base's alone, beside its database.
+    identitySigningKeyFile: env.HOME_BASE_IDENTITY_SIGNING_KEY || path.join(path.dirname(stateDbPath), 'identity-signing-key.pem'),
     identitySocket: env.HOME_BASE_IDENTITY_SOCKET === 'off' ? '' : (env.HOME_BASE_IDENTITY_SOCKET || '/run/homebase-identity/identity.sock'),
     // Feature-10 SID-001: this household's instance name (svc:<instance>-home, ...), unset until cutover.
     instance: String(env.HOME_BASE_INSTANCE || '').trim(),
