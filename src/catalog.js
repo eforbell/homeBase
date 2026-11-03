@@ -1056,6 +1056,91 @@ const catalog = [
       'Executor hosts only: the legacy-sudo backup planner always runs pg_dump.',
     ],
   },
+  {
+    id: 'remind-me',
+    repoKey: 'remindMe',
+    name: 'Remind Me',
+    icon: '⏰',
+    purpose: 'Schedule a reminder for one or more people; each gets a brrr push on the quarter hour.',
+    repository: {
+      url: 'https://github.com/eforbell/remindMe.git',
+      sshUrl: 'git@github.com:eforbell/remindMe.git',
+      defaultRef: 'main',
+    },
+    runtime: {
+      kind: 'node',
+      installCommand: 'npm ci --omit=dev',
+      startCommand: 'node server.js',
+      nodeEnv: 'production',
+    },
+    network: {
+      preferredMountPath: '/remind/',
+      preferredPort: 3013,
+      upstreamBind: '127.0.0.1',
+      health: {
+        type: 'http',
+        livenessPath: '/api/health',
+        readinessPath: '/api/health',
+      },
+      notes: [
+        'First-run household setup is handled in the browser when family_members is empty.',
+        'All fetch() calls and asset refs are relative so nginx subpath mounting at /remind/ works.',
+        '/api/health reports the dispatcher heartbeat (dispatcher.stale) as well as liveness.',
+      ],
+    },
+    database: {
+      engine: 'postgres',
+      bootstrap: 'migrations',
+      databaseName: 'remindme',
+      databaseUser: 'remindme',
+      migrationCommand: 'node db/migrate.js',
+      seedPolicy: 'app-onboarding',
+    },
+    onboarding: {
+      mode: 'browser',
+      setupPath: '/setup',
+      statusPath: '/api/bootstrap',
+      readyWhen: 'household_initialized',
+    },
+    service: {
+      name: 'remind-me',
+      description: 'Remind Me App',
+      envFile: '.env',
+    },
+    // Every minute, not every quarter hour: a failed push is retried within a minute. The web process also
+    // dispatches every minute; both claim rows, so running the two never double-sends.
+    timers: [
+      {
+        serviceName: 'remind-me-dispatch',
+        description: 'Remind Me dispatcher',
+        execStart: 'node scripts/dispatch.js',
+        timerName: 'remind-me-dispatch.timer',
+        onCalendar: '*:*:00',
+      },
+    ],
+    config: {
+      env: {
+        ...SOVEREIGN_FONT_ENV_TEMPLATE,
+        DATABASE_URL: '{{databaseUrl}}',
+        PORT: '{{port}}',
+        HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',
+        APP_PUBLIC_URL: '{{externalUrl}}',
+        // brrr fetches the icon from outside the tailnet, so it lives on the public site.
+        BRRR_ICON_URL: 'https://sovereignhome.org/images/apps/remind-me/icon-180.png',
+        DELIVERY_GIVE_UP_HOURS: '12',
+        RETENTION_DAYS: '180',
+      },
+      preserveExistingKeys: ['BRRR_ICON_URL', 'DELIVERY_GIVE_UP_HOURS', 'RETENTION_DAYS'],
+    },
+    storage: {
+      paths: [],
+    },
+    updateNotes: [
+      'Migrations also run at app start (advisory-locked); node db/migrate.js is safe to run any time.',
+      'remind-me-dispatch.timer runs every minute. Pushes keep retrying for DELIVERY_GIVE_UP_HOURS after they were due.',
+      'Per-person brrr secrets live in member_notification_channels and are set from the People page, not env.',
+    ],
+  },
 ];
 
 function getCatalog() {
