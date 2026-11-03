@@ -20,7 +20,7 @@ test('sensitive apps get their own service; everything else shares home', () => 
   const keys = Object.fromEntries(catalog.map((app) => [app.id, appServiceKey(app)]));
   assert.deepEqual(keys, {
     'family-pulse': 'pulse', 'family-help': 'home', 'family-dinner': 'home', 'family-plan': 'home', 'fast-to-eat': 'home',
-    'bitcoin-accounting': 'bitcoin-accounting', helm: 'helm', 'home-source': 'source', 'bug-base': 'home', 'home-ops': 'home', 'home-drop': 'home',
+    'bitcoin-accounting': 'bitcoin-accounting', helm: 'helm', 'home-source': 'source', 'bug-base': 'home', 'home-ops': 'home', 'home-drop': 'home', 'remind-me': 'home',
   });
   assert.deepEqual(ingressServices(SITE).map((service) => [service.name, service.socket, service.strict]), [
     ['svc:smith-home', '/run/sovereign-serve/home.sock', false],

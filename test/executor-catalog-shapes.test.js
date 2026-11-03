@@ -419,3 +419,29 @@ test('home-drop reinstall keeps the token, an operator link base and expiry, and
   assert.equal(rendered.PORT, '3012');
   assert.equal(rendered.SHARE_SANDBOX, 'off', 'an operator-added key is kept');
 });
+
+test('remind-me: an every-minute dispatcher timer, a postgres install, and operator-tunable delivery settings', () => {
+  const REMIND = getLayout('remind-me');
+  assert.equal(REMIND.timers.length, 1);
+  const timer = unit(REMIND, 'app-timer-v1', 'remind-me-dispatch.timer', null);
+  assert.match(timer, /^OnCalendar=\*:\*:00$/m);
+  assert.match(timer, /^Persistent=true$/m);
+  assert.match(timer, /^Unit=remind-me-dispatch\.service$/m);
+  assert.match(unit(REMIND, 'app-timer-service-v1', 'remind-me-dispatch.service'), /^ExecStart=\/usr\/bin\/node scripts\/dispatch\.js$/m);
+  assert.equal(REMIND.identity.own, false, 'not a sensitive app: shared user, home ingress');
+
+  const { plan } = compileAction({ action: 'install', appId: 'remind-me', ref: 'main', transport: 'https', site: SITE });
+  assert.ok(plan.operations.some((operation) => operation.type.startsWith('postgres.')));
+
+  const fresh = env.parseDotEnv(renderAppEnvFile({ layout: REMIND, password: 'test-password-1', site: SITE, fsImpl: createFakeFs() }));
+  assert.equal(fresh.APP_PUBLIC_URL, 'https://homebase.tailnet/remind/');
+  assert.equal(fresh.HOUSEHOLD_TIMEZONE, 'America/New_York');
+  assert.equal(fresh.BRRR_ICON_URL, 'https://sovereignhome.org/images/apps/remind-me/icon-180.png');
+  assert.equal(fresh.HOST, '127.0.0.1');
+  // An operator's own icon or delivery window survives a reinstall; derived values do not.
+  const { config } = getAppById('remind-me');
+  for (const key of ['BRRR_ICON_URL', 'DELIVERY_GIVE_UP_HOURS', 'RETENTION_DAYS']) {
+    assert.equal(env.shouldPreserveExistingEnvValue(key, config.env[key], config.preserveExistingKeys), true, key);
+  }
+  assert.equal(env.shouldPreserveExistingEnvValue('APP_PUBLIC_URL', config.env.APP_PUBLIC_URL, config.preserveExistingKeys), false);
+});
