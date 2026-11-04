@@ -121,7 +121,7 @@
         </form>
         <div class="hb-form-grid">
           ${status.credentials.length ? '<form data-passkey-action="check"><button class="hb-btn" type="submit">Check with a passkey</button></form>' : ''}
-          ${status.canActivate ? '<form data-passkey-action="activate"><button class="hb-btn hb-btn-primary" type="submit">Finish setup with my hardware key</button></form>' : ''}
+          ${status.canActivate ? '<form data-passkey-action="activate"><button class="hb-btn hb-btn-primary" type="submit">Finish ${esc(status.state)} with my hardware key</button></form>' : ''}
           <p class="hb-muted" data-check-result style="margin:0;"></p>
         </div>
       </div>
