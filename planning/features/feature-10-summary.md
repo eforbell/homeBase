@@ -169,7 +169,7 @@ Until the household directory exists, services may be published but no app can u
 - **Waiting on SID-005/006:** enrollment ceremonies call the directory's addCredential, activate and consumeGrant; active Home Base has no admin session until passkeys arrive, so directory edits there are tested but not reachable; administrator grants need the every-time hardware check.
 - **Next:** SID-005, the passkey service.
 
-**SID-005 slice 1, passkeys on Home Base's hostname (2026-11-04; SID-005 not yet passing).** The passkey service answers at `/_sovereign/auth/` on the Home Base service hostname only, and is the way out of setup.
+**SID-005 slice 1, passkeys on Home Base's hostname (2026-11-04).** The passkey service answers at `/_sovereign/auth/` on the Home Base service hostname only, and is the way out of setup.
 - **Hardware keys:** stored as hardware only when their attestation chains to a pinned vendor root; ticking "hardware" never makes a key one.
 - **Leaving setup:** two administrator passkeys, one of them hardware, then a fresh check with the hardware key moves Home Base to active and opens admin.
 - **Active:** a passkey check opens admin for 8 hours; the passphrase opens recovery only, which keeps every passkey and ends every check. Administrator passkeys change in recovery until slice 2.
@@ -193,6 +193,7 @@ Until the household directory exists, services may be published but no app can u
 - **Notices and audit:** opening recovery sends a health alert every time; each check and confirmation is audited with its session or token ID and signing key.
 - **Codex:** 3a two rounds, 3b four rounds; the last of each clean. **Proven on the test VM** with real devices (an app-hostname check, rotation, the recovery notice by push).
 - **Deferred:** redemption sockets, with the first app action that needs every-time. App wiring is SID-007.
+- **SID-005 passes** (slices 1-3 merged: #27, #28, #29). Next: SID-006, Home Base admin on tailnet identity and passkeys.
 
 ## Review
 
