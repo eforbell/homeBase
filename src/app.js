@@ -29,6 +29,7 @@ const { createDirectoryRoutes } = require('./identity/directory-routes');
 const { createPasskeys } = require('./identity/passkeys');
 const { createPasskeyRoutes } = require('./identity/passkey-routes');
 const { createKeyring } = require('./identity/signing-key');
+const { routeFor } = require('./route-matrix');
 const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
@@ -934,6 +935,17 @@ function createApp(config) {
     // The administrator flag is Home Base's own (D10), so it is shown here rather than read from the snapshot.
     return { caller: caller && { userId: caller.userId, login: caller.login, administrator: directory.isAdministrator(caller.userId) }, state: directory.state(), ingressHeaders, snapshot, apps };
   }
+  // With the directory on, an administrator route with session authority needs the unlocked administrator,
+  // before the handler reads the body or prompts for anything. Directory off (hosts not yet on Feature-10),
+  // each handler keeps the gate it always had: real runs and settings need the passphrase session, while
+  // reads, plans and dry runs stay open, until the host moves to the directory.
+  async function authorizeRoute(route, req) {
+    if (!directory || route.class !== 'administrator' || route.authority !== 'session') return null;
+    const status = await getAdminStatus(req, stateStore, adminOptions);
+    if (status.unlocked) return null;
+    if (!status.configured) return { statusCode: 409, payload: { error: 'Admin setup is required first.', code: 'ADMIN_SETUP_REQUIRED' } };
+    return { statusCode: 401, payload: { error: 'Unlock admin on the Admin page first.', code: 'ADMIN_UNLOCK_REQUIRED' } };
+  }
   const stoppers = [];
   const server = http.createServer(async (req, res) => {
     try {
@@ -950,6 +962,11 @@ function createApp(config) {
       // The admin session is Home Base's hostname's alone; the passkey routes also answer on sensitive ones.
       const site = passkeySite(req, state, effectiveConfig);
       req.homeBaseSite = site?.homeBase ? site : null;
+      // SID-006: the route matrix decides who may use this route before any handler runs. No entry, no route.
+      const route = routeFor(method, pathname) || routeFor(method, normalizedPath);
+      if (!route) return notFound(res);
+      const refused = await authorizeRoute(route, req);
+      if (refused) return sendJson(res, refused.statusCode, refused.payload);
 
       if (method === 'GET') {
         if (normalizedPath === '/') return servePublicPage(res, 'index.html');
