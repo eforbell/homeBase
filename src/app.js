@@ -28,11 +28,11 @@ const { createDirectory } = require('./identity/directory');
 const { createDirectoryRoutes } = require('./identity/directory-routes');
 const { createPasskeys } = require('./identity/passkeys');
 const { createPasskeyRoutes } = require('./identity/passkey-routes');
-const { loadSigningKey } = require('./identity/signing-key');
-const { createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
+const { createKeyring } = require('./identity/signing-key');
+const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
-const { appPublicBase, appServiceKey } = require('./operations/ingress-layout');
+const { HOMEBASE_SERVICE, appPublicBase, appServiceKey, ingressServices } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
   mergeHomeBaseConfig,
@@ -522,19 +522,23 @@ function createApp(config) {
     const addr = forwardedFor.includes(',') ? null : canonicalAddress(forwardedFor);
     return addr ? whoisCaller(addr) : null;
   }
-  // SID-005: the key that signs assurance cookies, published in the snapshot for apps to verify.
-  const signingKey = config.directory ? loadSigningKey(config.identitySigningKeyFile || path.join(path.dirname(config.stateDbPath), 'identity-signing-key.pem'), { create: true }) : null;
+  // SID-005: the keys that sign assurance cookies, published in the snapshot for apps to verify; a rotation
+  // keeps the previous ones published for one session window.
+  const signingKey = config.directory ? createKeyring(config.identitySigningKeyFile || path.join(path.dirname(config.stateDbPath), 'identity-signing-key.pem')) : null;
   const directory = config.directory ? createDirectory({
     dbPath: config.stateDbPath,
     catalog: getCatalog(),
     household: config.instance,
     snapshotFile: config.identitySnapshotFile,
-    keys: [signingKey.published],
+    keys: () => signingKey.published(),
     log: warn,
   }) : null;
   if (directory) directory.init();
   // passkeyRoots is for tests only (loadConfig never sets it): in use, the roots are sovereignAuth's pinned ones.
+  const passkeyRoots = config.passkeyRoots || ATTESTATION_ROOTS;
   const passkeys = directory ? createPasskeys({ directory, signingKey, household: config.instance, roots: config.passkeyRoots }) : null;
+  // A release that removed an attestation root demotes the keys that verified against it, now.
+  const stranded = directory ? directory.demoteUnpinned(new Set(passkeyRoots.map((root) => root.fingerprint))).stranded : [];
   // Active Home Base opens admin with the administrator's passkey check on its own hostname (open-admin, 8
   // hours), never the passphrase. req.homeBaseSite is set per request (passkeySite below).
   async function passkeySession(req) {
@@ -548,19 +552,21 @@ function createApp(config) {
   }
   const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state, passkeySession } : null;
   const adminOptions = directoryBinding ? { directory: directoryBinding } : {};
-  const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit }) : null;
+  const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit, notifyIdentity: (...args) => notifyIdentity(...args) }) : null;
   const passkeyRoutes = directory ? createPasskeyRoutes({
-    directory, passkeys, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
+    directory, passkeys, signingKey, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
     passphraseSession: (req) => passphraseSession(req, stateStore, adminOptions),
   }) : null;
-  // Passkeys run on Home Base's own service hostname only, so only once the host is cut over: the hostname
-  // the request came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain.
+  // Passkeys run on per-service hostnames only, so only once the host is cut over: the hostname the request
+  // came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain. homeBase: it is
+  // Home Base's own hostname, where everything runs; a sensitive app's hostname gets checks only (D21).
   function passkeySite(req, state, effectiveConfig) {
     const ingress = directory ? currentIngress(state.ingressJobs, effectiveConfig) : null;
     if (!ingress) return null;
-    const hostname = `${ingress.instance}-homebase.${ingress.domain}`;
-    const forwarded = typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].toLowerCase() : '';
-    return forwarded === hostname ? { hostname, rpID: ingress.domain } : null;
+    // nginx admits the hostname with or without the default port (ingress-layout.js); nothing else.
+    const forwarded = typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].toLowerCase().replace(/:443$/, '') : '';
+    const service = forwarded ? ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog }).find((entry) => entry.strict && entry.hostname === forwarded) : null;
+    return service ? { hostname: service.hostname, rpID: ingress.domain, homeBase: service.key === HOMEBASE_SERVICE } : null;
   }
   const ingressRoutes = createIngressRoutes({
     stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
@@ -617,6 +623,18 @@ function createApp(config) {
   const healthAlertNotifier = new HealthAlertNotifier({
     postJson: config.notificationsPostJson,
   });
+  // SID-005's notices through the health-alert channel, with a link to Admin at its current address. Sent in
+  // the background: a webhook that fails is logged, and never undoes or delays what happened.
+  function notifyIdentity(event, message, detail = {}) {
+    const effective = mergeHomeBaseConfig(config, stateStore.getHomeBaseConfig() || {});
+    const ingress = currentIngress(stateStore.loadState().ingressJobs, effective);
+    const adminUrl = ingress ? `https://${ingress.instance}-homebase.${ingress.domain}/admin` : undefined;
+    return healthAlertNotifier.notifyIdentityEvent({ event, message, adminUrl, detail }, effective)
+      .catch((error) => warn(`identity notice ${event} not sent: ${error.message}`));
+  }
+  if (stranded.length) {
+    notifyIdentity('administrator-hardware-key-lost', 'An attestation root was removed in a sovereignAuth update, so the administrator\'s hardware key no longer counts as one. Enter recovery on Admin and register a new hardware key.', { administrators: stranded.map((member) => member.login) });
+  }
   const appUpdateMonitor = new AppUpdateMonitor(stateStore, {
     serviceUser: initialEffectiveConfig.serviceUser || 'sovereign',
     gitTransport: initialEffectiveConfig.gitTransport || 'https',
@@ -929,7 +947,9 @@ function createApp(config) {
       const normalizedPath = normalizePathname(pathname);
       const unsafe = refuseUnsafeRequest(req, method);
       if (unsafe) return sendJson(res, unsafe.statusCode, unsafe.payload);
-      req.homeBaseSite = passkeySite(req, state, effectiveConfig);
+      // The admin session is Home Base's hostname's alone; the passkey routes also answer on sensitive ones.
+      const site = passkeySite(req, state, effectiveConfig);
+      req.homeBaseSite = site?.homeBase ? site : null;
 
       if (method === 'GET') {
         if (normalizedPath === '/') return servePublicPage(res, 'index.html');
@@ -963,7 +983,7 @@ function createApp(config) {
         if (!directory) return sendJson(res, 404, { error: 'The household directory is off (HOME_BASE_DIRECTORY).' });
         return sendJson(res, 200, await describeIdentity(req));
       }
-      if (passkeyRoutes && await passkeyRoutes({ req, res, method, pathname, here: req.homeBaseSite })) return;
+      if (passkeyRoutes && await passkeyRoutes({ req, res, method, pathname, here: site })) return;
       if (directoryRoutes && await directoryRoutes({ req, res, method, pathname })) return;
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });

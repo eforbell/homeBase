@@ -1,17 +1,23 @@
-// Feature-10 SID-005: the passkey service's routes, under /_sovereign/auth/ on Home Base's own hostname only
-// (D21). On any other hostname, the shared one included, they don't exist: a 404 before anything else, so no
-// ceremony starts there. Who may start which ceremony:
+// Feature-10 SID-005: the passkey service's routes, under /_sovereign/auth/ on Home Base's own hostname and,
+// for checks only, on each sensitive app's (D21). On any other hostname, the shared one included, they don't
+// exist: a 404 before anything else, so no ceremony starts there. A sensitive app's hostname serves
+// stepup.js, the check that sets that hostname's assurance cookie, and sign-out; enrollment, revocation,
+// status, activation and action tokens are Home Base's hostname's alone. Who may start which ceremony:
 //
 //   enroll    setup and recovery: the administrator, with the passphrase session their tailnet identity
 //             opened. Active: a member adding to their own passkeys after a check in the last 5 minutes
 //             (manage-own-credential), or a member with none, with the enrollment grant the administrator
 //             gave them; the administrator with an every-time hardware token (manage-admin-credential).
 //   check     any member with a passkey: sets the assurance cookie for this hostname. For the
-//             administrator in active Home Base this is the admin session (open-admin, 8 hours).
+//             administrator in active Home Base this is the admin session (open-admin, 8 hours). On a
+//             sensitive app's hostname, active Home Base only: the app's session (wire contract, section 8).
 //   activate  setup or recovery, the administrator with their passphrase session, using an attested
 //             hardware key: Home Base becomes active (D16) and the ceremony is also their first check.
 //   action    active: a fresh ceremony for one every-time action (wire contract, section 9), which answers
 //             with an action token bound to the app, the policy key, the target and the request digest.
+//
+// Rotating the signing key (signing-key/rotate) is the administrator's, in active Home Base, with an
+// every-time hardware token (privileged-plan: rotating secrets).
 //
 // A request that needs a check it doesn't have gets the wire contract's 401 step_up_required, which
 // stepup.js (served here) turns into a prompt and one retry of the identical request.
@@ -19,7 +25,7 @@
 // Every POST passes the mutation guard first (src/request-guard.js, before routing).
 const fs = require('fs');
 const path = require('path');
-const { requestDigest, policyFor } = require('sovereign-auth');
+const { POLICY, requestDigest, policyFor } = require('sovereign-auth');
 const { DirectoryError } = require('./directory');
 
 const PREFIX = '/_sovereign/auth/';
@@ -35,8 +41,18 @@ const REASONS = {
   cross_origin: 'it was answered from inside another page',
   not_verified: 'the passkey\'s answer did not verify',
 };
+// What the audit says about the passkey a ceremony used: its label and the start of its ID.
+const usedPasskey = (standing, credentialId) => {
+  const label = standing.credentials.find((credential) => credential.credentialId === credentialId)?.label;
+  return `${label ? `"${label}" ` : ''}(${String(credentialId).slice(0, 12)}…)`;
+};
 const ceremonyError = (what, reason) => `${what} was not accepted: ${REASONS[reason] || reason} (${reason}).`;
 const ADMIN_WINDOW_SECONDS = policyFor('open-admin').window_seconds;
+// A sensitive app's cookie lives as long as the longest app session; each app checks its own window from
+// auth_time (open-documents, 30 days; open-operator, 24 hours).
+const APP_WINDOW_SECONDS = Math.max(...Object.values(POLICY.policies).filter((policy) => policy.level === 'session' && !policy.administrator).map((policy) => policy.window_seconds));
+// What a sensitive app's hostname serves; anything else there is absent.
+const APP_ROUTES = new Set(['GET stepup.js', 'POST check/options', 'POST check/finish', 'POST sign-out']);
 // Home Base's own every-time actions name it as their app.
 const HOME_BASE_APP = 'homebase';
 const STEPUP_SCRIPT = fs.readFileSync(path.join(__dirname, 'browser', 'stepup.js'));
@@ -66,7 +82,8 @@ function actionRequest(action, standing) {
 }
 
 // passphraseSession(req): admin-auth's passphraseSession, bound to this Home Base.
-function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf }) {
+// signingKey: the keyring (signing-key.js createKeyring), for rotation and the administrator's status.
+function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf }) {
   const audit = (action, target, outcome, reason) => recordAdminAudit(stateStore, { action, target, outcome, reason });
 
   function refusal(res, statusCode, code, error, action, target) {
@@ -85,9 +102,9 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
 
   // The every-time hardware token for one administrator action on Home Base, bound to this request and
   // target: { consume } to use up with the change, or { every } to ask for one.
-  function adminAction(req, here, standing, target) {
+  function adminAction(req, here, standing, target, policyKey = 'manage-admin-credential') {
     const digest = requestDigest({ method: req.method, url: req.url, body: req.rawBody || Buffer.alloc(0), target });
-    const token = passkeys.actionToken(req.headers, { site: here, standing, app: HOME_BASE_APP, policyKey: 'manage-admin-credential', target, digest });
+    const token = passkeys.actionToken(req.headers, { site: here, standing, app: HOME_BASE_APP, policyKey, target, digest });
     return token.claims ? { consume: token.consume } : { every: { target, digest }, reason: token.reason };
   }
 
@@ -142,17 +159,19 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
       check: check.claims ? { credentialId: check.claims.cred, label: label(check.claims.cred), kind: check.claims.kind, checkedAt: new Date(check.claims.auth_time * 1000).toISOString(), ageSeconds: check.age } : null,
       administratorRuleMet: standing.meetsAdministratorRule,
       canActivate,
+      ...(standing.member.administrator && signingKey ? { signingKey: signingKey.describe() } : {}),
     };
   }
 
-  // here: { hostname, rpID } when the request came in on Home Base's own hostname, else null.
+  // here: { hostname, rpID, homeBase } when the request came in on Home Base's own hostname (homeBase) or a
+  // sensitive app's, else null.
   async function handle({ req, res, method, pathname, here }) {
     if (!pathname.startsWith(PREFIX)) return false;
-    if (!here) {
+    const route = `${method} ${pathname.slice(PREFIX.length)}`;
+    if (!here || (!here.homeBase && !APP_ROUTES.has(route))) {
       sendJson(res, 404, { error: 'Not found.' });
       return true;
     }
-    const route = `${method} ${pathname.slice(PREFIX.length)}`;
     if (route === 'GET stepup.js') {
       res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
       res.end(STEPUP_SCRIPT);
@@ -191,7 +210,7 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
           if (authority.consume) {
             const used = directory.consumeAction(authority.consume, { userId: standing.member.userId, ...expectOf(standing) });
             if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'passkey-enroll', target);
-            audit('passkey-enroll', target, 'hardware confirmed');
+            audit('passkey-enroll', target, `hardware confirmed · jti ${authority.consume.jti}`);
           }
           sendJson(res, 200, { options: await passkeys.enrollOptions({ site: here, standing, label: body.label, hardware: body.hardware === true, context }) });
           return true;
@@ -209,6 +228,11 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
 
       if (route === 'POST check/options' || route === 'POST check/finish') {
         const purpose = ['activate', 'action'].includes(body.purpose) ? body.purpose : 'step-up';
+        if (!here.homeBase) {
+          // An app's hostname: a check for that app's session, and only in active Home Base.
+          if (purpose !== 'step-up') return refusal(res, 400, 'INVALID', 'Only checks run on this hostname; Home Base does the rest on its own.');
+          if (standing.state !== 'active') return refusal(res, 409, 'BOOTSTRAP_STATE', `Home Base is in ${standing.state}: apps open again once it is active.`, 'passkey-step-up', target);
+        }
         let action = null;
         if (purpose === 'action') {
           action = actionRequest(body.action, standing);
@@ -227,7 +251,7 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
           return refusal(res, 409, 'BOOTSTRAP_STATE', `Home Base is in ${standing.state}: only the administrator uses passkeys here until it is finished.`, `passkey-${purpose}`, target);
         }
         const usable = standing.credentials.filter((credential) => credential.usable && (kind === 'any' || credential.kind === 'hardware'));
-        if (!usable.length) return refusal(res, 409, 'NO_CREDENTIAL', kind === 'hardware' ? 'You have no attested hardware key enrolled.' : 'You have no passkey enrolled yet.');
+        if (!usable.length) return refusal(res, 409, 'NO_CREDENTIAL', `${kind === 'hardware' ? 'You have no attested hardware key enrolled.' : 'You have no passkey enrolled yet.'}${here.homeBase ? '' : ' Register one on Home Base\'s Admin page.'}`);
         if (route === 'POST check/options') {
           sendJson(res, 200, { options: await passkeys.checkOptions({ site: here, standing, purpose, kind, ...bound }) });
           return true;
@@ -243,13 +267,15 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
         const expected = purpose === 'activate' ? { ...expectOf(standing), state: 'active' } : expectOf(standing);
         if (moved(expected, now)) return refusal(res, 409, 'STALE', 'Home Base changed while this was in progress; start again.', `passkey-${purpose}`, target);
         if (action) {
-          const token = passkeys.issueActionToken({ site: here, standing: now, app: HOME_BASE_APP, act: action.key, tgt: action.target, dig: action.digest, credentialId: result.credentialId, kind: result.kind });
-          audit('passkey-action', target, `confirmed ${action.key}`);
-          sendJson(res, 200, { ok: true, token });
+          const issued = passkeys.issueActionToken({ site: here, standing: now, app: HOME_BASE_APP, act: action.key, tgt: action.target, dig: action.digest, credentialId: result.credentialId, kind: result.kind });
+          audit('passkey-action', target, `confirmed ${action.key} ${action.target} with ${usedPasskey(now, result.credentialId)} · jti ${issued.jti} · key ${issued.kid}`);
+          sendJson(res, 200, { ok: true, token: issued.token });
           return true;
         }
-        res.setHeader('Set-Cookie', passkeys.issueCookie({ site: here, standing: now, credentialId: result.credentialId, kind: result.kind, windowSeconds: ADMIN_WINDOW_SECONDS }));
-        audit(`passkey-${purpose}`, target, purpose === 'activate' ? 'active' : `checked ${result.kind}`);
+        const issued = passkeys.issueCookie({ site: here, standing: now, credentialId: result.credentialId, kind: result.kind, windowSeconds: here.homeBase ? ADMIN_WINDOW_SECONDS : APP_WINDOW_SECONDS });
+        res.setHeader('Set-Cookie', issued.header);
+        // Enough to trace any cookie to this check, or show that no check issued it: its session ID and key.
+        audit(`passkey-${purpose}`, target, `${purpose === 'activate' ? 'active; ' : ''}checked ${result.kind} with ${usedPasskey(now, result.credentialId)} on ${here.hostname} · sid ${issued.sid} · key ${issued.kid}`);
         sendJson(res, 200, { ok: true, kind: result.kind, state: now.state });
         return true;
       }
@@ -271,6 +297,30 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
         // Revoking bumped the member's epoch, so this cookie is spent as well.
         res.setHeader('Set-Cookie', passkeys.clearCookieHeader());
         sendJson(res, 200, { ok: true });
+        return true;
+      }
+
+      if (route === 'POST signing-key/rotate') {
+        const exposed = body.exposed === true;
+        if (!standing.member.administrator) return refusal(res, 403, 'NOT_AUTHORIZED', 'Only the administrator rotates the signing key.', 'signing-key-rotate', 'homebase');
+        if (standing.state !== 'active') return refusal(res, 409, 'BOOTSTRAP_STATE', `Home Base is in ${standing.state}: rotate the signing key once it is active.`, 'signing-key-rotate', 'homebase');
+        const action = adminAction(req, here, standing, 'signing-key:rotate', 'privileged-plan');
+        if (!action.consume) return stepUp(res, 'privileged-plan', 'HARDWARE_CHECK_REQUIRED', 'Confirm with your hardware key to rotate the signing key.', action.every);
+        const used = directory.consumeAction(action.consume, { userId: standing.member.userId, ...expectOf(standing) });
+        if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'signing-key-rotate', 'homebase');
+        const rotated = signingKey.rotate({ exposed });
+        audit('signing-key-rotate', 'homebase', `${exposed ? `rotated to ${rotated.kid}; every earlier key dropped` : `rotated to ${rotated.kid}; ${rotated.retired.join(', ')} kept for the session window`} · jti ${action.consume.jti}`);
+        // An exposed key's cookies end now, this one included.
+        if (exposed) res.setHeader('Set-Cookie', passkeys.clearCookieHeader());
+        // The snapshot lists the new key now, not at the next scheduled publish. If it can't be written, the
+        // key has still changed, but apps don't know yet: they keep the last snapshot until it is 120 s old,
+        // then admit nobody until a publish succeeds (the scheduled ones keep trying).
+        if (!directory.publish()) {
+          audit('signing-key-rotate', 'homebase', 'snapshot not published');
+          sendJson(res, 503, { error: `The signing key is now ${rotated.kid}, but the snapshot apps read could not be written, so they don't know yet. Home Base keeps trying; check its log.`, code: 'SNAPSHOT_NOT_PUBLISHED', kid: rotated.kid, dropped: rotated.dropped });
+          return true;
+        }
+        sendJson(res, 200, { ok: true, kid: rotated.kid, dropped: rotated.dropped });
         return true;
       }
 

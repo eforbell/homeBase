@@ -169,7 +169,7 @@ Until the household directory exists, services may be published but no app can u
 - **Waiting on SID-005/006:** enrollment ceremonies call the directory's addCredential, activate and consumeGrant; active Home Base has no admin session until passkeys arrive, so directory edits there are tested but not reachable; administrator grants need the every-time hardware check.
 - **Next:** SID-005, the passkey service.
 
-**SID-005 slice 1, passkeys on Home Base's hostname (2026-11-04; SID-005 not yet passing).** The passkey service answers at `/_sovereign/auth/` on the Home Base service hostname only, and is the way out of setup.
+**SID-005 slice 1, passkeys on Home Base's hostname (2026-11-04).** The passkey service answers at `/_sovereign/auth/` on the Home Base service hostname only, and is the way out of setup.
 - **Hardware keys:** stored as hardware only when their attestation chains to a pinned vendor root; ticking "hardware" never makes a key one.
 - **Leaving setup:** two administrator passkeys, one of them hardware, then a fresh check with the hardware key moves Home Base to active and opens admin.
 - **Active:** a passkey check opens admin for 8 hours; the passphrase opens recovery only, which keeps every passkey and ends every check. Administrator passkeys change in recovery until slice 2.
@@ -185,7 +185,15 @@ Until the household directory exists, services may be published but no app can u
 - **Codex:** two rounds; one finding (a spent token could be taken again at its expiry), fixed with a regression test; the second clean.
 - **Proven on the test VM** with the administrator's real hardware key: adding and removing a passkey each asked for it, and removal ended the session.
 - **Deferred (agreed):** redemption sockets, so an app other than Home Base can spend a token. None needs every-time today; they ship with the first app action that does. Sensitive-app sign-in uses recent checks, which apps verify themselves.
-- **Next:** slice 3 (the sensitive hostnames, signing-key rotation, the root-removal and recovery notices).
+
+**SID-005 slice 3, the sensitive hostnames, key rotation and notices (2026-11-04).**
+- **Sensitive hostnames:** each sensitive app's hostname runs passkey checks only, setting its own host-only cookie (30 days; each app applies its own window). Everything else stays on Home Base's hostname (D21). Every challenge now binds the state and epochs it was issued at, so a recovery cancels ceremonies in flight.
+- **Signing key:** rotated from Admin with a hardware key; the previous key is kept for 30 days so no session ends, or dropped at once if it may have been exposed. Writes are durable and Home Base never signs with a key the snapshot no longer publishes.
+- **Removed roots:** keys whose attestation root is no longer pinned are demoted at the next start; a stranded administrator is told.
+- **Notices and audit:** opening recovery sends a health alert every time; each check and confirmation is audited with its session or token ID and signing key.
+- **Codex:** 3a two rounds, 3b four rounds; the last of each clean. **Proven on the test VM** with real devices (an app-hostname check, rotation, the recovery notice by push).
+- **Deferred:** redemption sockets, with the first app action that needs every-time. App wiring is SID-007.
+- **SID-005 passes** (slices 1-3 merged: #27, #28, #29). Next: SID-006, Home Base admin on tailnet identity and passkeys.
 
 ## Review
 

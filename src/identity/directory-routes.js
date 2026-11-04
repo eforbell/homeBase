@@ -4,7 +4,8 @@
 // directory is edited during setup, and active Home Base refuses every edit until passkeys arrive.
 const { PASSPHRASE_CHANGED, getAdminStatus, openSession, verifyPassphrase } = require('../admin-auth');
 
-function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parseBody, recordAdminAudit }) {
+// notifyIdentity(event, message, detail): the health-alert notice for what the administrator must hear about.
+function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parseBody, recordAdminAudit, notifyIdentity = () => {} }) {
   const fail = (res, error, audit) => {
     if (!error.statusCode) throw error;
     if (audit) recordAdminAudit(stateStore, { ...audit, outcome: 'refused', reason: error.code });
@@ -59,6 +60,9 @@ function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parse
       }
       try {
         const admin = directory.enterRecovery(caller, { passphraseHash: credential.passphraseHash });
+        // Every time: if the administrator didn't do this, someone with their tailnet account and the
+        // passphrase did, and this notice is how they find out.
+        notifyIdentity('identity-recovery-entered', `Recovery was opened on Home Base from ${admin.login}'s tailnet account with the admin passphrase. Every admin session has ended; passkeys are kept. If this wasn't you, change the passphrase and check that tailnet account.`, { login: admin.login });
         if (!openSession(res, stateStore, admin.user_id, credential.passphraseHash)) {
           sendJson(res, PASSPHRASE_CHANGED.statusCode, PASSPHRASE_CHANGED.payload);
         } else {
