@@ -840,10 +840,13 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
 
   async function load() {
     try {
+      // Admin renders from the lock state alone: it is where admin is unlocked, and where members manage their
+      // passkeys, so it loads nothing that needs the unlocked administrator (SID-006).
+      const adminReads = page !== 'admin';
       const [config, status, preflight, adminStatus, tailscale, publishPlan, verification] = await Promise.all([
-        window.HB.getJson('/api/homebase/config'),
-        window.HB.getJson('/api/homebase/status'),
-        window.HB.getJson('/api/preflight'),
+        adminReads ? window.HB.getJson('/api/homebase/config') : Promise.resolve(null),
+        adminReads ? window.HB.getJson('/api/homebase/status') : Promise.resolve(null),
+        adminReads ? window.HB.getJson('/api/preflight') : Promise.resolve(null),
         window.HB.getJson('/api/admin/status'),
         page === 'network'
           ? window.HB.getJson('/api/network/tailscale').catch((error) => ({ error: error.message }))
