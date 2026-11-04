@@ -137,6 +137,7 @@
       return;
     }
     node.innerHTML = render(status);
+    return status;
   }
 
   function wire(node) {

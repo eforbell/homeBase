@@ -474,7 +474,7 @@
         ${renderOverviewCard({
           title: 'Admin',
           description: 'Execution lock posture and destructive-action audit for Home Base.',
-          statusLine: `Status: ${lock.text}`,
+          statusLine: `<span data-admin-status>Status: ${lock.text}</span>`,
         })}
         ${adminStatus.directoryState ? '<section class="hb-card" data-passkeys><p class="hb-muted" style="margin:0;">Loading passkeys…</p></section>' : ''}
         <section class="hb-card">
@@ -865,7 +865,13 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
       const passkeysNode = root.querySelector('[data-passkeys]');
       if (passkeysNode && window.HBPasskeys) {
         window.HBPasskeys.wire(passkeysNode);
-        window.HBPasskeys.mount(passkeysNode);
+        window.HBPasskeys.mount(passkeysNode).then((status) => {
+          // A member's passkey check is for their own apps; admin stays the administrator's.
+          const line = root.querySelector('[data-admin-status]');
+          if (line && status && status.state === 'active' && !status.member.administrator) {
+            line.textContent = 'Status: Active · admin is for the household administrator; your passkeys below are for your own apps';
+          }
+        });
       }
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');
