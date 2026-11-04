@@ -166,6 +166,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         return value;
       }
       if (result.replayed) refuse(409, 'REPLAYED', 'That confirmation was already used; confirm again.');
+      if (result.expired) refuse(409, 'EXPIRED', 'That confirmation expired; confirm again.');
       if (result.passphraseChanged) refuse(409, 'PASSPHRASE_CHANGED', 'The admin passphrase changed while this request was in flight; unlock again.');
       if (result.integrity) refuse(409, 'CONFLICT', `That would give two members the same login or user ID (${result.integrity}).`);
     }
@@ -334,10 +335,10 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
 
   // Uses up an action token's jti for an app's redemption (D19), provided the member still stands as
-  // expect says ({ userId, state, globalEpoch, epoch }). Returns 'redeemed', 'replayed' or 'stale'.
+  // expect says ({ userId, state, globalEpoch, epoch }). Returns 'redeemed', 'replayed', 'expired' or 'stale'.
   function consumeAction(action, expect) {
     const result = store.consume({ action, expect, now: iso(), nowSeconds: Math.floor(now() / 1000) });
-    return result.ok ? 'redeemed' : result.replayed ? 'replayed' : 'stale';
+    return result.ok ? 'redeemed' : result.replayed ? 'replayed' : result.expired ? 'expired' : 'stale';
   }
 
   // A member removes one of their own credentials (the passkey service checked them recently). An

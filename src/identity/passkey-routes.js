@@ -41,6 +41,12 @@ const ADMIN_WINDOW_SECONDS = policyFor('open-admin').window_seconds;
 const HOME_BASE_APP = 'homebase';
 const STEPUP_SCRIPT = fs.readFileSync(path.join(__dirname, 'browser', 'stepup.js'));
 const TARGET_MAX = 512;
+// Why a confirmation could not be used (directory.consumeAction's answers).
+const USED = {
+  replayed: ['REPLAYED', 'That confirmation was already used; confirm again.'],
+  expired: ['EXPIRED', 'That confirmation expired; confirm again.'],
+  stale: ['STALE', 'Home Base changed while this was in progress; start again.'],
+};
 
 // An action ceremony's request ({ policy, target, digest }) as the challenge will bind it, or { error }.
 function actionRequest(action, standing) {
@@ -184,7 +190,7 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
         if (!finishing) {
           if (authority.consume) {
             const used = directory.consumeAction(authority.consume, { userId: standing.member.userId, ...expectOf(standing) });
-            if (used !== 'redeemed') return refusal(res, 409, used === 'replayed' ? 'REPLAYED' : 'STALE', used === 'replayed' ? 'That confirmation was already used; confirm again.' : 'Home Base changed while this was in progress; start again.', 'passkey-enroll', target);
+            if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'passkey-enroll', target);
             audit('passkey-enroll', target, 'hardware confirmed');
           }
           sendJson(res, 200, { options: await passkeys.enrollOptions({ site: here, standing, label: body.label, hardware: body.hardware === true, context }) });

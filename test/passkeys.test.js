@@ -567,3 +567,19 @@ test('an action token lives 60 seconds and binds every claim it names', async (t
   clock += 1_000;
   assert.equal(passkeys.actionToken(headers, want).reason, 'expired');
 });
+
+test('a spent action token is refused at its expiry, not taken again once its record could be dropped', async (t) => {
+  const { app, root } = await activeHousehold(t);
+  const { createDirectoryStore } = require('../src/identity/directory-store');
+  const store = createDirectoryStore(path.join(root, 'state.sqlite3'));
+  const member = app.directory.describe().members[0];
+  const standing = app.directory.standing(member.userId);
+  const expect = { userId: member.userId, state: standing.state, globalEpoch: standing.globalEpoch, epoch: standing.member.epoch };
+  const exp = Math.floor(Date.now() / 1000) + 60;
+  const at = (nowSeconds, jti = 'spent') => store.consume({ action: { jti, app: 'homebase', expiresAt: exp }, expect, now: new Date().toISOString(), nowSeconds });
+  assert.deepEqual(at(exp - 10), { ok: true });
+  assert.deepEqual(at(exp - 1), { ok: false, replayed: true });
+  assert.deepEqual(at(exp), { ok: false, expired: true }, 'at its expiry second it is refused, not re-taken');
+  assert.deepEqual(at(exp + 5, 'never-used'), { ok: false, expired: true }, 'nor is any token past its expiry');
+  assert.deepEqual(at(exp - 1), { ok: false, replayed: true }, 'and the spent record is still there');
+});

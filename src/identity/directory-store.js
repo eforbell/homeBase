@@ -101,16 +101,20 @@ def emit(value):
     sys.stdout.write(json.dumps(value))
 
 # An action token's jti is used once (D19), across processes and restarts: taken inside the caller's
-# write transaction. Expired ones go first; their tokens no longer verify anyway.
+# write transaction. A token at or past its expiry is refused here, whatever its verification saw a moment
+# ago, and only then are spent records of expired tokens dropped: no token they name can be taken again.
+# Returns "taken", "replayed" or "expired".
 def take_action(action, now_seconds, now):
-    conn.execute("DELETE FROM identity_action_tokens WHERE expires_at <= ?", (now_seconds,))
+    if int(action["expiresAt"]) <= now_seconds:
+        return "expired"
     if conn.execute("SELECT 1 FROM identity_action_tokens WHERE jti = ?", (action["jti"],)).fetchone():
-        return False
+        return "replayed"
+    conn.execute("DELETE FROM identity_action_tokens WHERE expires_at <= ?", (now_seconds,))
     conn.execute(
         "INSERT INTO identity_action_tokens (jti, app, expires_at, consumed_at) VALUES (?, ?, ?, ?)",
         (action["jti"], action["app"], int(action["expiresAt"]), now),
     )
-    return True
+    return "taken"
 
 if op == "init":
     conn.executescript(SCHEMA)
@@ -146,8 +150,10 @@ elif op == "commit":
             stored = conn.execute("SELECT passphrase_hash FROM homebase_admin_credentials WHERE id = 1").fetchone()
             if stored is None or stored["passphrase_hash"] != payload["expectPassphraseHash"]:
                 return {"ok": False, "passphraseChanged": True}
-        if "consumeAction" in payload and not take_action(payload["consumeAction"], payload["nowSeconds"], payload["now"]):
-            return {"ok": False, "replayed": True}
+        if "consumeAction" in payload:
+            taken = take_action(payload["consumeAction"], payload["nowSeconds"], payload["now"])
+            if taken != "taken":
+                return {"ok": False, taken: True}
         generation = payload["expectGeneration"] + 1
         household = payload.get("household") or {}
         for name in ("state", "global_epoch", "pending_administrator_login"):
@@ -200,10 +206,9 @@ elif op == "consume":
         if (household is None or member is None or household["state"] != expect["state"] or household["global_epoch"] != expect["globalEpoch"]
                 or member["status"] != "active" or member["epoch"] != expect["epoch"]):
             result = {"ok": False, "stale": True}
-        elif not take_action(payload["action"], payload["nowSeconds"], payload["now"]):
-            result = {"ok": False, "replayed": True}
         else:
-            result = {"ok": True}
+            taken = take_action(payload["action"], payload["nowSeconds"], payload["now"])
+            result = {"ok": True} if taken == "taken" else {"ok": False, taken: True}
     except BaseException:
         conn.execute("ROLLBACK")
         raise
