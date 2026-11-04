@@ -90,8 +90,10 @@
   function nextStep(status) {
     const admin = status.member.administrator;
     if (status.state === 'active') {
+      if (admin && !status.administratorRuleMet) return 'Your passkeys no longer include two with an attested hardware key (an update can stop trusting a maker\'s keys). Enter recovery with the passphrase and register a new hardware key.';
       if (!status.credentials.length) return 'You have no passkey yet: enter the enrollment code the administrator gave you, then register one.';
-      return status.check ? '' : 'Check with one of your passkeys to open your session on this hostname.';
+      // The check button beside the status says the rest.
+      return '';
     }
     if (!admin) return `Home Base is in ${status.state}: only the administrator registers passkeys now.`;
     if (!status.administratorRuleMet) {
@@ -99,6 +101,21 @@
       return `To finish ${status.state}, register at least two passkeys${hardware ? '' : ', including a hardware security key (tick "hardware key")'}. Then finish with the hardware key.`;
     }
     return status.canActivate ? 'Ready: finish with your hardware key to make Home Base active.' : 'Unlock with the passphrase above to finish.';
+  }
+
+  // The administrator's signing key line: which key signs, and the earlier ones still accepted.
+  function signingKeyBlock(status) {
+    const key = status.signingKey;
+    if (!key || status.state !== 'active') return '';
+    const previous = key.previous.length ? ` · ${key.previous.length} earlier key${key.previous.length === 1 ? '' : 's'} still accepted for 30 days after rotation` : '';
+    return `
+      <form class="hb-form-grid" data-passkey-action="rotate" style="margin-top:1rem;">
+        <h3 style="margin:0;">Signing key</h3>
+        <p class="hb-muted" style="margin:0;">${esc(key.kid)} · made ${esc(ago(key.createdAt))}${esc(previous)}. It signs every passkey check and confirmation; apps verify them with it.</p>
+        <label class="hb-label hb-check-row"><input type="checkbox" name="exposed"> It may have been exposed: stop accepting every earlier key now (everyone checks in again)</label>
+        <button class="hb-btn" type="submit">Rotate the signing key</button>
+        <p class="hb-muted" data-result style="margin:0;"></p>
+      </form>`;
   }
 
   function render(status) {
@@ -114,12 +131,27 @@
       ? `<span class="hb-ok">Checked ${esc(ago(status.check.checkedAt))}</span> with ${esc(status.check.label || 'a removed passkey')} (${esc(KIND_LABELS[status.check.kind] || status.check.kind)})`
       : '<span class="hb-warn">Not checked on this hostname</span>';
     const needsGrant = status.state === 'active' && !status.member.administrator && !status.credentials.length;
+    // The check beside the line it changes. For the administrator in active Home Base it is what unlocks
+    // admin; for a member it only proves who they are (to the household's apps), never admin.
+    const unlocks = status.member.administrator && status.state === 'active';
+    const checkLabel = status.check ? 'Check again' : unlocks ? 'Unlock admin with a passkey' : 'Confirm it\'s me with a passkey';
+    const checkButton = status.credentials.length && (status.state === 'active' || status.member.administrator)
+      ? `<form data-passkey-action="check" style="margin:0;"><button class="hb-btn${status.check ? '' : ' hb-btn-primary'}" type="submit">${checkLabel}</button></form>`
+      : '';
+    const memberHint = !status.member.administrator && status.credentials.length
+      ? '<p class="hb-muted" style="margin:0 0 0.8rem;">A check proves it\'s you to the household\'s apps. It doesn\'t open admin: that is the administrator\'s.</p>'
+      : '';
     const step = nextStep(status);
     return `
       <h2 style="margin-top:0;">Passkeys</h2>
       <p class="hb-muted" style="margin:0 0 0.6rem;">${esc(status.member.name || status.member.login)} · ${esc(status.member.role)}${status.member.administrator ? ' · administrator' : ''} · Home Base is <strong>${esc(status.state)}</strong></p>
-      <p style="margin:0 0 0.6rem;">${checkLine}</p>
+      <div class="hb-row" style="flex-wrap:wrap;gap:0.6rem;align-items:center;margin:0 0 0.6rem;">
+        <span>${checkLine}</span>
+        ${checkButton}
+      </div>
+      <p class="hb-muted" data-check-result style="margin:0 0 0.6rem;"></p>
       ${step ? `<p class="hb-warn" style="margin:0 0 0.8rem;">${esc(step)}</p>` : ''}
+      ${memberHint}
       ${status.member.administrator && status.state === 'active' ? '<p class="hb-muted" style="margin:0 0 0.8rem;">Adding or removing your passkeys asks for your hardware key every time. Removing one ends your checks everywhere, so check again afterwards.</p>' : ''}
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0 0 0.9rem;">${rows}</ul>
       <div class="hb-grid hb-grid-2">
@@ -131,11 +163,10 @@
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>
         <div class="hb-form-grid">
-          ${status.credentials.length ? '<form data-passkey-action="check"><button class="hb-btn" type="submit">Check with a passkey</button></form>' : ''}
           ${status.canActivate ? `<form data-passkey-action="activate"><button class="hb-btn hb-btn-primary" type="submit">Finish ${esc(status.state)} with my hardware key</button></form>` : ''}
-          <p class="hb-muted" data-check-result style="margin:0;"></p>
         </div>
       </div>
+      ${signingKeyBlock(status)}
     `;
   }
 
@@ -161,7 +192,11 @@
       const result = form.querySelector('[data-result]') || node.querySelector('[data-check-result]');
       result.textContent = 'Waiting for your passkey…';
       try {
-        if (action === 'enroll') {
+        if (action === 'rotate') {
+          const done = await guardedPost(`${AUTH}signing-key/rotate`, { exposed: form.elements.exposed.checked });
+          result.textContent = done.dropped ? `Rotated to ${done.kid}; earlier keys dropped. Check in again.` : `Rotated to ${done.kid}.`;
+          setTimeout(reload, 1500);
+        } else if (action === 'enroll') {
           const done = await enroll({ label: form.elements.label.value, hardware: form.elements.hardware.checked, grant: form.elements.grant ? form.elements.grant.value : undefined });
           result.textContent = done.askedForHardware && done.kind !== 'hardware' ? `Registered, but as a ${KIND_LABELS[done.kind]}: it did not prove it is a hardware key.` : 'Registered.';
           setTimeout(reload, 1200);

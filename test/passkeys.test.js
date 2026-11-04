@@ -7,16 +7,18 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { parseSnapshot, requestDigest, verifyToken } = require('sovereign-auth');
+const { ATTESTATION_ROOTS, createAssurance, createIdentity, parseSnapshot, requestDigest, verifyToken } = require('sovereign-auth');
 const { createApp } = require('../src/app');
 const { createPasskeys } = require('../src/identity/passkeys');
-const { loadSigningKey } = require('../src/identity/signing-key');
+const { RETIRED_KEEP_SECONDS, createKeyring, loadSigningKey, publishedKeys } = require('../src/identity/signing-key');
 const { SqliteStateStore } = require('../src/state/sqlite-store');
 const { attestationFixture, createAuthenticator } = require('./support/authenticator');
 
 const DOMAIN = 'example-tailnet.ts.net';
 const HOMEBASE = `smith-homebase.${DOMAIN}`;
 const ORIGIN = `https://${HOMEBASE}`;
+// A sensitive app's own hostname (family-pulse, catalog network.dedicatedHostname).
+const PULSE = `smith-pulse.${DOMAIN}`;
 const PEERS = {
   '100.64.0.1': { Node: { Tags: [] }, UserProfile: { ID: 1001, LoginName: 'parent@example.com', DisplayName: 'Parent' } },
   '100.64.0.2': { Node: { Tags: [] }, UserProfile: { ID: 1002, LoginName: 'kid@example.com', DisplayName: 'Kid' } },
@@ -28,14 +30,18 @@ const PASSPHRASE = 'correct horse battery';
 // whois: the stub's answer for an address, or a test's own in its place (one that pauses, say).
 const PEER_WHOIS = async (addr) => { if (!PEERS[addr]) throw new Error('no such peer'); return PEERS[addr]; };
 
-async function startServer(t, { cutOver = true, whois = PEER_WHOIS } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-passkeys-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+// again: the root of a server this test already ran, to start Home Base again on its files. roots: the
+// attestation roots it pins (the test root unless given). alerts: an array that collects health alerts.
+async function startServer(t, { cutOver = true, whois = PEER_WHOIS, again = null, roots = attestationFixture().roots, alerts = null } = {}) {
+  const root = again || fs.mkdtempSync(path.join(os.tmpdir(), 'hb-passkeys-'));
   const identityDir = path.join(root, 'identity');
-  fs.mkdirSync(identityDir, { mode: 0o755 });
-  fs.chmodSync(identityDir, 0o755);
   const stateDbPath = path.join(root, 'state.sqlite3');
-  if (cutOver) {
+  if (!again) {
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.mkdirSync(identityDir, { mode: 0o755 });
+    fs.chmodSync(identityDir, 0o755);
+  }
+  if (cutOver && !again) {
     const store = new SqliteStateStore(stateDbPath);
     store.init();
     const { id } = store.createJob({ kind: 'ingress-cutover', target: 'smith', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
@@ -54,14 +60,17 @@ async function startServer(t, { cutOver = true, whois = PEER_WHOIS } = {}) {
     instance: 'smith',
     defaultDomain: DOMAIN,
     directory: true,
-    passkeyRoots: attestationFixture().roots,
+    passkeyRoots: roots,
+    ...(alerts ? { healthAlertsEnabled: true, healthAlertsWebhookUrl: 'https://alerts.example/hook', notificationsPostJson: async (url, body) => { alerts.push(body); } } : {}),
     identityWhois: whois,
     identityStatus: async () => ({ Self: { TailscaleIPs: ['100.64.0.100'] } }),
   });
   await new Promise((resolve) => app.listen(resolve));
-  t.after(() => new Promise((resolve) => { app.stop(); app.server.close(resolve); }));
+  let stopped = false;
+  const stop = () => new Promise((resolve) => { if (stopped) return resolve(); stopped = true; app.stop(); app.server.close(resolve); });
+  t.after(stop);
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  return { app, base, root, snapshot: () => JSON.parse(fs.readFileSync(path.join(identityDir, 'snapshot.json'), 'utf8')) };
+  return { app, base, root, stop, snapshot: () => JSON.parse(fs.readFileSync(path.join(identityDir, 'snapshot.json'), 'utf8')) };
 }
 
 // A browser on one tailnet device: its cookies by name, and the hostname it asked for.
@@ -118,8 +127,8 @@ function browser(base, addr, { host = HOMEBASE } = {}) {
 }
 
 // Setup through activation: the founder, a synced passkey and an attested hardware key.
-async function activeHousehold(t) {
-  const server = await startServer(t);
+async function activeHousehold(t, options = {}) {
+  const server = await startServer(t, options);
   const parent = browser(server.base, PARENT);
   assert.equal((await parent.post('/api/admin/setup', { passphrase: PASSPHRASE })).status, 200);
   const phone = createAuthenticator({ kind: 'synced' });
@@ -131,12 +140,14 @@ async function activeHousehold(t) {
   return { ...server, parent, phone, yubikey };
 }
 
-test('the passkey routes exist only on Home Base\'s own hostname, once the host is cut over', async (t) => {
+test('the passkey routes exist only on per-service hostnames, once the host is cut over', async (t) => {
   const { base } = await startServer(t);
   const shared = browser(base, PARENT, { host: `smith-home.${DOMAIN}` });
   assert.equal((await shared.get('/_sovereign/auth/status')).status, 404);
   assert.equal((await shared.post('/_sovereign/auth/enroll/options', { label: 'x' })).status, 404, 'refused before a ceremony starts');
-  assert.equal((await browser(base, PARENT, { host: `smith-helm.${DOMAIN}` }).get('/_sovereign/auth/status')).status, 404);
+  assert.equal((await shared.post('/_sovereign/auth/check/options', {})).status, 404, 'no checks on the shared hostname either');
+  assert.equal((await browser(base, PARENT, { host: `smith-helm.${DOMAIN}` }).get('/_sovereign/auth/status')).status, 404, 'a sensitive app\'s hostname has checks only');
+  assert.equal((await browser(base, PARENT, { host: `smith-nosuchapp.${DOMAIN}` }).post('/_sovereign/auth/check/options', {})).status, 404, 'only hostnames this host serves');
   assert.equal((await browser(base, PARENT).get('/_sovereign/auth/status')).status, 403, 'on Home Base\'s hostname: there, but only for members');
 
   const { base: tcpBase } = await startServer(t, { cutOver: false });
@@ -529,14 +540,137 @@ test('an action token\'s jti is used once across processes and restarts, and onl
   assert.equal(app.directory.consumeAction(action('fresh'), expect), 'redeemed', 'and the stale attempt did not use it up');
 });
 
-test('stepup.js is served on Home Base\'s hostname, as a script', async (t) => {
+test('stepup.js is served on Home Base\'s hostname and each sensitive app\'s, as a script', async (t) => {
   const { base } = await startServer(t);
   const res = await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': HOMEBASE } });
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-type'), /^text\/javascript/);
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
   assert.match(await res.text(), /window\.SovereignStepUp/);
+  assert.equal((await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': PULSE } })).status, 200, 'and on a sensitive app\'s, for its pages');
   assert.equal((await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': `smith-home.${DOMAIN}` } })).status, 404);
+});
+
+// What a sensitive app does with the cookie (sovereignAuth's createAssurance), reading Home Base's snapshot.
+function appAssurance(snapshot, { appId = 'family-pulse', hostname = PULSE } = {}) {
+  const reader = { current: () => ({ ok: true, snapshot: parseSnapshot(snapshot()) }) };
+  const identity = createIdentity({ appId, mode: 'tailnet', listen: 'unix:/run/test.sock', reader });
+  const assurance = createAssurance({ appId, hostname, identity, redeem: async () => ({ redeemed: false, reason: 'unused' }) });
+  return (key, member, cookies) => assurance.check(key, {
+    method: 'GET',
+    url: '/pulse/',
+    headers: { 'x-sovereign-user-id': member.user_id, 'x-sovereign-login': member.login, cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') },
+  });
+}
+
+test('a sensitive app\'s hostname runs checks only: its own cookie, which that app accepts and no other hostname does', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  const origin = `https://${PULSE}`;
+  for (const [method, url] of [['GET', 'status'], ['POST', 'enroll/options'], ['POST', 'enroll/finish'], ['POST', 'credentials/revoke']]) {
+    assert.equal((method === 'GET' ? await pulse.get(`/_sovereign/auth/${url}`) : await pulse.post(`/_sovereign/auth/${url}`, { label: 'x' })).status, 404, `${method} ${url} is Home Base's hostname's alone (D21)`);
+  }
+  assert.equal((await pulse.post('/_sovereign/auth/check/options', { purpose: 'activate' })).body.code, 'INVALID');
+  const digest = requestDigest({ method: 'POST', url: '/x', body: '{}', target: 'enroll:m' });
+  assert.equal((await pulse.post('/_sovereign/auth/check/options', { purpose: 'action', action: { policy: 'manage-admin-credential', target: 'enroll:m', digest } })).body.code, 'INVALID', 'no action tokens here');
+
+  const member = snapshot().members.find((entry) => entry.login === 'parent@example.com');
+  const check = appAssurance(snapshot);
+  assert.equal((await check('open-documents', member, pulse.cookies)).body.error, 'step_up_required', 'no check yet');
+  assert.equal((await pulse.check(yubikey, { origin: `https://${HOMEBASE}` })).status, 400, 'a ceremony answered for another hostname is refused');
+  const checked = await pulse.check(phone, { origin });
+  assert.equal(checked.status, 200, JSON.stringify(checked.body));
+  assert.equal(checked.body.kind, 'synced');
+  const cookie = checked.setCookie.find((line) => line.startsWith('__Host-sv_assurance='));
+  assert.match(cookie, /Max-Age=2592000/, 'as long as the longest app session (open-documents, 30 days)');
+  assert.match(cookie, /SameSite=Strict/);
+  assert.doesNotMatch(cookie, /Domain=/i, 'host-only');
+  const opened = await check('open-documents', member, pulse.cookies);
+  assert.equal(opened.allowed, true, JSON.stringify(opened.body));
+  assert.equal(opened.member.userId, member.user_id);
+  assert.equal((await check('export-data', member, pulse.cookies)).allowed, true, 'and it is a recent check, for 5 minutes');
+  assert.equal((await appAssurance(snapshot, { appId: 'helm', hostname: `smith-helm.${DOMAIN}` })('open-operator', member, pulse.cookies)).body.error, 'step_up_required', 'another app\'s hostname refuses it (aud)');
+
+  // It opens nothing on Home Base: the admin session is Home Base's hostname's own.
+  const atHomeBase = browser(base, PARENT);
+  for (const [name, value] of pulse.cookies) atHomeBase.cookies.set(name, value);
+  assert.equal((await atHomeBase.get('/api/admin/status')).body.unlocked, false);
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, true, 'the administrator\'s own Home Base check still stands');
+
+  // Signing out on the app's hostname ends that cookie only.
+  const out = await pulse.post('/_sovereign/auth/sign-out');
+  assert.equal(out.status, 200);
+  assert.equal((await check('open-documents', member, pulse.cookies)).body.error, 'step_up_required');
+});
+
+test('a check answered before a recovery is refused after it, even once Home Base is active again', async (t) => {
+  const { base, parent, phone, yubikey } = await activeHousehold(t);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  // Both answered, neither finished: on the app's hostname and on Home Base's (the admin session).
+  const appStarted = await pulse.post('/_sovereign/auth/check/options', {});
+  const appAnswer = phone.authenticate(appStarted.body.options, { origin: `https://${PULSE}` });
+  const adminStarted = await parent.post('/_sovereign/auth/check/options', {});
+  const adminAnswer = phone.authenticate(adminStarted.body.options, { origin: ORIGIN });
+
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  assert.equal((await parent.check(yubikey, { purpose: 'activate' })).status, 200, 'active again');
+  parent.cookies.delete('__Host-sv_assurance');
+
+  const late = await pulse.post('/_sovereign/auth/check/finish', { response: appAnswer });
+  assert.equal(late.status, 400);
+  assert.match(late.body.error, /wrong_action/);
+  assert.equal(late.setCookie.length, 0, 'no cookie');
+  const lateAdmin = await parent.post('/_sovereign/auth/check/finish', { response: adminAnswer });
+  assert.match(lateAdmin.body.error, /wrong_action/);
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, false, 'no admin session from it');
+});
+
+test('a check runs only on the hostname it started on: no swaps between an app\'s and Home Base\'s', async (t) => {
+  const { base, parent, phone } = await activeHousehold(t);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  parent.cookies.delete('__Host-sv_assurance');
+  const swaps = [
+    [pulse, parent, `https://${PULSE}`],
+    [pulse, parent, ORIGIN],
+    [parent, pulse, ORIGIN],
+    [parent, pulse, `https://${PULSE}`],
+  ];
+  for (const [from, to, origin] of swaps) {
+    const started = await from.post('/_sovereign/auth/check/options', {});
+    const finished = await to.post('/_sovereign/auth/check/finish', { response: phone.authenticate(started.body.options, { origin }) });
+    assert.equal(finished.status, 400, `${origin}: ${JSON.stringify(finished.body)}`);
+    assert.equal(finished.setCookie.length, 0);
+  }
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, false);
+});
+
+test('the hostname may carry the default port, as nginx admits it, and no other', async (t) => {
+  const { base, phone, snapshot } = await activeHousehold(t);
+  const script = (host) => fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': host } }).then((res) => res.status);
+  assert.equal(await script(`${PULSE}:443`), 200);
+  assert.equal(await script(`${PULSE}:8443`), 404);
+  const withPort = browser(base, PARENT, { host: `${PULSE}:443` });
+  const started = await withPort.post('/_sovereign/auth/check/options', {});
+  const checked = await withPort.post('/_sovereign/auth/check/finish', { response: phone.authenticate(started.body.options, { origin: `https://${PULSE}` }) });
+  assert.equal(checked.status, 200, JSON.stringify(checked.body));
+  const cookie = verifyToken(withPort.cookies.get('__Host-sv_assurance'), { keys: parseSnapshot(snapshot()).keys });
+  assert.equal(cookie.payload.aud, PULSE, 'the cookie names the hostname, not the port');
+});
+
+test('on a sensitive app\'s hostname a check needs active Home Base, and a member with no passkey is sent to Home Base', async (t) => {
+  const { app, base, parent } = await activeHousehold(t);
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  assert.equal((await parent.post('/api/directory/members', { userId: '1002', role: 'kid' })).status, 201);
+  const none = await browser(base, KID, { host: PULSE }).post('/_sovereign/auth/check/options', {});
+  assert.equal(none.body.code, 'NO_CREDENTIAL');
+  assert.match(none.body.error, /Home Base/);
+  assert.equal((await browser(base, '100.64.0.9', { host: PULSE }).post('/_sovereign/auth/check/options', {})).body.code, 'NOT_A_MEMBER');
+
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  const started = await pulse.post('/_sovereign/auth/check/options', {});
+  assert.equal(started.status, 409);
+  assert.equal(started.body.code, 'BOOTSTRAP_STATE', 'apps stay closed in recovery, even to the administrator');
 });
 
 test('an action token lives 60 seconds and binds every claim it names', async (t) => {
@@ -547,7 +681,7 @@ test('an action token lives 60 seconds and binds every claim it names', async (t
   const site = { hostname: HOMEBASE, rpID: DOMAIN };
   const standing = { member: { userId: '1001', status: 'active', epoch: 3, administrator: true }, globalEpoch: 2, state: 'active' };
   const want = { site, standing, app: 'homebase', policyKey: 'manage-admin-credential', target: 'enroll:m_1', digest: 'D'.repeat(43) };
-  const token = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'hardware' });
+  const { token } = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'hardware' });
   const headers = { 'x-sovereign-action-token': token };
   assert.ok(passkeys.actionToken(headers, want).claims);
   assert.equal(passkeys.actionToken({}, want).reason, 'no_token');
@@ -558,9 +692,9 @@ test('an action token lives 60 seconds and binds every claim it names', async (t
   assert.equal(passkeys.actionToken(headers, { ...want, site: { ...site, hostname: `smith-helm.${DOMAIN}` } }).reason, 'wrong_audience');
   assert.equal(passkeys.actionToken(headers, { ...want, standing: { ...standing, member: { ...standing.member, epoch: 4 } } }).reason, 'stale_epoch');
   assert.equal(passkeys.actionToken(headers, { ...want, standing: { ...standing, globalEpoch: 3 } }).reason, 'stale_global_epoch');
-  const synced = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'synced' });
+  const { token: synced } = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'synced' });
   assert.equal(passkeys.actionToken({ 'x-sovereign-action-token': synced }, want).reason, 'wrong_kind');
-  const cookieLike = passkeys.issueCookie({ site, standing, credentialId: 'c', kind: 'hardware', windowSeconds: 60 }).split(';')[0].split('=').slice(1).join('=');
+  const cookieLike = passkeys.issueCookie({ site, standing, credentialId: 'c', kind: 'hardware', windowSeconds: 60 }).header.split(';')[0].split('=').slice(1).join('=');
   assert.equal(passkeys.actionToken({ 'x-sovereign-action-token': cookieLike }, want).reason, 'wrong_type', 'an assurance cookie is not an action token');
   clock += 59_000;
   assert.ok(passkeys.actionToken(headers, want).claims);
@@ -582,4 +716,235 @@ test('a spent action token is refused at its expiry, not taken again once its re
   assert.deepEqual(at(exp), { ok: false, expired: true }, 'at its expiry second it is refused, not re-taken');
   assert.deepEqual(at(exp + 5, 'never-used'), { ok: false, expired: true }, 'nor is any token past its expiry');
   assert.deepEqual(at(exp - 1), { ok: false, replayed: true }, 'and the spent record is still there');
+});
+
+// The cookie a member's browser holds on PULSE after a check there.
+async function pulseCheck(base, authenticator) {
+  const pulse = browser(base, PARENT, { host: PULSE });
+  assert.equal((await pulse.check(authenticator, { origin: `https://${PULSE}` })).status, 200);
+  return pulse;
+}
+const ROTATE = '/_sovereign/auth/signing-key/rotate';
+
+test('rotating the signing key takes a hardware key every time and ends nobody\'s session', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const member = snapshot().members.find((entry) => entry.login === 'parent@example.com');
+  const pulse = await pulseCheck(base, phone);
+  const before = snapshot().keys.map((key) => key.kid);
+  assert.equal(before.length, 1);
+
+  const withPhone = await parent.confirmed(phone, ROTATE, {});
+  assert.equal(withPhone.first.status, 401);
+  assert.equal(withPhone.first.body.policy, 'privileged-plan');
+  assert.equal(withPhone.first.body.target, 'signing-key:rotate');
+  assert.equal(withPhone.token, null, 'a synced passkey does not confirm it');
+  const rotated = await parent.confirmed(yubikey, ROTATE, {});
+  assert.equal(rotated.retry.status, 200, JSON.stringify(rotated.retry.body));
+  assert.equal(rotated.retry.body.dropped, false);
+  const after = snapshot().keys.map((key) => key.kid);
+  assert.deepEqual(after, [rotated.retry.body.kid, before[0]], 'the new key first, the old one kept');
+  assert.equal(parseSnapshot(snapshot()).keys.size, 2, 'and apps read both');
+
+  assert.equal((await appAssurance(snapshot)('open-documents', member, pulse.cookies)).allowed, true, 'the app session from before stands');
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, true, 'so does the admin session');
+  const again = await pulseCheck(base, phone);
+  assert.equal(verifyToken(again.cookies.get('__Host-sv_assurance'), { keys: parseSnapshot(snapshot()).keys }).payload.kid, rotated.retry.body.kid, 'new checks are signed with the new key');
+  const status = (await parent.get('/_sovereign/auth/status')).body;
+  assert.equal(status.signingKey.kid, rotated.retry.body.kid);
+  assert.deepEqual(status.signingKey.previous.map((key) => key.kid), [before[0]]);
+
+  assert.equal((await parent.post(ROTATE, {}, { 'x-sovereign-action-token': rotated.token })).body.code, 'REPLAYED', 'one confirmation, one rotation');
+});
+
+test('a rotation for an exposed key drops every earlier key, and every session it signed ends', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const member = snapshot().members.find((entry) => entry.login === 'parent@example.com');
+  const pulse = await pulseCheck(base, phone);
+  assert.equal((await parent.confirmed(yubikey, ROTATE, {})).retry.status, 200);
+  const exposed = await parent.confirmed(yubikey, ROTATE, { exposed: true });
+  assert.equal(exposed.retry.status, 200, JSON.stringify(exposed.retry.body));
+  assert.equal(exposed.retry.body.dropped, true);
+  assert.deepEqual(snapshot().keys.map((key) => key.kid), [exposed.retry.body.kid]);
+  const refused = await appAssurance(snapshot)('open-documents', member, pulse.cookies);
+  assert.equal(refused.body.error, 'step_up_required', 'the app session ended');
+  assert.equal(refused.reason, 'unknown_kid');
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, false, 'and the admin session, this one included');
+  assert.equal((await parent.check(yubikey)).status, 200);
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, true, 'a new check opens it again');
+});
+
+test('only the administrator rotates the signing key, on Home Base\'s hostname, in active Home Base', async (t) => {
+  const { app, base, parent, yubikey } = await activeHousehold(t);
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const memberId = (await parent.post('/api/directory/members', { userId: '1002', role: 'kid' })).body.memberId;
+  const { code } = (await parent.post(`/api/directory/members/${memberId}/grant`)).body;
+  const kid = browser(base, KID);
+  await kid.enroll(createAuthenticator(), { label: 'Tablet', grant: code });
+  assert.equal((await kid.post(ROTATE, {})).body.code, 'NOT_AUTHORIZED');
+  assert.equal((await kid.get('/_sovereign/auth/status')).body.signingKey, undefined, 'a member is not shown the key');
+  assert.equal((await browser(base, PARENT, { host: PULSE }).post(ROTATE, {})).status, 404);
+  const enrollToken = await parent.actionToken(yubikey, (await parent.post('/_sovereign/auth/enroll/options', { label: 'k' })).body);
+  assert.equal((await parent.post(ROTATE, {}, { 'x-sovereign-action-token': enrollToken.body.token })).status, 401, 'another action\'s confirmation does not rotate');
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  assert.equal((await parent.post(ROTATE, {})).body.code, 'BOOTSTRAP_STATE');
+});
+
+test('a retired key is published for one session window, and an interrupted rotation lists no key twice', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-keyring-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'identity-signing-key.pem');
+  let clock = Date.parse('2026-11-04T12:00:00Z');
+  const keyring = createKeyring(file, { now: () => clock });
+  const first = keyring.current().kid;
+  const { kid: second } = keyring.rotate();
+  assert.deepEqual(keyring.published().map((key) => key.kid), [second, first]);
+  assert.equal(keyring.verifying().size, 2);
+  assert.equal((fs.statSync(path.join(root, 'identity-signing-key-retired.json')).mode & 0o777), 0o600);
+  clock += RETIRED_KEEP_SECONDS * 1000 - 1000;
+  assert.equal(keyring.published().length, 2, 'still within the longest session');
+  clock += 2000;
+  assert.deepEqual(keyring.published().map((key) => key.kid), [second], 'gone once no cookie it signed can be alive');
+  assert.equal(keyring.verifying().size, 1);
+
+  // A rotation stopped after its list was written: the key that stayed current is listed as retired too.
+  const list = path.join(root, 'identity-signing-key-retired.json');
+  fs.writeFileSync(list, JSON.stringify({ format: 1, keys: [{ ...keyring.current().published, retired_at: new Date(clock).toISOString() }] }), { mode: 0o600 });
+  assert.deepEqual(publishedKeys(file, { now: () => clock }).map((key) => key.kid), [second]);
+  assert.doesNotThrow(() => parseSnapshot({ format: 1, household: 'h', generation: 1, written_at: new Date(clock).toISOString(), global_epoch: 0, keys: publishedKeys(file, { now: () => clock }), members: [] }));
+
+  // Losing the key makes a new one; nothing else is lost.
+  fs.rmSync(file);
+  const fresh = createKeyring(file, { now: () => clock });
+  assert.notEqual(fresh.current().kid, second);
+});
+
+test('losing the signing key ends sessions and nothing else', async (t) => {
+  const { root, stop, parent, yubikey, snapshot } = await activeHousehold(t);
+  await stop();
+  fs.rmSync(path.join(root, 'identity-signing-key.pem'));
+  const { base: restarted } = await startServer(t, { again: root });
+  const same = browser(restarted, PARENT);
+  for (const [name, value] of parent.cookies) same.cookies.set(name, value);
+  assert.equal((await same.get('/api/admin/status')).body.unlocked, false, 'the old cookie no longer verifies');
+  const status = (await same.get('/_sovereign/auth/status')).body;
+  assert.equal(status.state, 'active');
+  assert.equal(status.credentials.length, 2, 'passkeys are kept');
+  assert.equal((await same.check(yubikey)).status, 200);
+  assert.equal((await same.get('/api/admin/status')).body.unlocked, true);
+  assert.equal(snapshot().keys.length, 1);
+});
+
+test('a removed attestation root demotes its keys at the next start, and a stranded administrator is told', async (t) => {
+  const alerts = [];
+  const { root, stop, parent, snapshot } = await activeHousehold(t, { alerts });
+  const epochBefore = snapshot().members[0].epoch;
+  await stop();
+  // The next release no longer pins the root the YubiKey verified against.
+  const { base } = await startServer(t, { again: root, roots: ATTESTATION_ROOTS, alerts });
+  const same = browser(base, PARENT);
+  for (const [name, value] of parent.cookies) same.cookies.set(name, value);
+  assert.equal((await same.get('/api/admin/status')).body.unlocked, false, 'the epoch moved: no cookie still says hardware');
+  assert.equal(snapshot().members[0].epoch, epochBefore + 1);
+  const status = (await same.get('/_sovereign/auth/status')).body;
+  assert.deepEqual(status.credentials.map((credential) => [credential.label, credential.kind]), [['Phone', 'synced'], ['YubiKey', 'device-bound']]);
+  assert.equal(status.administratorRuleMet, false);
+  const notice = alerts.find((alert) => alert.event === 'administrator-hardware-key-lost');
+  assert.ok(notice, JSON.stringify(alerts));
+  assert.deepEqual(notice.administrators, ['parent@example.com']);
+  assert.match(notice.adminUrl, /^https:\/\/smith-homebase\.example-tailnet\.ts\.net\/admin$/);
+});
+
+test('entering recovery sends a notice every time, and a failing webhook does not stop it', async (t) => {
+  const alerts = [];
+  const { parent } = await activeHousehold(t, { alerts });
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  await new Promise((resolve) => setImmediate(resolve));
+  const notice = alerts.find((alert) => alert.event === 'identity-recovery-entered');
+  assert.ok(notice, JSON.stringify(alerts));
+  assert.equal(notice.login, 'parent@example.com');
+  assert.match(notice.message, /If this wasn't you/);
+  assert.equal(alerts.filter((alert) => alert.event === 'administrator-hardware-key-lost').length, 0, 'nothing stranded');
+
+  const { parent: other } = await activeHousehold(t, { alerts: { push() { throw new Error('webhook down'); } } });
+  assert.equal((await other.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200, 'recovery does not wait on the notice');
+});
+
+test('a rotation is flushed to disk before it is reported, and a snapshot that can\'t be written is reported', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-keyring-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const keyring = createKeyring(path.join(root, 'identity-signing-key.pem'));
+  const synced = [];
+  const real = fs.fsyncSync;
+  fs.fsyncSync = (fd) => { synced.push(fd); return real(fd); };
+  try {
+    keyring.rotate({ exposed: true });
+  } finally {
+    fs.fsyncSync = real;
+  }
+  assert.equal(synced.length, 4, 'both files and, after each rename, their directory');
+
+  // A flush that fails after the key landed: the rotation fails, and memory follows the disk.
+  const file = path.join(root, 'identity-signing-key.pem');
+  let syncs = 0;
+  fs.fsyncSync = (fd) => { syncs += 1; if (syncs === 4) throw Object.assign(new Error('EIO'), { code: 'EIO' }); return real(fd); };
+  try {
+    assert.throws(() => keyring.rotate({ exposed: true }), /EIO/);
+  } finally {
+    fs.fsyncSync = real;
+  }
+  assert.equal(keyring.current().kid, loadSigningKey(file).kid, 'signing with the key on disk');
+  assert.equal(keyring.published()[0].kid, keyring.current().kid, 'which is the one published');
+
+  // The key landed but can't be read back yet: nothing is signed with the old one meanwhile.
+  const realRead = fs.readFileSync;
+  let failing = false;
+  fs.readFileSync = (target, ...rest) => { if (failing && target === file) throw Object.assign(new Error('EIO'), { code: 'EIO' }); return realRead(target, ...rest); };
+  const unrotated = keyring.current().kid;
+  try {
+    const realRename = fs.renameSync;
+    fs.renameSync = (from, to) => { realRename(from, to); if (to === file) failing = true; };
+    try {
+      assert.throws(() => keyring.rotate({ exposed: true }), /EIO/);
+    } finally {
+      fs.renameSync = realRename;
+    }
+    assert.throws(() => keyring.current(), /EIO/, 'fails closed while the key is unreadable');
+    assert.throws(() => keyring.verifying(), /EIO/);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.notEqual(keyring.current().kid, unrotated, 'and once it reads, the new key is the one used');
+  assert.equal(keyring.current().kid, keyring.published()[0].kid);
+
+  const { root: home, parent, yubikey, snapshot } = await activeHousehold(t);
+  const before = snapshot().keys.map((key) => key.kid);
+  const identityDir = path.join(home, 'identity');
+  fs.chmodSync(identityDir, 0o555);
+  let rotated;
+  try {
+    rotated = await parent.confirmed(yubikey, ROTATE, {});
+  } finally {
+    fs.chmodSync(identityDir, 0o755);
+  }
+  assert.equal(rotated.retry.status, 503, JSON.stringify(rotated.retry.body));
+  assert.equal(rotated.retry.body.code, 'SNAPSHOT_NOT_PUBLISHED');
+  assert.notEqual(rotated.retry.body.kid, before[0], 'the key did change');
+  assert.deepEqual(snapshot().keys.map((key) => key.kid), before, 'apps have not been told');
+});
+
+test('every cookie and confirmation can be traced in the audit to the check that issued it', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const keys = () => parseSnapshot(snapshot()).keys;
+  const pulse = await pulseCheck(base, phone);
+  const cookie = verifyToken(pulse.cookies.get('__Host-sv_assurance'), { keys: keys() }).payload;
+  const issued = await parent.actionToken(yubikey, (await parent.post('/_sovereign/auth/enroll/options', { label: 'k' })).body);
+  const token = verifyToken(issued.body.token, { keys: keys() }).payload;
+  const entries = (await parent.get('/api/admin/audit?limit=50')).body.entries;
+  const check = entries.find((entry) => entry.action === 'passkey-step-up' && entry.outcome.includes(`sid ${cookie.sid}`));
+  assert.ok(check, JSON.stringify(entries.map((entry) => entry.outcome)));
+  assert.match(check.outcome, new RegExp(`key ${cookie.kid}$`));
+  assert.match(check.outcome, new RegExp(`with "Phone" \\(${cookie.cred.slice(0, 12)}…\\) on ${PULSE.replace(/\./g, '\\.')}`));
+  const confirmed = entries.find((entry) => entry.action === 'passkey-action' && entry.outcome.includes(`jti ${token.jti}`));
+  assert.ok(confirmed);
+  assert.match(confirmed.outcome, /^confirmed manage-admin-credential enroll:m_[0-9a-f]+ with "YubiKey"/);
 });
