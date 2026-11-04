@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { parseSnapshot, requestDigest, verifyToken } = require('sovereign-auth');
+const { createAssurance, createIdentity, parseSnapshot, requestDigest, verifyToken } = require('sovereign-auth');
 const { createApp } = require('../src/app');
 const { createPasskeys } = require('../src/identity/passkeys');
 const { loadSigningKey } = require('../src/identity/signing-key');
@@ -17,6 +17,8 @@ const { attestationFixture, createAuthenticator } = require('./support/authentic
 const DOMAIN = 'example-tailnet.ts.net';
 const HOMEBASE = `smith-homebase.${DOMAIN}`;
 const ORIGIN = `https://${HOMEBASE}`;
+// A sensitive app's own hostname (family-pulse, catalog network.dedicatedHostname).
+const PULSE = `smith-pulse.${DOMAIN}`;
 const PEERS = {
   '100.64.0.1': { Node: { Tags: [] }, UserProfile: { ID: 1001, LoginName: 'parent@example.com', DisplayName: 'Parent' } },
   '100.64.0.2': { Node: { Tags: [] }, UserProfile: { ID: 1002, LoginName: 'kid@example.com', DisplayName: 'Kid' } },
@@ -131,12 +133,14 @@ async function activeHousehold(t) {
   return { ...server, parent, phone, yubikey };
 }
 
-test('the passkey routes exist only on Home Base\'s own hostname, once the host is cut over', async (t) => {
+test('the passkey routes exist only on per-service hostnames, once the host is cut over', async (t) => {
   const { base } = await startServer(t);
   const shared = browser(base, PARENT, { host: `smith-home.${DOMAIN}` });
   assert.equal((await shared.get('/_sovereign/auth/status')).status, 404);
   assert.equal((await shared.post('/_sovereign/auth/enroll/options', { label: 'x' })).status, 404, 'refused before a ceremony starts');
-  assert.equal((await browser(base, PARENT, { host: `smith-helm.${DOMAIN}` }).get('/_sovereign/auth/status')).status, 404);
+  assert.equal((await shared.post('/_sovereign/auth/check/options', {})).status, 404, 'no checks on the shared hostname either');
+  assert.equal((await browser(base, PARENT, { host: `smith-helm.${DOMAIN}` }).get('/_sovereign/auth/status')).status, 404, 'a sensitive app\'s hostname has checks only');
+  assert.equal((await browser(base, PARENT, { host: `smith-nosuchapp.${DOMAIN}` }).post('/_sovereign/auth/check/options', {})).status, 404, 'only hostnames this host serves');
   assert.equal((await browser(base, PARENT).get('/_sovereign/auth/status')).status, 403, 'on Home Base\'s hostname: there, but only for members');
 
   const { base: tcpBase } = await startServer(t, { cutOver: false });
@@ -529,14 +533,83 @@ test('an action token\'s jti is used once across processes and restarts, and onl
   assert.equal(app.directory.consumeAction(action('fresh'), expect), 'redeemed', 'and the stale attempt did not use it up');
 });
 
-test('stepup.js is served on Home Base\'s hostname, as a script', async (t) => {
+test('stepup.js is served on Home Base\'s hostname and each sensitive app\'s, as a script', async (t) => {
   const { base } = await startServer(t);
   const res = await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': HOMEBASE } });
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-type'), /^text\/javascript/);
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
   assert.match(await res.text(), /window\.SovereignStepUp/);
+  assert.equal((await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': PULSE } })).status, 200, 'and on a sensitive app\'s, for its pages');
   assert.equal((await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': `smith-home.${DOMAIN}` } })).status, 404);
+});
+
+// What a sensitive app does with the cookie (sovereignAuth's createAssurance), reading Home Base's snapshot.
+function appAssurance(snapshot, { appId = 'family-pulse', hostname = PULSE } = {}) {
+  const reader = { current: () => ({ ok: true, snapshot: parseSnapshot(snapshot()) }) };
+  const identity = createIdentity({ appId, mode: 'tailnet', listen: 'unix:/run/test.sock', reader });
+  const assurance = createAssurance({ appId, hostname, identity, redeem: async () => ({ redeemed: false, reason: 'unused' }) });
+  return (key, member, cookies) => assurance.check(key, {
+    method: 'GET',
+    url: '/pulse/',
+    headers: { 'x-sovereign-user-id': member.user_id, 'x-sovereign-login': member.login, cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') },
+  });
+}
+
+test('a sensitive app\'s hostname runs checks only: its own cookie, which that app accepts and no other hostname does', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  const origin = `https://${PULSE}`;
+  for (const [method, url] of [['GET', 'status'], ['POST', 'enroll/options'], ['POST', 'enroll/finish'], ['POST', 'credentials/revoke']]) {
+    assert.equal((method === 'GET' ? await pulse.get(`/_sovereign/auth/${url}`) : await pulse.post(`/_sovereign/auth/${url}`, { label: 'x' })).status, 404, `${method} ${url} is Home Base's hostname's alone (D21)`);
+  }
+  assert.equal((await pulse.post('/_sovereign/auth/check/options', { purpose: 'activate' })).body.code, 'INVALID');
+  const digest = requestDigest({ method: 'POST', url: '/x', body: '{}', target: 'enroll:m' });
+  assert.equal((await pulse.post('/_sovereign/auth/check/options', { purpose: 'action', action: { policy: 'manage-admin-credential', target: 'enroll:m', digest } })).body.code, 'INVALID', 'no action tokens here');
+
+  const member = snapshot().members.find((entry) => entry.login === 'parent@example.com');
+  const check = appAssurance(snapshot);
+  assert.equal((await check('open-documents', member, pulse.cookies)).body.error, 'step_up_required', 'no check yet');
+  assert.equal((await pulse.check(yubikey, { origin: `https://${HOMEBASE}` })).status, 400, 'a ceremony answered for another hostname is refused');
+  const checked = await pulse.check(phone, { origin });
+  assert.equal(checked.status, 200, JSON.stringify(checked.body));
+  assert.equal(checked.body.kind, 'synced');
+  const cookie = checked.setCookie.find((line) => line.startsWith('__Host-sv_assurance='));
+  assert.match(cookie, /Max-Age=2592000/, 'as long as the longest app session (open-documents, 30 days)');
+  assert.match(cookie, /SameSite=Strict/);
+  assert.doesNotMatch(cookie, /Domain=/i, 'host-only');
+  const opened = await check('open-documents', member, pulse.cookies);
+  assert.equal(opened.allowed, true, JSON.stringify(opened.body));
+  assert.equal(opened.member.userId, member.user_id);
+  assert.equal((await check('export-data', member, pulse.cookies)).allowed, true, 'and it is a recent check, for 5 minutes');
+  assert.equal((await appAssurance(snapshot, { appId: 'helm', hostname: `smith-helm.${DOMAIN}` })('open-operator', member, pulse.cookies)).body.error, 'step_up_required', 'another app\'s hostname refuses it (aud)');
+
+  // It opens nothing on Home Base: the admin session is Home Base's hostname's own.
+  const atHomeBase = browser(base, PARENT);
+  for (const [name, value] of pulse.cookies) atHomeBase.cookies.set(name, value);
+  assert.equal((await atHomeBase.get('/api/admin/status')).body.unlocked, false);
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, true, 'the administrator\'s own Home Base check still stands');
+
+  // Signing out on the app's hostname ends that cookie only.
+  const out = await pulse.post('/_sovereign/auth/sign-out');
+  assert.equal(out.status, 200);
+  assert.equal((await check('open-documents', member, pulse.cookies)).body.error, 'step_up_required');
+});
+
+test('on a sensitive app\'s hostname a check needs active Home Base, and a member with no passkey is sent to Home Base', async (t) => {
+  const { app, base, parent } = await activeHousehold(t);
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  assert.equal((await parent.post('/api/directory/members', { userId: '1002', role: 'kid' })).status, 201);
+  const none = await browser(base, KID, { host: PULSE }).post('/_sovereign/auth/check/options', {});
+  assert.equal(none.body.code, 'NO_CREDENTIAL');
+  assert.match(none.body.error, /Home Base/);
+  assert.equal((await browser(base, '100.64.0.9', { host: PULSE }).post('/_sovereign/auth/check/options', {})).body.code, 'NOT_A_MEMBER');
+
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  const started = await pulse.post('/_sovereign/auth/check/options', {});
+  assert.equal(started.status, 409);
+  assert.equal(started.body.code, 'BOOTSTRAP_STATE', 'apps stay closed in recovery, even to the administrator');
 });
 
 test('an action token lives 60 seconds and binds every claim it names', async (t) => {

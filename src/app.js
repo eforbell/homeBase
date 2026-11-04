@@ -32,7 +32,7 @@ const { loadSigningKey } = require('./identity/signing-key');
 const { createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
-const { appPublicBase, appServiceKey } = require('./operations/ingress-layout');
+const { HOMEBASE_SERVICE, appPublicBase, appServiceKey, ingressServices } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
   mergeHomeBaseConfig,
@@ -553,14 +553,15 @@ function createApp(config) {
     directory, passkeys, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
     passphraseSession: (req) => passphraseSession(req, stateStore, adminOptions),
   }) : null;
-  // Passkeys run on Home Base's own service hostname only, so only once the host is cut over: the hostname
-  // the request came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain.
+  // Passkeys run on per-service hostnames only, so only once the host is cut over: the hostname the request
+  // came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain. homeBase: it is
+  // Home Base's own hostname, where everything runs; a sensitive app's hostname gets checks only (D21).
   function passkeySite(req, state, effectiveConfig) {
     const ingress = directory ? currentIngress(state.ingressJobs, effectiveConfig) : null;
     if (!ingress) return null;
-    const hostname = `${ingress.instance}-homebase.${ingress.domain}`;
     const forwarded = typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].toLowerCase() : '';
-    return forwarded === hostname ? { hostname, rpID: ingress.domain } : null;
+    const service = forwarded ? ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog }).find((entry) => entry.strict && entry.hostname === forwarded) : null;
+    return service ? { hostname: service.hostname, rpID: ingress.domain, homeBase: service.key === HOMEBASE_SERVICE } : null;
   }
   const ingressRoutes = createIngressRoutes({
     stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
@@ -929,7 +930,9 @@ function createApp(config) {
       const normalizedPath = normalizePathname(pathname);
       const unsafe = refuseUnsafeRequest(req, method);
       if (unsafe) return sendJson(res, unsafe.statusCode, unsafe.payload);
-      req.homeBaseSite = passkeySite(req, state, effectiveConfig);
+      // The admin session is Home Base's hostname's alone; the passkey routes also answer on sensitive ones.
+      const site = passkeySite(req, state, effectiveConfig);
+      req.homeBaseSite = site?.homeBase ? site : null;
 
       if (method === 'GET') {
         if (normalizedPath === '/') return servePublicPage(res, 'index.html');
@@ -963,7 +966,7 @@ function createApp(config) {
         if (!directory) return sendJson(res, 404, { error: 'The household directory is off (HOME_BASE_DIRECTORY).' });
         return sendJson(res, 200, await describeIdentity(req));
       }
-      if (passkeyRoutes && await passkeyRoutes({ req, res, method, pathname, here: req.homeBaseSite })) return;
+      if (passkeyRoutes && await passkeyRoutes({ req, res, method, pathname, here: site })) return;
       if (directoryRoutes && await directoryRoutes({ req, res, method, pathname })) return;
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });

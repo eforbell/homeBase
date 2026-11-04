@@ -127,7 +127,8 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   }
 
   // The cookie for a ceremony that just ran on site.hostname. It lives as long as the longest window that
-  // hostname's sessions use (Home Base: open-admin, 8 hours); apps check their own window from auth_time.
+  // hostname's sessions use (Home Base: open-admin, 8 hours; a sensitive app: the longest app session);
+  // apps check their own window from auth_time.
   function issueCookie({ site, standing, credentialId, kind, windowSeconds }) {
     if (!KINDS.has(kind)) throw new Error(`unknown credential kind ${kind}`);
     const at = seconds(now());
