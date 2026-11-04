@@ -9,13 +9,18 @@
 // kind, the member's epoch and the household's global epoch, and when the ceremony ran (auth_time). Revoking a
 // credential bumps the member's epoch and recovery bumps the global epoch, so either ends every cookie.
 //
+// An every-time action (wire contract, section 9) gets an action token instead: minted from a fresh ceremony
+// whose challenge was bound to the app, the policy key, the target and the request digest, valid 60 seconds,
+// and used once (its jti is consumed in the state database).
+//
 // Ceremonies run only on the hostname they were started on; the routes (passkey-routes.js) decide who may
 // start which one. RP ID is the tailnet domain (D17).
 const crypto = require('crypto');
-const { COOKIE_NAME, POLICY, assuranceCookie, createMemoryChallengeStore, createWebAuthn, policyFor, signToken, verifyToken } = require('sovereign-auth');
+const { ACTION_HEADER, COOKIE_NAME, POLICY, assuranceCookie, createMemoryChallengeStore, createWebAuthn, policyFor, signToken, verifyToken } = require('sovereign-auth');
 
 const KINDS = new Set(['synced', 'device-bound', 'hardware']);
 const LABEL_MAX = 60;
+const ACTION_SECONDS = 60;
 
 const seconds = (ms) => Math.floor(ms / 1000);
 
@@ -48,12 +53,13 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
 
   // Enrollment: attestation is asked for only when the member says it is a hardware key; the kind stored
   // is what the authenticator proves either way (D15).
-  async function enrollOptions({ site, standing, label, hardware }) {
+  // context: what else the challenge binds (the administrator's every-time authority, from the routes).
+  async function enrollOptions({ site, standing, label, hardware, context = {} }) {
     return webauthnFor(site.rpID).registrationOptions({
       hostname: site.hostname,
       member: memberOf(standing),
       purpose: 'enroll',
-      action: { label: cleanLabel(label), hardware: hardware === true },
+      action: { ...context, label: cleanLabel(label), hardware: hardware === true },
       attestation: hardware === true ? 'direct' : 'none',
       excludeCredentials: directory.credentialsFor(standing.member.userId),
     });
@@ -61,12 +67,12 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
 
   // Returns { ok, credential } with what directory.addCredential stores, or { ok: false, reason }. The route
   // stores it, after anything else the enrollment needs (an enrollment grant).
-  async function enrollFinish({ site, standing, label, hardware, response }) {
+  async function enrollFinish({ site, standing, label, hardware, context = {}, response }) {
     const result = await webauthnFor(site.rpID).verifyRegistration({
       hostname: site.hostname,
       member: memberOf(standing),
       purpose: 'enroll',
-      action: { label: cleanLabel(label), hardware: hardware === true },
+      action: { ...context, label: cleanLabel(label), hardware: hardware === true },
       response,
     });
     if (!result.ok) return result;
@@ -86,13 +92,15 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
     } };
   }
 
-  // purpose: 'step-up' (sets the cookie) or 'activate' (the administrator's fresh hardware ceremony, D16).
-  async function checkOptions({ site, standing, purpose, kind }) {
+  // purpose: 'step-up' (sets the cookie), 'activate' (the administrator's fresh hardware ceremony, D16) or
+  // 'action' (an every-time action: audience is the app, action { act, tgt, dig } what the token will bind).
+  async function checkOptions({ site, standing, purpose, kind, audience, action }) {
     return webauthnFor(site.rpID).authenticationOptions({
       hostname: site.hostname,
       member: memberOf(standing),
       purpose,
       kind,
+      ...(audience ? { audience, action } : {}),
       credentials: directory.credentialsFor(standing.member.userId),
     });
   }
@@ -101,12 +109,13 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   // stored, even when it is refused for its kind, so a credential that fell never climbs back. The kind
   // returned is the stored one after that merge, never the assertion's alone: a finish that verified while
   // another one demoted the credential gets the demoted kind, and is refused if the check needed hardware.
-  async function checkFinish({ site, standing, purpose, kind, response }) {
+  async function checkFinish({ site, standing, purpose, kind, audience, action, response }) {
     const result = await webauthnFor(site.rpID).verifyAuthentication({
       hostname: site.hostname,
       member: memberOf(standing),
       purpose,
       kind,
+      ...(audience ? { audience, action } : {}),
       credentials: directory.credentialsFor(standing.member.userId),
       response,
     });
@@ -140,25 +149,76 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
     return cookieHeader(token, windowSeconds);
   }
 
+  // An action token for a fresh ceremony on site.hostname (wire contract, section 9).
+  function issueActionToken({ site, standing, app, act, tgt, dig, credentialId, kind }) {
+    if (!KINDS.has(kind)) throw new Error(`unknown credential kind ${kind}`);
+    const at = seconds(now());
+    return signToken({
+      typ: 'action',
+      kid: signingKey.kid,
+      household,
+      aud: site.hostname,
+      sub: standing.member.userId,
+      cred: credentialId,
+      kind,
+      epoch: standing.member.epoch,
+      global_epoch: standing.globalEpoch,
+      app,
+      act,
+      tgt,
+      dig,
+      jti: crypto.randomBytes(16).toString('base64url'),
+      iat: at,
+      exp: at + ACTION_SECONDS,
+    }, signingKey.privateKey);
+  }
+
+  // The claims every token of type typ must hold for this caller on this hostname, as the directory stands
+  // now (the same rules apps apply from the snapshot): the claims, or { reason }.
+  function verified(token, typ, { site, standing }) {
+    const result = verifyToken(token, { keys, now });
+    if (!result.ok) return { reason: result.reason };
+    const claims = result.payload;
+    if (claims.typ !== typ) return { reason: 'wrong_type' };
+    if (claims.household !== household) return { reason: 'wrong_household' };
+    if (claims.aud !== site.hostname) return { reason: 'wrong_audience' };
+    if (!standing || claims.sub !== standing.member.userId) return { reason: 'wrong_member' };
+    if (standing.member.status !== 'active') return { reason: 'not_admitted' };
+    if (claims.epoch !== standing.member.epoch) return { reason: 'stale_epoch' };
+    if (claims.global_epoch !== standing.globalEpoch) return { reason: 'stale_global_epoch' };
+    if (!KINDS.has(claims.kind)) return { reason: 'wrong_kind' };
+    return { claims };
+  }
+
   // The caller's check on this hostname, as the cookie shows it and the directory stands now: { claims,
   // age } or { claims: null, reason }. The same rules apps apply (section 7), read from the database
   // rather than the snapshot.
   function currentCheck(headers, { site, standing }) {
     const { token, reason } = assuranceCookie(headers);
     if (!token) return { claims: null, reason };
-    const verified = verifyToken(token, { keys, now });
-    if (!verified.ok) return { claims: null, reason: verified.reason };
-    const claims = verified.payload;
-    if (claims.typ !== 'assurance') return { claims: null, reason: 'wrong_type' };
-    if (claims.household !== household) return { claims: null, reason: 'wrong_household' };
-    if (claims.aud !== site.hostname) return { claims: null, reason: 'wrong_audience' };
-    if (!standing || claims.sub !== standing.member.userId) return { claims: null, reason: 'wrong_member' };
-    if (standing.member.status !== 'active') return { claims: null, reason: 'not_admitted' };
-    if (claims.epoch !== standing.member.epoch) return { claims: null, reason: 'stale_epoch' };
-    if (claims.global_epoch !== standing.globalEpoch) return { claims: null, reason: 'stale_global_epoch' };
-    if (!KINDS.has(claims.kind)) return { claims: null, reason: 'wrong_kind' };
+    const { claims, reason: wrong } = verified(token, 'assurance', { site, standing });
+    if (!claims) return { claims: null, reason: wrong };
     if (!Number.isSafeInteger(claims.auth_time) || claims.auth_time > claims.iat) return { claims: null, reason: 'malformed' };
     return { claims, age: seconds(now()) - claims.auth_time };
+  }
+
+  // The action token on this request, for the every-time policy policyKey of app, bound to target and
+  // digest: { claims, consume } (consume is what the commit uses up) or { claims: null, reason }. Checking
+  // does not use it up; the change it authorizes does, in the same commit.
+  function actionToken(headers, { site, standing, app, policyKey, target, digest }) {
+    const header = headers[ACTION_HEADER];
+    if (header === undefined) return { claims: null, reason: 'no_token' };
+    if (typeof header !== 'string') return { claims: null, reason: 'malformed' };
+    const { claims, reason } = verified(header, 'action', { site, standing });
+    if (!claims) return { claims: null, reason };
+    if (policyFor(policyKey).kind === 'hardware' && claims.kind !== 'hardware') return { claims: null, reason: 'wrong_kind' };
+    if (claims.app !== app) return { claims: null, reason: 'wrong_app' };
+    if (claims.act !== policyKey) return { claims: null, reason: 'wrong_action' };
+    if (claims.tgt !== target) return { claims: null, reason: 'wrong_target' };
+    if (claims.dig !== digest) return { claims: null, reason: 'wrong_digest' };
+    if (!Number.isSafeInteger(claims.iat) || claims.exp - claims.iat > ACTION_SECONDS) return { claims: null, reason: 'malformed' };
+    if (typeof claims.jti !== 'string' || !claims.jti) return { claims: null, reason: 'malformed' };
+    return { claims, consume: { jti: claims.jti, app, expiresAt: claims.exp } };
   }
 
   // Whether a check meets a policy's window: 'recent' (5 minutes) or a session policy's own.
@@ -170,7 +230,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
     return policy.kind !== 'hardware' || check.claims.kind === 'hardware';
   }
 
-  return { checkFinish, checkOptions, clearCookieHeader, currentCheck, enrollFinish, enrollOptions, issueCookie, keys, meets };
+  return { actionToken, checkFinish, checkOptions, clearCookieHeader, currentCheck, enrollFinish, enrollOptions, issueActionToken, issueCookie, keys, meets, verified };
 }
 
 function defaultLabel(kind) {
