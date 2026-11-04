@@ -219,7 +219,8 @@ async function confirmPrivileged(req, directory, status, target) {
   return directory.confirmPlan(req, plan);
 }
 
-async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false, directory = null, duringBootstrap = false, target = null } = {}) {
+// deferConfirmation: the handler confirms the plan itself once it is resolved (confirmResolved in app.js).
+async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false, directory = null, duringBootstrap = false, target = null, deferConfirmation = false } = {}) {
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const sessionTokenHash = token ? hashToken(token) : null;
   const status = await getAdminStatus(req, stateStore, { directory });
@@ -247,6 +248,7 @@ async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled =
       sessionTokenHash,
     };
   }
+  if (deferConfirmation) return { ok: true, sessionTokenHash };
   const confirmed = await confirmPrivileged(req, directory, status, target);
   if (!confirmed.ok) return { ...confirmed, sessionTokenHash };
   return { ok: true, sessionTokenHash, ...(confirmed.jti ? { confirmation: confirmed.jti } : {}) };

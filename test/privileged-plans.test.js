@@ -159,3 +159,24 @@ test('a setting that can\'t be saved is refused before the hardware key is asked
   assert.equal(good.first.status, 401);
   assert.equal(good.retry.status, 200, JSON.stringify(good.retry.body));
 });
+
+test('a plan resolved when it runs is confirmed resolved: a setting that changes before the retry refuses it', async (t) => {
+  const household = await executorHousehold(t);
+  const { parent, yubikey, received, store } = household;
+  const url = `/api/apps/${APP}/execute`;
+  const asked = await parent.post(url, REAL);
+  assert.equal(asked.status, 401, JSON.stringify(asked.body));
+  assert.match(asked.body.target, new RegExp(`^POST ${url} plan [A-Za-z0-9_-]{22}$`));
+  const token = await parent.actionToken(yubikey, asked.body);
+  // The install's site values come from the settings, which change between the tap and the retry.
+  store.setHomeBaseConfig({ hostname: 'otherhost', domain: 'example-tailnet.ts.net', gitTransport: 'https', gitSshKeyPath: '', healthAlertsEnabled: false, healthAlertsWebhookUrl: '', tailscaleManagedServiceId: 'svc:home', updatedAt: new Date().toISOString() });
+  const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
+  assert.equal(retried.status, 401, 'the confirmed install is not the one that would run now');
+  assert.notEqual(retried.body.target, asked.body.target);
+
+  const run = await parent.confirmed(yubikey, url, REAL);
+  assert.equal(run.retry.status, 202, JSON.stringify(run.retry.body));
+  const [install] = await ran(household, run.retry.body.jobId, 'install');
+  assert.equal(install.site.hostname, 'otherhost', 'the install that was confirmed');
+  assert.equal(received.filter((spec) => spec.action === 'install').length, 1);
+});

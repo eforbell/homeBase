@@ -1,4 +1,5 @@
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
@@ -230,6 +231,13 @@ function rejectLegacyExecution(res) {
 
 // Resolves the restore archive by name only: the web process never reads backup directories (they
 // belong to sovereign and may not be listable by homebase). The executor verifies the archive exists.
+// JSON with every object's keys sorted, so the same action always reads the same.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined && typeof value[key] !== 'function').map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value ?? null);
+}
+
 function resolveRestoreBackupId({ appId, backupDir, stateStore }) {
   const pattern = /^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$/;
   if (backupDir) {
@@ -573,6 +581,16 @@ function createApp(config) {
     return { ok: true, jti: token.consume.jti };
   }
   const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state, passkeySession, confirmPlan } : null;
+  // A plan whose details are resolved when it runs (a default ref, the git transport, site values) is
+  // confirmed once resolved: the confirmation covers that exact executor action, and the handler runs that
+  // same action object, so a value that changes between the tap and the retry refuses the retry. Null to
+  // go ahead, or the refusal (the step-up, or why the confirmation can't be used).
+  async function confirmResolved(req, action) {
+    if (!directory || directory.state() !== 'active' || !req.planTarget) return null;
+    const fingerprint = crypto.createHash('sha256').update(canonicalJson(action)).digest('base64url').slice(0, 22);
+    const confirmed = await confirmPlan(req, `${req.planTarget} plan ${fingerprint}`);
+    return confirmed.ok ? null : confirmed;
+  }
   const adminOptions = directoryBinding ? { directory: directoryBinding } : {};
   const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit, notifyIdentity: (...args) => notifyIdentity(...args) }) : null;
   const passkeyRoutes = directory ? createPasskeyRoutes({
@@ -1701,7 +1719,7 @@ function createApp(config) {
             recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
             return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
           }
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, deferConfirmation: true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
             return sendJson(res, auth.statusCode, auth.payload);
@@ -1723,6 +1741,8 @@ function createApp(config) {
         if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
         const adoptBlock = appMutationBlock(stateStore, state, appId, { adopting: true });
         if (adoptBlock) return sendJson(res, 409, adoptBlock);
+        const unconfirmed = await confirmResolved(req, action);
+        if (unconfirmed) return sendJson(res, unconfirmed.statusCode, unconfirmed.payload);
         // Until the adopt completes (after readiness) the app accepts only adopt: a failed run may already
         // have rewritten units, .env, and the nginx snippet, which legacy plans must not touch.
         stateStore.upsertInstallation({ ...install, managedBy: 'adopting', updatedAt: new Date().toISOString() });
@@ -1753,8 +1773,10 @@ function createApp(config) {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
+        // An executor install confirms its resolved action below; a legacy one confirms the request here.
+        const typedInstall = executorManagesApp(effectiveConfig, state, executeInstallMatch[1]);
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, deferConfirmation: typedInstall });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-install-execute',
@@ -1812,6 +1834,8 @@ function createApp(config) {
           const { transport } = action;
           const keyProblem = deployKeyProblem(transport, capabilities, effectiveConfig.homeBaseExecutionMode);
           if (keyProblem) return sendJson(res, 409, keyProblem);
+          const unconfirmed = await confirmResolved(req, action);
+          if (unconfirmed) return sendJson(res, unconfirmed.statusCode, unconfirmed.payload);
           // Database credentials are generated inside the executor; a caller-supplied dbPassword is ignored here.
           const jobId = jobRunner.startTypedInstallJob({
             appId,
@@ -1989,7 +2013,7 @@ function createApp(config) {
             recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
             return sendJson(res, 400, { error: 'Moving an app to its own user requires confirm=MOVE.' });
           }
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, deferConfirmation: true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
             return sendJson(res, auth.statusCode, auth.payload);
@@ -2011,6 +2035,8 @@ function createApp(config) {
           return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
         }
         if (!capabilities.actions?.includes('move-user')) return refuseMove(409, 'The executor does not support moving apps yet; update it with install.sh --repair.', 'EXECUTOR_INCOMPATIBLE');
+        const unconfirmed = await confirmResolved(req, action);
+        if (unconfirmed) return sendJson(res, unconfirmed.statusCode, unconfirmed.payload);
         return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-move-user', auth, start: () => jobRunner.startTypedMoveUserJob({ appId, site: action.site }) });
       }
       const backupPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup-plan$/);
