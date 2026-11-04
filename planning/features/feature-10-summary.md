@@ -169,6 +169,17 @@ Until the household directory exists, services may be published but no app can u
 - **Waiting on SID-005/006:** enrollment ceremonies call the directory's addCredential, activate and consumeGrant; active Home Base has no admin session until passkeys arrive, so directory edits there are tested but not reachable; administrator grants need the every-time hardware check.
 - **Next:** SID-005, the passkey service.
 
+**SID-005 slice 1, passkeys on Home Base's hostname (2026-11-04; SID-005 not yet passing).** The passkey service answers at `/_sovereign/auth/` on the Home Base service hostname only, and is the way out of setup.
+- **Hardware keys:** stored as hardware only when their attestation chains to a pinned vendor root; ticking "hardware" never makes a key one.
+- **Leaving setup:** two administrator passkeys, one of them hardware, then a fresh check with the hardware key moves Home Base to active and opens admin.
+- **Active:** a passkey check opens admin for 8 hours; the passphrase opens recovery only, which keeps every passkey and ends every check. Administrator passkeys change in recovery until slice 2.
+- **Members:** added from accounts Home Base has seen, then enroll with a 15-minute code; a member's check proves who they are and never opens admin.
+- **Consistency:** every change commits only if nothing that authorized it (state, epochs, the stored passphrase) moved in between. Codex: three rounds, the last clean.
+- **Proven on the test VM with real devices:** an attested hardware key and a synced passkey, setup finished, admin unlocked with each, a recovery round trip, and a kid's device enrolled with a code.
+- **Decided:** entering recovery sends a notice through the health-alert channel (slice 3); no waiting period for now.
+- **Follow-ups:** a Members panel (candidates, add, issue code) and hiding admin cards from members.
+- **Next:** slice 2 (every-time hardware tokens, redemption sockets, `stepup.js`), then slice 3 (the sensitive hostnames, signing-key rotation, the root-removal and recovery notices).
+
 ## Review
 
 Two rounds of external plan review:
