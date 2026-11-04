@@ -131,3 +131,31 @@ test('changing the admin passphrase takes the hardware key, asked after the pass
   assert.equal(run.first.body.message, 'Confirm with your hardware key to change the admin passphrase.');
   assert.equal(run.retry.status, 200, JSON.stringify(run.retry.body));
 });
+
+test('a legacy host freezes "latest" too: the archive it plans now is the one confirmed', async (t) => {
+  const backups = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-legacy-backups-'));
+  t.after(() => fs.rmSync(backups, { recursive: true, force: true }));
+  const archive = (name) => fs.mkdirSync(path.join(backups, APP, name), { recursive: true });
+  archive('20260924T101010123Z');
+  const { parent, yubikey, root } = await activeHousehold(t, { config: { homeBaseExecutionMode: 'legacy-sudo', homeBaseEnablePrivilegedJobs: true, baseBackupDir: backups } });
+  const store = new SqliteStateStore(path.join(root, 'state.sqlite3'));
+  store.upsertInstallation({ appId: APP, name: 'Home Source', purpose: 'x', port: 3008, mountPath: '/source/', externalUrl: 'https://homebase.tailnet/source/', installRoot: '/opt/sovereign-home/apps/homeSource', serviceName: APP, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  const url = `/api/apps/${APP}/restore/execute`;
+  const asked = await parent.post(url, REAL);
+  assert.equal(asked.body.target, `POST ${url} backup ${path.join(backups, APP, '20260924T101010123Z')}`);
+  const token = await parent.actionToken(yubikey, asked.body);
+  archive('20260925T090000000Z');
+  // Refused before anything could run (on a host where it could, the preflight would come next).
+  const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
+  assert.equal(retried.status, 401, JSON.stringify(retried.body));
+  assert.equal(retried.body.target, `POST ${url} backup ${path.join(backups, APP, '20260925T090000000Z')}`);
+});
+
+test('a setting that can\'t be saved is refused before the hardware key is asked for', async (t) => {
+  const { parent, yubikey } = await executorHousehold(t);
+  const bad = await parent.post('/api/homebase/config', { hostname: 'not a hostname!' });
+  assert.equal(bad.status, 400, JSON.stringify(bad.body));
+  const good = await parent.confirmed(yubikey, '/api/homebase/config', { householdTimezone: 'America/New_York' });
+  assert.equal(good.first.status, 401);
+  assert.equal(good.retry.status, 200, JSON.stringify(good.retry.body));
+});

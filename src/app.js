@@ -1181,6 +1181,19 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/homebase/config') {
         const body = await parseBody(req);
+        const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
+        const parsed = validateHomeBaseConfigPatch(body, current);
+        // A cut-over host is bound to its instance and tailnet domain (the executor's cutover record); these
+        // fields would only make Home Base and the executor disagree about every address.
+        const locked = !parsed.error && currentIngress(state.ingressJobs, effectiveConfig)
+          ? ['hostname', 'domain', 'tailscaleManagedServiceId'].filter((field) => parsed.value[field] !== current[field])
+          : [];
+        const invalid = parsed.error ? [400, { error: parsed.error }]
+          : locked.length ? [409, { error: `${locked.join(', ')} cannot change while this host uses per-service sockets; roll back ingress first.`, code: 'INGRESS_LOCKED' }]
+            : null;
+        // With the directory on, the route matrix admitted only the unlocked administrator, so a change that
+        // can't be saved is refused before the hardware key is asked for, and spends no confirmation.
+        if (directory && invalid) return sendJson(res, ...invalid);
         // Host settings re-project every app's URLs: administrator only (bugBase #150). Nothing runs on the
         // host, so plan-only hosts can still save.
         const auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: true });
@@ -1189,17 +1202,7 @@ function createApp(config) {
           const error = auth.payload?.code ? auth.payload.error : (auth.statusCode === 401 ? 'Admin unlock is required to change Home Base settings.' : 'Set up the admin passphrase before changing Home Base settings.');
           return sendJson(res, auth.statusCode, { ...auth.payload, error });
         }
-        const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
-        const parsed = validateHomeBaseConfigPatch(body, current);
-        if (parsed.error) {
-          return sendJson(res, 400, { error: parsed.error });
-        }
-        // A cut-over host is bound to its instance and tailnet domain (the executor's cutover record); these
-        // fields would only make Home Base and the executor disagree about every address.
-        if (currentIngress(state.ingressJobs, effectiveConfig)) {
-          const locked = ['hostname', 'domain', 'tailscaleManagedServiceId'].filter((field) => parsed.value[field] !== current[field]);
-          if (locked.length) return sendJson(res, 409, { error: `${locked.join(', ')} cannot change while this host uses per-service sockets; roll back ingress first.`, code: 'INGRESS_LOCKED' });
-        }
+        if (invalid) return sendJson(res, ...invalid);
         const persisted = {
           ...parsed.value,
           updatedAt: new Date().toISOString(),
@@ -2246,13 +2249,16 @@ function createApp(config) {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
-        // "Latest" is frozen to the backup it names now: the confirmation is for that backup, and a newer one
-        // appearing before the retry refuses the retry rather than restoring something else.
-        const frozenBackupId = body.dryRun === false && executorManagesApp(effectiveConfig, state, restoreExecuteMatch[1])
-          ? resolveRestoreBackupId({ appId: restoreExecuteMatch[1], backupDir: body.backupDir, stateStore })
-          : null;
+        // "Latest" is frozen to the backup it names now: the confirmation is for that backup, the run restores
+        // that one, and a newer one appearing before the retry refuses the retry rather than restoring
+        // something else. Executor hosts name it from the database; legacy hosts plan from the archives on disk.
+        const real = body.dryRun === false;
+        const typedRestore = executorManagesApp(effectiveConfig, state, restoreExecuteMatch[1]);
+        const frozenBackupId = real && typedRestore ? resolveRestoreBackupId({ appId: restoreExecuteMatch[1], backupDir: body.backupDir, stateStore }) : null;
+        const frozenLegacyPlan = real && !typedRestore ? buildRestorePlan({ appId: restoreExecuteMatch[1], backupDir: body.backupDir, state, config: effectiveConfig }) : null;
+        const frozenBackup = frozenBackupId || frozenLegacyPlan?.restore.archiveDir || null;
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, target: frozenBackupId ? `${req.planTarget} backup ${frozenBackupId}` : null });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, target: frozenBackup ? `${req.planTarget} backup ${frozenBackup}` : null });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restore-execute',
@@ -2298,7 +2304,7 @@ function createApp(config) {
           if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
           return startExecutorPreview({ res, effectiveConfig, appId, kind: 'restore', action: { action: 'restore', appId, backupId }, jobRunner });
         }
-        const plan = buildRestorePlan({
+        const plan = frozenLegacyPlan || buildRestorePlan({
           appId: restoreExecuteMatch[1],
           backupDir: body.backupDir,
           state,
