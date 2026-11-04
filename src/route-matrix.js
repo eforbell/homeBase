@@ -133,7 +133,8 @@ function compile([method, path, routeClass, policy = null, authority = 'session'
 
 const MATRIX = Object.freeze(ROUTES.map(compile));
 
-// Static files (page scripts, styles, icons, fonts) are public, and only GETs of names like these.
+// Static files (page scripts, styles, icons, fonts) are public, and only GETs of names like these. Fonts under
+// a configured mount other than /_sovereign/fonts/ are matched by the font resolver in app.js.
 const STATIC = /^\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.(?:js|css|svg|png|ico|webmanifest|woff2?|ttf|json|txt)$/;
 const STATIC_ROUTE = Object.freeze({ method: 'GET', path: '<static file>', class: 'public', policy: null, authority: null, pattern: STATIC });
 

@@ -161,6 +161,30 @@ test('directory on: a member reaches the pages, their own passkeys and their own
   assert.equal((await parent.post('/api/nope', {})).status, 404, 'unknown to the administrator too');
 });
 
+test('directory on: the public health probe says only that Home Base answers; fonts follow their configured mount', async (t) => {
+  const assets = fs.mkdtempSync(path.join(require('os').tmpdir(), 'hb-fonts-'));
+  t.after(() => fs.rmSync(assets, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(assets, 'fonts'));
+  fs.writeFileSync(path.join(assets, 'fonts', 'test.woff2'), 'font');
+  const saved = { mount: process.env.SOVEREIGN_FONT_MOUNT_PATH, root: process.env.HOME_BASE_ASSETS_ROOT };
+  process.env.SOVEREIGN_FONT_MOUNT_PATH = '/_sovereign/custom-fonts/';
+  process.env.HOME_BASE_ASSETS_ROOT = assets;
+  t.after(() => {
+    for (const [key, value] of [['SOVEREIGN_FONT_MOUNT_PATH', saved.mount], ['HOME_BASE_ASSETS_ROOT', saved.root]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  const { base } = await activeHousehold(t);
+  const kid = browser(base, KID);
+  const health = await kid.get('/api/homebase/health');
+  assert.equal(health.status, 200);
+  assert.deepEqual(Object.keys(health.body).sort(), ['status', 'timestamp']);
+  assert.equal((await kid.get('/api/homebase/status')).status, 401, 'the details are the administrator\'s');
+  const font = await fetch(`${base}/_sovereign/custom-fonts/test.woff2`, { headers: { 'x-forwarded-for': KID, 'x-forwarded-host': HOMEBASE } });
+  assert.equal(font.status, 200);
+  assert.equal((await fetch(`${base}/_sovereign/other/test.woff2`, { headers: { 'x-forwarded-for': KID, 'x-forwarded-host': HOMEBASE } })).status, 404);
+});
+
 test('directory on: opening admin is the passphrase\'s and the passkey\'s, not the session\'s', async (t) => {
   const { base, parent } = await activeHousehold(t);
   const locked = browser(base, PARENT);

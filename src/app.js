@@ -29,7 +29,7 @@ const { createDirectoryRoutes } = require('./identity/directory-routes');
 const { createPasskeys } = require('./identity/passkeys');
 const { createPasskeyRoutes } = require('./identity/passkey-routes');
 const { createKeyring } = require('./identity/signing-key');
-const { routeFor } = require('./route-matrix');
+const { STATIC_ROUTE, routeFor } = require('./route-matrix');
 const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
@@ -963,7 +963,9 @@ function createApp(config) {
       const site = passkeySite(req, state, effectiveConfig);
       req.homeBaseSite = site?.homeBase ? site : null;
       // SID-006: the route matrix decides who may use this route before any handler runs. No entry, no route.
-      const route = routeFor(method, pathname) || routeFor(method, normalizedPath);
+      // Font files are wherever the font mount is configured: the resolver that serves them decides.
+      const route = routeFor(method, pathname) || routeFor(method, normalizedPath)
+        || (method === 'GET' && resolveSovereignFontAssetPath(pathname) ? STATIC_ROUTE : null);
       if (!route) return notFound(res);
       const refused = await authorizeRoute(route, req);
       if (refused) return sendJson(res, refused.statusCode, refused.payload);
@@ -1170,10 +1172,12 @@ function createApp(config) {
         return sendJson(res, 200, getHomeBaseStatus(effectiveConfig));
       }
       if (method === 'GET' && pathname === '/api/homebase/health') {
+        // The installer's probe, open to anyone who reaches Home Base: with the directory on, it says only that
+        // Home Base answers. The host's details are /api/homebase/status, the administrator's.
         return sendJson(res, 200, {
           status: 'ok',
           timestamp: new Date().toISOString(),
-          homebase: getHomeBaseStatus(effectiveConfig),
+          ...(directory ? {} : { homebase: getHomeBaseStatus(effectiveConfig) }),
         });
       }
       if (method === 'GET' && pathname === '/api/homebase/bootstrap-status') {
