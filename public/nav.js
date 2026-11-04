@@ -138,13 +138,21 @@
       setup: 'Home Base is in <strong>setup</strong>. Until the administrator registers two passkeys, one of them a hardware security key, and finishes setup, plans and setting changes are refused.',
       recovery: 'Home Base is in <strong>recovery</strong>. Every session has ended; only replacing and removing administrator passkeys works until it is finished with a hardware key.',
     };
+    // Active, and this is the locked view (anyone but the unlocked administrator): every page's data is the
+    // administrator's (SID-006), so say why it is empty and where to go.
+    if (directory.state === 'active' && directory.caller && activePage !== 'admin') {
+      messages.active = directory.caller.member
+        ? 'These pages are the administrator\'s, and admin is locked. The administrator unlocks it with a passkey; everyone manages their own passkeys there too.'
+        : 'These pages are for the household\'s administrator.';
+    }
     const main = document.getElementById('app');
     if (!messages[directory.state] || !main) return;
     const banner = document.createElement('div');
     banner.className = 'hb-card';
     banner.setAttribute('role', 'status');
     banner.style.cssText = 'border-color:var(--yellow);margin-bottom:1rem;';
-    banner.innerHTML = `<p style="margin:0;">${messages[directory.state]} ${activePage === 'admin' ? 'Use Passkeys below.' : '<a href="/admin">Finish on Admin</a>.'}</p>`;
+    const link = directory.state === 'active' ? (directory.caller.member ? '<a href="/admin">Go to Admin</a>.' : '') : '<a href="/admin">Finish on Admin</a>.';
+    banner.innerHTML = `<p style="margin:0;">${messages[directory.state]} ${activePage === 'admin' ? 'Use Passkeys below.' : link}</p>`;
     main.prepend(banner);
     // The page's own render replaces main's contents; keep the banner on top of whatever it draws.
     new MutationObserver(() => { if (main.firstElementChild !== banner) main.prepend(banner); }).observe(main, { childList: true });

@@ -29,6 +29,7 @@ const { createDirectoryRoutes } = require('./identity/directory-routes');
 const { createPasskeys } = require('./identity/passkeys');
 const { createPasskeyRoutes } = require('./identity/passkey-routes');
 const { createKeyring } = require('./identity/signing-key');
+const { STATIC_ROUTE, routeFor } = require('./route-matrix');
 const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
@@ -923,9 +924,11 @@ function createApp(config) {
     if (!sent.userId && !sent.login) ingressHeaders = 'absent';
     else if (caller && sent.userId === caller.userId && sent.login === caller.login) ingressHeaders = 'match';
     const state = snapshotReader.current();
+    // The reader's message can name paths and user IDs on the host: the administrator's to see.
+    const admin = state.ok ? false : (await getAdminStatus(req, stateStore, adminOptions)).unlocked;
     const snapshot = state.ok
       ? { ok: true, household: state.snapshot.household, generation: state.snapshot.generation, ageSeconds: Math.round((Date.now() - state.snapshot.writtenAt) / 1000) }
-      : { ok: false, reason: state.reason, message: state.message };
+      : { ok: false, reason: state.reason, ...(admin ? { message: state.message } : {}) };
     const callerHeaders = caller ? { 'x-sovereign-user-id': caller.userId, 'x-sovereign-login': caller.login } : {};
     const apps = state.ok ? Object.fromEntries(catalog.map((app) => {
       const result = resolveMember(state.snapshot, callerHeaders, { appId: app.id });
@@ -933,6 +936,17 @@ function createApp(config) {
     })) : {};
     // The administrator flag is Home Base's own (D10), so it is shown here rather than read from the snapshot.
     return { caller: caller && { userId: caller.userId, login: caller.login, administrator: directory.isAdministrator(caller.userId) }, state: directory.state(), ingressHeaders, snapshot, apps };
+  }
+  // With the directory on, an administrator route with session authority needs the unlocked administrator,
+  // before the handler reads the body or prompts for anything. Directory off (hosts not yet on Feature-10),
+  // each handler keeps the gate it always had: real runs and settings need the passphrase session, while
+  // reads, plans and dry runs stay open, until the host moves to the directory.
+  async function authorizeRoute(route, req) {
+    if (!directory || route.class !== 'administrator' || route.authority !== 'session') return null;
+    const status = await getAdminStatus(req, stateStore, adminOptions);
+    if (status.unlocked) return null;
+    if (!status.configured) return { statusCode: 409, payload: { error: 'Admin setup is required first.', code: 'ADMIN_SETUP_REQUIRED' } };
+    return { statusCode: 401, payload: { error: 'Unlock admin on the Admin page first.', code: 'ADMIN_UNLOCK_REQUIRED' } };
   }
   const stoppers = [];
   const server = http.createServer(async (req, res) => {
@@ -950,6 +964,13 @@ function createApp(config) {
       // The admin session is Home Base's hostname's alone; the passkey routes also answer on sensitive ones.
       const site = passkeySite(req, state, effectiveConfig);
       req.homeBaseSite = site?.homeBase ? site : null;
+      // SID-006: the route matrix decides who may use this route before any handler runs. No entry, no route.
+      // Font files are wherever the font mount is configured: the resolver that serves them decides.
+      const route = routeFor(method, pathname) || routeFor(method, normalizedPath)
+        || (method === 'GET' && resolveSovereignFontAssetPath(pathname) ? STATIC_ROUTE : null);
+      if (!route) return notFound(res);
+      const refused = await authorizeRoute(route, req);
+      if (refused) return sendJson(res, refused.statusCode, refused.payload);
 
       if (method === 'GET') {
         if (normalizedPath === '/') return servePublicPage(res, 'index.html');
@@ -1153,10 +1174,12 @@ function createApp(config) {
         return sendJson(res, 200, getHomeBaseStatus(effectiveConfig));
       }
       if (method === 'GET' && pathname === '/api/homebase/health') {
+        // The installer's probe, open to anyone who reaches Home Base: with the directory on, it says only that
+        // Home Base answers. The host's details are /api/homebase/status, the administrator's.
         return sendJson(res, 200, {
           status: 'ok',
           timestamp: new Date().toISOString(),
-          homebase: getHomeBaseStatus(effectiveConfig),
+          ...(directory ? {} : { homebase: getHomeBaseStatus(effectiveConfig) }),
         });
       }
       if (method === 'GET' && pathname === '/api/homebase/bootstrap-status') {
