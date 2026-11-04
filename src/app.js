@@ -204,6 +204,8 @@ function parseBody(req) {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
+      // The bytes as received, for the digest an every-time action is bound to (wire contract, section 9).
+      req.rawBody = Buffer.concat(chunks);
       if (chunks.length === 0) return resolve({});
       try {
         const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));

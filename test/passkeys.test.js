@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { parseSnapshot, verifyToken } = require('sovereign-auth');
+const { parseSnapshot, requestDigest, verifyToken } = require('sovereign-auth');
 const { createApp } = require('../src/app');
 const { createPasskeys } = require('../src/identity/passkeys');
 const { loadSigningKey } = require('../src/identity/signing-key');
@@ -67,8 +67,8 @@ async function startServer(t, { cutOver = true, whois = PEER_WHOIS } = {}) {
 // A browser on one tailnet device: its cookies by name, and the hostname it asked for.
 function browser(base, addr, { host = HOMEBASE } = {}) {
   const cookies = new Map();
-  const request = async (method, url, body) => {
-    const headers = { 'x-forwarded-for': addr, 'x-forwarded-host': host };
+  const request = async (method, url, body, extra = {}) => {
+    const headers = { 'x-forwarded-for': addr, 'x-forwarded-host': host, ...extra };
     if (cookies.size) headers.cookie = [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
     if (body !== undefined) headers['content-type'] = 'application/json';
     const res = await fetch(`${base}${url}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -83,11 +83,27 @@ function browser(base, addr, { host = HOMEBASE } = {}) {
     return { status: res.status, body: text ? JSON.parse(text) : null, setCookie: res.headers.getSetCookie() };
   };
   const get = (url) => request('GET', url);
-  const post = (url, body = {}) => request('POST', url, body);
+  const post = (url, body = {}, headers = {}) => request('POST', url, body, headers);
+  // What stepup.js does with an every-time 401: an action ceremony, then the token.
+  async function actionToken(authenticator, stepUp, { origin = ORIGIN } = {}) {
+    const action = { policy: stepUp.policy, target: stepUp.target, digest: stepUp.digest };
+    const started = await post('/_sovereign/auth/check/options', { purpose: 'action', action });
+    if (started.status !== 200) return started;
+    return post('/_sovereign/auth/check/finish', { purpose: 'action', action, response: authenticator.authenticate(started.body.options, { origin }) });
+  }
   return {
     get,
     post,
     cookies,
+    actionToken,
+    // A POST, and on an every-time 401 the ceremony with authenticator and one identical retry.
+    async confirmed(authenticator, url, body = {}) {
+      const first = await post(url, body);
+      if (first.status !== 401 || first.body.level !== 'every-time') return { first, retry: null, token: null };
+      const issued = await actionToken(authenticator, first.body);
+      if (issued.status !== 200) return { first, retry: null, token: null, issued };
+      return { first, token: issued.body.token, retry: await post(url, body, { 'x-sovereign-action-token': issued.body.token }) };
+    },
     async enroll(authenticator, { label = 'key', hardware = false, grant, origin = ORIGIN } = {}) {
       const started = await post('/_sovereign/auth/enroll/options', { label, hardware, grant });
       if (started.status !== 200) return started;
@@ -272,8 +288,8 @@ test('active: a member enrolls with the administrator\'s grant, adds and removes
   assert.equal((await kid.post('/_sovereign/auth/credentials/revoke', { credentialId: last })).body.code, 'LAST_CREDENTIAL');
   assert.match((await kid.check(tablet)).body.error, /unknown_credential/, 'a revoked passkey checks nothing');
 
-  // The administrator's own passkeys don't change here while active.
-  assert.equal((await parent.enroll(createAuthenticator())).body.code, 'ADMINISTRATOR_CREDENTIAL');
+  // The administrator's own passkeys change here while active only with a hardware key every time.
+  assert.equal((await parent.enroll(createAuthenticator())).body.code, 'HARDWARE_CHECK_REQUIRED');
 });
 
 // A POST whose headers go now and whose body goes when the test says: what a client holding its body back
@@ -308,8 +324,8 @@ test('authority is decided after the body arrives: a request held back across ac
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal((await parent.check(yubikey, { purpose: 'activate' })).body.state, 'active');
   const late = await held.release({ label: 'Late key' });
-  assert.equal(late.status, 409);
-  assert.equal(late.body.code, 'ADMINISTRATOR_CREDENTIAL', 'judged as active, where administrator passkeys don\'t change');
+  assert.equal(late.status, 401);
+  assert.equal(late.body.code, 'HARDWARE_CHECK_REQUIRED', 'judged as active, where administrator passkeys need a hardware key every time');
 });
 
 test('recovery is the administrator\'s alone: members neither check in nor change passkeys, and admin credentials change only there', async (t) => {
@@ -391,4 +407,179 @@ test('a passphrase rotated while a setup enrollment waits on the identity lookup
   assert.equal(finished.status, 409);
   assert.equal(finished.body.code, 'PASSPHRASE_CHANGED');
   assert.deepEqual((await other.get('/_sovereign/auth/status')).body.credentials, []);
+});
+
+const payloadOf = (token) => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+
+test('active: the administrator adds and removes their passkeys with a hardware key every time, one confirmation per request', async (t) => {
+  const { app, parent, phone, yubikey } = await activeHousehold(t);
+  const memberId = app.directory.describe().members[0].memberId;
+  const body = { label: 'Backup key', hardware: true };
+  const first = await parent.post('/_sovereign/auth/enroll/options', body);
+  assert.equal(first.status, 401);
+  const { error, policy, level, kind, target, code } = first.body;
+  assert.deepEqual({ error, policy, level, kind, target, code }, { error: 'step_up_required', policy: 'manage-admin-credential', level: 'every-time', kind: 'hardware', target: `enroll:${memberId}`, code: 'HARDWARE_CHECK_REQUIRED' });
+  assert.equal(first.body.digest, requestDigest({ method: 'POST', url: '/_sovereign/auth/enroll/options', body: JSON.stringify(body), target }), 'the wire contract\'s digest of this exact request');
+
+  assert.match((await parent.actionToken(phone, first.body)).body.error, /insufficient_kind/, 'only a hardware key confirms it');
+  const issued = await parent.actionToken(yubikey, first.body);
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  const claims = payloadOf(issued.body.token);
+  assert.deepEqual({ typ: claims.typ, aud: claims.aud, app: claims.app, act: claims.act, tgt: claims.tgt, dig: claims.dig, kind: claims.kind, life: claims.exp - claims.iat },
+    { typ: 'action', aud: HOMEBASE, app: 'homebase', act: 'manage-admin-credential', tgt: target, dig: first.body.digest, kind: 'hardware', life: 60 });
+  const token = { 'x-sovereign-action-token': issued.body.token };
+
+  const changed = await parent.post('/_sovereign/auth/enroll/options', { label: 'Another', hardware: true }, token);
+  assert.equal(changed.status, 401, 'a token for one request is no use for a changed one');
+
+  const both = await Promise.all([parent.post('/_sovereign/auth/enroll/options', body, token), parent.post('/_sovereign/auth/enroll/options', body, token)]);
+  assert.deepEqual(both.map((answer) => answer.status).sort(), [200, 409], 'the identical request, once');
+  assert.equal(both.find((answer) => answer.status === 409).body.code, 'REPLAYED');
+  const backup = createAuthenticator({ kind: 'hardware' });
+  const options = both.find((answer) => answer.status === 200).body.options;
+  const added = await parent.post('/_sovereign/auth/enroll/finish', { ...body, response: backup.register(options, { origin: ORIGIN }) });
+  assert.equal(added.status, 201, JSON.stringify(added.body));
+  assert.equal(added.body.kind, 'hardware');
+
+  const keys = Object.fromEntries((await parent.get('/_sovereign/auth/status')).body.credentials.map((credential) => [credential.label, credential.credentialId]));
+  const removal = await parent.confirmed(backup, '/_sovereign/auth/credentials/revoke', { credentialId: keys.Phone });
+  assert.equal(removal.first.body.target, `revoke:${keys.Phone}`);
+  assert.equal(removal.retry.status, 200, JSON.stringify(removal.retry.body));
+  assert.equal(parent.cookies.has('__Host-sv_assurance'), false, 'the epoch moved, so the admin session is spent');
+  const replayed = await parent.post('/_sovereign/auth/credentials/revoke', { credentialId: keys.Phone }, { 'x-sovereign-action-token': removal.token });
+  assert.equal(replayed.status, 404, 'replayed, it finds nothing left to remove');
+  assert.equal(payloadOf(removal.token).epoch + 1, app.directory.describe().members[0].epoch, 'and its epoch is spent besides');
+
+  // D11 still holds, and a refused change leaves its token unspent.
+  const last = await parent.confirmed(backup, '/_sovereign/auth/credentials/revoke', { credentialId: keys.YubiKey });
+  assert.equal(last.retry.body.code, 'LAST_ADMINISTRATOR_CREDENTIAL');
+  assert.equal((await parent.post('/_sovereign/auth/credentials/revoke', { credentialId: keys.YubiKey }, { 'x-sovereign-action-token': last.token })).body.code, 'LAST_ADMINISTRATOR_CREDENTIAL');
+  assert.equal((await parent.post('/_sovereign/auth/credentials/revoke', { credentialId: 'someone-elses' })).status, 404, 'only their own passkeys here');
+});
+
+test('a confirmation is the administrator\'s, for an every-time action, in active Home Base, and binds the target it names', async (t) => {
+  const { app, base, parent, yubikey } = await activeHousehold(t);
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const memberId = (await parent.post('/api/directory/members', { userId: '1002', role: 'kid' })).body.memberId;
+  const { code } = (await parent.post(`/api/directory/members/${memberId}/grant`)).body;
+  const kid = browser(base, KID);
+  const tablet = createAuthenticator();
+  await kid.enroll(tablet, { label: 'Tablet', grant: code });
+  const digest = 'A'.repeat(43);
+  const ask = (who, action) => who.post('/_sovereign/auth/check/options', { purpose: 'action', action });
+  assert.equal((await ask(kid, { policy: 'manage-admin-credential', target: 'enroll:x', digest })).body.code, 'NOT_AUTHORIZED');
+  assert.equal((await ask(parent, { policy: 'open-admin', target: '', digest })).status, 400, 'a session policy takes a check, not a token');
+  assert.equal((await ask(parent, { policy: 'no-such-policy', target: '', digest })).status, 400);
+  assert.equal((await ask(parent, { policy: 'manage-admin-credential', target: 'a\nb', digest })).status, 400);
+  assert.equal((await ask(parent, { policy: 'manage-admin-credential', target: '', digest: 'short' })).status, 400);
+
+  const enroll = await parent.post('/_sovereign/auth/enroll/options', { label: 'x' });
+  const issued = await parent.actionToken(yubikey, enroll.body);
+  const keys = (await parent.get('/_sovereign/auth/status')).body.credentials;
+  const elsewhere = await parent.post('/_sovereign/auth/credentials/revoke', { credentialId: keys[0].credentialId }, { 'x-sovereign-action-token': issued.body.token });
+  assert.equal(elsewhere.status, 401, 'an enrollment\'s token removes nothing');
+
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  assert.equal((await ask(parent, { policy: 'manage-admin-credential', target: 'enroll:x', digest })).body.code, 'BOOTSTRAP_STATE');
+});
+
+test('an administrator\'s enrollment finishes only with a challenge a confirmation bought, at the epochs it saw', async (t) => {
+  const { app, parent, yubikey } = await activeHousehold(t);
+  const body = { label: 'Spare' };
+  const { retry } = await parent.confirmed(yubikey, '/_sovereign/auth/enroll/options', body);
+  assert.equal(retry.status, 200, JSON.stringify(retry.body));
+  // Between the start and the finish, a removal moves the administrator's epoch.
+  const admin = app.directory.describe().members[0];
+  app.directory.addCredential({ userId: admin.userId, credentialId: 'extra-key', kind: 'hardware' });
+  const phone = admin.credentials.find((credential) => credential.label === 'Phone').credentialId;
+  app.directory.revokeCredential({ userId: admin.userId }, phone, { hardwareEveryTime: true });
+  const finished = await parent.post('/_sovereign/auth/enroll/finish', { ...body, response: createAuthenticator().register(retry.body.options, { origin: ORIGIN }) });
+  assert.equal(finished.status, 400, JSON.stringify(finished.body));
+  assert.equal(finished.body.code, 'CEREMONY_REFUSED');
+
+  // And the same start, finished at once, enrolls.
+  const again = await parent.confirmed(yubikey, '/_sovereign/auth/enroll/options', body);
+  const spare = await parent.post('/_sovereign/auth/enroll/finish', { ...body, response: createAuthenticator().register(again.retry.body.options, { origin: ORIGIN }) });
+  assert.equal(spare.status, 201, JSON.stringify(spare.body));
+});
+
+test('an action token\'s jti is used once across processes and restarts, and only while the member still stands', async (t) => {
+  const { app, root } = await activeHousehold(t);
+  const member = app.directory.describe().members[0];
+  const standing = app.directory.standing(member.userId);
+  const expect = { userId: member.userId, state: standing.state, globalEpoch: standing.globalEpoch, epoch: standing.member.epoch };
+  const action = (jti) => ({ jti, app: 'helm', expiresAt: Math.floor(Date.now() / 1000) + 60 });
+  // Two processes at once, each its own connection: exactly one takes it.
+  const script = `const { createDirectoryStore } = require(${JSON.stringify(path.join(__dirname, '..', 'src', 'identity', 'directory-store'))});
+    const store = createDirectoryStore(process.argv[1]);
+    process.stdout.write(JSON.stringify(store.consume(JSON.parse(process.argv[2]))));`;
+  const request = JSON.stringify({ action: action('shared'), expect, now: new Date().toISOString(), nowSeconds: Math.floor(Date.now() / 1000) });
+  const { spawn } = require('child_process');
+  const run = () => new Promise((resolve) => {
+    const child = spawn(process.execPath, ['-e', script, path.join(root, 'state.sqlite3'), request]);
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('close', () => resolve(JSON.parse(out)));
+  });
+  const results = await Promise.all([run(), run(), run()]);
+  assert.equal(results.filter((result) => result.ok).length, 1, JSON.stringify(results));
+  assert.ok(results.filter((result) => !result.ok).every((result) => result.replayed));
+  assert.equal(app.directory.consumeAction(action('shared'), expect), 'replayed', 'and stays used for the directory in this process');
+  assert.equal(app.directory.consumeAction(action('fresh'), { ...expect, epoch: expect.epoch + 1 }), 'stale', 'a member who moved redeems nothing');
+  assert.equal(app.directory.consumeAction(action('fresh'), expect), 'redeemed', 'and the stale attempt did not use it up');
+});
+
+test('stepup.js is served on Home Base\'s hostname, as a script', async (t) => {
+  const { base } = await startServer(t);
+  const res = await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': HOMEBASE } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /^text\/javascript/);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(await res.text(), /window\.SovereignStepUp/);
+  assert.equal((await fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': `smith-home.${DOMAIN}` } })).status, 404);
+});
+
+test('an action token lives 60 seconds and binds every claim it names', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-action-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let clock = Date.parse('2026-11-04T12:00:00Z');
+  const passkeys = createPasskeys({ directory: {}, signingKey: loadSigningKey(path.join(root, 'key.pem'), { create: true }), household: 'smith', roots: attestationFixture().roots, now: () => clock });
+  const site = { hostname: HOMEBASE, rpID: DOMAIN };
+  const standing = { member: { userId: '1001', status: 'active', epoch: 3, administrator: true }, globalEpoch: 2, state: 'active' };
+  const want = { site, standing, app: 'homebase', policyKey: 'manage-admin-credential', target: 'enroll:m_1', digest: 'D'.repeat(43) };
+  const token = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'hardware' });
+  const headers = { 'x-sovereign-action-token': token };
+  assert.ok(passkeys.actionToken(headers, want).claims);
+  assert.equal(passkeys.actionToken({}, want).reason, 'no_token');
+  assert.equal(passkeys.actionToken(headers, { ...want, app: 'helm' }).reason, 'wrong_app');
+  assert.equal(passkeys.actionToken(headers, { ...want, policyKey: 'grant-administrator' }).reason, 'wrong_action');
+  assert.equal(passkeys.actionToken(headers, { ...want, target: 'enroll:m_2' }).reason, 'wrong_target');
+  assert.equal(passkeys.actionToken(headers, { ...want, digest: 'E'.repeat(43) }).reason, 'wrong_digest');
+  assert.equal(passkeys.actionToken(headers, { ...want, site: { ...site, hostname: `smith-helm.${DOMAIN}` } }).reason, 'wrong_audience');
+  assert.equal(passkeys.actionToken(headers, { ...want, standing: { ...standing, member: { ...standing.member, epoch: 4 } } }).reason, 'stale_epoch');
+  assert.equal(passkeys.actionToken(headers, { ...want, standing: { ...standing, globalEpoch: 3 } }).reason, 'stale_global_epoch');
+  const synced = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'synced' });
+  assert.equal(passkeys.actionToken({ 'x-sovereign-action-token': synced }, want).reason, 'wrong_kind');
+  const cookieLike = passkeys.issueCookie({ site, standing, credentialId: 'c', kind: 'hardware', windowSeconds: 60 }).split(';')[0].split('=').slice(1).join('=');
+  assert.equal(passkeys.actionToken({ 'x-sovereign-action-token': cookieLike }, want).reason, 'wrong_type', 'an assurance cookie is not an action token');
+  clock += 59_000;
+  assert.ok(passkeys.actionToken(headers, want).claims);
+  clock += 1_000;
+  assert.equal(passkeys.actionToken(headers, want).reason, 'expired');
+});
+
+test('a spent action token is refused at its expiry, not taken again once its record could be dropped', async (t) => {
+  const { app, root } = await activeHousehold(t);
+  const { createDirectoryStore } = require('../src/identity/directory-store');
+  const store = createDirectoryStore(path.join(root, 'state.sqlite3'));
+  const member = app.directory.describe().members[0];
+  const standing = app.directory.standing(member.userId);
+  const expect = { userId: member.userId, state: standing.state, globalEpoch: standing.globalEpoch, epoch: standing.member.epoch };
+  const exp = Math.floor(Date.now() / 1000) + 60;
+  const at = (nowSeconds, jti = 'spent') => store.consume({ action: { jti, app: 'homebase', expiresAt: exp }, expect, now: new Date().toISOString(), nowSeconds });
+  assert.deepEqual(at(exp - 10), { ok: true });
+  assert.deepEqual(at(exp - 1), { ok: false, replayed: true });
+  assert.deepEqual(at(exp), { ok: false, expired: true }, 'at its expiry second it is refused, not re-taken');
+  assert.deepEqual(at(exp + 5, 'never-used'), { ok: false, expired: true }, 'nor is any token past its expiry');
+  assert.deepEqual(at(exp - 1), { ok: false, replayed: true }, 'and the spent record is still there');
 });

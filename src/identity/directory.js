@@ -149,16 +149,24 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   // build(data) returns { change, value } from what it read, or throws a DirectoryError. The change is
   // committed only if nothing else changed the directory meanwhile; otherwise it is rebuilt from a fresh read.
   // expectPassphraseHash: the change also needs the passphrase it was authorized by to be the stored one.
-  function change(build, { expectPassphraseHash } = {}) {
+  // consumeAction ({ jti, app, expiresAt }): the action token this change was authorized by, used up in the
+  // same commit, so a replay changes nothing.
+  function change(build, { expectPassphraseHash, consumeAction } = {}) {
     for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
       const data = load();
       const { change: delta, value } = build(data);
       if (!Object.keys(delta).length) return value;
-      const result = store.commit({ expectGeneration: data.household.generation, now: iso(), ...delta, ...(expectPassphraseHash ? { expectPassphraseHash } : {}) });
+      const result = store.commit({
+        expectGeneration: data.household.generation, now: iso(), ...delta,
+        ...(expectPassphraseHash ? { expectPassphraseHash } : {}),
+        ...(consumeAction ? { consumeAction, nowSeconds: Math.floor(now() / 1000) } : {}),
+      });
       if (result.ok) {
         publish();
         return value;
       }
+      if (result.replayed) refuse(409, 'REPLAYED', 'That confirmation was already used; confirm again.');
+      if (result.expired) refuse(409, 'EXPIRED', 'That confirmation expired; confirm again.');
       if (result.passphraseChanged) refuse(409, 'PASSPHRASE_CHANGED', 'The admin passphrase changed while this request was in flight; unlock again.');
       if (result.integrity) refuse(409, 'CONFLICT', `That would give two members the same login or user ID (${result.integrity}).`);
     }
@@ -301,16 +309,17 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
 
   // While active the administrator keeps D11 (transactionally: the check and the write are one commit).
   // Setup and recovery may revoke anything; that is what recovery is for.
-  // hardwareEveryTime: the actor passed an every-time hardware check for this (manage-admin-credential). An
-  // admin session is not one, so until those checks exist (SID-005's next slice) administrator credentials
-  // change only in setup and recovery.
-  function revokeCredential(actor, credentialId, { hardwareEveryTime = false } = {}) {
+  // hardwareEveryTime: the actor presented an every-time hardware token for this (manage-admin-credential);
+  // consumeAction is that token, used up in the same commit, and expect what its check saw. An admin session
+  // is not one, so without it administrator credentials change only in setup and recovery.
+  function revokeCredential(actor, credentialId, { hardwareEveryTime = false, expect = null, consumeAction = null } = {}) {
     return change((data) => {
-      requireAdministrator(data, actor.userId);
+      const actingAdmin = requireAdministrator(data, actor.userId);
+      requireUnchanged(data, actingAdmin, expect);
       const credential = data.credentials.find((entry) => entry.credential_id === credentialId && !entry.revoked_at) || refuse(404, 'NOT_FOUND', 'No such credential.');
       const member = memberById(data, credential.member_id);
       if (data.household.state === 'active' && member.administrator) {
-        if (!hardwareEveryTime) refuse(409, 'ADMINISTRATOR_CREDENTIAL', 'Administrator passkeys change in recovery for now; every-time hardware checks for them come next.');
+        if (!hardwareEveryTime) refuse(409, 'ADMINISTRATOR_CREDENTIAL', 'In active Home Base, administrator passkeys are removed from the Passkeys card on Admin, with a hardware key every time.');
         const remaining = credentialsOf(data, member.member_id).filter((entry) => entry.credential_id !== credentialId);
         if (!meetsCredentialRule(remaining)) refuse(409, 'LAST_ADMINISTRATOR_CREDENTIAL', 'The administrator must keep at least two credentials, including an attested hardware key. Enroll a replacement first.');
       }
@@ -322,7 +331,14 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         },
         value: { revoked: credentialId },
       };
-    });
+    }, consumeAction ? { consumeAction } : {});
+  }
+
+  // Uses up an action token's jti for an app's redemption (D19), provided the member still stands as
+  // expect says ({ userId, state, globalEpoch, epoch }). Returns 'redeemed', 'replayed', 'expired' or 'stale'.
+  function consumeAction(action, expect) {
+    const result = store.consume({ action, expect, now: iso(), nowSeconds: Math.floor(now() / 1000) });
+    return result.ok ? 'redeemed' : result.replayed ? 'replayed' : result.expired ? 'expired' : 'stale';
   }
 
   // A member removes one of their own credentials (the passkey service checked them recently). An
@@ -574,7 +590,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
 
   return {
-    activate, addCredential, addMember, claim, consumeGrant, credentialsFor, describe, enterRecovery, init, isAdministrator, issueGrant,
+    activate, addCredential, addMember, claim, consumeAction, consumeGrant, credentialsFor, describe, enterRecovery, init, isAdministrator, issueGrant,
     lookup, memberStatus, publish, recordAssertion, reset, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }

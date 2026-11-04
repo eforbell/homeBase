@@ -52,8 +52,18 @@
     return error;
   }
 
+  // A POST that may need a step-up first (a recent check, or a hardware key every time): through the
+  // shared helper when this hostname serves it.
+  async function guardedPost(url, body) {
+    if (!window.SovereignStepUp) return window.HB.postJson(url, body);
+    const response = await window.SovereignStepUp.fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || payload.error || `Request failed (${response.status})`);
+    return payload;
+  }
+
   async function enroll({ label, hardware, grant }) {
-    const { options } = await window.HB.postJson(`${AUTH}enroll/options`, { label, hardware, grant });
+    const { options } = await guardedPost(`${AUTH}enroll/options`, { label, hardware, grant });
     let response;
     try { response = await create(options); } catch (error) { throw ceremonyError(error); }
     return window.HB.postJson(`${AUTH}enroll/finish`, { label, hardware, grant, response });
@@ -97,7 +107,7 @@
           <li class="hb-row" style="flex-wrap:wrap;gap:0.4rem;">
             <strong>${esc(credential.label)}</strong>
             <span class="hb-muted">${esc(KIND_LABELS[credential.kind] || credential.kind)} · added ${esc(ago(credential.createdAt))} · last used ${esc(ago(credential.lastUsedAt))}</span>
-            ${status.member.administrator ? '' : `<button class="hb-btn" type="button" data-passkey-revoke="${esc(credential.credentialId)}" style="margin-left:auto;">Remove</button>`}
+            ${status.member.administrator && status.state !== 'active' ? '' : `<button class="hb-btn" type="button" data-passkey-revoke="${esc(credential.credentialId)}" style="margin-left:auto;">Remove</button>`}
           </li>`).join('')
       : '<li class="hb-muted">No passkeys yet.</li>';
     const checkLine = status.check
@@ -110,6 +120,7 @@
       <p class="hb-muted" style="margin:0 0 0.6rem;">${esc(status.member.name || status.member.login)} · ${esc(status.member.role)}${status.member.administrator ? ' · administrator' : ''} · Home Base is <strong>${esc(status.state)}</strong></p>
       <p style="margin:0 0 0.6rem;">${checkLine}</p>
       ${step ? `<p class="hb-warn" style="margin:0 0 0.8rem;">${esc(step)}</p>` : ''}
+      ${status.member.administrator && status.state === 'active' ? '<p class="hb-muted" style="margin:0 0 0.8rem;">Adding or removing your passkeys asks for your hardware key every time. Removing one ends your checks everywhere, so check again afterwards.</p>' : ''}
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0 0 0.9rem;">${rows}</ul>
       <div class="hb-grid hb-grid-2">
         <form class="hb-form-grid" data-passkey-action="enroll">
@@ -167,7 +178,7 @@
       if (!button) return;
       const result = node.querySelector('[data-check-result]');
       try {
-        await window.HB.postJson(`${AUTH}credentials/revoke`, { credentialId: button.dataset.passkeyRevoke });
+        await guardedPost(`${AUTH}credentials/revoke`, { credentialId: button.dataset.passkeyRevoke });
         reload();
       } catch (error) {
         result.textContent = error.message;

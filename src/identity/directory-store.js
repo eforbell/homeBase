@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS identity_enrollment_grants (
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS identity_action_tokens (
+  jti TEXT PRIMARY KEY,
+  app TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  consumed_at TEXT NOT NULL
+);
 """
 
 MEMBER_FIELDS = ["member_id", "user_id", "login", "name", "role", "administrator", "status", "epoch", "apps", "created_at", "updated_at"]
@@ -92,6 +99,22 @@ def upsert(table, key, fields, record):
 
 def emit(value):
     sys.stdout.write(json.dumps(value))
+
+# An action token's jti is used once (D19), across processes and restarts: taken inside the caller's
+# write transaction. A token at or past its expiry is refused here, whatever its verification saw a moment
+# ago, and only then are spent records of expired tokens dropped: no token they name can be taken again.
+# Returns "taken", "replayed" or "expired".
+def take_action(action, now_seconds, now):
+    if int(action["expiresAt"]) <= now_seconds:
+        return "expired"
+    if conn.execute("SELECT 1 FROM identity_action_tokens WHERE jti = ?", (action["jti"],)).fetchone():
+        return "replayed"
+    conn.execute("DELETE FROM identity_action_tokens WHERE expires_at <= ?", (now_seconds,))
+    conn.execute(
+        "INSERT INTO identity_action_tokens (jti, app, expires_at, consumed_at) VALUES (?, ?, ?, ?)",
+        (action["jti"], action["app"], int(action["expiresAt"]), now),
+    )
+    return "taken"
 
 if op == "init":
     conn.executescript(SCHEMA)
@@ -127,6 +150,10 @@ elif op == "commit":
             stored = conn.execute("SELECT passphrase_hash FROM homebase_admin_credentials WHERE id = 1").fetchone()
             if stored is None or stored["passphrase_hash"] != payload["expectPassphraseHash"]:
                 return {"ok": False, "passphraseChanged": True}
+        if "consumeAction" in payload:
+            taken = take_action(payload["consumeAction"], payload["nowSeconds"], payload["now"])
+            if taken != "taken":
+                return {"ok": False, taken: True}
         generation = payload["expectGeneration"] + 1
         household = payload.get("household") or {}
         for name in ("state", "global_epoch", "pending_administrator_login"):
@@ -162,6 +189,26 @@ elif op == "commit":
         result = apply()
     except sqlite3.IntegrityError as error:
         result = {"ok": False, "integrity": str(error)}
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT" if result["ok"] else "ROLLBACK")
+    emit(result)
+
+elif op == "consume":
+    # payload: action {jti, app, expiresAt}, now, nowSeconds, expect {userId, state, globalEpoch, epoch}: the
+    # member as the redemption saw them, which must still stand when the jti is taken.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        expect = payload["expect"]
+        household = conn.execute("SELECT state, global_epoch FROM identity_household WHERE id = 1").fetchone()
+        member = conn.execute("SELECT status, epoch FROM identity_members WHERE user_id = ?", (expect["userId"],)).fetchone()
+        if (household is None or member is None or household["state"] != expect["state"] or household["global_epoch"] != expect["globalEpoch"]
+                or member["status"] != "active" or member["epoch"] != expect["epoch"]):
+            result = {"ok": False, "stale": True}
+        else:
+            taken = take_action(payload["action"], payload["nowSeconds"], payload["now"])
+            result = {"ok": True} if taken == "taken" else {"ok": False, taken: True}
     except BaseException:
         conn.execute("ROLLBACK")
         raise
@@ -231,6 +278,7 @@ function createDirectoryStore(dbPath) {
     init: ({ generation, now }) => run(dbPath, 'init', { generation, now }),
     load: () => run(dbPath, 'load'),
     commit: (change) => run(dbPath, 'commit', change),
+    consume: (request) => run(dbPath, 'consume', request),
     publish: (snapshot) => run(dbPath, 'publish', snapshot),
   };
 }

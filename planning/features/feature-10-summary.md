@@ -178,7 +178,14 @@ Until the household directory exists, services may be published but no app can u
 - **Proven on the test VM with real devices:** an attested hardware key and a synced passkey, setup finished, admin unlocked with each, a recovery round trip, and a kid's device enrolled with a code.
 - **Decided:** entering recovery sends a notice through the health-alert channel (slice 3); no waiting period for now.
 - **Follow-ups:** a Members panel (candidates, add, issue code) and hiding admin cards from members.
-- **Next:** slice 2 (every-time hardware tokens, redemption sockets, `stepup.js`), then slice 3 (the sensitive hostnames, signing-key rotation, the root-removal and recovery notices).
+
+**SID-005 slice 2, every-time hardware for the administrator's passkeys (2026-11-04).** While active, the administrator adds and removes their own passkeys from Admin, with a hardware key every time.
+- **Action tokens:** a hardware check for one action mints a 60-second token bound to that exact request (policy, target, body digest) and to both epochs; it is spent in the same commit as the change, so one tap makes one change.
+- **`stepup.js`:** Home Base's routes answer `step_up_required`; the shared helper shows a confirm dialog, runs the check and retries the identical request once.
+- **Codex:** two rounds; one finding (a spent token could be taken again at its expiry), fixed with a regression test; the second clean.
+- **Proven on the test VM** with the administrator's real hardware key: adding and removing a passkey each asked for it, and removal ended the session.
+- **Deferred (agreed):** redemption sockets, so an app other than Home Base can spend a token. None needs every-time today; they ship with the first app action that does. Sensitive-app sign-in uses recent checks, which apps verify themselves.
+- **Next:** slice 3 (the sensitive hostnames, signing-key rotation, the root-removal and recovery notices).
 
 ## Review
 
