@@ -44,7 +44,7 @@ async function ran({ received, store }, jobId, action) {
 }
 
 // The words each real run is confirmed with, besides dryRun: false.
-const realBody = (entry) => ({
+const realBody = (entry) => (entry.path === '/api/homebase/config' ? { householdTimezone: 'America/New_York' } : {
   ...REAL,
   ...({ '/api/ingress/cutover': { confirm: 'CUTOVER' }, '/api/ingress/rollback': { confirm: 'ROLLBACK' }, '/api/ingress/services/:id/publish': { confirm: 'PUBLISH' }, '/api/apps/:id/move-user/execute': { confirm: 'MOVE' } }[entry.path] || {}),
 });
