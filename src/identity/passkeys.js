@@ -134,18 +134,20 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
 
   // The cookie for a ceremony that just ran on site.hostname. It lives as long as the longest window that
   // hostname's sessions use (Home Base: open-admin, 8 hours; a sensitive app: the longest app session);
-  // apps check their own window from auth_time.
+  // apps check their own window from auth_time. Returns { header, sid, kid }: the Set-Cookie header, and what
+  // the audit records so that any cookie can be traced to the check that issued it.
   function issueCookie({ site, standing, credentialId, kind, windowSeconds }) {
     if (!KINDS.has(kind)) throw new Error(`unknown credential kind ${kind}`);
     const at = seconds(now());
     const key = keyring.current();
+    const sid = crypto.randomBytes(16).toString('base64url');
     const token = signToken({
       typ: 'assurance',
       kid: key.kid,
       household,
       aud: site.hostname,
       sub: standing.member.userId,
-      sid: crypto.randomBytes(16).toString('base64url'),
+      sid,
       cred: credentialId,
       kind,
       epoch: standing.member.epoch,
@@ -154,15 +156,17 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       iat: at,
       exp: at + windowSeconds,
     }, key.privateKey);
-    return cookieHeader(token, windowSeconds);
+    return { header: cookieHeader(token, windowSeconds), sid, kid: key.kid };
   }
 
-  // An action token for a fresh ceremony on site.hostname (wire contract, section 9).
+  // An action token for a fresh ceremony on site.hostname (wire contract, section 9). Returns { token, jti,
+  // kid }, the last two for the audit.
   function issueActionToken({ site, standing, app, act, tgt, dig, credentialId, kind }) {
     if (!KINDS.has(kind)) throw new Error(`unknown credential kind ${kind}`);
     const at = seconds(now());
     const key = keyring.current();
-    return signToken({
+    const jti = crypto.randomBytes(16).toString('base64url');
+    const token = signToken({
       typ: 'action',
       kid: key.kid,
       household,
@@ -176,10 +180,11 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       act,
       tgt,
       dig,
-      jti: crypto.randomBytes(16).toString('base64url'),
+      jti,
       iat: at,
       exp: at + ACTION_SECONDS,
     }, key.privateKey);
+    return { token, jti, kid: key.kid };
   }
 
   // The claims every token of type typ must hold for this caller on this hostname, as the directory stands

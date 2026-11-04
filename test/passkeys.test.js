@@ -681,7 +681,7 @@ test('an action token lives 60 seconds and binds every claim it names', async (t
   const site = { hostname: HOMEBASE, rpID: DOMAIN };
   const standing = { member: { userId: '1001', status: 'active', epoch: 3, administrator: true }, globalEpoch: 2, state: 'active' };
   const want = { site, standing, app: 'homebase', policyKey: 'manage-admin-credential', target: 'enroll:m_1', digest: 'D'.repeat(43) };
-  const token = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'hardware' });
+  const { token } = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'hardware' });
   const headers = { 'x-sovereign-action-token': token };
   assert.ok(passkeys.actionToken(headers, want).claims);
   assert.equal(passkeys.actionToken({}, want).reason, 'no_token');
@@ -692,9 +692,9 @@ test('an action token lives 60 seconds and binds every claim it names', async (t
   assert.equal(passkeys.actionToken(headers, { ...want, site: { ...site, hostname: `smith-helm.${DOMAIN}` } }).reason, 'wrong_audience');
   assert.equal(passkeys.actionToken(headers, { ...want, standing: { ...standing, member: { ...standing.member, epoch: 4 } } }).reason, 'stale_epoch');
   assert.equal(passkeys.actionToken(headers, { ...want, standing: { ...standing, globalEpoch: 3 } }).reason, 'stale_global_epoch');
-  const synced = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'synced' });
+  const { token: synced } = passkeys.issueActionToken({ site, standing, app: 'homebase', act: 'manage-admin-credential', tgt: 'enroll:m_1', dig: 'D'.repeat(43), credentialId: 'c', kind: 'synced' });
   assert.equal(passkeys.actionToken({ 'x-sovereign-action-token': synced }, want).reason, 'wrong_kind');
-  const cookieLike = passkeys.issueCookie({ site, standing, credentialId: 'c', kind: 'hardware', windowSeconds: 60 }).split(';')[0].split('=').slice(1).join('=');
+  const cookieLike = passkeys.issueCookie({ site, standing, credentialId: 'c', kind: 'hardware', windowSeconds: 60 }).header.split(';')[0].split('=').slice(1).join('=');
   assert.equal(passkeys.actionToken({ 'x-sovereign-action-token': cookieLike }, want).reason, 'wrong_type', 'an assurance cookie is not an action token');
   clock += 59_000;
   assert.ok(passkeys.actionToken(headers, want).claims);
@@ -930,4 +930,21 @@ test('a rotation is flushed to disk before it is reported, and a snapshot that c
   assert.equal(rotated.retry.body.code, 'SNAPSHOT_NOT_PUBLISHED');
   assert.notEqual(rotated.retry.body.kid, before[0], 'the key did change');
   assert.deepEqual(snapshot().keys.map((key) => key.kid), before, 'apps have not been told');
+});
+
+test('every cookie and confirmation can be traced in the audit to the check that issued it', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const keys = () => parseSnapshot(snapshot()).keys;
+  const pulse = await pulseCheck(base, phone);
+  const cookie = verifyToken(pulse.cookies.get('__Host-sv_assurance'), { keys: keys() }).payload;
+  const issued = await parent.actionToken(yubikey, (await parent.post('/_sovereign/auth/enroll/options', { label: 'k' })).body);
+  const token = verifyToken(issued.body.token, { keys: keys() }).payload;
+  const entries = (await parent.get('/api/admin/audit?limit=50')).body.entries;
+  const check = entries.find((entry) => entry.action === 'passkey-step-up' && entry.outcome.includes(`sid ${cookie.sid}`));
+  assert.ok(check, JSON.stringify(entries.map((entry) => entry.outcome)));
+  assert.match(check.outcome, new RegExp(`key ${cookie.kid}$`));
+  assert.match(check.outcome, new RegExp(`with "Phone" \\(${cookie.cred.slice(0, 12)}…\\) on ${PULSE.replace(/\./g, '\\.')}`));
+  const confirmed = entries.find((entry) => entry.action === 'passkey-action' && entry.outcome.includes(`jti ${token.jti}`));
+  assert.ok(confirmed);
+  assert.match(confirmed.outcome, /^confirmed manage-admin-credential enroll:m_[0-9a-f]+ with "YubiKey"/);
 });

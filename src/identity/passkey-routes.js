@@ -41,6 +41,11 @@ const REASONS = {
   cross_origin: 'it was answered from inside another page',
   not_verified: 'the passkey\'s answer did not verify',
 };
+// What the audit says about the passkey a ceremony used: its label and the start of its ID.
+const usedPasskey = (standing, credentialId) => {
+  const label = standing.credentials.find((credential) => credential.credentialId === credentialId)?.label;
+  return `${label ? `"${label}" ` : ''}(${String(credentialId).slice(0, 12)}…)`;
+};
 const ceremonyError = (what, reason) => `${what} was not accepted: ${REASONS[reason] || reason} (${reason}).`;
 const ADMIN_WINDOW_SECONDS = policyFor('open-admin').window_seconds;
 // A sensitive app's cookie lives as long as the longest app session; each app checks its own window from
@@ -205,7 +210,7 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
           if (authority.consume) {
             const used = directory.consumeAction(authority.consume, { userId: standing.member.userId, ...expectOf(standing) });
             if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'passkey-enroll', target);
-            audit('passkey-enroll', target, 'hardware confirmed');
+            audit('passkey-enroll', target, `hardware confirmed · jti ${authority.consume.jti}`);
           }
           sendJson(res, 200, { options: await passkeys.enrollOptions({ site: here, standing, label: body.label, hardware: body.hardware === true, context }) });
           return true;
@@ -262,13 +267,15 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
         const expected = purpose === 'activate' ? { ...expectOf(standing), state: 'active' } : expectOf(standing);
         if (moved(expected, now)) return refusal(res, 409, 'STALE', 'Home Base changed while this was in progress; start again.', `passkey-${purpose}`, target);
         if (action) {
-          const token = passkeys.issueActionToken({ site: here, standing: now, app: HOME_BASE_APP, act: action.key, tgt: action.target, dig: action.digest, credentialId: result.credentialId, kind: result.kind });
-          audit('passkey-action', target, `confirmed ${action.key}`);
-          sendJson(res, 200, { ok: true, token });
+          const issued = passkeys.issueActionToken({ site: here, standing: now, app: HOME_BASE_APP, act: action.key, tgt: action.target, dig: action.digest, credentialId: result.credentialId, kind: result.kind });
+          audit('passkey-action', target, `confirmed ${action.key} ${action.target} with ${usedPasskey(now, result.credentialId)} · jti ${issued.jti} · key ${issued.kid}`);
+          sendJson(res, 200, { ok: true, token: issued.token });
           return true;
         }
-        res.setHeader('Set-Cookie', passkeys.issueCookie({ site: here, standing: now, credentialId: result.credentialId, kind: result.kind, windowSeconds: here.homeBase ? ADMIN_WINDOW_SECONDS : APP_WINDOW_SECONDS }));
-        audit(`passkey-${purpose}`, target, purpose === 'activate' ? 'active' : `checked ${result.kind}${here.homeBase ? '' : ` on ${here.hostname}`}`);
+        const issued = passkeys.issueCookie({ site: here, standing: now, credentialId: result.credentialId, kind: result.kind, windowSeconds: here.homeBase ? ADMIN_WINDOW_SECONDS : APP_WINDOW_SECONDS });
+        res.setHeader('Set-Cookie', issued.header);
+        // Enough to trace any cookie to this check, or show that no check issued it: its session ID and key.
+        audit(`passkey-${purpose}`, target, `${purpose === 'activate' ? 'active; ' : ''}checked ${result.kind} with ${usedPasskey(now, result.credentialId)} on ${here.hostname} · sid ${issued.sid} · key ${issued.kid}`);
         sendJson(res, 200, { ok: true, kind: result.kind, state: now.state });
         return true;
       }
@@ -302,7 +309,7 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
         const used = directory.consumeAction(action.consume, { userId: standing.member.userId, ...expectOf(standing) });
         if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'signing-key-rotate', 'homebase');
         const rotated = signingKey.rotate({ exposed });
-        audit('signing-key-rotate', 'homebase', exposed ? `rotated to ${rotated.kid}; every earlier key dropped` : `rotated to ${rotated.kid}; ${rotated.retired.join(', ')} kept for the session window`);
+        audit('signing-key-rotate', 'homebase', `${exposed ? `rotated to ${rotated.kid}; every earlier key dropped` : `rotated to ${rotated.kid}; ${rotated.retired.join(', ')} kept for the session window`} · jti ${action.consume.jti}`);
         // An exposed key's cookies end now, this one included.
         if (exposed) res.setHeader('Set-Cookie', passkeys.clearCookieHeader());
         // The snapshot lists the new key now, not at the next scheduled publish. If it can't be written, the

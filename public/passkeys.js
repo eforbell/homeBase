@@ -92,7 +92,8 @@
     if (status.state === 'active') {
       if (admin && !status.administratorRuleMet) return 'Your passkeys no longer include two with an attested hardware key (an update can stop trusting a maker\'s keys). Enter recovery with the passphrase and register a new hardware key.';
       if (!status.credentials.length) return 'You have no passkey yet: enter the enrollment code the administrator gave you, then register one.';
-      return status.check ? '' : 'Check with one of your passkeys to open your session on this hostname.';
+      if (status.check) return '';
+      return admin ? 'Unlock admin with one of your passkeys.' : '';
     }
     if (!admin) return `Home Base is in ${status.state}: only the administrator registers passkeys now.`;
     if (!status.administratorRuleMet) {
@@ -130,12 +131,27 @@
       ? `<span class="hb-ok">Checked ${esc(ago(status.check.checkedAt))}</span> with ${esc(status.check.label || 'a removed passkey')} (${esc(KIND_LABELS[status.check.kind] || status.check.kind)})`
       : '<span class="hb-warn">Not checked on this hostname</span>';
     const needsGrant = status.state === 'active' && !status.member.administrator && !status.credentials.length;
+    // The check beside the line it changes. For the administrator in active Home Base it is what unlocks
+    // admin; for a member it only proves who they are (to the household's apps), never admin.
+    const unlocks = status.member.administrator && status.state === 'active';
+    const checkLabel = status.check ? 'Check again' : unlocks ? 'Unlock admin with a passkey' : 'Confirm it\'s me with a passkey';
+    const checkButton = status.credentials.length && (status.state === 'active' || status.member.administrator)
+      ? `<form data-passkey-action="check" style="margin:0;"><button class="hb-btn${status.check ? '' : ' hb-btn-primary'}" type="submit">${checkLabel}</button></form>`
+      : '';
+    const memberHint = !status.member.administrator && status.credentials.length
+      ? '<p class="hb-muted" style="margin:0 0 0.8rem;">A check proves it\'s you to the household\'s apps. It doesn\'t open admin: that is the administrator\'s.</p>'
+      : '';
     const step = nextStep(status);
     return `
       <h2 style="margin-top:0;">Passkeys</h2>
       <p class="hb-muted" style="margin:0 0 0.6rem;">${esc(status.member.name || status.member.login)} · ${esc(status.member.role)}${status.member.administrator ? ' · administrator' : ''} · Home Base is <strong>${esc(status.state)}</strong></p>
-      <p style="margin:0 0 0.6rem;">${checkLine}</p>
+      <div class="hb-row" style="flex-wrap:wrap;gap:0.6rem;align-items:center;margin:0 0 0.6rem;">
+        <span>${checkLine}</span>
+        ${checkButton}
+      </div>
+      <p class="hb-muted" data-check-result style="margin:0 0 0.6rem;"></p>
       ${step ? `<p class="hb-warn" style="margin:0 0 0.8rem;">${esc(step)}</p>` : ''}
+      ${memberHint}
       ${status.member.administrator && status.state === 'active' ? '<p class="hb-muted" style="margin:0 0 0.8rem;">Adding or removing your passkeys asks for your hardware key every time. Removing one ends your checks everywhere, so check again afterwards.</p>' : ''}
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0 0 0.9rem;">${rows}</ul>
       <div class="hb-grid hb-grid-2">
@@ -147,9 +163,7 @@
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>
         <div class="hb-form-grid">
-          ${status.credentials.length ? '<form data-passkey-action="check"><button class="hb-btn" type="submit">Check with a passkey</button></form>' : ''}
           ${status.canActivate ? `<form data-passkey-action="activate"><button class="hb-btn hb-btn-primary" type="submit">Finish ${esc(status.state)} with my hardware key</button></form>` : ''}
-          <p class="hb-muted" data-check-result style="margin:0;"></p>
         </div>
       </div>
       ${signingKeyBlock(status)}
