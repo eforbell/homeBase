@@ -174,7 +174,7 @@ Until the household directory exists, services may be published but no app can u
 - **Leaving setup:** two administrator passkeys, one of them hardware, then a fresh check with the hardware key moves Home Base to active and opens admin.
 - **Active:** a passkey check opens admin for 8 hours; the passphrase opens recovery only, which keeps every passkey and ends every check. Administrator passkeys change in recovery until slice 2.
 - **Members:** added from accounts Home Base has seen, then enroll with a 15-minute code; a member's check proves who they are and never opens admin.
-- **Consistency:** every change commits only if nothing that authorized it (state, epochs, the stored passphrase) moved in between. Codex: three rounds, the last clean.
+- **Consistency:** every passkey enrollment, activation and member self-revocation commits only if nothing that authorized it (state, epochs, the stored passphrase) moved in between; the administrator's revocations through the directory API aren't bound that way yet. Codex: three rounds, the last clean.
 - **Proven on the test VM with real devices:** an attested hardware key and a synced passkey, setup finished, admin unlocked with each, a recovery round trip, and a kid's device enrolled with a code.
 - **Decided:** entering recovery sends a notice through the health-alert channel (slice 3); no waiting period for now.
 - **Follow-ups:** a Members panel (candidates, add, issue code) and hiding admin cards from members.
