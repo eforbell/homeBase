@@ -70,7 +70,12 @@ CREATE TABLE IF NOT EXISTS identity_enrollment_grants (
 """
 
 MEMBER_FIELDS = ["member_id", "user_id", "login", "name", "role", "administrator", "status", "epoch", "apps", "created_at", "updated_at"]
-CREDENTIAL_FIELDS = ["credential_id", "member_id", "kind", "label", "orphaned", "created_at", "revoked_at"]
+# What the passkey service (SID-005) keeps to verify a credential's assertions: added to databases from before it.
+CREDENTIAL_KEY_COLUMNS = [
+    ("public_key", "TEXT"), ("counter", "INTEGER NOT NULL DEFAULT 0"), ("transports", "TEXT"), ("aaguid", "TEXT"),
+    ("device_type", "TEXT"), ("backed_up", "INTEGER NOT NULL DEFAULT 1"), ("root", "TEXT"), ("last_used_at", "TEXT"),
+]
+CREDENTIAL_FIELDS = ["credential_id", "member_id", "kind", "label", "orphaned", "created_at", "revoked_at"] + [name for name, _ in CREDENTIAL_KEY_COLUMNS]
 GRANT_FIELDS = ["member_id", "code_hash", "issued_by", "created_at", "expires_at"]
 
 def rows(sql, args=()):
@@ -90,6 +95,10 @@ def emit(value):
 
 if op == "init":
     conn.executescript(SCHEMA)
+    present = {row["name"] for row in conn.execute("PRAGMA table_info(identity_credentials)")}
+    for name, declaration in CREDENTIAL_KEY_COLUMNS:
+        if name not in present:
+            conn.execute(f"ALTER TABLE identity_credentials ADD COLUMN {name} {declaration}")
     conn.execute(
         "INSERT OR IGNORE INTO identity_household (id, state, generation, global_epoch, updated_at) VALUES (1, 'setup', ?, 1, ?)",
         (int(payload["generation"]), payload["now"]),

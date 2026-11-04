@@ -26,7 +26,10 @@ const { getTailscalePublishVerification, getIngressVerification } = require('./s
 const { canonicalAddress, createIdentityResolver, createIdentityServer, createWhoisIdentity, startIdentitySocketWhenReady } = require('./identity/identity-endpoint');
 const { createDirectory } = require('./identity/directory');
 const { createDirectoryRoutes } = require('./identity/directory-routes');
-const { createSnapshotReader, resolveMember } = require('sovereign-auth');
+const { createPasskeys } = require('./identity/passkeys');
+const { createPasskeyRoutes } = require('./identity/passkey-routes');
+const { loadSigningKey } = require('./identity/signing-key');
+const { createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
 const { appPublicBase, appServiceKey } = require('./operations/ingress-layout');
@@ -45,6 +48,7 @@ const { getExecutorCapabilities, canExecuteMutations } = require('./executor/cap
 const { hostStatus: requestExecutorHostStatus, foundationStatus: requestExecutorFoundationStatus, dependencyInventory: requestExecutorDependencyInventory, appIdentity: requestExecutorAppIdentity, appProbe: requestExecutorAppProbe, planAction: requestExecutorPlan } = require('./executor/client');
 const {
   getAdminStatus,
+  passphraseSession,
   setupAdmin,
   unlockAdmin,
   lockAdmin,
@@ -516,17 +520,46 @@ function createApp(config) {
     const addr = forwardedFor.includes(',') ? null : canonicalAddress(forwardedFor);
     return addr ? whoisCaller(addr) : null;
   }
+  // SID-005: the key that signs assurance cookies, published in the snapshot for apps to verify.
+  const signingKey = config.directory ? loadSigningKey(config.identitySigningKeyFile || path.join(path.dirname(config.stateDbPath), 'identity-signing-key.pem'), { create: true }) : null;
   const directory = config.directory ? createDirectory({
     dbPath: config.stateDbPath,
     catalog: getCatalog(),
     household: config.instance,
     snapshotFile: config.identitySnapshotFile,
+    keys: [signingKey.published],
     log: warn,
   }) : null;
   if (directory) directory.init();
-  const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state } : null;
+  // passkeyRoots is for tests only (loadConfig never sets it): in use, the roots are sovereignAuth's pinned ones.
+  const passkeys = directory ? createPasskeys({ directory, signingKey, household: config.instance, roots: config.passkeyRoots }) : null;
+  // Active Home Base opens admin with the administrator's passkey check on its own hostname (open-admin, 8
+  // hours), never the passphrase. req.homeBaseSite is set per request (passkeySite below).
+  async function passkeySession(req) {
+    if (!req.homeBaseSite) return null;
+    const caller = await callerOf(req);
+    const standing = caller ? directory.standing(caller.userId) : null;
+    if (!standing?.member.administrator || standing.state !== 'active') return null;
+    const check = passkeys.currentCheck(req.headers, { site: req.homeBaseSite, standing });
+    if (!passkeys.meets(check, 'open-admin')) return null;
+    return { userId: standing.member.userId, expiresAt: new Date((check.claims.auth_time + policyFor('open-admin').window_seconds) * 1000).toISOString() };
+  }
+  const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state, passkeySession } : null;
   const adminOptions = directoryBinding ? { directory: directoryBinding } : {};
   const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit }) : null;
+  const passkeyRoutes = directory ? createPasskeyRoutes({
+    directory, passkeys, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
+    passphraseSession: (req) => passphraseSession(req, stateStore, adminOptions),
+  }) : null;
+  // Passkeys run on Home Base's own service hostname only, so only once the host is cut over: the hostname
+  // the request came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain.
+  function passkeySite(req, state, effectiveConfig) {
+    const ingress = directory ? currentIngress(state.ingressJobs, effectiveConfig) : null;
+    if (!ingress) return null;
+    const hostname = `${ingress.instance}-homebase.${ingress.domain}`;
+    const forwarded = typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].toLowerCase() : '';
+    return forwarded === hostname ? { hostname, rpID: ingress.domain } : null;
+  }
   const ingressRoutes = createIngressRoutes({
     stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
     adminStatus: (req, store) => getAdminStatus(req, store, adminOptions),
@@ -878,7 +911,8 @@ function createApp(config) {
       const result = resolveMember(state.snapshot, callerHeaders, { appId: app.id });
       return [app.id, result.member ? { memberId: result.member.memberId, role: result.member.role } : { reason: result.reason }];
     })) : {};
-    return { caller: caller && { userId: caller.userId, login: caller.login }, ingressHeaders, snapshot, apps };
+    // The administrator flag is Home Base's own (D10), so it is shown here rather than read from the snapshot.
+    return { caller: caller && { userId: caller.userId, login: caller.login, administrator: directory.isAdministrator(caller.userId) }, state: directory.state(), ingressHeaders, snapshot, apps };
   }
   const stoppers = [];
   const server = http.createServer(async (req, res) => {
@@ -893,6 +927,7 @@ function createApp(config) {
       const normalizedPath = normalizePathname(pathname);
       const unsafe = refuseUnsafeRequest(req, method);
       if (unsafe) return sendJson(res, unsafe.statusCode, unsafe.payload);
+      req.homeBaseSite = passkeySite(req, state, effectiveConfig);
 
       if (method === 'GET') {
         if (normalizedPath === '/') return servePublicPage(res, 'index.html');
@@ -926,6 +961,7 @@ function createApp(config) {
         if (!directory) return sendJson(res, 404, { error: 'The household directory is off (HOME_BASE_DIRECTORY).' });
         return sendJson(res, 200, await describeIdentity(req));
       }
+      if (passkeyRoutes && await passkeyRoutes({ req, res, method, pathname, here: req.homeBaseSite })) return;
       if (directoryRoutes && await directoryRoutes({ req, res, method, pathname })) return;
       if (method === 'GET' && pathname === '/api/catalog') {
         return sendJson(res, 200, { apps: catalog });
