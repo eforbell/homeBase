@@ -92,8 +92,8 @@
     if (status.state === 'active') {
       if (admin && !status.administratorRuleMet) return 'Your passkeys no longer include two with an attested hardware key (an update can stop trusting a maker\'s keys). Enter recovery with the passphrase and register a new hardware key.';
       if (!status.credentials.length) return 'You have no passkey yet: enter the enrollment code the administrator gave you, then register one.';
-      if (status.check) return '';
-      return admin ? 'Unlock admin with one of your passkeys.' : '';
+      // The check button beside the status says the rest.
+      return '';
     }
     if (!admin) return `Home Base is in ${status.state}: only the administrator registers passkeys now.`;
     if (!status.administratorRuleMet) {
