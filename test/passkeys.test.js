@@ -895,6 +895,27 @@ test('a rotation is flushed to disk before it is reported, and a snapshot that c
   assert.equal(keyring.current().kid, loadSigningKey(file).kid, 'signing with the key on disk');
   assert.equal(keyring.published()[0].kid, keyring.current().kid, 'which is the one published');
 
+  // The key landed but can't be read back yet: nothing is signed with the old one meanwhile.
+  const realRead = fs.readFileSync;
+  let failing = false;
+  fs.readFileSync = (target, ...rest) => { if (failing && target === file) throw Object.assign(new Error('EIO'), { code: 'EIO' }); return realRead(target, ...rest); };
+  const unrotated = keyring.current().kid;
+  try {
+    const realRename = fs.renameSync;
+    fs.renameSync = (from, to) => { realRename(from, to); if (to === file) failing = true; };
+    try {
+      assert.throws(() => keyring.rotate({ exposed: true }), /EIO/);
+    } finally {
+      fs.renameSync = realRename;
+    }
+    assert.throws(() => keyring.current(), /EIO/, 'fails closed while the key is unreadable');
+    assert.throws(() => keyring.verifying(), /EIO/);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.notEqual(keyring.current().kid, unrotated, 'and once it reads, the new key is the one used');
+  assert.equal(keyring.current().kid, keyring.published()[0].kid);
+
   const { root: home, parent, yubikey, snapshot } = await activeHousehold(t);
   const before = snapshot().keys.map((key) => key.kid);
   const identityDir = path.join(home, 'identity');

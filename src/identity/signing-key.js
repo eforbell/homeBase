@@ -119,14 +119,22 @@ function publishedKeys(file, { now = Date.now } = {}) {
 // rotate() replaces the current key. Everything is read again from the files after a rotation.
 function createKeyring(file, { now = Date.now } = {}) {
   let current = loadSigningKey(file, { create: true });
+  // Null after a rotation whose files couldn't be read back: read again on next use, and until that works
+  // nothing is signed or verified (never with a key the snapshot no longer publishes).
+  const active = () => {
+    if (!current) current = loadSigningKey(file);
+    if (!current) throw new Error(`the signing key ${file} is missing`);
+    return current;
+  };
 
   function verifying() {
-    return new Map([[current.kid, current.publicKey], ...retiredKeys(file, current, now).map((entry) => [entry.kid, publicKeyOf(entry)])]);
+    const key = active();
+    return new Map([[key.kid, key.publicKey], ...retiredKeys(file, key, now).map((entry) => [entry.kid, publicKeyOf(entry)])]);
   }
 
   // exposed: the current key (and every earlier one) may be known to someone else, so none of them is kept.
   function rotate({ exposed = false } = {}) {
-    const previous = current;
+    const previous = active();
     const { privateKey } = crypto.generateKeyPairSync('ed25519');
     try {
       // The list first: if the key never lands, the old key is still current and still verifies.
@@ -134,16 +142,20 @@ function createKeyring(file, { now = Date.now } = {}) {
       writeDurably(file, privateKey.export({ format: 'pem', type: 'pkcs8' }));
     } finally {
       // Whatever the files now say, failed or not: Home Base signs with the key the snapshot publishes.
+      current = null;
       current = loadSigningKey(file);
     }
-    return { kid: current.kid, retired: exposed ? [] : [previous.kid], dropped: exposed };
+    return { kid: active().kid, retired: exposed ? [] : [previous.kid], dropped: exposed };
   }
 
   return {
-    current: () => current,
+    current: active,
     verifying,
     published: () => publishedKeys(file, { now }),
-    describe: () => ({ kid: current.kid, createdAt: current.createdAt, previous: retiredKeys(file, current, now).map(({ kid, retired_at: retiredAt }) => ({ kid, retiredAt })) }),
+    describe: () => {
+      const key = active();
+      return { kid: key.kid, createdAt: key.createdAt, previous: retiredKeys(file, key, now).map(({ kid, retired_at: retiredAt }) => ({ kid, retiredAt })) };
+    },
     rotate,
   };
 }
