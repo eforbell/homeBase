@@ -128,10 +128,14 @@ function createKeyring(file, { now = Date.now } = {}) {
   function rotate({ exposed = false } = {}) {
     const previous = current;
     const { privateKey } = crypto.generateKeyPairSync('ed25519');
-    // The list first: if the key never lands, the old key is still current and still verifies.
-    writeRetired(file, exposed ? [] : [{ ...previous.published, retired_at: new Date(now()).toISOString() }, ...retiredKeys(file, previous, now)]);
-    writeDurably(file, privateKey.export({ format: 'pem', type: 'pkcs8' }));
-    current = loadSigningKey(file);
+    try {
+      // The list first: if the key never lands, the old key is still current and still verifies.
+      writeRetired(file, exposed ? [] : [{ ...previous.published, retired_at: new Date(now()).toISOString() }, ...retiredKeys(file, previous, now)]);
+      writeDurably(file, privateKey.export({ format: 'pem', type: 'pkcs8' }));
+    } finally {
+      // Whatever the files now say, failed or not: Home Base signs with the key the snapshot publishes.
+      current = loadSigningKey(file);
+    }
     return { kid: current.kid, retired: exposed ? [] : [previous.kid], dropped: exposed };
   }
 

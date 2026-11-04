@@ -883,6 +883,18 @@ test('a rotation is flushed to disk before it is reported, and a snapshot that c
   }
   assert.equal(synced.length, 4, 'both files and, after each rename, their directory');
 
+  // A flush that fails after the key landed: the rotation fails, and memory follows the disk.
+  const file = path.join(root, 'identity-signing-key.pem');
+  let syncs = 0;
+  fs.fsyncSync = (fd) => { syncs += 1; if (syncs === 4) throw Object.assign(new Error('EIO'), { code: 'EIO' }); return real(fd); };
+  try {
+    assert.throws(() => keyring.rotate({ exposed: true }), /EIO/);
+  } finally {
+    fs.fsyncSync = real;
+  }
+  assert.equal(keyring.current().kid, loadSigningKey(file).kid, 'signing with the key on disk');
+  assert.equal(keyring.published()[0].kid, keyring.current().kid, 'which is the one published');
+
   const { root: home, parent, yubikey, snapshot } = await activeHousehold(t);
   const before = snapshot().keys.map((key) => key.kid);
   const identityDir = path.join(home, 'identity');
