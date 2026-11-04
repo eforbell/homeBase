@@ -36,11 +36,12 @@ function cleanLabel(label) {
 }
 
 // directory: the household directory (standing, credentialsFor, addCredential, recordAssertion).
-// signingKey: loadSigningKey()'s result. household: the instance name. roots: the attestation roots a
+// signingKey: createKeyring()'s result, or one loadSigningKey() key (tests). household: the instance name. roots: the attestation roots a
 // hardware key must verify to; sovereignAuth's pinned list unless a test gives its own.
 function createPasskeys({ directory, signingKey, household, roots, now = Date.now, store = createMemoryChallengeStore({ now }) }) {
   if (!signingKey) throw new Error('the passkey service needs Home Base\'s signing key');
-  const keys = new Map([[signingKey.kid, signingKey.publicKey]]);
+  // Signed with the current key; verified against it and the retired keys still in their window.
+  const keyring = typeof signingKey.current === 'function' ? signingKey : { current: () => signingKey, verifying: () => new Map([[signingKey.kid, signingKey.publicKey]]) };
   const ceremonies = new Map();
 
   // One ceremony helper per tailnet domain, sharing the challenge store.
@@ -137,9 +138,10 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   function issueCookie({ site, standing, credentialId, kind, windowSeconds }) {
     if (!KINDS.has(kind)) throw new Error(`unknown credential kind ${kind}`);
     const at = seconds(now());
+    const key = keyring.current();
     const token = signToken({
       typ: 'assurance',
-      kid: signingKey.kid,
+      kid: key.kid,
       household,
       aud: site.hostname,
       sub: standing.member.userId,
@@ -151,7 +153,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       auth_time: at,
       iat: at,
       exp: at + windowSeconds,
-    }, signingKey.privateKey);
+    }, key.privateKey);
     return cookieHeader(token, windowSeconds);
   }
 
@@ -159,9 +161,10 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   function issueActionToken({ site, standing, app, act, tgt, dig, credentialId, kind }) {
     if (!KINDS.has(kind)) throw new Error(`unknown credential kind ${kind}`);
     const at = seconds(now());
+    const key = keyring.current();
     return signToken({
       typ: 'action',
-      kid: signingKey.kid,
+      kid: key.kid,
       household,
       aud: site.hostname,
       sub: standing.member.userId,
@@ -176,13 +179,13 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       jti: crypto.randomBytes(16).toString('base64url'),
       iat: at,
       exp: at + ACTION_SECONDS,
-    }, signingKey.privateKey);
+    }, key.privateKey);
   }
 
   // The claims every token of type typ must hold for this caller on this hostname, as the directory stands
   // now (the same rules apps apply from the snapshot): the claims, or { reason }.
   function verified(token, typ, { site, standing }) {
-    const result = verifyToken(token, { keys, now });
+    const result = verifyToken(token, { keys: keyring.verifying(), now });
     if (!result.ok) return { reason: result.reason };
     const claims = result.payload;
     if (claims.typ !== typ) return { reason: 'wrong_type' };
@@ -236,7 +239,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
     return policy.kind !== 'hardware' || check.claims.kind === 'hardware';
   }
 
-  return { actionToken, checkFinish, checkOptions, clearCookieHeader, currentCheck, enrollFinish, enrollOptions, issueActionToken, issueCookie, keys, meets, verified };
+  return { actionToken, checkFinish, checkOptions, clearCookieHeader, currentCheck, enrollFinish, enrollOptions, issueActionToken, issueCookie, meets, verified };
 }
 
 function defaultLabel(kind) {

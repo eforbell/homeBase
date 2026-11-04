@@ -90,6 +90,7 @@
   function nextStep(status) {
     const admin = status.member.administrator;
     if (status.state === 'active') {
+      if (admin && !status.administratorRuleMet) return 'Your passkeys no longer include two with an attested hardware key (an update can stop trusting a maker\'s keys). Enter recovery with the passphrase and register a new hardware key.';
       if (!status.credentials.length) return 'You have no passkey yet: enter the enrollment code the administrator gave you, then register one.';
       return status.check ? '' : 'Check with one of your passkeys to open your session on this hostname.';
     }
@@ -99,6 +100,21 @@
       return `To finish ${status.state}, register at least two passkeys${hardware ? '' : ', including a hardware security key (tick "hardware key")'}. Then finish with the hardware key.`;
     }
     return status.canActivate ? 'Ready: finish with your hardware key to make Home Base active.' : 'Unlock with the passphrase above to finish.';
+  }
+
+  // The administrator's signing key line: which key signs, and the earlier ones still accepted.
+  function signingKeyBlock(status) {
+    const key = status.signingKey;
+    if (!key || status.state !== 'active') return '';
+    const previous = key.previous.length ? ` · ${key.previous.length} earlier key${key.previous.length === 1 ? '' : 's'} still accepted for 30 days after rotation` : '';
+    return `
+      <form class="hb-form-grid" data-passkey-action="rotate" style="margin-top:1rem;">
+        <h3 style="margin:0;">Signing key</h3>
+        <p class="hb-muted" style="margin:0;">${esc(key.kid)} · made ${esc(ago(key.createdAt))}${esc(previous)}. It signs every passkey check and confirmation; apps verify them with it.</p>
+        <label class="hb-label hb-check-row"><input type="checkbox" name="exposed"> It may have been exposed: stop accepting every earlier key now (everyone checks in again)</label>
+        <button class="hb-btn" type="submit">Rotate the signing key</button>
+        <p class="hb-muted" data-result style="margin:0;"></p>
+      </form>`;
   }
 
   function render(status) {
@@ -136,6 +152,7 @@
           <p class="hb-muted" data-check-result style="margin:0;"></p>
         </div>
       </div>
+      ${signingKeyBlock(status)}
     `;
   }
 
@@ -161,7 +178,11 @@
       const result = form.querySelector('[data-result]') || node.querySelector('[data-check-result]');
       result.textContent = 'Waiting for your passkey…';
       try {
-        if (action === 'enroll') {
+        if (action === 'rotate') {
+          const done = await guardedPost(`${AUTH}signing-key/rotate`, { exposed: form.elements.exposed.checked });
+          result.textContent = done.dropped ? `Rotated to ${done.kid}; earlier keys dropped. Check in again.` : `Rotated to ${done.kid}.`;
+          setTimeout(reload, 1500);
+        } else if (action === 'enroll') {
           const done = await enroll({ label: form.elements.label.value, hardware: form.elements.hardware.checked, grant: form.elements.grant ? form.elements.grant.value : undefined });
           result.textContent = done.askedForHardware && done.kind !== 'hardware' ? `Registered, but as a ${KIND_LABELS[done.kind]}: it did not prove it is a hardware key.` : 'Registered.';
           setTimeout(reload, 1200);

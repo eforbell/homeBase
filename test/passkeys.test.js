@@ -7,10 +7,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { createAssurance, createIdentity, parseSnapshot, requestDigest, verifyToken } = require('sovereign-auth');
+const { ATTESTATION_ROOTS, createAssurance, createIdentity, parseSnapshot, requestDigest, verifyToken } = require('sovereign-auth');
 const { createApp } = require('../src/app');
 const { createPasskeys } = require('../src/identity/passkeys');
-const { loadSigningKey } = require('../src/identity/signing-key');
+const { RETIRED_KEEP_SECONDS, createKeyring, loadSigningKey, publishedKeys } = require('../src/identity/signing-key');
 const { SqliteStateStore } = require('../src/state/sqlite-store');
 const { attestationFixture, createAuthenticator } = require('./support/authenticator');
 
@@ -30,14 +30,18 @@ const PASSPHRASE = 'correct horse battery';
 // whois: the stub's answer for an address, or a test's own in its place (one that pauses, say).
 const PEER_WHOIS = async (addr) => { if (!PEERS[addr]) throw new Error('no such peer'); return PEERS[addr]; };
 
-async function startServer(t, { cutOver = true, whois = PEER_WHOIS } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-passkeys-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+// again: the root of a server this test already ran, to start Home Base again on its files. roots: the
+// attestation roots it pins (the test root unless given). alerts: an array that collects health alerts.
+async function startServer(t, { cutOver = true, whois = PEER_WHOIS, again = null, roots = attestationFixture().roots, alerts = null } = {}) {
+  const root = again || fs.mkdtempSync(path.join(os.tmpdir(), 'hb-passkeys-'));
   const identityDir = path.join(root, 'identity');
-  fs.mkdirSync(identityDir, { mode: 0o755 });
-  fs.chmodSync(identityDir, 0o755);
   const stateDbPath = path.join(root, 'state.sqlite3');
-  if (cutOver) {
+  if (!again) {
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.mkdirSync(identityDir, { mode: 0o755 });
+    fs.chmodSync(identityDir, 0o755);
+  }
+  if (cutOver && !again) {
     const store = new SqliteStateStore(stateDbPath);
     store.init();
     const { id } = store.createJob({ kind: 'ingress-cutover', target: 'smith', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: '{}' });
@@ -56,14 +60,17 @@ async function startServer(t, { cutOver = true, whois = PEER_WHOIS } = {}) {
     instance: 'smith',
     defaultDomain: DOMAIN,
     directory: true,
-    passkeyRoots: attestationFixture().roots,
+    passkeyRoots: roots,
+    ...(alerts ? { healthAlertsEnabled: true, healthAlertsWebhookUrl: 'https://alerts.example/hook', notificationsPostJson: async (url, body) => { alerts.push(body); } } : {}),
     identityWhois: whois,
     identityStatus: async () => ({ Self: { TailscaleIPs: ['100.64.0.100'] } }),
   });
   await new Promise((resolve) => app.listen(resolve));
-  t.after(() => new Promise((resolve) => { app.stop(); app.server.close(resolve); }));
+  let stopped = false;
+  const stop = () => new Promise((resolve) => { if (stopped) return resolve(); stopped = true; app.stop(); app.server.close(resolve); });
+  t.after(stop);
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  return { app, base, root, snapshot: () => JSON.parse(fs.readFileSync(path.join(identityDir, 'snapshot.json'), 'utf8')) };
+  return { app, base, root, stop, snapshot: () => JSON.parse(fs.readFileSync(path.join(identityDir, 'snapshot.json'), 'utf8')) };
 }
 
 // A browser on one tailnet device: its cookies by name, and the hostname it asked for.
@@ -120,8 +127,8 @@ function browser(base, addr, { host = HOMEBASE } = {}) {
 }
 
 // Setup through activation: the founder, a synced passkey and an attested hardware key.
-async function activeHousehold(t) {
-  const server = await startServer(t);
+async function activeHousehold(t, options = {}) {
+  const server = await startServer(t, options);
   const parent = browser(server.base, PARENT);
   assert.equal((await parent.post('/api/admin/setup', { passphrase: PASSPHRASE })).status, 200);
   const phone = createAuthenticator({ kind: 'synced' });
@@ -709,4 +716,155 @@ test('a spent action token is refused at its expiry, not taken again once its re
   assert.deepEqual(at(exp), { ok: false, expired: true }, 'at its expiry second it is refused, not re-taken');
   assert.deepEqual(at(exp + 5, 'never-used'), { ok: false, expired: true }, 'nor is any token past its expiry');
   assert.deepEqual(at(exp - 1), { ok: false, replayed: true }, 'and the spent record is still there');
+});
+
+// The cookie a member's browser holds on PULSE after a check there.
+async function pulseCheck(base, authenticator) {
+  const pulse = browser(base, PARENT, { host: PULSE });
+  assert.equal((await pulse.check(authenticator, { origin: `https://${PULSE}` })).status, 200);
+  return pulse;
+}
+const ROTATE = '/_sovereign/auth/signing-key/rotate';
+
+test('rotating the signing key takes a hardware key every time and ends nobody\'s session', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const member = snapshot().members.find((entry) => entry.login === 'parent@example.com');
+  const pulse = await pulseCheck(base, phone);
+  const before = snapshot().keys.map((key) => key.kid);
+  assert.equal(before.length, 1);
+
+  const withPhone = await parent.confirmed(phone, ROTATE, {});
+  assert.equal(withPhone.first.status, 401);
+  assert.equal(withPhone.first.body.policy, 'privileged-plan');
+  assert.equal(withPhone.first.body.target, 'signing-key:rotate');
+  assert.equal(withPhone.token, null, 'a synced passkey does not confirm it');
+  const rotated = await parent.confirmed(yubikey, ROTATE, {});
+  assert.equal(rotated.retry.status, 200, JSON.stringify(rotated.retry.body));
+  assert.equal(rotated.retry.body.dropped, false);
+  const after = snapshot().keys.map((key) => key.kid);
+  assert.deepEqual(after, [rotated.retry.body.kid, before[0]], 'the new key first, the old one kept');
+  assert.equal(parseSnapshot(snapshot()).keys.size, 2, 'and apps read both');
+
+  assert.equal((await appAssurance(snapshot)('open-documents', member, pulse.cookies)).allowed, true, 'the app session from before stands');
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, true, 'so does the admin session');
+  const again = await pulseCheck(base, phone);
+  assert.equal(verifyToken(again.cookies.get('__Host-sv_assurance'), { keys: parseSnapshot(snapshot()).keys }).payload.kid, rotated.retry.body.kid, 'new checks are signed with the new key');
+  const status = (await parent.get('/_sovereign/auth/status')).body;
+  assert.equal(status.signingKey.kid, rotated.retry.body.kid);
+  assert.deepEqual(status.signingKey.previous.map((key) => key.kid), [before[0]]);
+
+  assert.equal((await parent.post(ROTATE, {}, { 'x-sovereign-action-token': rotated.token })).body.code, 'REPLAYED', 'one confirmation, one rotation');
+});
+
+test('a rotation for an exposed key drops every earlier key, and every session it signed ends', async (t) => {
+  const { base, parent, phone, yubikey, snapshot } = await activeHousehold(t);
+  const member = snapshot().members.find((entry) => entry.login === 'parent@example.com');
+  const pulse = await pulseCheck(base, phone);
+  assert.equal((await parent.confirmed(yubikey, ROTATE, {})).retry.status, 200);
+  const exposed = await parent.confirmed(yubikey, ROTATE, { exposed: true });
+  assert.equal(exposed.retry.status, 200, JSON.stringify(exposed.retry.body));
+  assert.equal(exposed.retry.body.dropped, true);
+  assert.deepEqual(snapshot().keys.map((key) => key.kid), [exposed.retry.body.kid]);
+  const refused = await appAssurance(snapshot)('open-documents', member, pulse.cookies);
+  assert.equal(refused.body.error, 'step_up_required', 'the app session ended');
+  assert.equal(refused.reason, 'unknown_kid');
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, false, 'and the admin session, this one included');
+  assert.equal((await parent.check(yubikey)).status, 200);
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, true, 'a new check opens it again');
+});
+
+test('only the administrator rotates the signing key, on Home Base\'s hostname, in active Home Base', async (t) => {
+  const { app, base, parent, yubikey } = await activeHousehold(t);
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const memberId = (await parent.post('/api/directory/members', { userId: '1002', role: 'kid' })).body.memberId;
+  const { code } = (await parent.post(`/api/directory/members/${memberId}/grant`)).body;
+  const kid = browser(base, KID);
+  await kid.enroll(createAuthenticator(), { label: 'Tablet', grant: code });
+  assert.equal((await kid.post(ROTATE, {})).body.code, 'NOT_AUTHORIZED');
+  assert.equal((await kid.get('/_sovereign/auth/status')).body.signingKey, undefined, 'a member is not shown the key');
+  assert.equal((await browser(base, PARENT, { host: PULSE }).post(ROTATE, {})).status, 404);
+  const enrollToken = await parent.actionToken(yubikey, (await parent.post('/_sovereign/auth/enroll/options', { label: 'k' })).body);
+  assert.equal((await parent.post(ROTATE, {}, { 'x-sovereign-action-token': enrollToken.body.token })).status, 401, 'another action\'s confirmation does not rotate');
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  assert.equal((await parent.post(ROTATE, {})).body.code, 'BOOTSTRAP_STATE');
+});
+
+test('a retired key is published for one session window, and an interrupted rotation lists no key twice', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-keyring-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'identity-signing-key.pem');
+  let clock = Date.parse('2026-11-04T12:00:00Z');
+  const keyring = createKeyring(file, { now: () => clock });
+  const first = keyring.current().kid;
+  const { kid: second } = keyring.rotate();
+  assert.deepEqual(keyring.published().map((key) => key.kid), [second, first]);
+  assert.equal(keyring.verifying().size, 2);
+  assert.equal((fs.statSync(path.join(root, 'identity-signing-key-retired.json')).mode & 0o777), 0o600);
+  clock += RETIRED_KEEP_SECONDS * 1000 - 1000;
+  assert.equal(keyring.published().length, 2, 'still within the longest session');
+  clock += 2000;
+  assert.deepEqual(keyring.published().map((key) => key.kid), [second], 'gone once no cookie it signed can be alive');
+  assert.equal(keyring.verifying().size, 1);
+
+  // A rotation stopped after its list was written: the key that stayed current is listed as retired too.
+  const list = path.join(root, 'identity-signing-key-retired.json');
+  fs.writeFileSync(list, JSON.stringify({ format: 1, keys: [{ ...keyring.current().published, retired_at: new Date(clock).toISOString() }] }), { mode: 0o600 });
+  assert.deepEqual(publishedKeys(file, { now: () => clock }).map((key) => key.kid), [second]);
+  assert.doesNotThrow(() => parseSnapshot({ format: 1, household: 'h', generation: 1, written_at: new Date(clock).toISOString(), global_epoch: 0, keys: publishedKeys(file, { now: () => clock }), members: [] }));
+
+  // Losing the key makes a new one; nothing else is lost.
+  fs.rmSync(file);
+  const fresh = createKeyring(file, { now: () => clock });
+  assert.notEqual(fresh.current().kid, second);
+});
+
+test('losing the signing key ends sessions and nothing else', async (t) => {
+  const { root, stop, parent, yubikey, snapshot } = await activeHousehold(t);
+  await stop();
+  fs.rmSync(path.join(root, 'identity-signing-key.pem'));
+  const { base: restarted } = await startServer(t, { again: root });
+  const same = browser(restarted, PARENT);
+  for (const [name, value] of parent.cookies) same.cookies.set(name, value);
+  assert.equal((await same.get('/api/admin/status')).body.unlocked, false, 'the old cookie no longer verifies');
+  const status = (await same.get('/_sovereign/auth/status')).body;
+  assert.equal(status.state, 'active');
+  assert.equal(status.credentials.length, 2, 'passkeys are kept');
+  assert.equal((await same.check(yubikey)).status, 200);
+  assert.equal((await same.get('/api/admin/status')).body.unlocked, true);
+  assert.equal(snapshot().keys.length, 1);
+});
+
+test('a removed attestation root demotes its keys at the next start, and a stranded administrator is told', async (t) => {
+  const alerts = [];
+  const { root, stop, parent, snapshot } = await activeHousehold(t, { alerts });
+  const epochBefore = snapshot().members[0].epoch;
+  await stop();
+  // The next release no longer pins the root the YubiKey verified against.
+  const { base } = await startServer(t, { again: root, roots: ATTESTATION_ROOTS, alerts });
+  const same = browser(base, PARENT);
+  for (const [name, value] of parent.cookies) same.cookies.set(name, value);
+  assert.equal((await same.get('/api/admin/status')).body.unlocked, false, 'the epoch moved: no cookie still says hardware');
+  assert.equal(snapshot().members[0].epoch, epochBefore + 1);
+  const status = (await same.get('/_sovereign/auth/status')).body;
+  assert.deepEqual(status.credentials.map((credential) => [credential.label, credential.kind]), [['Phone', 'synced'], ['YubiKey', 'device-bound']]);
+  assert.equal(status.administratorRuleMet, false);
+  const notice = alerts.find((alert) => alert.event === 'administrator-hardware-key-lost');
+  assert.ok(notice, JSON.stringify(alerts));
+  assert.deepEqual(notice.administrators, ['parent@example.com']);
+  assert.match(notice.adminUrl, /^https:\/\/smith-homebase\.example-tailnet\.ts\.net\/admin$/);
+});
+
+test('entering recovery sends a notice every time, and a failing webhook does not stop it', async (t) => {
+  const alerts = [];
+  const { parent } = await activeHousehold(t, { alerts });
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  await new Promise((resolve) => setImmediate(resolve));
+  const notice = alerts.find((alert) => alert.event === 'identity-recovery-entered');
+  assert.ok(notice, JSON.stringify(alerts));
+  assert.equal(notice.login, 'parent@example.com');
+  assert.match(notice.message, /If this wasn't you/);
+  assert.equal(alerts.filter((alert) => alert.event === 'administrator-hardware-key-lost').length, 0, 'nothing stranded');
+
+  const { parent: other } = await activeHousehold(t, { alerts: { push() { throw new Error('webhook down'); } } });
+  assert.equal((await other.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200, 'recovery does not wait on the notice');
 });

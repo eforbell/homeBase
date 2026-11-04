@@ -17,7 +17,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { DEFAULT_SNAPSHOT_PATH, mergeCredentialUpdate, parseSnapshot } = require('sovereign-auth');
+const { DEFAULT_SNAPSHOT_PATH, credentialKind, mergeCredentialUpdate, parseSnapshot } = require('sovereign-auth');
 const { createDirectoryStore } = require('./directory-store');
 
 const PUBLISH_MS = 30_000;
@@ -70,7 +70,7 @@ function forCeremony(row) {
 
 // catalog: [{ id, identity?: { defaultAccess: 'administrator' } }]. Operator apps default to administrators.
 // keys: the public keys that verify assurance cookies and action tokens ({ kid, public_key }), published in
-// the snapshot so apps can check them.
+// the snapshot so apps can check them; or a function returning them, read at every publish (rotation).
 function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SNAPSHOT_PATH, keys = [], now = Date.now, log = () => {}, store = createDirectoryStore(dbPath) }) {
   if (!household) throw new Error('the household directory needs HOME_BASE_INSTANCE');
   const file = path.resolve(snapshotFile);
@@ -105,7 +105,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
       generation: data.household.generation,
       written_at: iso(),
       global_epoch: data.household.global_epoch,
-      keys,
+      keys: typeof keys === 'function' ? keys() : keys,
       members: data.members.map((member) => ({
         user_id: member.user_id,
         member_id: member.member_id,
@@ -384,6 +384,34 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     });
   }
 
+  // A sovereignAuth release that removes an attestation root (a vendor compromise, say) demotes every
+  // credential that verified against it, at Home Base's next start rather than at its next use: the kind
+  // falls to what its flags alone support, and the member's epoch moves, so no cookie still says hardware.
+  // pinned: the fingerprints of the roots now pinned. Returns { demoted (how many), stranded }: in active
+  // Home Base, the administrators left without an attested hardware key ([{ memberId, login }]), who must
+  // enter recovery to enroll one (every-time hardware is how they would otherwise).
+  function demoteUnpinned(pinned) {
+    const demoted = change((data) => {
+      const credentials = data.credentials.filter((row) => usable(row) && row.kind === 'hardware' && !pinned.has(row.root));
+      const touched = new Set(credentials.map((row) => row.member_id));
+      const members = data.members.filter((member) => touched.has(member.member_id)).map((member) => toRow({ ...member, epoch: member.epoch + 1, updated_at: iso() }));
+      if (!credentials.length) return { change: {}, value: 0 };
+      return {
+        change: {
+          credentials: credentials.map((row) => ({ ...row, orphaned: row.orphaned ? 1 : 0, kind: kindWithoutRoot(row), root: null })),
+          members,
+          audit: credentials.map((row) => ({ action: 'credential-kind', target: row.member_id, outcome: `hardware to ${kindWithoutRoot(row)}: root ${String(row.root).slice(0, 23)} is no longer pinned` })),
+        },
+        value: credentials.length,
+      };
+    });
+    if (demoted) log(`directory: ${demoted} hardware key(s) demoted: their attestation root is no longer pinned`);
+    const data = load();
+    const stranded = data.household.state !== 'active' ? [] : administrators(data).filter((member) => !meetsCredentialRule(credentialsOf(data, member.member_id))).map((member) => ({ memberId: member.member_id, login: member.login }));
+    return { demoted, stranded };
+  }
+  const kindWithoutRoot = (row) => credentialKind({ deviceType: row.device_type, backedUp: row.backed_up !== 0, root: null });
+
   // What a check is decided on, read fresh: the member (with the administrator flag), the household's state
   // and global epoch. Null for anyone who isn't a member.
   function standing(userId) {
@@ -590,7 +618,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
 
   return {
-    activate, addCredential, addMember, claim, consumeAction, consumeGrant, credentialsFor, describe, enterRecovery, init, isAdministrator, issueGrant,
+    activate, addCredential, addMember, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, init, isAdministrator, issueGrant,
     lookup, memberStatus, publish, recordAssertion, reset, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }

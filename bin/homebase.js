@@ -139,16 +139,15 @@ async function main(argv, { env = process.env, prompt = promptHidden, isRoot = (
   const { createDirectory } = require('../src/identity/directory');
   const { getCatalog } = require('../src/catalog');
   const { hashPassphrase } = require('../src/admin-auth');
-  const { loadSigningKey } = require('../src/identity/signing-key');
+  const { publishedKeys } = require('../src/identity/signing-key');
   new SqliteStateStore(config.stateDbPath).init();
-  // The snapshot keeps listing Home Base's key (the reset's new global epoch is what ends every cookie).
-  const signingKey = loadSigningKey(config.identitySigningKeyFile);
+  // The snapshot keeps listing Home Base's keys (the reset's new global epoch is what ends every cookie).
   const directory = createDirectory({
     dbPath: config.stateDbPath,
     catalog: getCatalog(),
     household: config.instance,
     snapshotFile: config.identitySnapshotFile,
-    keys: signingKey ? [signingKey.published] : [],
+    keys: () => publishedKeys(config.identitySigningKeyFile),
     log: (line) => out(line),
   });
   directory.init();

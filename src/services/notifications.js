@@ -103,6 +103,23 @@ class HealthAlertNotifier {
     return { enabled: true, sent };
   }
 
+  // Feature-10 SID-005: something the administrator must hear about even when they did it themselves, because
+  // if they didn't, someone else did (recovery entered with their identity and the passphrase), or because
+  // they must act (a removed attestation root left them without a hardware key). Rare, so no cooldown;
+  // failures are the caller's to log, never a reason to refuse what happened.
+  async notifyIdentityEvent({ event, message, adminUrl, detail = {} }, config = {}) {
+    if (!config.healthAlertsEnabled || !config.healthAlertsWebhookUrl) return { enabled: false, sent: 0 };
+    await this.postJson(config.healthAlertsWebhookUrl, {
+      source: 'homebase',
+      event,
+      message,
+      ...detail,
+      sentAt: new Date(this.now()).toISOString(),
+      adminUrl: adminUrl || `${buildPublicBase(config)}/admin`,
+    });
+    return { enabled: true, sent: 1 };
+  }
+
   async sendTestAlert(config = {}) {
     if (!config.healthAlertsEnabled) {
       const error = new Error('Health alerts are disabled. Enable alerts before sending a test message.');

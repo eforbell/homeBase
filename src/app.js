@@ -28,8 +28,8 @@ const { createDirectory } = require('./identity/directory');
 const { createDirectoryRoutes } = require('./identity/directory-routes');
 const { createPasskeys } = require('./identity/passkeys');
 const { createPasskeyRoutes } = require('./identity/passkey-routes');
-const { loadSigningKey } = require('./identity/signing-key');
-const { createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
+const { createKeyring } = require('./identity/signing-key');
+const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
 const { HOMEBASE_SERVICE, appPublicBase, appServiceKey, ingressServices } = require('./operations/ingress-layout');
@@ -522,19 +522,23 @@ function createApp(config) {
     const addr = forwardedFor.includes(',') ? null : canonicalAddress(forwardedFor);
     return addr ? whoisCaller(addr) : null;
   }
-  // SID-005: the key that signs assurance cookies, published in the snapshot for apps to verify.
-  const signingKey = config.directory ? loadSigningKey(config.identitySigningKeyFile || path.join(path.dirname(config.stateDbPath), 'identity-signing-key.pem'), { create: true }) : null;
+  // SID-005: the keys that sign assurance cookies, published in the snapshot for apps to verify; a rotation
+  // keeps the previous ones published for one session window.
+  const signingKey = config.directory ? createKeyring(config.identitySigningKeyFile || path.join(path.dirname(config.stateDbPath), 'identity-signing-key.pem')) : null;
   const directory = config.directory ? createDirectory({
     dbPath: config.stateDbPath,
     catalog: getCatalog(),
     household: config.instance,
     snapshotFile: config.identitySnapshotFile,
-    keys: [signingKey.published],
+    keys: () => signingKey.published(),
     log: warn,
   }) : null;
   if (directory) directory.init();
   // passkeyRoots is for tests only (loadConfig never sets it): in use, the roots are sovereignAuth's pinned ones.
+  const passkeyRoots = config.passkeyRoots || ATTESTATION_ROOTS;
   const passkeys = directory ? createPasskeys({ directory, signingKey, household: config.instance, roots: config.passkeyRoots }) : null;
+  // A release that removed an attestation root demotes the keys that verified against it, now.
+  const stranded = directory ? directory.demoteUnpinned(new Set(passkeyRoots.map((root) => root.fingerprint))).stranded : [];
   // Active Home Base opens admin with the administrator's passkey check on its own hostname (open-admin, 8
   // hours), never the passphrase. req.homeBaseSite is set per request (passkeySite below).
   async function passkeySession(req) {
@@ -548,9 +552,9 @@ function createApp(config) {
   }
   const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state, passkeySession } : null;
   const adminOptions = directoryBinding ? { directory: directoryBinding } : {};
-  const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit }) : null;
+  const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit, notifyIdentity: (...args) => notifyIdentity(...args) }) : null;
   const passkeyRoutes = directory ? createPasskeyRoutes({
-    directory, passkeys, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
+    directory, passkeys, signingKey, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
     passphraseSession: (req) => passphraseSession(req, stateStore, adminOptions),
   }) : null;
   // Passkeys run on per-service hostnames only, so only once the host is cut over: the hostname the request
@@ -619,6 +623,18 @@ function createApp(config) {
   const healthAlertNotifier = new HealthAlertNotifier({
     postJson: config.notificationsPostJson,
   });
+  // SID-005's notices through the health-alert channel, with a link to Admin at its current address. Sent in
+  // the background: a webhook that fails is logged, and never undoes or delays what happened.
+  function notifyIdentity(event, message, detail = {}) {
+    const effective = mergeHomeBaseConfig(config, stateStore.getHomeBaseConfig() || {});
+    const ingress = currentIngress(stateStore.loadState().ingressJobs, effective);
+    const adminUrl = ingress ? `https://${ingress.instance}-homebase.${ingress.domain}/admin` : undefined;
+    return healthAlertNotifier.notifyIdentityEvent({ event, message, adminUrl, detail }, effective)
+      .catch((error) => warn(`identity notice ${event} not sent: ${error.message}`));
+  }
+  if (stranded.length) {
+    notifyIdentity('administrator-hardware-key-lost', 'An attestation root was removed in a sovereignAuth update, so the administrator\'s hardware key no longer counts as one. Enter recovery on Admin and register a new hardware key.', { administrators: stranded.map((member) => member.login) });
+  }
   const appUpdateMonitor = new AppUpdateMonitor(stateStore, {
     serviceUser: initialEffectiveConfig.serviceUser || 'sovereign',
     gitTransport: initialEffectiveConfig.gitTransport || 'https',

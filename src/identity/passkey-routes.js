@@ -16,6 +16,9 @@
 //   action    active: a fresh ceremony for one every-time action (wire contract, section 9), which answers
 //             with an action token bound to the app, the policy key, the target and the request digest.
 //
+// Rotating the signing key (signing-key/rotate) is the administrator's, in active Home Base, with an
+// every-time hardware token (privileged-plan: rotating secrets).
+//
 // A request that needs a check it doesn't have gets the wire contract's 401 step_up_required, which
 // stepup.js (served here) turns into a prompt and one retry of the identical request.
 //
@@ -74,7 +77,8 @@ function actionRequest(action, standing) {
 }
 
 // passphraseSession(req): admin-auth's passphraseSession, bound to this Home Base.
-function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf }) {
+// signingKey: the keyring (signing-key.js createKeyring), for rotation and the administrator's status.
+function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf }) {
   const audit = (action, target, outcome, reason) => recordAdminAudit(stateStore, { action, target, outcome, reason });
 
   function refusal(res, statusCode, code, error, action, target) {
@@ -93,9 +97,9 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
 
   // The every-time hardware token for one administrator action on Home Base, bound to this request and
   // target: { consume } to use up with the change, or { every } to ask for one.
-  function adminAction(req, here, standing, target) {
+  function adminAction(req, here, standing, target, policyKey = 'manage-admin-credential') {
     const digest = requestDigest({ method: req.method, url: req.url, body: req.rawBody || Buffer.alloc(0), target });
-    const token = passkeys.actionToken(req.headers, { site: here, standing, app: HOME_BASE_APP, policyKey: 'manage-admin-credential', target, digest });
+    const token = passkeys.actionToken(req.headers, { site: here, standing, app: HOME_BASE_APP, policyKey, target, digest });
     return token.claims ? { consume: token.consume } : { every: { target, digest }, reason: token.reason };
   }
 
@@ -150,6 +154,7 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
       check: check.claims ? { credentialId: check.claims.cred, label: label(check.claims.cred), kind: check.claims.kind, checkedAt: new Date(check.claims.auth_time * 1000).toISOString(), ageSeconds: check.age } : null,
       administratorRuleMet: standing.meetsAdministratorRule,
       canActivate,
+      ...(standing.member.administrator && signingKey ? { signingKey: signingKey.describe() } : {}),
     };
   }
 
@@ -285,6 +290,24 @@ function createPasskeyRoutes({ directory, passkeys, binding, stateStore, sendJso
         // Revoking bumped the member's epoch, so this cookie is spent as well.
         res.setHeader('Set-Cookie', passkeys.clearCookieHeader());
         sendJson(res, 200, { ok: true });
+        return true;
+      }
+
+      if (route === 'POST signing-key/rotate') {
+        const exposed = body.exposed === true;
+        if (!standing.member.administrator) return refusal(res, 403, 'NOT_AUTHORIZED', 'Only the administrator rotates the signing key.', 'signing-key-rotate', 'homebase');
+        if (standing.state !== 'active') return refusal(res, 409, 'BOOTSTRAP_STATE', `Home Base is in ${standing.state}: rotate the signing key once it is active.`, 'signing-key-rotate', 'homebase');
+        const action = adminAction(req, here, standing, 'signing-key:rotate', 'privileged-plan');
+        if (!action.consume) return stepUp(res, 'privileged-plan', 'HARDWARE_CHECK_REQUIRED', 'Confirm with your hardware key to rotate the signing key.', action.every);
+        const used = directory.consumeAction(action.consume, { userId: standing.member.userId, ...expectOf(standing) });
+        if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'signing-key-rotate', 'homebase');
+        const rotated = signingKey.rotate({ exposed });
+        // The snapshot lists the new key now, not at the next scheduled publish.
+        directory.publish();
+        audit('signing-key-rotate', 'homebase', exposed ? `rotated to ${rotated.kid}; every earlier key dropped` : `rotated to ${rotated.kid}; ${rotated.retired.join(', ')} kept for the session window`);
+        // An exposed key's cookies end now, this one included.
+        if (exposed) res.setHeader('Set-Cookie', passkeys.clearCookieHeader());
+        sendJson(res, 200, { ok: true, kid: rotated.kid, dropped: rotated.dropped });
         return true;
       }
 
