@@ -1,10 +1,29 @@
 (function homeBaseApi() {
   function checkResponse(response, payload) {
     if (!response.ok) {
-      const message = payload && payload.error ? payload.error : `Request failed (${response.status})`;
+      // A step-up answer carries words for people beside its machine-readable error.
+      const message = payload && payload.error === 'step_up_required' && payload.message ? payload.message : payload && payload.error ? payload.error : `Request failed (${response.status})`;
       throw new Error(message);
     }
     return payload;
+  }
+
+  // The passkey prompt (/_sovereign/auth/stepup.js), loaded the first time a request asks for a confirmation:
+  // hosts without the household directory never ask, and never load it.
+  let stepUpLoading = null;
+  function stepUpHelper() {
+    if (window.SovereignStepUp) return Promise.resolve(window.SovereignStepUp);
+    stepUpLoading = stepUpLoading || new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '/_sovereign/auth/stepup.js';
+      script.onload = () => resolve(window.SovereignStepUp);
+      script.onerror = () => {
+        stepUpLoading = null;
+        reject(new Error('Home Base could not load its passkey prompt; reload the page and try again.'));
+      };
+      document.head.append(script);
+    });
+    return stepUpLoading;
   }
 
   async function parseJson(response) {
@@ -18,14 +37,24 @@
     return checkResponse(response, payload);
   }
 
+  // A POST. If Home Base answers that it needs a passkey (a check, or the hardware key for a privileged plan,
+  // SID-006), the prompt runs and the identical request is sent once more, with the confirmation it got.
   async function postJson(url, body) {
-    const response = await fetch(url, {
+    const text = JSON.stringify(body || {});
+    const send = (token) => fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(token ? { 'X-Sovereign-Action-Token': token } : {}) },
       credentials: 'same-origin',
-      body: JSON.stringify(body || {}),
+      body: text,
     });
-    const payload = await parseJson(response);
+    let response = await send(null);
+    let payload = await parseJson(response);
+    if (response.status === 401 && payload && payload.error === 'step_up_required') {
+      const token = await (await stepUpHelper()).satisfy(payload);
+      if (token === false) throw new Error('Cancelled: nothing ran.');
+      response = await send(token);
+      payload = await parseJson(response);
+    }
     return checkResponse(response, payload);
   }
 

@@ -187,6 +187,10 @@ async function rotateAdmin(req, res, body, stateStore, { directory = null } = {}
   if (newPassphrase.length < 8) {
     return { statusCode: 400, payload: { error: 'New admin passphrase must be at least 8 characters.' } };
   }
+  // Rotating a secret is a privileged plan: the hardware key every time, in active Home Base. Asked last, so a
+  // mistyped passphrase doesn't spend the confirmation.
+  const confirmed = await confirmPrivileged(req, directory, status, null);
+  if (!confirmed.ok) return { statusCode: confirmed.statusCode, payload: confirmed.payload };
 
   const nowIso = new Date().toISOString();
   const passphraseHash = hashPassphrase(newPassphrase);
@@ -204,7 +208,18 @@ const EXECUTION_MODE_UPGRADE_HINT = 'HOME_BASE_ENABLE_PRIVILEGED_JOBS is set but
 
 // duringBootstrap: the few host actions setup needs (the cutover and Home Base's own service). Recovery
 // permits none: only re-enrolling and revoking (D16).
-async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false, directory = null, duringBootstrap = false } = {}) {
+// SID-006: with the household directory on and Home Base active, a privileged plan also needs the
+// administrator's every-time hardware confirmation, bound to the plan and this request's bytes, used once.
+// The plan is the route's (req.planTarget, which the route matrix sets for every privileged-plan route) unless
+// the handler froze a more exact one (target: restore names the backup it resolved). A route the matrix
+// doesn't call privileged asks for nothing more.
+async function confirmPrivileged(req, directory, status, target) {
+  const plan = target || req.planTarget;
+  if (!directory || status.directoryState !== 'active' || !plan) return { ok: true };
+  return directory.confirmPlan(req, plan);
+}
+
+async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled = true, executionModeMissing = false, directory = null, duringBootstrap = false, target = null } = {}) {
   const token = parseCookie(req.headers.cookie, COOKIE_NAME);
   const sessionTokenHash = token ? hashToken(token) : null;
   const status = await getAdminStatus(req, stateStore, { directory });
@@ -232,7 +247,9 @@ async function requireAdminForExecute(req, stateStore, { privilegedJobsEnabled =
       sessionTokenHash,
     };
   }
-  return { ok: true, sessionTokenHash };
+  const confirmed = await confirmPrivileged(req, directory, status, target);
+  if (!confirmed.ok) return { ...confirmed, sessionTokenHash };
+  return { ok: true, sessionTokenHash, ...(confirmed.jti ? { confirmation: confirmed.jti } : {}) };
 }
 
 module.exports = {
