@@ -596,6 +596,60 @@ test('a sensitive app\'s hostname runs checks only: its own cookie, which that a
   assert.equal((await check('open-documents', member, pulse.cookies)).body.error, 'step_up_required');
 });
 
+test('a check answered before a recovery is refused after it, even once Home Base is active again', async (t) => {
+  const { base, parent, phone, yubikey } = await activeHousehold(t);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  // Both answered, neither finished: on the app's hostname and on Home Base's (the admin session).
+  const appStarted = await pulse.post('/_sovereign/auth/check/options', {});
+  const appAnswer = phone.authenticate(appStarted.body.options, { origin: `https://${PULSE}` });
+  const adminStarted = await parent.post('/_sovereign/auth/check/options', {});
+  const adminAnswer = phone.authenticate(adminStarted.body.options, { origin: ORIGIN });
+
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  assert.equal((await parent.check(yubikey, { purpose: 'activate' })).status, 200, 'active again');
+  parent.cookies.delete('__Host-sv_assurance');
+
+  const late = await pulse.post('/_sovereign/auth/check/finish', { response: appAnswer });
+  assert.equal(late.status, 400);
+  assert.match(late.body.error, /wrong_action/);
+  assert.equal(late.setCookie.length, 0, 'no cookie');
+  const lateAdmin = await parent.post('/_sovereign/auth/check/finish', { response: adminAnswer });
+  assert.match(lateAdmin.body.error, /wrong_action/);
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, false, 'no admin session from it');
+});
+
+test('a check runs only on the hostname it started on: no swaps between an app\'s and Home Base\'s', async (t) => {
+  const { base, parent, phone } = await activeHousehold(t);
+  const pulse = browser(base, PARENT, { host: PULSE });
+  parent.cookies.delete('__Host-sv_assurance');
+  const swaps = [
+    [pulse, parent, `https://${PULSE}`],
+    [pulse, parent, ORIGIN],
+    [parent, pulse, ORIGIN],
+    [parent, pulse, `https://${PULSE}`],
+  ];
+  for (const [from, to, origin] of swaps) {
+    const started = await from.post('/_sovereign/auth/check/options', {});
+    const finished = await to.post('/_sovereign/auth/check/finish', { response: phone.authenticate(started.body.options, { origin }) });
+    assert.equal(finished.status, 400, `${origin}: ${JSON.stringify(finished.body)}`);
+    assert.equal(finished.setCookie.length, 0);
+  }
+  assert.equal((await parent.get('/api/admin/status')).body.unlocked, false);
+});
+
+test('the hostname may carry the default port, as nginx admits it, and no other', async (t) => {
+  const { base, phone, snapshot } = await activeHousehold(t);
+  const script = (host) => fetch(`${base}/_sovereign/auth/stepup.js`, { headers: { 'x-forwarded-host': host } }).then((res) => res.status);
+  assert.equal(await script(`${PULSE}:443`), 200);
+  assert.equal(await script(`${PULSE}:8443`), 404);
+  const withPort = browser(base, PARENT, { host: `${PULSE}:443` });
+  const started = await withPort.post('/_sovereign/auth/check/options', {});
+  const checked = await withPort.post('/_sovereign/auth/check/finish', { response: phone.authenticate(started.body.options, { origin: `https://${PULSE}` }) });
+  assert.equal(checked.status, 200, JSON.stringify(checked.body));
+  const cookie = verifyToken(withPort.cookies.get('__Host-sv_assurance'), { keys: parseSnapshot(snapshot()).keys });
+  assert.equal(cookie.payload.aud, PULSE, 'the cookie names the hostname, not the port');
+});
+
 test('on a sensitive app\'s hostname a check needs active Home Base, and a member with no passkey is sent to Home Base', async (t) => {
   const { app, base, parent } = await activeHousehold(t);
   app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });

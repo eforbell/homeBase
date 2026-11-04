@@ -50,6 +50,9 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   }
 
   const memberOf = (standing) => ({ userId: standing.member.userId, login: standing.member.login, name: standing.member.name });
+  // Every challenge is bound to the directory as it stood when it was issued: a recovery, reset, revocation
+  // or activation before the finish refuses the finish (wrong_action), even once Home Base is active again.
+  const stoodAt = (standing) => ({ state: standing.state, epoch: standing.member.epoch, globalEpoch: standing.globalEpoch });
 
   // Enrollment: attestation is asked for only when the member says it is a hardware key; the kind stored
   // is what the authenticator proves either way (D15).
@@ -59,7 +62,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       hostname: site.hostname,
       member: memberOf(standing),
       purpose: 'enroll',
-      action: { ...context, label: cleanLabel(label), hardware: hardware === true },
+      action: { ...context, label: cleanLabel(label), hardware: hardware === true, standing: stoodAt(standing) },
       attestation: hardware === true ? 'direct' : 'none',
       excludeCredentials: directory.credentialsFor(standing.member.userId),
     });
@@ -72,7 +75,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       hostname: site.hostname,
       member: memberOf(standing),
       purpose: 'enroll',
-      action: { ...context, label: cleanLabel(label), hardware: hardware === true },
+      action: { ...context, label: cleanLabel(label), hardware: hardware === true, standing: stoodAt(standing) },
       response,
     });
     if (!result.ok) return result;
@@ -100,7 +103,8 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       member: memberOf(standing),
       purpose,
       kind,
-      ...(audience ? { audience, action } : {}),
+      ...(audience ? { audience } : {}),
+      action: { ...(action || {}), standing: stoodAt(standing) },
       credentials: directory.credentialsFor(standing.member.userId),
     });
   }
@@ -115,7 +119,8 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
       member: memberOf(standing),
       purpose,
       kind,
-      ...(audience ? { audience, action } : {}),
+      ...(audience ? { audience } : {}),
+      action: { ...(action || {}), standing: stoodAt(standing) },
       credentials: directory.credentialsFor(standing.member.userId),
       response,
     });

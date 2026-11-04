@@ -559,7 +559,8 @@ function createApp(config) {
   function passkeySite(req, state, effectiveConfig) {
     const ingress = directory ? currentIngress(state.ingressJobs, effectiveConfig) : null;
     if (!ingress) return null;
-    const forwarded = typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].toLowerCase() : '';
+    // nginx admits the hostname with or without the default port (ingress-layout.js); nothing else.
+    const forwarded = typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].toLowerCase().replace(/:443$/, '') : '';
     const service = forwarded ? ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog }).find((entry) => entry.strict && entry.hostname === forwarded) : null;
     return service ? { hostname: service.hostname, rpID: ingress.domain, homeBase: service.key === HOMEBASE_SERVICE } : null;
   }
