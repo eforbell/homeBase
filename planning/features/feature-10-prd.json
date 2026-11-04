@@ -350,7 +350,11 @@
       "priority": 6,
       "estimatedLines": "+420/-140",
       "testStrategy": "Route-matrix completeness test; API authorization tests per route; cross-site form and sibling-hostname request tests; VM rehearsal of setup, active, recovery, and reset",
-      "passes": false
+      "passes": false,
+      "implementationNotes": [
+        "Slicing (2026-11-04): slice 1 is the route matrix and its enforcement (AC 2, the rest of AC 3); slice 2 every-time hardware for privileged plans with frozen plan digests (AC 5); slice 3 Home Base admin onto its nginx-only socket, :3080 redirected then retired (AC 1, which also closes local processes setting X-Forwarded-For on the loopback port). AC 4 (identity plus passkey to unlock admin, 8 h, bound to the stable user ID and hostname) was met by SID-005 slice 1. bugBase #150 is fixed (PR #15) and closes after the production deploy. Redemption sockets stay deferred (SID-005)",
+        "Slice 1 (2026-11-04): src/route-matrix.js lists every route with its class (public, member self-service, administrator), the assurance policy its level comes from, and its authority (an unlocked admin session checked before the handler, or the route itself where it opens admin or is member self-service). Every request is matched before any handler; no entry is a 404, so a handler without an entry is unreachable. Decided with the administrator: with the directory on, every administrator route, reads included, needs the unlocked administrator; members use Home Base for their own passkeys and their own view of the directory. Directory off (hosts not yet on Feature-10) keeps each handler's gate unchanged. With the directory on, the public health probe and whoami carry no host detail. A source scan fails if a handled route has no entry or an entry no handler; behaviour tests refuse a checked-in member and the locked administrator on every administrator route before its handler. Codex: three rounds (public health detail, configured font mount, whoami's snapshot message), the last clean. Checked in a browser on the test VM: locked pages show why and where to go"
+      ]
     },
     {
       "id": "SID-007",
