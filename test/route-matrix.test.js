@@ -185,6 +185,21 @@ test('directory on: the public health probe says only that Home Base answers; fo
   assert.equal((await fetch(`${base}/_sovereign/other/test.woff2`, { headers: { 'x-forwarded-for': KID, 'x-forwarded-host': HOMEBASE } })).status, 404);
 });
 
+test('directory on: whoami gives a member the snapshot\'s reason, and only the administrator its details', async (t) => {
+  const { root, base, parent } = await activeHousehold(t);
+  // A snapshot directory anyone may write: apps refuse it, and the reader's message names the path.
+  fs.chmodSync(path.join(root, 'identity'), 0o777);
+  const kid = browser(base, KID);
+  const seen = (await kid.get('/api/identity/whoami')).body.snapshot;
+  assert.equal(seen.ok, false);
+  assert.ok(seen.reason);
+  assert.equal(seen.message, undefined);
+  assert.doesNotMatch(JSON.stringify(seen), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const told = (await parent.get('/api/identity/whoami')).body.snapshot;
+  assert.equal(told.reason, seen.reason);
+  assert.ok(typeof told.message === 'string' && told.message, 'the unlocked administrator sees why');
+});
+
 test('directory on: opening admin is the passphrase\'s and the passkey\'s, not the session\'s', async (t) => {
   const { base, parent } = await activeHousehold(t);
   const locked = browser(base, PARENT);

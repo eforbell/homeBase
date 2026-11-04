@@ -924,9 +924,11 @@ function createApp(config) {
     if (!sent.userId && !sent.login) ingressHeaders = 'absent';
     else if (caller && sent.userId === caller.userId && sent.login === caller.login) ingressHeaders = 'match';
     const state = snapshotReader.current();
+    // The reader's message can name paths and user IDs on the host: the administrator's to see.
+    const admin = state.ok ? false : (await getAdminStatus(req, stateStore, adminOptions)).unlocked;
     const snapshot = state.ok
       ? { ok: true, household: state.snapshot.household, generation: state.snapshot.generation, ageSeconds: Math.round((Date.now() - state.snapshot.writtenAt) / 1000) }
-      : { ok: false, reason: state.reason, message: state.message };
+      : { ok: false, reason: state.reason, ...(admin ? { message: state.message } : {}) };
     const callerHeaders = caller ? { 'x-sovereign-user-id': caller.userId, 'x-sovereign-login': caller.login } : {};
     const apps = state.ok ? Object.fromEntries(catalog.map((app) => {
       const result = resolveMember(state.snapshot, callerHeaders, { appId: app.id });
