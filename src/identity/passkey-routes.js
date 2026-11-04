@@ -302,11 +302,17 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
         const used = directory.consumeAction(action.consume, { userId: standing.member.userId, ...expectOf(standing) });
         if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'signing-key-rotate', 'homebase');
         const rotated = signingKey.rotate({ exposed });
-        // The snapshot lists the new key now, not at the next scheduled publish.
-        directory.publish();
         audit('signing-key-rotate', 'homebase', exposed ? `rotated to ${rotated.kid}; every earlier key dropped` : `rotated to ${rotated.kid}; ${rotated.retired.join(', ')} kept for the session window`);
         // An exposed key's cookies end now, this one included.
         if (exposed) res.setHeader('Set-Cookie', passkeys.clearCookieHeader());
+        // The snapshot lists the new key now, not at the next scheduled publish. If it can't be written, the
+        // key has still changed, but apps don't know yet: they keep the last snapshot until it is 120 s old,
+        // then admit nobody until a publish succeeds (the scheduled ones keep trying).
+        if (!directory.publish()) {
+          audit('signing-key-rotate', 'homebase', 'snapshot not published');
+          sendJson(res, 503, { error: `The signing key is now ${rotated.kid}, but the snapshot apps read could not be written, so they don't know yet. Home Base keeps trying; check its log.`, code: 'SNAPSHOT_NOT_PUBLISHED', kid: rotated.kid, dropped: rotated.dropped });
+          return true;
+        }
         sendJson(res, 200, { ok: true, kid: rotated.kid, dropped: rotated.dropped });
         return true;
       }

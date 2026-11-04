@@ -868,3 +868,33 @@ test('entering recovery sends a notice every time, and a failing webhook does no
   const { parent: other } = await activeHousehold(t, { alerts: { push() { throw new Error('webhook down'); } } });
   assert.equal((await other.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200, 'recovery does not wait on the notice');
 });
+
+test('a rotation is flushed to disk before it is reported, and a snapshot that can\'t be written is reported', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-keyring-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const keyring = createKeyring(path.join(root, 'identity-signing-key.pem'));
+  const synced = [];
+  const real = fs.fsyncSync;
+  fs.fsyncSync = (fd) => { synced.push(fd); return real(fd); };
+  try {
+    keyring.rotate({ exposed: true });
+  } finally {
+    fs.fsyncSync = real;
+  }
+  assert.equal(synced.length, 4, 'both files and, after each rename, their directory');
+
+  const { root: home, parent, yubikey, snapshot } = await activeHousehold(t);
+  const before = snapshot().keys.map((key) => key.kid);
+  const identityDir = path.join(home, 'identity');
+  fs.chmodSync(identityDir, 0o555);
+  let rotated;
+  try {
+    rotated = await parent.confirmed(yubikey, ROTATE, {});
+  } finally {
+    fs.chmodSync(identityDir, 0o755);
+  }
+  assert.equal(rotated.retry.status, 503, JSON.stringify(rotated.retry.body));
+  assert.equal(rotated.retry.body.code, 'SNAPSHOT_NOT_PUBLISHED');
+  assert.notEqual(rotated.retry.body.kid, before[0], 'the key did change');
+  assert.deepEqual(snapshot().keys.map((key) => key.kid), before, 'apps have not been told');
+});

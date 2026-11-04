@@ -72,12 +72,28 @@ function readRetired(file) {
   return data.keys.filter((entry) => typeof entry?.kid === 'string' && typeof entry.public_key === 'string' && !Number.isNaN(Date.parse(entry.retired_at)));
 }
 
-// Written beside the key and renamed into place, so a reader sees the old list or the new one.
+// Written beside its target, flushed, then renamed into place and the directory flushed: a reader (or a
+// restart after a power cut) sees the old file or the new one, and a rotation reported done stays done.
+function writeDurably(target, content) {
+  const temporary = `${target}.${process.pid}.tmp`;
+  const fd = fs.openSync(temporary, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(temporary, target);
+  const dir = fs.openSync(path.dirname(target), 'r');
+  try {
+    fs.fsyncSync(dir);
+  } finally {
+    fs.closeSync(dir);
+  }
+}
+
 function writeRetired(file, keys) {
-  const list = retiredFile(file);
-  const temporary = `${list}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify({ format: 1, keys }, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, list);
+  writeDurably(retiredFile(file), `${JSON.stringify({ format: 1, keys }, null, 2)}\n`);
 }
 
 // The retired keys still within their window, never the current one: a rotation interrupted between its
@@ -112,11 +128,9 @@ function createKeyring(file, { now = Date.now } = {}) {
   function rotate({ exposed = false } = {}) {
     const previous = current;
     const { privateKey } = crypto.generateKeyPairSync('ed25519');
-    const temporary = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, privateKey.export({ format: 'pem', type: 'pkcs8' }), { mode: 0o600 });
-    // The list first: if the rename never happens, the old key is still current and still verifies.
+    // The list first: if the key never lands, the old key is still current and still verifies.
     writeRetired(file, exposed ? [] : [{ ...previous.published, retired_at: new Date(now()).toISOString() }, ...retiredKeys(file, previous, now)]);
-    fs.renameSync(temporary, file);
+    writeDurably(file, privateKey.export({ format: 'pem', type: 'pkcs8' }));
     current = loadSigningKey(file);
     return { kid: current.kid, retired: exposed ? [] : [previous.kid], dropped: exposed };
   }
