@@ -61,7 +61,7 @@ async function ran({ received, store }, jobId, action) {
 // The words each real run is confirmed with, besides dryRun: false.
 const realBody = (entry) => (entry.path === '/api/homebase/config' ? { householdTimezone: 'America/New_York' } : {
   ...REAL,
-  ...({ '/api/ingress/cutover': { confirm: 'CUTOVER' }, '/api/ingress/rollback': { confirm: 'ROLLBACK' }, '/api/ingress/services/:id/publish': { confirm: 'PUBLISH' }, '/api/apps/:id/move-user/execute': { confirm: 'MOVE' } }[entry.path] || {}),
+  ...({ '/api/ingress/cutover': { confirm: 'CUTOVER' }, '/api/ingress/rollback': { confirm: 'ROLLBACK' }, '/api/ingress/services/:id/publish': { confirm: 'PUBLISH' }, '/api/apps/:id/move-user/execute': { confirm: 'MOVE' }, '/api/ingress/apps/:id/tailnet-mode': { confirm: 'TAILNET' }, '/api/ingress/apps/:id/local-mode': { confirm: 'LOCAL' } }[entry.path] || {}),
 });
 const sample = (entry) => entry.path.replace(':id', entry.path.startsWith('/api/ingress/services') ? 'homebase' : APP);
 // The routes whose confirmation this slice adds: the passkey service's own and the passphrase's have theirs.

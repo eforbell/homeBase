@@ -326,6 +326,8 @@
           'ingress-rollback': ['/api/ingress/rollback', { confirm: 'ROLLBACK' }],
           'ingress-publish': [`/api/ingress/services/${key}/publish`, { confirm: 'PUBLISH' }],
           'ingress-confirm': [`/api/ingress/services/${key}/confirm`, { hostNodeId: '' }],
+          'ingress-tailnet-mode': [`/api/ingress/apps/${key}/tailnet-mode`, { confirm: 'TAILNET' }],
+          'ingress-local-mode': [`/api/ingress/apps/${key}/local-mode`, { confirm: 'LOCAL' }],
         }[action];
         if (!request) return;
         if (action === 'ingress-confirm') {
@@ -679,6 +681,17 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
       const label = v.reason === 'service-unknown' ? 'not defined in the console' : (v.state === 'unverified' && ['self-missing', 'self-not-approved'].includes(v.reason) ? 'ready to publish' : v.state);
       return `<span class="${cls}">${esc(label)}</span>`;
     };
+    // SID-007: which identity each app trusts, and the switch. Tailnet mode only once its service may use it.
+    const identityRow = (entry, app) => {
+      const form = (action, label, primary) => `<form data-action="${action}" data-key="${esc(app.appId)}"><button class="hb-btn${primary ? ' hb-btn-primary' : ''}" type="submit">${label}</button> <span class="hb-muted" data-result style="font-size:0.85rem;"></span></form>`;
+      if (app.mode === 'tailnet') {
+        return `<div class="hb-row" style="flex-wrap:wrap;gap:0.5rem;justify-content:space-between;"><span>${esc(app.name)}: <span class="hb-ok">members' tailnet identity</span></span>${form('ingress-local-mode', 'Return to its own sign-in', false)}</div>`;
+      }
+      const allowed = app.supportsTailnet && data.cutOver && entry.published && entry.gates?.tailnetMode?.allowed;
+      const why = !app.supportsTailnet ? 'this version can\'t use tailnet identity yet'
+        : !data.cutOver ? 'needs the cutover' : !entry.published ? 'publish the service first' : (entry.gates?.tailnetMode?.allowed ? '' : entry.gates?.tailnetMode?.reason || '');
+      return `<div class="hb-row" style="flex-wrap:wrap;gap:0.5rem;justify-content:space-between;"><span>${esc(app.name)}: <span class="hb-muted">its own sign-in${allowed ? '' : ` (${esc(why)})`}</span></span>${allowed ? form('ingress-tailnet-mode', 'Use tailnet identity', true) : ''}</div>`;
+    };
     const rows = (data.services || []).filter((entry) => entry.installed).map((entry) => {
       const v = entry.verification || {};
       const warnings = (entry.warnings || []).filter((warning) => warning.id !== 'policy-not-checked');
@@ -694,6 +707,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
           ${v.detail && v.state !== 'verified' ? `<span class="hb-muted" style="font-size:0.85rem;">${esc(v.detail)}</span>` : ''}
           ${warnings.map((warning) => `<span class="hb-warn" style="font-size:0.85rem;">${esc(warning.detail)}</span>`).join('')}
           ${!entry.gates?.publish?.allowed && !entry.published ? `<span class="hb-muted" style="font-size:0.85rem;">Publish blocked: ${esc(entry.gates?.publish?.reason || '')}</span>` : ''}
+          ${(entry.identity || []).map((app) => identityRow(entry, app)).join('')}
           <div class="hb-row" style="flex-wrap:wrap;gap:0.5rem;">
             ${canPublish ? `<form data-action="ingress-publish" data-key="${esc(entry.key)}"><button class="hb-btn hb-btn-primary" type="submit">Publish</button> <span class="hb-muted" data-result style="font-size:0.85rem;"></span></form>` : ''}
             ${canConfirm ? `<form data-action="ingress-confirm" data-key="${esc(entry.key)}"><button class="hb-btn" type="submit">I checked the console: no other host is approved</button> <span class="hb-muted" data-result style="font-size:0.85rem;"></span></form>` : ''}

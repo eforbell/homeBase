@@ -218,6 +218,34 @@ function applyListenEnv(env, layout) {
   return layout.listen?.kind === 'unix' ? { ...rest, SOVEREIGN_LISTEN: `unix:${layout.listen.socket}` } : { ...rest, HOST: '127.0.0.1' };
 }
 
+// Which identity the app trusts (Feature-10 SID-007), never left to an old .env either. SOVEREIGN_AUTH_MODE is
+// what sovereignAuth reads, and it refuses to start without one, so an app that supports tailnet identity always
+// gets one: the mode it already had, else local. The Home Base user's uid, which the snapshot reader needs,
+// comes with tailnet mode only. SOVEREIGN_IDENTITY_MODE, a name used before the contract settled, is dropped.
+const IDENTITY_ENV_KEYS = Object.freeze(['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_HOMEBASE_UID', 'SOVEREIGN_IDENTITY_MODE']);
+function withoutIdentityEnv(env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !IDENTITY_ENV_KEYS.includes(key)));
+}
+function identityModeOf(env) {
+  return String(env?.SOVEREIGN_AUTH_MODE || '').trim() === 'tailnet' ? 'tailnet' : 'local';
+}
+// mode: 'tailnet' (with homeBaseUid) or 'local'. Returns a new object.
+function setIdentityEnv(env, { mode, homeBaseUid = null }) {
+  if (mode === 'tailnet') {
+    if (!Number.isInteger(homeBaseUid) || homeBaseUid <= 0) throw new Error('tailnet mode needs the Home Base user\'s uid');
+    return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'tailnet', SOVEREIGN_HOMEBASE_UID: String(homeBaseUid) };
+  }
+  if (mode !== 'local') throw new Error(`unknown identity mode ${mode}`);
+  return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'local' };
+}
+// What a re-rendered or restored .env says about identity: the app's current .env decides. An app that
+// can't trust the directory gets no mode at all; one that can keeps its own, or starts local.
+function keepIdentityEnv(env, current, layout) {
+  if (!layout.identityModes?.includes('tailnet')) return withoutIdentityEnv(env);
+  if (identityModeOf(current) === 'local') return setIdentityEnv(env, { mode: 'local' });
+  return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'tailnet', ...(current.SOVEREIGN_HOMEBASE_UID ? { SOVEREIGN_HOMEBASE_UID: current.SOVEREIGN_HOMEBASE_UID } : {}) };
+}
+
 function storageEnvOverrides(app) {
   const root = String(app?.storage?.absoluteRoot || '').replace(/\/+$/, '');
   if (!root) return {};
@@ -233,6 +261,10 @@ function storageEnvOverrides(app) {
 module.exports = {
   EnvTemplateError,
   applyListenEnv,
+  IDENTITY_ENV_KEYS,
+  identityModeOf,
+  setIdentityEnv,
+  keepIdentityEnv,
   storageEnvOverrides,
   DATABASE_KEYS,
   quoteEnvValue,

@@ -217,6 +217,11 @@ Until the household directory exists, services may be published but no app can u
 - **Merged:** #34.
 - **SID-006 passes** (slices 1-3 merged: #31, #32, #33, #34). Redemption sockets stay deferred with SID-005's; each host closes `:3080` after its redirect period. Next: SID-007, the pilot apps (one low-friction, one sensitive canary).
 
+**SID-007 slice 1, the switch to tailnet identity (2026-11-05).**
+- **Pilots (decided with the administrator):** Family Plan is the low-friction pilot (name picker, settings PIN and a kids page); Family Pulse is the canary. A parent links local members to directory members in the app, since apps can't see the administrator flag (D10); the canary asks for a passkey check too.
+- **The switch:** on the Network page, per app, with the hardware key. Tailnet mode needs Home Base active, the cutover, a tagged host and the app's service published and verified. The executor checks again, writes `SOVEREIGN_AUTH_MODE` and `SOVEREIGN_HOMEBASE_UID` into the app's `.env`, and restarts it. Updates and restores keep the mode the app is in.
+- **Fixed on the way:** the executor's rollback guard looked for an older variable name than the one apps read, and Home Base never told the ingress control the directory's state, so setup and active publish rules were not applied.
+
 ## Review
 
 Two rounds of external plan review:

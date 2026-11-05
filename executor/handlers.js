@@ -8,7 +8,7 @@ const { groupMembers, resolveAppIdentity } = require('./identity');
 const { catalog } = require('../src/catalog');
 const { gitTransportForRepository, BOOTSTRAP_PACKAGES } = require('../src/operations/policy');
 const { MIRROR_ROOT, appLayout } = require('../src/operations/app-layout');
-const { APP_SOCKET_ROOT, NGINX_GROUP } = require('../src/operations/paths');
+const { APP_SOCKET_ROOT, IDENTITY_SNAPSHOT, NGINX_GROUP } = require('../src/operations/paths');
 const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
@@ -16,7 +16,7 @@ const {
   appPublicBase, gatewayReachesHomeBaseSocket, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
   APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
-const { applyListenEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
+const { applyListenEnv, keepIdentityEnv, setIdentityEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
 // the plan target's catalog layout; see directoryFor().
@@ -235,7 +235,7 @@ function renderAppEnvFile({ layout, password = null, site, ingress = null, exist
     if (error.code === 'ENV_TEMPLATE_UNRESOLVED') deny(error.message);
     throw error;
   }
-  return renderEnv({ ...applyListenEnv(env, layout), ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) });
+  return renderEnv({ ...keepIdentityEnv(applyListenEnv(env, layout), existing || {}, layout), ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) });
 }
 
 // The database password this install must use. Existing database wiring is kept verbatim by the
@@ -402,9 +402,10 @@ function directoryFor(operation, layout) {
 }
 
 // Does an app's .env put it in tailnet mode? Fail closed: dotenv loaders accept `export`, quotes and inline
-// comments, so any assignment of SOVEREIGN_IDENTITY_MODE to something other than empty or "local", however
-// written, counts as trusting identity headers.
-const IDENTITY_MODE_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_IDENTITY_MODE\s*[=:](.*)$/;
+// comments, so any assignment of SOVEREIGN_AUTH_MODE (what sovereignAuth reads) to something other than empty
+// or "local", however written, counts as trusting identity headers. SOVEREIGN_IDENTITY_MODE, the name used
+// before the contract settled, still counts too.
+const IDENTITY_MODE_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_(?:AUTH|IDENTITY)_MODE\s*[=:](.*)$/;
 function trustsIdentityHeaders(content) {
   return String(content).split(/\r\n|\r|\n/).some((line) => {
     const match = IDENTITY_MODE_ASSIGNMENT.exec(line);
@@ -470,6 +471,15 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
   }
 
   const readIngressState = () => readIngressRecord(fsImpl);
+  // The Home Base user, as the owner of the directory snapshot apps read (never root): the reader in each app
+  // checks the same ownership, so a uid that doesn't own it would only make the app refuse to start.
+  const snapshotOwner = () => {
+    const directory = lstatOrNull(fsImpl, path.dirname(IDENTITY_SNAPSHOT));
+    const file = lstatOrNull(fsImpl, IDENTITY_SNAPSHOT);
+    if (!directory || !directory.isDirectory() || directory.uid === 0 || (directory.mode & 0o022) !== 0) deny(`${path.dirname(IDENTITY_SNAPSHOT)} must be a directory owned by the Home Base user and writable by no one else.`);
+    if (!file || !file.isFile() || file.uid !== directory.uid || (file.mode & 0o022) !== 0) deny('Home Base has not published the household directory snapshot yet; it does once the directory is active.');
+    return directory.uid;
+  };
 
   // Every installed app's snippet, re-rendered for the ingress mode and moved to its <service>--<app> name.
   // A snippet left in the old mode would either be outside every socket block or call a lookup that the
@@ -883,7 +893,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         const content = asUser(owner, () => readSmallFileNoFollow(fsImpl, layout.envPath));
         return Boolean(content) && trustsIdentityHeaders(content);
       }).map((app) => app.id);
-      if (trusting.length) deny(`${trusting.join(', ')} still ${trusting.length === 1 ? 'trusts' : 'trust'} identity headers (SOVEREIGN_IDENTITY_MODE=tailnet); return ${trusting.length === 1 ? 'it' : 'them'} to local mode before restoring TCP ingress.`);
+      if (trusting.length) deny(`${trusting.join(', ')} still ${trusting.length === 1 ? 'trusts' : 'trust'} identity headers (SOVEREIGN_AUTH_MODE=tailnet); return ${trusting.length === 1 ? 'it' : 'them'} to local mode before restoring TCP ingress.`);
       if (lstatOrNull(fsImpl, INGRESS_STATE_PATH)) fsImpl.unlinkSync(INGRESS_STATE_PATH);
       const rewritten = rewriteAppSnippets({ identity: false });
       writeGatewaySite(NGINX_GATEWAY_CONTENT);
@@ -1050,6 +1060,32 @@ END $$;
       } finally { fsImpl.closeSync(fd); }
       return `ensured ${operation.purpose}`;
     },
+    // Feature-10 SID-007: which identity the app trusts. Tailnet mode only for an app that supports it, on its
+    // socket, on a host cut over to socket ingress (so nginx sets the identity headers and nothing else reaches
+    // the app), with the snapshot the app will read in place. The app restarts next, in the same plan.
+    'app.set-identity-mode': async (operation, { layout } = {}) => {
+      requireLayout(layout);
+      let homeBaseUid = null;
+      if (operation.mode === 'tailnet') {
+        if (!layout.identityModes.includes('tailnet')) deny(`${layout.app.name} does not support tailnet identity.`);
+        if (layout.listen.kind !== 'unix') deny(`${layout.app.name} does not listen on its socket, so identity headers can't be trusted.`);
+        if (!readIngressState()) deny('This host is not cut over to socket ingress, so nginx sets no identity headers; run the ingress cutover first.');
+        homeBaseUid = snapshotOwner();
+      } else if (operation.mode !== 'local') {
+        deny('mode must be tailnet or local.');
+      }
+      const owner = identityFor(layout);
+      asUser(owner, () => {
+        const stat = lstatOrNull(fsImpl, layout.envPath);
+        if (!stat || !stat.isFile()) deny(`${layout.app.name} has no .env; install it first.`);
+        const current = parseDotEnv(readSmallFileNoFollow(fsImpl, layout.envPath) ?? deny(`${layout.app.name}'s .env is not a regular file.`));
+        // Local follows the update rule: an app that can't trust the directory carries no mode at all.
+        const next = operation.mode === 'tailnet' ? setIdentityEnv(current, { mode: 'tailnet', homeBaseUid }) : keepIdentityEnv(current, { SOVEREIGN_AUTH_MODE: 'local' }, layout);
+        writeFileAtomic(fsImpl, layout.envPath, renderEnv(next), owner.own ? 0o600 : 0o640);
+      });
+      return operation.mode === 'tailnet' ? `${layout.app.name} trusts tailnet identity (Home Base uid ${homeBaseUid})` : `${layout.app.name} uses its own sign-in`;
+    },
+
     'filesystem.write-managed-file': async (operation, { secretBindings = {}, layout } = {}) => {
       // App snippets and URLs follow the host's ingress mode: identity lookups and service hostnames exist
       // only once the host is cut over.

@@ -32,6 +32,8 @@ PROFILE_TYPES['service-publish-v1'] = new Set(['tailscale.publish-service']);
 // Moving a sensitive app to its own user (SID-002): backup, stop, identity and home, the hand-over, the
 // .env and units rewritten for the new user, start.
 PROFILE_TYPES['app-move-user-v1'] = new Set(['filesystem.check-app-trees', 'backup.create', 'systemd.ensure-service', 'identity.ensure-user', 'filesystem.ensure-directory', 'filesystem.reown-app', 'filesystem.write-managed-file', 'systemd.apply-tmpfiles', 'systemd.daemon-reload', 'http.wait-ready']);
+// Which identity an app trusts (SID-007): the switch, then the restart that applies it.
+PROFILE_TYPES['app-identity-mode-v1'] = new Set(['app.set-identity-mode', 'systemd.ensure-service', 'http.wait-ready']);
 const PROFILE_KIND = {
   'host-bootstrap-v1': 'host-bootstrap',
   'app-install-v1': 'app-install',
@@ -44,6 +46,7 @@ const PROFILE_KIND = {
   'ingress-rollback-v1': 'ingress-rollback',
   'service-publish-v1': 'service-publish',
   'app-move-user-v1': 'app-move-user',
+  'app-identity-mode-v1': 'app-identity-mode',
 };
 // Profiles that change the host itself rather than one catalog app.
 const HOST_PROFILES = new Set(['host-bootstrap-v1', 'ingress-cutover-v1', 'ingress-rollback-v1', 'service-publish-v1']);
@@ -143,6 +146,9 @@ function checkInstallOperation(operation, layout, plan) {
       break;
     case 'http.wait-ready':
       if (operation.port !== layout.port || operation.path !== layout.readinessPath) deny('Readiness endpoint does not match this app.');
+      break;
+    case 'app.set-identity-mode':
+      if (!layout.identityModes.includes(operation.mode)) deny(`This app does not support ${operation.mode} identity.`);
       break;
     default:
       break;
