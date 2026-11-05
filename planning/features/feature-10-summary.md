@@ -213,7 +213,7 @@ Until the household directory exists, services may be published but no app can u
 - **The switch** (decided with the administrator) is running the cutover again: **Move Home Base to its socket** on the Network page.
 - **The port:** once nginx has reloaded a gateway that reaches the socket, `:3080` only redirects to Home Base's hostname and answers the health probe. `HOME_BASE_LOOPBACK=off` closes it after the redirect period.
 - **Proven on the test VM:** before, a local unprivileged user faking `X-Forwarded-For` on `:3080` was taken for every member device tried (13, six of them the administrator's); after, all 13 were redirected.
-- **Codex:** three rounds. The signal moved from job records, to a marker in the gateway, to a record of what nginx last reloaded. Two remaining cases need a failed nginx reload (a rollback, an executor downgrade) and are documented in the runbook by agreement.
+- **Codex:** three rounds. The signal moved from job records, to a marker in the gateway, to a record of what nginx last reloaded. Two remaining cases need a failed nginx reload (a rollback, an executor downgrade). By agreement the runbook checks `sudo nginx -t` before each ingress step instead, and forbids executor downgrades.
 
 ## Review
 
