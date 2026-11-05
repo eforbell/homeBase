@@ -586,7 +586,10 @@ function createApp(config) {
   // same action object, so a value that changes between the tap and the retry refuses the retry. Null to
   // go ahead, or the refusal (the step-up, or why the confirmation can't be used).
   async function confirmResolved(req, action) {
-    if (!directory || directory.state() !== 'active' || !req.planTarget) return null;
+    if (!directory || !req.planTarget) return null;
+    // Only active Home Base runs these: one that left active while the plan was resolved (a recovery in
+    // between) refuses it rather than running it unconfirmed.
+    if (directory.state() !== 'active') return { statusCode: 409, payload: { error: `Home Base is in ${directory.state()}: privileged plans wait until it is active again.`, code: 'BOOTSTRAP_INCOMPLETE' } };
     const fingerprint = crypto.createHash('sha256').update(canonicalJson(action)).digest('base64url').slice(0, 22);
     const confirmed = await confirmPlan(req, `${req.planTarget} plan ${fingerprint}`);
     return confirmed.ok ? null : confirmed;
@@ -1032,8 +1035,11 @@ function createApp(config) {
       const refused = await authorizeRoute(route, req);
       if (refused) return sendJson(res, refused.statusCode, refused.payload);
       // A privileged plan's confirmation is bound to the route as it was called (a handler may freeze more).
+      // It covers the saved settings too: legacy plans read the git transport and key from them when they
+      // run, so a settings change between the tap and the retry refuses the retry.
       if (route.policy === 'privileged-plan') {
-        req.planTarget = `${method} ${pathname}`;
+        const settings = crypto.createHash('sha256').update(canonicalJson(homeBaseConfigOverride)).digest('base64url').slice(0, 16);
+        req.planTarget = `${method} ${pathname} settings ${settings}`;
         req.planLabel = describePlan(pathname);
       }
 

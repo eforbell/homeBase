@@ -4,6 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { createExecutorServer } = require('../executor/server');
@@ -23,12 +24,25 @@ async function executorHousehold(t) {
   const executor = createExecutorServer({ logger: { info() {} }, mutationsEnabled: true, runAction: async (spec) => { received.push(spec); return { completedOperationIds: [] }; } });
   await new Promise((resolve) => executor.listen(socket, resolve));
   t.after(() => new Promise((resolve) => executor.close(resolve)));
-  const household = await activeHousehold(t, { config: { homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: socket, jobRunnerOptions: { reconcile: { intervalMs: 20, maxWaitMs: 10_000, unknownGraceMs: 200 }, readinessOptions: { attempts: 1, delayMs: 10 }, busyRetry: { attempts: 1, delayMs: 10 } } } });
+  // Home Base reaches the executor through a pass-through the test can hold, to land something mid-plan.
+  const front = path.join(dir, 'front.sock');
+  let held = null;
+  const open = new Set();
+  const track = (sock) => { open.add(sock); sock.on('close', () => open.delete(sock)); return sock; };
+  const proxy = net.createServer((client) => {
+    track(client);
+    Promise.resolve(held?.promise).then(() => { const upstream = track(net.connect(socket)); client.pipe(upstream).pipe(client); });
+  });
+  await new Promise((resolve) => proxy.listen(front, resolve));
+  // A failed assertion can leave a plan's connection open; teardown cuts it rather than waiting on it.
+  t.after(() => new Promise((resolve) => { held?.release(); for (const sock of open) sock.destroy(); proxy.close(resolve); }));
+  const hold = () => { let release; held = { promise: new Promise((resolve) => { release = resolve; }), release: () => release() }; return () => { held = null; release(); }; };
+  const household = await activeHousehold(t, { config: { homeBaseExecutionMode: 'executor', homeBaseEnablePrivilegedJobs: true, homeBaseExecutorSocket: front, jobRunnerOptions: { reconcile: { intervalMs: 20, maxWaitMs: 10_000, unknownGraceMs: 200 }, readinessOptions: { attempts: 1, delayMs: 10 }, busyRetry: { attempts: 1, delayMs: 10 } } } });
   const store = new SqliteStateStore(path.join(household.root, 'state.sqlite3'));
   store.upsertInstallation({ appId: APP, name: 'Home Source', purpose: 'x', port: 3008, mountPath: '/source/', externalUrl: 'https://homebase.tailnet/source/', installRoot: '/opt/sovereign-home/apps/homeSource', serviceName: APP, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
   const backup = (name) => store.recordBackup({ appId: APP, archiveDir: `${BACKUPS}/${name}`, generatedAt: '2026-09-24T10:10:10.123Z', dryRun: false, status: 'completed', includedFiles: [], jobId: null, createdAt: '2026-09-24T10:10:11.000Z' });
   backup('20260924T101010123Z');
-  return { ...household, received, backup, store };
+  return { ...household, received, backup, store, hold };
 }
 
 const REAL = { dryRun: false, confirm: 'EXECUTE' };
@@ -69,7 +83,7 @@ test('every privileged plan asks the unlocked administrator for the hardware key
     assert.equal(res.body.error, 'step_up_required', url);
     assert.equal(res.body.policy, 'privileged-plan');
     assert.equal(res.body.kind, 'hardware');
-    assert.ok(res.body.target.startsWith(`POST ${url}`), `${url}: target ${res.body.target}`);
+    assert.match(res.body.target, new RegExp(`^POST ${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} settings [A-Za-z0-9_-]{16}`), `${url}: target ${res.body.target}`);
     assert.match(res.body.digest, /^[A-Za-z0-9_-]{43}$/);
     assert.match(res.body.message, /^Confirm with your hardware key to /);
   }
@@ -106,12 +120,12 @@ test('restore freezes "latest" to the backup it names: a newer backup before the
   const { parent, yubikey, backup, received } = household;
   const url = `/api/apps/${APP}/restore/execute`;
   const asked = await parent.post(url, REAL);
-  assert.equal(asked.body.target, `POST ${url} backup 20260924T101010123Z`);
+  assert.match(asked.body.target, new RegExp(`^POST ${url} settings [A-Za-z0-9_-]{16} backup 20260924T101010123Z$`));
   const token = await parent.actionToken(yubikey, asked.body);
   backup('20260925T090000000Z');
   const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
   assert.equal(retried.status, 401, 'the confirmed plan is not the one that would run now');
-  assert.equal(retried.body.target, `POST ${url} backup 20260925T090000000Z`);
+  assert.match(retried.body.target, /backup 20260925T090000000Z$/);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(received.filter((spec) => spec.action === 'restore').length, 0, 'nothing ran');
 
@@ -142,13 +156,13 @@ test('a legacy host freezes "latest" too: the archive it plans now is the one co
   store.upsertInstallation({ appId: APP, name: 'Home Source', purpose: 'x', port: 3008, mountPath: '/source/', externalUrl: 'https://homebase.tailnet/source/', installRoot: '/opt/sovereign-home/apps/homeSource', serviceName: APP, ref: 'main', status: 'installed', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
   const url = `/api/apps/${APP}/restore/execute`;
   const asked = await parent.post(url, REAL);
-  assert.equal(asked.body.target, `POST ${url} backup ${path.join(backups, APP, '20260924T101010123Z')}`);
+  assert.ok(asked.body.target.endsWith(` backup ${path.join(backups, APP, '20260924T101010123Z')}`), asked.body.target);
   const token = await parent.actionToken(yubikey, asked.body);
   archive('20260925T090000000Z');
   // Refused before anything could run (on a host where it could, the preflight would come next).
   const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
   assert.equal(retried.status, 401, JSON.stringify(retried.body));
-  assert.equal(retried.body.target, `POST ${url} backup ${path.join(backups, APP, '20260925T090000000Z')}`);
+  assert.ok(retried.body.target.endsWith(` backup ${path.join(backups, APP, '20260925T090000000Z')}`), retried.body.target);
 });
 
 test('a setting that can\'t be saved is refused before the hardware key is asked for', async (t) => {
@@ -166,7 +180,7 @@ test('a plan resolved when it runs is confirmed resolved: a setting that changes
   const url = `/api/apps/${APP}/execute`;
   const asked = await parent.post(url, REAL);
   assert.equal(asked.status, 401, JSON.stringify(asked.body));
-  assert.match(asked.body.target, new RegExp(`^POST ${url} plan [A-Za-z0-9_-]{22}$`));
+  assert.match(asked.body.target, new RegExp(`^POST ${url} settings [A-Za-z0-9_-]{16} plan [A-Za-z0-9_-]{22}$`));
   const token = await parent.actionToken(yubikey, asked.body);
   // The install's site values come from the settings, which change between the tap and the retry.
   store.setHomeBaseConfig({ hostname: 'otherhost', domain: 'example-tailnet.ts.net', gitTransport: 'https', gitSshKeyPath: '', healthAlertsEnabled: false, healthAlertsWebhookUrl: '', tailscaleManagedServiceId: 'svc:home', updatedAt: new Date().toISOString() });
@@ -179,4 +193,32 @@ test('a plan resolved when it runs is confirmed resolved: a setting that changes
   const [install] = await ran(household, run.retry.body.jobId, 'install');
   assert.equal(install.site.hostname, 'otherhost', 'the install that was confirmed');
   assert.equal(received.filter((spec) => spec.action === 'install').length, 1);
+});
+
+test('a plan whose Home Base leaves active while it resolves is refused, not run unconfirmed', async (t) => {
+  const { parent, received, hold } = await executorHousehold(t);
+  const release = hold();
+  const pending = parent.post(`/api/apps/${APP}/execute`, REAL);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  release();
+  const answer = await pending;
+  assert.equal(answer.status, 409, JSON.stringify(answer.body));
+  assert.equal(answer.body.code, 'BOOTSTRAP_INCOMPLETE');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(received.filter((spec) => spec.action === 'install').length, 0, 'nothing ran');
+});
+
+test('a legacy plan built from the settings is confirmed with them: a change before the retry refuses it', async (t) => {
+  const { parent, yubikey, root } = await activeHousehold(t, { config: { homeBaseExecutionMode: 'legacy-sudo', homeBaseEnablePrivilegedJobs: true } });
+  const store = new SqliteStateStore(path.join(root, 'state.sqlite3'));
+  const url = '/api/apps/family-help/execute';
+  const asked = await parent.post(url, REAL);
+  assert.equal(asked.status, 401, JSON.stringify(asked.body));
+  const token = await parent.actionToken(yubikey, asked.body);
+  store.setHomeBaseConfig({ hostname: 'homebase', domain: 'example-tailnet.ts.net', gitTransport: 'ssh', gitSshKeyPath: '/etc/sovereign-home/other-key', healthAlertsEnabled: false, healthAlertsWebhookUrl: '', tailscaleManagedServiceId: 'svc:home', updatedAt: new Date().toISOString() });
+  // Refused before anything could run (on a host where it could, the preflight would come next).
+  const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
+  assert.equal(retried.status, 401, JSON.stringify(retried.body));
+  assert.notEqual(retried.body.target, asked.body.target);
 });
