@@ -228,28 +228,45 @@ const IDENTITY_MODE_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_(?:AUTH|IDENTITY)_
 const HOMEBASE_UID_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_HOMEBASE_UID\s*[=:]/;
 const lines = (content) => String(content || '').split(/\r\n|\r|\n/);
 
+// dotenv reads `local` unquoted (up to a comment) or in any quotes. Nothing else is local, an empty value
+// included: a quoted value may continue on the next line.
+const EXPLICIT_LOCAL = /^\s*(?:local|'local'|"local"|`local`)\s*(?:#.*)?$/i;
+// Every assignment dotenv sees starts a line, so this sees them all (and, failing closed, lines inside other keys'
+// quoted values too).
 // The executor's rollback guard: does this .env put the app in tailnet mode? Fail closed, since this only ever
-// refuses a rollback: any assignment to something other than empty or "local", however written, counts.
+// refuses a rollback: anything but an explicit local, however written, counts.
 function trustsIdentityHeaders(content) {
   return lines(content).some((line) => {
     const match = IDENTITY_MODE_ASSIGNMENT.exec(line);
+    return Boolean(match) && !EXPLICIT_LOCAL.test(match[1]);
+  });
+}
+
+// A value that opens a quote and doesn't close it on its line continues on the next (dotenv's multi-line values).
+// Home Base writes every value on one line, so this is always a hand edit.
+const QUOTED_ASSIGNMENT = /^\s*(?:export\s+)?[\w.-]+\s*(?:=|:\s)\s*(["'`])(.*)$/;
+function hasMultilineValue(content) {
+  return lines(content).some((line) => {
+    const match = QUOTED_ASSIGNMENT.exec(line);
     if (!match) return false;
-    let value = match[1].trim();
-    const quoted = /^(['"])(.*?)\1/.exec(value);
-    value = quoted ? quoted[2] : value.replace(/\s+#.*$/, '');
-    return !['', 'local'].includes(value.trim().toLowerCase());
+    for (let index = 0; index < match[2].length; index += 1) {
+      if (match[2][index] === '\\') index += 1;
+      else if (match[2][index] === match[1]) return false;
+    }
+    return true;
   });
 }
 
 // The mode an update or restore keeps. Tailnet only in exactly the form the executor writes, as the only
-// assignments of those keys; anything else is a hand edit, and a hand edit never turns trust on (it would skip
-// every gate). It falls back to local, the safe direction: the guard above still counts it, and Home Base's
-// record stays tailnet, so a rollback waits until the administrator returns the app to its own sign-in.
+// assignments of those keys, in a file with no multi-line values (whose lines could look like assignments); any
+// hand edit never turns trust on (it would skip every gate). It falls back to local, the safe direction: the
+// guard above still counts it, and Home Base's record stays tailnet, so a rollback waits until the administrator
+// returns the app to its own sign-in.
 function currentIdentity(content) {
   const all = lines(content);
   const modes = all.filter((line) => IDENTITY_MODE_ASSIGNMENT.test(line));
   const uids = all.filter((line) => HOMEBASE_UID_ASSIGNMENT.test(line));
-  if (modes.length === 1 && modes[0] === 'SOVEREIGN_AUTH_MODE=tailnet' && uids.length === 1 && /^SOVEREIGN_HOMEBASE_UID=[1-9][0-9]*$/.test(uids[0])) {
+  if (!hasMultilineValue(content) && modes.length === 1 && modes[0] === 'SOVEREIGN_AUTH_MODE=tailnet' && uids.length === 1 && /^SOVEREIGN_HOMEBASE_UID=[1-9][0-9]*$/.test(uids[0])) {
     return { mode: 'tailnet', homeBaseUid: Number(uids[0].slice('SOVEREIGN_HOMEBASE_UID='.length)) };
   }
   return { mode: 'local' };

@@ -220,10 +220,11 @@ test('rollback refuses when it cannot tell who owns an installed app', async () 
 test('rollback reads the identity mode the way dotenv loaders do, and fails closed', async () => {
   const { trustsIdentityHeaders } = require('../executor/handlers');
   for (const key of ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE']) {
-    for (const content of [`${key}=tailnet # pilot`, `export ${key}=tailnet`, `${key} = "tailnet"`, `  ${key}='Tailnet'`, `${key}=tailnet\r`, `${key}=headers`, `${key}=local\n${key}=tailnet`, `SOVEREIGN_AUTH_MODE=local\n${key}=tailnet`]) {
+    // Anything but an explicit local counts, an empty value too: a quoted value may continue on the next line.
+    for (const content of [`${key}=tailnet # pilot`, `export ${key}=tailnet`, `${key} = "tailnet"`, `  ${key}='Tailnet'`, `${key}=tailnet\r`, `${key}=headers`, `${key}=local\n${key}=tailnet`, `SOVEREIGN_AUTH_MODE=local\n${key}=tailnet`, `${key}=`, `${key}=\n"tailnet"`, `${key}="local\ntailnet"`, `${key}: tailnet`]) {
       assert.equal(trustsIdentityHeaders(content), true, JSON.stringify(content));
     }
-    for (const content of ['', `${key}=local`, `${key}=`, `${key}="local" # default`, `# ${key}=tailnet`, `OTHER_${key}=tailnet`]) {
+    for (const content of ['', `${key}=local`, `${key}="local" # default`, `${key}=local#pilot`, `${key}=\`local\``, `${key}: 'local'`, `# ${key}=tailnet`, `OTHER_${key}=tailnet`]) {
       assert.equal(trustsIdentityHeaders(content), false, JSON.stringify(content));
     }
   }
