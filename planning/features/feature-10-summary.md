@@ -195,6 +195,19 @@ Until the household directory exists, services may be published but no app can u
 - **Deferred:** redemption sockets, with the first app action that needs every-time. App wiring is SID-007.
 - **SID-005 passes** (slices 1-3 merged: #27, #28, #29). Next: SID-006, Home Base admin on tailnet identity and passkeys.
 
+**SID-006 slice 1, the route matrix (2026-11-04).**
+- **Every route has an entry:** its class (public, member self-service, administrator), its assurance policy and who authorizes it. No entry is a 404, and a source scan fails if a handler and the matrix disagree.
+- **Decided with the administrator:** with the directory on, every administrator route, reads included, needs the unlocked administrator. Members use Home Base for their own passkeys only. Hosts with the directory off are unchanged.
+- **Codex:** three rounds, the last clean. A locked Admin page that lost its unlock card was found in the browser and fixed (#32). Merged: #31, #32.
+
+**SID-006 slice 2, the hardware key for every privileged plan (2026-11-04).**
+- **Every privileged plan** (installs, restarts, backups, restores, uninstalls, ingress, Home Base's own update, settings) asks for the administrator's hardware key in active Home Base. The confirmation is for that plan and that request, and is spent once. The browser asks for the key when refused and retries once.
+- **What it's bound to:** the route as called, the saved settings and the installation records, since plans are built from these when they run and an unlocked session can change them without the key.
+- **Decided with the administrator:** plans resolved when they run are frozen. Restore names its backup; executor install, adopt and move-user confirm the resolved action. A recovery opened while a plan resolves refuses it.
+- **Passphrase rotation** asks for the key last, and refuses if another rotation landed while it waited.
+- **Codex:** five rounds, the fifth clean after a sweep of every input behind all 18 routes. **Test VM proof** with the real hardware key is pending.
+- **Next:** slice 3, Home Base admin onto its nginx-only socket, with :3080 redirected then retired.
+
 ## Review
 
 Two rounds of external plan review:

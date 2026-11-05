@@ -26,12 +26,12 @@ const PEER_WHOIS = async (addr) => { if (!PEERS[addr]) throw new Error('no such 
 
 // again: the root of a server this test already ran, to start Home Base again on its files. roots: the
 // attestation roots it pins (the test root unless given). alerts: an array that collects health alerts.
-async function startServer(t, { cutOver = true, whois = PEER_WHOIS, again = null, roots = attestationFixture().roots, alerts = null } = {}) {
+// config: more of Home Base's configuration (executor mode, say).
+async function startServer(t, { cutOver = true, whois = PEER_WHOIS, again = null, roots = attestationFixture().roots, alerts = null, config = {} } = {}) {
   const root = again || fs.mkdtempSync(path.join(os.tmpdir(), 'hb-passkeys-'));
   const identityDir = path.join(root, 'identity');
   const stateDbPath = path.join(root, 'state.sqlite3');
   if (!again) {
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     fs.mkdirSync(identityDir, { mode: 0o755 });
     fs.chmodSync(identityDir, 0o755);
   }
@@ -58,11 +58,14 @@ async function startServer(t, { cutOver = true, whois = PEER_WHOIS, again = null
     ...(alerts ? { healthAlertsEnabled: true, healthAlertsWebhookUrl: 'https://alerts.example/hook', notificationsPostJson: async (url, body) => { alerts.push(body); } } : {}),
     identityWhois: whois,
     identityStatus: async () => ({ Self: { TailscaleIPs: ['100.64.0.100'] } }),
+    ...config,
   });
   await new Promise((resolve) => app.listen(resolve));
   let stopped = false;
   const stop = () => new Promise((resolve) => { if (stopped) return resolve(); stopped = true; app.stop(); app.server.close(resolve); });
   t.after(stop);
+  // After the stop: hooks run in the order they were added, and Home Base must not outlive its files.
+  if (!again) t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const base = `http://127.0.0.1:${app.server.address().port}`;
   return { app, base, root, stop, snapshot: () => JSON.parse(fs.readFileSync(path.join(identityDir, 'snapshot.json'), 'utf8')) };
 }

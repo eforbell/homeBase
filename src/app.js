@@ -1,4 +1,5 @@
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
@@ -30,7 +31,7 @@ const { createPasskeys } = require('./identity/passkeys');
 const { createPasskeyRoutes } = require('./identity/passkey-routes');
 const { createKeyring } = require('./identity/signing-key');
 const { STATIC_ROUTE, routeFor } = require('./route-matrix');
-const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, resolveMember } = require('sovereign-auth');
+const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, requestDigest, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
 const { HOMEBASE_SERVICE, appPublicBase, appServiceKey, ingressServices } = require('./operations/ingress-layout');
@@ -230,6 +231,13 @@ function rejectLegacyExecution(res) {
 
 // Resolves the restore archive by name only: the web process never reads backup directories (they
 // belong to sovereign and may not be listable by homebase). The executor verifies the archive exists.
+// JSON with every object's keys sorted, so the same action always reads the same.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined && typeof value[key] !== 'function').map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value ?? null);
+}
+
 function resolveRestoreBackupId({ appId, backupDir, stateStore }) {
   const pattern = /^[0-9]{8}T[0-9]{6}[0-9]{0,3}Z$/;
   if (backupDir) {
@@ -510,7 +518,8 @@ function createApp(config) {
   const stateStore = new SqliteStateStore(config.stateDbPath);
   const hostCaBundlePath = config.hostCaBundlePath || HOST_CA_BUNDLE;
   stateStore.init();
-  const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket });
+  // jobRunnerOptions is for tests only (loadConfig never sets it): shorter executor polling, say.
+  const jobRunner = new JobRunner(stateStore, { executorSocket: config.homeBaseExecutorSocket, ...(config.jobRunnerOptions || {}) });
 
   // Feature-10 SID-004: the household directory (src/identity/directory.js), on when HOME_BASE_DIRECTORY is.
   // Who is asking comes from tailscaled, by the address Serve put in X-Forwarded-For (Serve overwrites any
@@ -551,7 +560,40 @@ function createApp(config) {
     if (!passkeys.meets(check, 'open-admin')) return null;
     return { userId: standing.member.userId, expiresAt: new Date((check.claims.auth_time + policyFor('open-admin').window_seconds) * 1000).toISOString() };
   }
-  const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state, passkeySession } : null;
+  // SID-006: a privileged plan in active Home Base runs only with the administrator's every-time hardware
+  // token for exactly this plan (target) and request (digest of the method, URL and body bytes), used once.
+  // Without one, the answer is the wire contract's step-up, which stepup.js turns into a tap and one retry.
+  async function confirmPlan(req, target) {
+    const caller = await callerOf(req);
+    const standing = caller ? directory.standing(caller.userId) : null;
+    if (!standing?.member.administrator || !req.homeBaseSite) return { ok: false, statusCode: 403, payload: { error: 'Only the administrator runs privileged plans, on Home Base\'s own address.', code: 'NOT_AUTHORIZED' } };
+    const digest = requestDigest({ method: req.method, url: req.url, body: req.rawBody || Buffer.alloc(0), target });
+    const token = passkeys.actionToken(req.headers, { site: req.homeBaseSite, standing, app: 'homebase', policyKey: 'privileged-plan', target, digest });
+    if (!token.claims) {
+      const what = req.planLabel || 'run this plan';
+      return { ok: false, statusCode: 401, payload: { error: 'step_up_required', policy: 'privileged-plan', level: 'every-time', kind: 'hardware', target, digest, code: 'HARDWARE_CHECK_REQUIRED', message: `Confirm with your hardware key to ${what}.` } };
+    }
+    const used = directory.consumeAction(token.consume, { userId: standing.member.userId, state: standing.state, globalEpoch: standing.globalEpoch, epoch: standing.member.epoch });
+    if (used !== 'redeemed') {
+      const [code, error] = { replayed: ['REPLAYED', 'That confirmation was already used; confirm again.'], expired: ['EXPIRED', 'That confirmation expired; confirm again.'], stale: ['STALE', 'Home Base changed while this was in progress; start again.'] }[used];
+      return { ok: false, statusCode: 409, payload: { error, code } };
+    }
+    return { ok: true, jti: token.consume.jti };
+  }
+  const directoryBinding = directory ? { caller: callerOf, claim: directory.claim, isAdministrator: directory.isAdministrator, state: directory.state, passkeySession, confirmPlan } : null;
+  // A plan whose details are resolved when it runs (a default ref, the git transport, site values) is
+  // confirmed once resolved: the confirmation covers that exact executor action, and the handler runs that
+  // same action object, so a value that changes between the tap and the retry refuses the retry. Null to
+  // go ahead, or the refusal (the step-up, or why the confirmation can't be used).
+  async function confirmResolved(req, action) {
+    if (!directory || !req.planTarget) return null;
+    // Only active Home Base runs these: one that left active while the plan was resolved (a recovery in
+    // between) refuses it rather than running it unconfirmed.
+    if (directory.state() !== 'active') return { statusCode: 409, payload: { error: `Home Base is in ${directory.state()}: privileged plans wait until it is active again.`, code: 'BOOTSTRAP_INCOMPLETE' } };
+    const fingerprint = crypto.createHash('sha256').update(canonicalJson(action)).digest('base64url').slice(0, 22);
+    const confirmed = await confirmPlan(req, `${req.planTarget} plan ${fingerprint}`);
+    return confirmed.ok ? null : confirmed;
+  }
   const adminOptions = directoryBinding ? { directory: directoryBinding } : {};
   const directoryRoutes = directory ? createDirectoryRoutes({ directory, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit, notifyIdentity: (...args) => notifyIdentity(...args) }) : null;
   const passkeyRoutes = directory ? createPasskeyRoutes({
@@ -948,6 +990,27 @@ function createApp(config) {
     if (!status.configured) return { statusCode: 409, payload: { error: 'Admin setup is required first.', code: 'ADMIN_SETUP_REQUIRED' } };
     return { statusCode: 401, payload: { error: 'Unlock admin on the Admin page first.', code: 'ADMIN_UNLOCK_REQUIRED' } };
   }
+  // The words in a privileged plan's confirmation prompt.
+  function describePlan(planPath) {
+    const appAction = planPath.match(/^\/api\/apps\/([^/]+)\/(execute|adopt\/execute|restart\/execute|move-user\/execute|backup\/execute|restore\/execute|uninstall\/execute)$/);
+    if (appAction) {
+      const name = getAppById(appAction[1])?.name || appAction[1];
+      const verb = { execute: 'install or update', 'adopt/execute': 'adopt', 'restart/execute': 'restart', 'move-user/execute': 'move to its own user', 'backup/execute': 'back up', 'restore/execute': 'restore', 'uninstall/execute': 'uninstall' }[appAction[2]];
+      return `${verb} ${name}`;
+    }
+    const service = planPath.match(/^\/api\/ingress\/services\/([a-z0-9-]+)\/(confirm|publish)$/);
+    if (service) return service[2] === 'confirm' ? `record ${service[1]}'s address as verified` : `publish ${service[1]}'s address`;
+    return {
+      '/api/admin/rotate': 'change the admin passphrase',
+      '/api/homebase/config': 'change Home Base\'s settings',
+      '/api/homebase/update-self': 'update Home Base',
+      '/api/homebase/install-self': 'reinstall Home Base\'s service',
+      '/api/bootstrap/execute': 'run the host bootstrap',
+      '/api/network/tailscale/publish-execute': 'publish Home Base on the tailnet',
+      '/api/ingress/cutover': 'move this host to per-service addresses',
+      '/api/ingress/rollback': 'roll this host back to its single address',
+    }[planPath] || 'run this plan';
+  }
   const stoppers = [];
   const server = http.createServer(async (req, res) => {
     try {
@@ -971,6 +1034,17 @@ function createApp(config) {
       if (!route) return notFound(res);
       const refused = await authorizeRoute(route, req);
       if (refused) return sendJson(res, refused.statusCode, refused.payload);
+      // A privileged plan's confirmation is bound to the route as it was called (a handler may freeze more).
+      // It covers what legacy plans are built from when they run, too: the saved settings (the git transport
+      // and key) and the installation records (install roots, units, ports), which an unlocked session can
+      // change without the hardware key. A change between the tap and the retry refuses the retry. Update
+      // checks write only updateStatus, which no plan reads, so it is left out.
+      if (route.policy === 'privileged-plan') {
+        const fingerprint = (value, length) => crypto.createHash('sha256').update(canonicalJson(value)).digest('base64url').slice(0, length);
+        const records = Object.values(state.installations || {}).map(({ updateStatus, ...record }) => record);
+        req.planTarget = `${method} ${pathname} settings ${fingerprint(homeBaseConfigOverride, 16)} installs ${fingerprint(records, 16)}`;
+        req.planLabel = describePlan(pathname);
+      }
 
       if (method === 'GET') {
         if (normalizedPath === '/') return servePublicPage(res, 'index.html');
@@ -1134,6 +1208,19 @@ function createApp(config) {
       }
       if (method === 'POST' && pathname === '/api/homebase/config') {
         const body = await parseBody(req);
+        const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
+        const parsed = validateHomeBaseConfigPatch(body, current);
+        // A cut-over host is bound to its instance and tailnet domain (the executor's cutover record); these
+        // fields would only make Home Base and the executor disagree about every address.
+        const locked = !parsed.error && currentIngress(state.ingressJobs, effectiveConfig)
+          ? ['hostname', 'domain', 'tailscaleManagedServiceId'].filter((field) => parsed.value[field] !== current[field])
+          : [];
+        const invalid = parsed.error ? [400, { error: parsed.error }]
+          : locked.length ? [409, { error: `${locked.join(', ')} cannot change while this host uses per-service sockets; roll back ingress first.`, code: 'INGRESS_LOCKED' }]
+            : null;
+        // With the directory on, the route matrix admitted only the unlocked administrator, so a change that
+        // can't be saved is refused before the hardware key is asked for, and spends no confirmation.
+        if (directory && invalid) return sendJson(res, ...invalid);
         // Host settings re-project every app's URLs: administrator only (bugBase #150). Nothing runs on the
         // host, so plan-only hosts can still save.
         const auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: true });
@@ -1142,17 +1229,7 @@ function createApp(config) {
           const error = auth.payload?.code ? auth.payload.error : (auth.statusCode === 401 ? 'Admin unlock is required to change Home Base settings.' : 'Set up the admin passphrase before changing Home Base settings.');
           return sendJson(res, auth.statusCode, { ...auth.payload, error });
         }
-        const current = toClientHomeBaseConfig(config, homeBaseConfigOverride);
-        const parsed = validateHomeBaseConfigPatch(body, current);
-        if (parsed.error) {
-          return sendJson(res, 400, { error: parsed.error });
-        }
-        // A cut-over host is bound to its instance and tailnet domain (the executor's cutover record); these
-        // fields would only make Home Base and the executor disagree about every address.
-        if (currentIngress(state.ingressJobs, effectiveConfig)) {
-          const locked = ['hostname', 'domain', 'tailscaleManagedServiceId'].filter((field) => parsed.value[field] !== current[field]);
-          if (locked.length) return sendJson(res, 409, { error: `${locked.join(', ')} cannot change while this host uses per-service sockets; roll back ingress first.`, code: 'INGRESS_LOCKED' });
-        }
+        if (invalid) return sendJson(res, ...invalid);
         const persisted = {
           ...parsed.value,
           updatedAt: new Date().toISOString(),
@@ -1651,7 +1728,7 @@ function createApp(config) {
             recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
             return sendJson(res, 400, { error: 'Real execution requires confirm=EXECUTE' });
           }
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, deferConfirmation: true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, { action: 'app-adopt-execute', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
             return sendJson(res, auth.statusCode, auth.payload);
@@ -1673,6 +1750,8 @@ function createApp(config) {
         if (!canExecuteMutations(capabilities)) return sendJson(res, 409, { error: 'Home Base executor is incompatible or mutations are disabled.', code: 'EXECUTOR_INCOMPATIBLE' });
         const adoptBlock = appMutationBlock(stateStore, state, appId, { adopting: true });
         if (adoptBlock) return sendJson(res, 409, adoptBlock);
+        const unconfirmed = await confirmResolved(req, action);
+        if (unconfirmed) return sendJson(res, unconfirmed.statusCode, unconfirmed.payload);
         // Until the adopt completes (after readiness) the app accepts only adopt: a failed run may already
         // have rewritten units, .env, and the nginx snippet, which legacy plans must not touch.
         stateStore.upsertInstallation({ ...install, managedBy: 'adopting', updatedAt: new Date().toISOString() });
@@ -1703,8 +1782,10 @@ function createApp(config) {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
+        // An executor install confirms its resolved action below; a legacy one confirms the request here.
+        const typedInstall = executorManagesApp(effectiveConfig, state, executeInstallMatch[1]);
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, deferConfirmation: typedInstall });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-install-execute',
@@ -1762,6 +1843,8 @@ function createApp(config) {
           const { transport } = action;
           const keyProblem = deployKeyProblem(transport, capabilities, effectiveConfig.homeBaseExecutionMode);
           if (keyProblem) return sendJson(res, 409, keyProblem);
+          const unconfirmed = await confirmResolved(req, action);
+          if (unconfirmed) return sendJson(res, unconfirmed.statusCode, unconfirmed.payload);
           // Database credentials are generated inside the executor; a caller-supplied dbPassword is ignored here.
           const jobId = jobRunner.startTypedInstallJob({
             appId,
@@ -1939,7 +2022,7 @@ function createApp(config) {
             recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: 'blocked-confirm', reason: 'confirm-missing' });
             return sendJson(res, 400, { error: 'Moving an app to its own user requires confirm=MOVE.' });
           }
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, deferConfirmation: true });
           if (!auth.ok) {
             recordAdminAudit(stateStore, { action: 'app-move-user', target: appId, dryRun: false, outcome: executionBlockOutcome(auth), reason: auth.payload?.error, sessionTokenHash: auth.sessionTokenHash });
             return sendJson(res, auth.statusCode, auth.payload);
@@ -1961,6 +2044,8 @@ function createApp(config) {
           return sendJson(res, 503, { error: 'Home Base executor is unavailable.', code: 'EXECUTOR_UNAVAILABLE' });
         }
         if (!capabilities.actions?.includes('move-user')) return refuseMove(409, 'The executor does not support moving apps yet; update it with install.sh --repair.', 'EXECUTOR_INCOMPATIBLE');
+        const unconfirmed = await confirmResolved(req, action);
+        if (unconfirmed) return sendJson(res, unconfirmed.statusCode, unconfirmed.payload);
         return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-move-user', auth, start: () => jobRunner.startTypedMoveUserJob({ appId, site: action.site }) });
       }
       const backupPlanMatch = pathname.match(/^\/api\/apps\/([^/]+)\/backup-plan$/);
@@ -2199,8 +2284,16 @@ function createApp(config) {
             error: 'Real execution requires confirm=EXECUTE',
           });
         }
+        // "Latest" is frozen to the backup it names now: the confirmation is for that backup, the run restores
+        // that one, and a newer one appearing before the retry refuses the retry rather than restoring
+        // something else. Executor hosts name it from the database; legacy hosts plan from the archives on disk.
+        const real = body.dryRun === false;
+        const typedRestore = executorManagesApp(effectiveConfig, state, restoreExecuteMatch[1]);
+        const frozenBackupId = real && typedRestore ? resolveRestoreBackupId({ appId: restoreExecuteMatch[1], backupDir: body.backupDir, stateStore }) : null;
+        const frozenLegacyPlan = real && !typedRestore ? buildRestorePlan({ appId: restoreExecuteMatch[1], backupDir: body.backupDir, state, config: effectiveConfig }) : null;
+        const frozenBackup = frozenBackupId || frozenLegacyPlan?.restore.archiveDir || null;
         if (body.dryRun === false) {
-          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true });
+          auth = await requireAdminForExecute(req, stateStore, { ...adminOptions, privilegedJobsEnabled: effectiveConfig.homeBaseEnablePrivilegedJobs === true, executionModeMissing: effectiveConfig.homeBaseExecutionModeMissing === true, target: frozenBackup ? `${req.planTarget} backup ${frozenBackup}` : null });
           if (!auth.ok) {
             recordAdminAudit(stateStore, {
               action: 'app-restore-execute',
@@ -2218,7 +2311,7 @@ function createApp(config) {
         if (body.dryRun === false) {
           if (executorManagesApp(effectiveConfig, state, restoreExecuteMatch[1])) {
             const appId = restoreExecuteMatch[1];
-            const backupId = resolveRestoreBackupId({ appId, backupDir: body.backupDir, stateStore });
+            const backupId = frozenBackupId;
             if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
             return startExecutorLifecycle({ res, effectiveConfig, stateStore, appId, auditAction: 'app-restore-execute', auth, start: () => jobRunner.startTypedRestoreJob({ appId, backupId }) });
           }
@@ -2246,7 +2339,7 @@ function createApp(config) {
           if (!backupId) return sendJson(res, 409, { error: `No restorable backup found for ${appId}.`, code: 'BACKUP_NOT_FOUND' });
           return startExecutorPreview({ res, effectiveConfig, appId, kind: 'restore', action: { action: 'restore', appId, backupId }, jobRunner });
         }
-        const plan = buildRestorePlan({
+        const plan = frozenLegacyPlan || buildRestorePlan({
           appId: restoreExecuteMatch[1],
           backupDir: body.backupDir,
           state,

@@ -107,7 +107,8 @@ const ROUTES = [
   ['POST', '/api/ingress/services/:id/publish', 'administrator', 'privileged-plan'],
   ['POST', '/api/apps/:id/discard-plan', 'administrator', 'open-admin'],
   ['POST', '/api/apps/:id/install-plan', 'administrator', 'open-admin'],
-  ['POST', '/api/apps/:id/install', 'administrator', 'privileged-plan'],
+  // Saves a planned install record; nothing runs.
+  ['POST', '/api/apps/:id/install', 'administrator', 'open-admin'],
   ['POST', '/api/apps/:id/execute', 'administrator', 'privileged-plan'],
   ['POST', '/api/apps/:id/adopt/execute', 'administrator', 'privileged-plan'],
   ['POST', '/api/apps/:id/adopt/abandon', 'administrator', 'open-admin'],
