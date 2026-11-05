@@ -220,28 +220,44 @@ function applyListenEnv(env, layout) {
 
 // Which identity the app trusts (Feature-10 SID-007), never left to an old .env either. SOVEREIGN_AUTH_MODE is
 // what sovereignAuth reads, and it refuses to start without one, so an app that supports tailnet identity always
-// gets one: the mode it already had, else local. The Home Base user's uid, which the snapshot reader needs,
-// comes with tailnet mode only. SOVEREIGN_IDENTITY_MODE, a name used before the contract settled, is dropped.
+// gets one. The Home Base user's uid, which the snapshot reader needs, comes with tailnet mode only.
+// SOVEREIGN_IDENTITY_MODE, a name used before the contract settled, is dropped.
 const IDENTITY_ENV_KEYS = Object.freeze(['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_HOMEBASE_UID', 'SOVEREIGN_IDENTITY_MODE']);
-// parseDotEnv keeps `export KEY` as the key and an inline comment in the value; dotenv loaders don't. The identity
-// keys are read the way the loaders (and the executor's rollback guard) read them, whatever else parseDotEnv does.
-const identityKey = (key) => String(key).replace(/^export\s+/, '').trim();
-const identityValue = (value) => {
-  const text = String(value ?? '').trim();
-  const quoted = /^(['"])(.*?)\1/.exec(text);
-  return (quoted ? quoted[2] : text.replace(/\s+#.*$/, '')).trim();
-};
+// Any assignment of the mode, however a dotenv loader would accept it: `export`, `=` or `:`, spacing.
+const IDENTITY_MODE_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_(?:AUTH|IDENTITY)_MODE\s*[=:](.*)$/;
+const HOMEBASE_UID_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_HOMEBASE_UID\s*[=:]/;
+const lines = (content) => String(content || '').split(/\r\n|\r|\n/);
+
+// The executor's rollback guard: does this .env put the app in tailnet mode? Fail closed, since this only ever
+// refuses a rollback: any assignment to something other than empty or "local", however written, counts.
+function trustsIdentityHeaders(content) {
+  return lines(content).some((line) => {
+    const match = IDENTITY_MODE_ASSIGNMENT.exec(line);
+    if (!match) return false;
+    let value = match[1].trim();
+    const quoted = /^(['"])(.*?)\1/.exec(value);
+    value = quoted ? quoted[2] : value.replace(/\s+#.*$/, '');
+    return !['', 'local'].includes(value.trim().toLowerCase());
+  });
+}
+
+// The mode an update or restore keeps. Tailnet only in exactly the form the executor writes, as the only
+// assignments of those keys; anything else is a hand edit, and a hand edit never turns trust on (it would skip
+// every gate). It falls back to local, the safe direction: the guard above still counts it, and Home Base's
+// record stays tailnet, so a rollback waits until the administrator returns the app to its own sign-in.
+function currentIdentity(content) {
+  const all = lines(content);
+  const modes = all.filter((line) => IDENTITY_MODE_ASSIGNMENT.test(line));
+  const uids = all.filter((line) => HOMEBASE_UID_ASSIGNMENT.test(line));
+  if (modes.length === 1 && modes[0] === 'SOVEREIGN_AUTH_MODE=tailnet' && uids.length === 1 && /^SOVEREIGN_HOMEBASE_UID=[1-9][0-9]*$/.test(uids[0])) {
+    return { mode: 'tailnet', homeBaseUid: Number(uids[0].slice('SOVEREIGN_HOMEBASE_UID='.length)) };
+  }
+  return { mode: 'local' };
+}
+
+// parseDotEnv keeps `export KEY` as a key; those go too.
 function withoutIdentityEnv(env) {
-  return Object.fromEntries(Object.entries(env).filter(([key]) => !IDENTITY_ENV_KEYS.includes(identityKey(key))));
-}
-// Fail closed, as the rollback guard does: any mode other than empty or local counts as tailnet.
-function identityModeOf(env) {
-  return Object.entries(env || {}).some(([key, value]) => ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE'].includes(identityKey(key)) && !['', 'local'].includes(identityValue(value).toLowerCase()))
-    ? 'tailnet' : 'local';
-}
-function homeBaseUidOf(env) {
-  const entry = Object.entries(env || {}).find(([key]) => identityKey(key) === 'SOVEREIGN_HOMEBASE_UID');
-  return entry && /^[1-9][0-9]*$/.test(identityValue(entry[1])) ? identityValue(entry[1]) : null;
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !IDENTITY_ENV_KEYS.includes(String(key).replace(/^export\s+/, '').trim())));
 }
 // mode: 'tailnet' (with homeBaseUid) or 'local'. Returns a new object.
 function setIdentityEnv(env, { mode, homeBaseUid = null }) {
@@ -252,13 +268,11 @@ function setIdentityEnv(env, { mode, homeBaseUid = null }) {
   if (mode !== 'local') throw new Error(`unknown identity mode ${mode}`);
   return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'local' };
 }
-// What a re-rendered or restored .env says about identity: the app's current .env decides. An app that
-// can't trust the directory gets no mode at all; one that can keeps its own, or starts local.
-function keepIdentityEnv(env, current, layout) {
+// What a re-rendered or restored .env says about identity: the app's current .env (its raw content) decides,
+// never the template or a backup. An app that can't trust the directory gets no mode at all.
+function keepIdentityEnv(env, currentContent, layout) {
   if (!layout.identityModes?.includes('tailnet')) return withoutIdentityEnv(env);
-  if (identityModeOf(current) === 'local') return setIdentityEnv(env, { mode: 'local' });
-  const uid = homeBaseUidOf(current);
-  return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'tailnet', ...(uid ? { SOVEREIGN_HOMEBASE_UID: uid } : {}) };
+  return setIdentityEnv(env, currentIdentity(currentContent));
 }
 
 function storageEnvOverrides(app) {
@@ -277,7 +291,8 @@ module.exports = {
   EnvTemplateError,
   applyListenEnv,
   IDENTITY_ENV_KEYS,
-  identityModeOf,
+  trustsIdentityHeaders,
+  currentIdentity,
   setIdentityEnv,
   keepIdentityEnv,
   storageEnvOverrides,

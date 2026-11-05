@@ -16,7 +16,7 @@ const {
   appPublicBase, gatewayReachesHomeBaseSocket, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
   APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
-const { applyListenEnv, keepIdentityEnv, setIdentityEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
+const { applyListenEnv, keepIdentityEnv, setIdentityEnv, trustsIdentityHeaders, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
 // Fixed host directories. App-specific ones (app-install, app-storage-root, app-storage) come from
 // the plan target's catalog layout; see directoryFor().
@@ -235,7 +235,7 @@ function renderAppEnvFile({ layout, password = null, site, ingress = null, exist
     if (error.code === 'ENV_TEMPLATE_UNRESOLVED') deny(error.message);
     throw error;
   }
-  return renderEnv({ ...keepIdentityEnv(applyListenEnv(env, layout), existing || {}, layout), ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) });
+  return renderEnv({ ...keepIdentityEnv(applyListenEnv(env, layout), existingContent, layout), ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) });
 }
 
 // The database password this install must use. Existing database wiring is kept verbatim by the
@@ -399,22 +399,6 @@ function directoryFor(operation, layout) {
     return `${storage.root}/${operation.subpath}`;
   }
   return deny('Unknown managed directory purpose.');
-}
-
-// Does an app's .env put it in tailnet mode? Fail closed: dotenv loaders accept `export`, quotes and inline
-// comments, so any assignment of SOVEREIGN_AUTH_MODE (what sovereignAuth reads) to something other than empty
-// or "local", however written, counts as trusting identity headers. SOVEREIGN_IDENTITY_MODE, the name used
-// before the contract settled, still counts too.
-const IDENTITY_MODE_ASSIGNMENT = /^\s*(?:export\s+)?SOVEREIGN_(?:AUTH|IDENTITY)_MODE\s*[=:](.*)$/;
-function trustsIdentityHeaders(content) {
-  return String(content).split(/\r\n|\r|\n/).some((line) => {
-    const match = IDENTITY_MODE_ASSIGNMENT.exec(line);
-    if (!match) return false;
-    let value = match[1].trim();
-    const quoted = /^(['"])(.*?)\1/.exec(value);
-    value = quoted ? quoted[2] : value.replace(/\s+#.*$/, '');
-    return !['', 'local'].includes(value.trim().toLowerCase());
-  });
 }
 
 // The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
@@ -1086,7 +1070,7 @@ END $$;
         if (!stat || !stat.isFile()) deny(`${layout.app.name} has no .env; install it first.`);
         const current = parseDotEnv(readSmallFileNoFollow(fsImpl, layout.envPath) ?? deny(`${layout.app.name}'s .env is not a regular file.`));
         // Local follows the update rule: an app that can't trust the directory carries no mode at all.
-        const next = operation.mode === 'tailnet' ? setIdentityEnv(current, { mode: 'tailnet', homeBaseUid }) : keepIdentityEnv(current, { SOVEREIGN_AUTH_MODE: 'local' }, layout);
+        const next = operation.mode === 'tailnet' ? setIdentityEnv(current, { mode: 'tailnet', homeBaseUid }) : keepIdentityEnv(current, '', layout);
         writeFileAtomic(fsImpl, layout.envPath, renderEnv(next), owner.own ? 0o600 : 0o640);
       });
       return operation.mode === 'tailnet' ? `${layout.app.name} trusts tailnet identity (Home Base uid ${homeBaseUid})` : `${layout.app.name} uses its own sign-in`;

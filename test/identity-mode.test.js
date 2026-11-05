@@ -76,16 +76,25 @@ test('the .env says which identity the app trusts, and an update or restore keep
   assert.throws(() => setIdentityEnv({}, { mode: 'headers' }), /unknown identity mode/);
   // The app's current .env decides, never the incoming one (a template, or a backup).
   const tailnet = { SOVEREIGN_AUTH_MODE: 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' };
-  assert.deepEqual(keepIdentityEnv({ A: '1', SOVEREIGN_AUTH_MODE: 'local' }, tailnet, capable), { A: '1', ...tailnet });
-  assert.deepEqual(keepIdentityEnv({ A: '1', ...tailnet }, { SOVEREIGN_AUTH_MODE: 'local' }, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, 'a backup taken in tailnet mode does not bring it back');
-  assert.deepEqual(keepIdentityEnv({ A: '1' }, {}, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, 'sovereignAuth refuses to start without a mode');
-  assert.deepEqual(keepIdentityEnv({ A: '1', ...tailnet, SOVEREIGN_IDENTITY_MODE: 'tailnet' }, tailnet, plain), { A: '1' }, 'an app that cannot trust the directory gets no mode');
-  // Read as dotenv loaders read them (parseDotEnv keeps `export KEY` and inline comments), failing closed as the
-  // rollback guard does: a hand-edited .env never downgrades the app on the next update.
-  for (const content of ['export SOVEREIGN_AUTH_MODE=tailnet\nexport SOVEREIGN_HOMEBASE_UID=990', 'SOVEREIGN_AUTH_MODE=tailnet # pilot\nSOVEREIGN_HOMEBASE_UID="990" # Home Base', "SOVEREIGN_AUTH_MODE='Tailnet'\nSOVEREIGN_HOMEBASE_UID=990", 'SOVEREIGN_IDENTITY_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990']) {
-    assert.deepEqual(keepIdentityEnv({ A: '1', 'export SOVEREIGN_AUTH_MODE': 'local' }, parseDotEnv(content), capable), { A: '1', ...tailnet }, JSON.stringify(content));
+  const written = 'SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n';
+  assert.deepEqual(keepIdentityEnv({ A: '1', SOVEREIGN_AUTH_MODE: 'local' }, `A=1\n${written}`, capable), { A: '1', ...tailnet });
+  assert.deepEqual(keepIdentityEnv({ A: '1', ...tailnet }, 'SOVEREIGN_AUTH_MODE=local\n', capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, 'a backup taken in tailnet mode does not bring it back');
+  assert.deepEqual(keepIdentityEnv({ A: '1' }, '', capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, 'sovereignAuth refuses to start without a mode');
+  assert.deepEqual(keepIdentityEnv({ A: '1', ...tailnet, SOVEREIGN_IDENTITY_MODE: 'tailnet', 'export SOVEREIGN_AUTH_MODE': 'tailnet' }, written, plain), { A: '1' }, 'an app that cannot trust the directory gets no mode');
+  // Tailnet survives only as the executor wrote it. A hand edit never turns trust on, since that would skip every
+  // gate (dotenv reads `local#pilot` as local); it falls back to local, which the rollback guard still counts.
+  const { trustsIdentityHeaders } = require('../executor/handlers');
+  for (const content of [
+    'SOVEREIGN_AUTH_MODE=local#pilot\nSOVEREIGN_HOMEBASE_UID=990', 'SOVEREIGN_AUTH_MODE=`local`\nSOVEREIGN_HOMEBASE_UID=990',
+    'export SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990', 'SOVEREIGN_AUTH_MODE: tailnet\nSOVEREIGN_HOMEBASE_UID=990',
+    'SOVEREIGN_AUTH_MODE=tailnet # pilot\nSOVEREIGN_HOMEBASE_UID=990', `${written}SOVEREIGN_AUTH_MODE: local`, `${written}SOVEREIGN_IDENTITY_MODE=tailnet`,
+    'SOVEREIGN_AUTH_MODE=tailnet', `${written}export SOVEREIGN_HOMEBASE_UID=0`, 'SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=0',
+  ]) {
+    assert.deepEqual(keepIdentityEnv({ A: '1', 'export SOVEREIGN_AUTH_MODE': 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' }, content, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, JSON.stringify(content));
   }
-  assert.deepEqual(keepIdentityEnv({ A: '1' }, parseDotEnv('SOVEREIGN_AUTH_MODE=local # default'), capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' });
+  for (const content of ['export SOVEREIGN_AUTH_MODE=tailnet', 'SOVEREIGN_AUTH_MODE: tailnet', 'SOVEREIGN_AUTH_MODE=tailnet # pilot', `${written}SOVEREIGN_AUTH_MODE: local`]) {
+    assert.equal(trustsIdentityHeaders(content), true, `the rollback guard still counts ${JSON.stringify(content)}`);
+  }
 });
 
 test('an update re-renders the .env and keeps the identity mode the app is in', () => {

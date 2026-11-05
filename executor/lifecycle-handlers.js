@@ -180,7 +180,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       if (present.env) {
         asUser(owner, () => {
           const restoredEnv = parseDotEnv(readSmallFileNoFollow(fsImpl, `${archiveDir}/.env.backup`) ?? deny('The backup .env is not a regular file.'));
-          const current = parseDotEnv(readSmallFileNoFollow(fsImpl, layout.envPath) ?? '');
+          const currentContent = readSmallFileNoFollow(fsImpl, layout.envPath) ?? '';
+          const current = parseDotEnv(currentContent);
           for (const key of PRESERVED_DB_ENV_KEYS) {
             if (!current[key]) continue;
             delete restoredEnv[key];
@@ -190,7 +191,7 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
           Object.assign(restoredEnv, storageEnvOverrides(layout.app));
           // Nor listen where nginx no longer points (a backup from before the app's socket, or HOST=0.0.0.0), nor
           // trust identity headers it no longer should (a backup taken in tailnet mode, restored after the switch back).
-          writeFileAtomic(fsImpl, layout.envPath, renderEnv(keepIdentityEnv(applyListenEnv(restoredEnv, layout), current, layout)), owner.own ? 0o600 : 0o640);
+          writeFileAtomic(fsImpl, layout.envPath, renderEnv(keepIdentityEnv(applyListenEnv(restoredEnv, layout), currentContent, layout)), owner.own ? 0o600 : 0o640);
         });
         restored.push('.env');
       }
