@@ -243,8 +243,10 @@ function trustsIdentityHeaders(content) {
 }
 
 // A file whose every line is KEY=value, the value plain or in double quotes with no backslash, quote or line
-// separator inside: dotenv and python-dotenv both read it exactly as its lines say (nothing continues, nothing is
-// escaped). renderEnv writes this form unless a value needs escaping. Returns its entries, or null.
+// separator inside: dotenv and python-dotenv both see exactly its lines as its assignments (nothing continues,
+// nothing is escaped; python-dotenv may still expand ${VAR} inside a quoted value, which can't change which keys
+// are assigned or the literal values read here). renderEnv writes this form unless a value needs escaping.
+// Returns its entries, or null.
 const STRICT_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=(?:([A-Za-z0-9_./:@-]*)|"([^"\\\r\n\u0085\u2028\u2029]*)")$/;
 function strictEnv(content) {
   const rows = String(content || '').split('\n');
@@ -266,7 +268,7 @@ function currentIdentity(content) {
   const entries = strictEnv(content) || [];
   const modes = entries.filter(([key]) => MODE_KEYS.includes(key));
   const uids = entries.filter(([key]) => key === 'SOVEREIGN_HOMEBASE_UID');
-  if (modes.length === 1 && modes[0][0] === 'SOVEREIGN_AUTH_MODE' && modes[0][1] === 'tailnet' && uids.length === 1 && /^[1-9][0-9]*$/.test(uids[0][1])) {
+  if (modes.length === 1 && modes[0][0] === 'SOVEREIGN_AUTH_MODE' && modes[0][1] === 'tailnet' && uids.length === 1 && /^[1-9][0-9]{0,9}$/.test(uids[0][1]) && Number(uids[0][1]) < 2 ** 32 - 1) {
     return { mode: 'tailnet', homeBaseUid: Number(uids[0][1]) };
   }
   return { mode: 'local' };

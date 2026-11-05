@@ -162,9 +162,10 @@ function createIngressRoutes({
       if (!auth) return true;
       if (apiFor(config) || apiProblem) { refuse(res, { action: 'ingress-confirm', target: key, auth, error: apiProblem ? `The Tailscale API credential is configured but unusable (${apiProblem}); fix it, or remove it to confirm hosts by hand.` : 'An API credential is configured, so service hosts are verified automatically.', code: 'CONFIRMATION_NOT_USED' }); return true; }
       try {
-        // In active Home Base this route is a privileged plan, so the administrator has just tapped their hardware
-        // key for it (route matrix); in setup and recovery it is the passphrase session.
-        const assurance = lifecycleState() === 'active' ? 'hardware-key' : 'passphrase-session';
+        // In active Home Base this route is a privileged plan, so the administrator taps their hardware key for it
+        // (route matrix). Recorded from that proof, never from the state now: one authorized in setup may finish
+        // after activation.
+        const assurance = auth.confirmation ? 'hardware-key' : 'passphrase-session';
         const record = await controlFor(config).confirm(key, { hostNodeId: String(body.hostNodeId || ''), confirmedBy: config.administratorLogin || null, assurance });
         recordAdminAudit(stateStore, { action: 'ingress-confirm', target: record.service, dryRun: false, outcome: 'recorded', sessionTokenHash: auth.sessionTokenHash });
         sendJson(res, 200, { ok: true, confirmation: record });

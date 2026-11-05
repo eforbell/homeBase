@@ -94,6 +94,8 @@ test('the .env says which identity the app trusts, and an update or restore keep
     `SOVEREIGN_AUTH_MODE\n=local\nNOTES=\n"\n${written}"\n`, `${written}# a note\n`, `${written}\n`, written.replace(/\n/g, '\r\n'),
     // dotenv doesn't decode JSON escapes: it reads this literally, which sovereignAuth refuses.
     'SOVEREIGN_AUTH_MODE="\\u0074ailnet"\nSOVEREIGN_HOMEBASE_UID=990\n', `NOTES="\\q"\n${written}`, `A="x\u2028y"\n${written}`,
+    // Not a uid (a hand edit): no number to keep.
+    `SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=${'9'.repeat(309)}\n`, 'SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=4294967295\n',
   ]) {
     assert.deepEqual(keepIdentityEnv({ A: '1', 'export SOVEREIGN_AUTH_MODE': 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' }, content, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, JSON.stringify(content));
   }
@@ -264,19 +266,19 @@ test('routes: tailnet mode is refused until the app, the host, the service and H
   assert.equal((await old.post('/api/ingress/apps/no-such-app/local-mode', { confirm: 'LOCAL' })).status, 404);
 });
 
-test('routes: a confirmation made in active Home Base is recorded as the hardware key, which a publish then needs', async () => {
+test('routes: a confirmation is recorded as the hardware key only when the key confirmed it', async () => {
   // Without an API credential the administrator confirms each service's hosts; in active Home Base that route is
   // a privileged plan (route matrix), so the key was tapped for it.
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-mode-'));
   const cli = async (args) => (args[0] === 'status' ? { Self: { ID: 'nSelf', Tags: ['tag:smith-host'] } } : { version: '0.0.1', services: {} });
-  const confirm = async (lifecycle) => {
+  const confirm = async (lifecycle, confirmation) => {
     const handle = createIngressRoutes({
       stateStore: {}, jobRunner: {}, recordAdminAudit: () => {}, executionBlockOutcome: () => 'blocked-auth',
       sendJson: (res, status, payload) => Object.assign(res, { status, payload }),
       parseBody: async () => ({ hostNodeId: 'nSelf' }),
       controlFactory: (options) => createIngressControl({ ...options, cli }),
       apiFactory: () => null,
-      requireAdmin: async () => ({ ok: true }),
+      requireAdmin: async () => ({ ok: true, ...(confirmation ? { confirmation } : {}) }),
       lifecycleState: () => lifecycle,
     });
     const res = {};
@@ -284,8 +286,10 @@ test('routes: a confirmation made in active Home Base is recorded as the hardwar
     assert.equal(res.status, 200, JSON.stringify(res.payload));
     return JSON.parse(fs.readFileSync(path.join(dataDir, 'ingress-confirmations.json'), 'utf8'))['svc:smith-pulse'].assurance;
   };
-  assert.equal(await confirm('active'), 'hardware-key');
+  assert.equal(await confirm('active', 'jti-1'), 'hardware-key');
   assert.equal(await confirm('setup'), 'passphrase-session');
+  // Authorized in setup with the passphrase, finished after activation: still the passphrase.
+  assert.equal(await confirm('active'), 'passphrase-session');
 });
 
 test('the job runner records local mode when the switch completes, and the record survives updates', async (t) => {
