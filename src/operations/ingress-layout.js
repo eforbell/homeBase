@@ -26,6 +26,9 @@ const HOME_SERVICE = 'home';
 const HOMEBASE_SERVICE = 'homebase';
 // First line of the socket gateway; the executor reads it to refuse writing a TCP gateway over it.
 const SOCKET_GATEWAY_MARKER = '# sovereign-ingress: sockets';
+// Last line, added by the executor only once nginx has validated and reloaded exactly this file (SID-006).
+// A file without it may not be what nginx runs: its reload failed, or an older executor wrote it.
+const APPLIED_MARKER = '# sovereign-ingress: applied';
 const TMPFILES_PATH = '/etc/tmpfiles.d/sovereign-serve.conf';
 // The identity socket's directory: Home Base listens there and only nginx's group may enter (D1). Not
 // /run/homebase: that is the root executor's, and it must stay root-owned (executor/maintenance.js).
@@ -291,7 +294,19 @@ function renderGatewaySite({ instance, domain, apps, homeBase = 'tcp' }) {
   ].join('\n');
 }
 
+// SID-006: whether nginx, as it runs now, reaches Home Base only on its socket, read from the gateway site
+// (world-readable). Only then may Home Base stop serving on loopback TCP; any doubt keeps it there, which
+// can't strand anyone behind a redirect to itself.
+function gatewayReachesHomeBaseSocket(siteText) {
+  const text = String(siteText || '');
+  return text.startsWith(SOCKET_GATEWAY_MARKER)
+    && text.trimEnd().endsWith(APPLIED_MARKER)
+    && text.includes(`proxy_pass ${HOMEBASE_UPSTREAMS.socket};`)
+    && !text.includes(HOMEBASE_UPSTREAMS.tcp);
+}
+
 module.exports = {
+  APPLIED_MARKER,
   APP_SNIPPET_DIR,
   AUTH_MOUNT,
   HOMEBASE_IDENTITY_SOCKET,
@@ -309,6 +324,7 @@ module.exports = {
   appPublicBase,
   appServiceKey,
   appSnippetPath,
+  gatewayReachesHomeBaseSocket,
   ingressServices,
   legacyAppSnippetPath,
   renderAppLocations,

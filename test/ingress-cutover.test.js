@@ -27,7 +27,7 @@ function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookup
     if (input.binary === '/usr/sbin/nginx') return { stdout: dump, stderr: '' };
     return { stdout: '' };
   };
-  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
+  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, sleep: async () => {}, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
 }
 
 const cutover = (fields = {}) => base('nginx.ensure-socket-gateway', { instance: 'smith', domain: DOMAIN, ...fields });
@@ -61,25 +61,56 @@ test('after cutover, an install or repair refreshes the socket gateway and never
   assert.match(fsImpl.readFileSync(SITE), /^# sovereign-ingress: sockets/);
 });
 
-test('SID-006: a cutover that puts Home Base on its socket records it, refreshes keep it, and an older cutover keeps TCP until run again', async () => {
+test('SID-006: a cutover moves Home Base onto its socket only once it listens there, and refreshes keep it', async () => {
   const { fsImpl, handlers } = harness();
   const homeBaseUpstreams = () => fsImpl.readFileSync(SITE).match(/proxy_pass http:\/\/(?:unix:\/run\/homebase-identity\/homebase\.sock|127\.0\.0\.1:3080);/g);
+  const onPort = () => homeBaseUpstreams().every((line) => line.includes('127.0.0.1:3080'));
   // A host cut over before SID-006: its record has no homeBase, so nginx keeps Home Base on the loopback port.
   await handlers['nginx.ensure-socket-gateway'](cutover());
-  assert.ok(homeBaseUpstreams().every((line) => line.includes('127.0.0.1:3080')));
+  assert.ok(onPort());
   await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
-  assert.ok(homeBaseUpstreams().every((line) => line.includes('127.0.0.1:3080')), 'a refresh never moves Home Base on its own');
-  // Running the cutover again moves Home Base and its passkey mounts (every strict hostname) onto its socket.
-  await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' }));
-  assert.deepEqual(JSON.parse(fsImpl.readFileSync(INGRESS_STATE_PATH)), { mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'socket' });
-  assert.equal(homeBaseUpstreams().length, 6, "homebase's location / plus /_sovereign/auth/ on homebase and the four sensitive apps");
-  assert.ok(homeBaseUpstreams().every((line) => line.includes('homebase.sock')));
-  assert.doesNotMatch(fsImpl.readFileSync(SITE), /127\.0\.0\.1:3080/);
-  await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
-  assert.doesNotMatch(fsImpl.readFileSync(SITE), /127\.0\.0\.1:3080/, 'refreshes keep the socket');
+  assert.ok(onPort(), 'a refresh never moves Home Base on its own');
+  // A Home Base older than the executor never opens its socket: nginx keeps it on the port (no 502).
+  assert.match(await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on port 3080: it is not listening on its socket yet/);
+  assert.ok(onPort());
+  assert.equal(JSON.parse(fsImpl.readFileSync(INGRESS_STATE_PATH)).homeBase, undefined);
+  // Listening: Home Base and its passkey mounts (every strict hostname) move onto its socket.
+  const listening = harness({ '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } });
+  assert.match(await listening.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on its socket/);
+  assert.deepEqual(JSON.parse(listening.fsImpl.readFileSync(INGRESS_STATE_PATH)), { mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'socket' });
+  const upstreams = listening.fsImpl.readFileSync(SITE).match(/proxy_pass http:\/\/(?:unix:\/run\/homebase-identity\/homebase\.sock|127\.0\.0\.1:3080);/g);
+  assert.equal(upstreams.length, 6, "homebase's location / plus /_sovereign/auth/ on homebase and the four sensitive apps");
+  assert.ok(upstreams.every((line) => line.includes('homebase.sock')));
+  await listening.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.doesNotMatch(listening.fsImpl.readFileSync(SITE), /127\.0\.0\.1:3080/, 'refreshes keep the socket');
+  listening.fsImpl.unlinkSync('/run/homebase-identity/homebase.sock');
+  assert.match(await listening.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on its socket/, 'running the cutover again while Home Base restarts keeps it');
   // A record naming anything else is unreadable, not quietly TCP.
-  fsImpl.writeFileSync(INGRESS_STATE_PATH, JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'tcp' }));
-  await assert.rejects(() => handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway')), /is unreadable/);
+  listening.fsImpl.writeFileSync(INGRESS_STATE_PATH, JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'tcp' }));
+  await assert.rejects(() => listening.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway')), /is unreadable/);
+});
+
+test('SID-006: only a gateway nginx has validated and reloaded is marked applied, which is what Home Base reads', async () => {
+  const { gatewayReachesHomeBaseSocket } = require('../src/operations/ingress-layout');
+  const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } };
+  const { fsImpl, handlers } = harness(files);
+  await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' }));
+  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false, 'written, not yet reloaded');
+  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
+  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), true);
+  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
+  assert.equal(fsImpl.readFileSync(SITE).match(/# sovereign-ingress: applied/g).length, 1, 'marked once');
+  // A refresh rewrites the site: unmarked until its own reload succeeds. If nginx -t refuses it, it stays so.
+  await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false);
+  const refusing = createBaseHandlers({ fsImpl, sleep: async () => {}, run: async (input) => { if (input.binary === '/usr/sbin/nginx') throw Object.assign(new Error('nginx -t failed'), { code: 'OPERATION_FAILED' }); return { stdout: '' }; } });
+  await assert.rejects(() => refusing['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /nginx -t failed/);
+  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false);
+  // The TCP gateway a rollback writes never reaches Home Base's socket.
+  await handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' }));
+  assert.doesNotMatch(fsImpl.readFileSync(SITE), /^# sovereign-ingress: sockets/);
+  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
+  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false);
 });
 
 test('an unreadable cutover record is refused, never read as "not cut over"', async () => {

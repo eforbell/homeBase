@@ -13,7 +13,7 @@ const { FLOORS, compareVersions } = require('../src/operations/security-floors')
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const {
   appPublicBase, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
-  IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
+  APPLIED_MARKER, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
 const { applyListenEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
@@ -428,7 +428,7 @@ function readIngressRecord(fsImpl = fs) {
   return state;
 }
 
-function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
+function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   // Who this app runs as on this host: its own user, or sovereign until it is moved (identity.js).
   // planKind: only the move plan may continue a move that was interrupted (identity.js).
@@ -476,6 +476,17 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       rewritten.push(app.id);
     }
     return rewritten;
+  }
+
+  // SID-006: nginx moves Home Base to its socket only if Home Base listens there, so a Home Base older than
+  // the executor keeps the loopback port. A first cutover makes the socket's directory just now; Home Base
+  // checks for it every 2 seconds, so this waits a little for the socket.
+  async function homeBaseListensOnSocket() {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (lstatOrNull(fsImpl, HOMEBASE_SOCKET)?.isSocket()) return true;
+      await sleep(500);
+    }
+    return false;
   }
 
   async function installSocketGateway(ingress, operation) {
@@ -810,7 +821,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       return 'installed managed nginx gateway site';
     },
     'nginx.ensure-socket-gateway': async (operation) => {
-      const ingress = { mode: 'sockets', instance: operation.instance, domain: operation.domain, ...(operation.homeBase === 'socket' ? { homeBase: 'socket' } : {}) };
+      const ingress = { mode: 'sockets', instance: operation.instance, domain: operation.domain };
       if (validateInstance(ingress.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(ingress.domain || ''))) deny('The ingress instance or tailnet domain is malformed.');
       const existing = readIngressState();
       if (existing && (existing.instance !== ingress.instance || existing.domain !== ingress.domain)) {
@@ -823,9 +834,22 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         deny(`Could not read the active nginx configuration (nginx -T): ${error.message}. Fix nginx, then retry.`);
       }
       if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook 3.3), then run the cutover again.');
-      writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify(ingress)}\n`, 0o600);
-      const rewritten = await installSocketGateway(ingress, operation);
-      return `installed the per-service socket gateway for ${ingress.instance} on ${ingress.domain}; app snippets: ${rewritten.join(', ') || 'none installed'}`;
+      // The socket's directory comes from the tmpfiles entry the gateway installs, so the record is written
+      // twice: first as it was (or without Home Base's socket), then with it once Home Base listens there.
+      const keep = existing?.homeBase === 'socket' ? { homeBase: 'socket' } : {};
+      writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify({ ...ingress, ...keep })}\n`, 0o600);
+      let rewritten = await installSocketGateway({ ...ingress, ...keep }, operation);
+      let homeBase = keep.homeBase ? 'on its socket' : 'on port 3080';
+      if (operation.homeBase === 'socket' && !keep.homeBase) {
+        if (await homeBaseListensOnSocket()) {
+          writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify({ ...ingress, homeBase: 'socket' })}\n`, 0o600);
+          rewritten = await installSocketGateway({ ...ingress, homeBase: 'socket' }, operation);
+          homeBase = 'on its socket';
+        } else {
+          homeBase = 'on port 3080: it is not listening on its socket yet (update Home Base, then run the cutover again)';
+        }
+      }
+      return `installed the per-service socket gateway for ${ingress.instance} on ${ingress.domain}; Home Base ${homeBase}; app snippets: ${rewritten.join(', ') || 'none installed'}`;
     },
     'nginx.restore-tcp-gateway': async () => {
       // Over TCP any local process can forge identity headers, so no app may still trust them. Home Base
@@ -958,6 +982,12 @@ END $$;
     'nginx.validate-and-reload': async (operation) => {
       await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+      // nginx now runs exactly this socket gateway: say so in it, for Home Base (SID-006). A failed reload
+      // never gets here, so a gateway nginx refused is never marked applied.
+      if (gatewayIsSocketMode()) {
+        const site = String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '');
+        if (!site.trimEnd().endsWith(APPLIED_MARKER)) writeGatewaySite(`${site.trimEnd()}\n${APPLIED_MARKER}\n`);
+      }
       return 'validated and reloaded nginx';
     },
     'filesystem.ensure-directory': async (operation, { layout, planKind } = {}) => {

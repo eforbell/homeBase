@@ -140,8 +140,7 @@ test('after cutover, Open links and app URLs use each app\'s service hostname (b
   const job = (id, kind, extra = {}) => ({ id, kind, status: 'completed', dryRun: false, finishedAt: `2026-10-27T10:0${id}:00Z`, ...extra });
   assert.equal(currentIngress([], config), null);
   assert.equal(currentIngress([job(1, 'ingress-cutover')], { ...config, instance: '' }), null);
-  assert.deepEqual(currentIngress([job(1, 'ingress-cutover')], config), { instance: 'smith', domain: 'example-tailnet.ts.net', homeBase: 'tcp' });
-  assert.equal(currentIngress([job(1, 'ingress-cutover', { homeBaseOnSocket: true })], config).homeBase, 'socket', 'SID-006: the cutover the executor ran put Home Base on its socket');
+  assert.deepEqual(currentIngress([job(1, 'ingress-cutover')], config), { instance: 'smith', domain: 'example-tailnet.ts.net' });
   assert.equal(currentIngress([job(1, 'ingress-cutover'), job(2, 'ingress-rollback')], config), null);
   assert.ok(currentIngress([job(1, 'ingress-cutover'), job(2, 'ingress-rollback'), job(3, 'ingress-cutover')], config));
   assert.equal(currentIngress([job(1, 'ingress-cutover', { status: 'failed' })], config), null);

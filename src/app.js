@@ -34,7 +34,7 @@ const { STATIC_ROUTE, routeFor } = require('./route-matrix');
 const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, requestDigest, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
-const { HOMEBASE_SERVICE, appPublicBase, appServiceKey, ingressServices } = require('./operations/ingress-layout');
+const { HOMEBASE_SERVICE, appPublicBase, appServiceKey, gatewayReachesHomeBaseSocket, ingressServices } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
   mergeHomeBaseConfig,
@@ -615,6 +615,7 @@ function createApp(config) {
     stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
     adminStatus: (req, store) => getAdminStatus(req, store, adminOptions),
     requireAdmin: (req, store, options) => requireAdminForExecute(req, store, { ...adminOptions, ...options }),
+    homeBaseOnSocket: () => homeBaseOnSocket(),
   });
   try {
     jobRunner.reconcileStaleUpdateJobs();
@@ -1023,7 +1024,7 @@ function createApp(config) {
       const homeBaseConfigOverride = stateStore.getHomeBaseConfig() || {};
       const effectiveConfig = mergeHomeBaseConfig(config, homeBaseConfigOverride);
       const normalizedPath = normalizePathname(pathname);
-      const moved = loopbackAnswer(req, method, pathname, url, state, effectiveConfig);
+      const moved = loopbackAnswer(req, method, pathname, url, effectiveConfig);
       if (moved) {
         if (!moved.payload) {
           res.writeHead(moved.statusCode, { ...moved.headers, 'cache-control': 'no-store' });
@@ -2408,28 +2409,40 @@ function createApp(config) {
   const server = http.createServer(handleRequest);
   const socketServer = http.createServer((req, res) => { req.homeBaseVia = 'socket'; return handleRequest(req, res); });
 
-  // SID-006: where a loopback request goes once nginx reaches Home Base on its socket, or null to serve it here.
-  // The port is not Home Base any more: a local process could set X-Forwarded-For on it and be taken for any
-  // member. It keeps the health probe (the installer and updates call it, and with the directory on it says
-  // nothing) and redirects pages to Home Base's hostname; anything else is refused.
-  function loopbackAnswer(req, method, pathname, url, state, effectiveConfig) {
-    if (req.homeBaseVia === 'socket') return null;
-    const ingress = currentIngress(state.ingressJobs, effectiveConfig);
-    if (ingress?.homeBase !== 'socket') return null;
-    const read = method === 'GET' || method === 'HEAD';
+  // SID-006: whether nginx, as it runs now, reaches Home Base on its socket: the gateway site the executor marks
+  // applied once nginx has reloaded it (world-readable). Not the job record, which a recovered or partly
+  // failed job leaves behind the host, and an older executor's refresh would leave stale. Read at most every
+  // 2 seconds.
+  const gatewaySite = config.nginxGatewaySite || '/etc/nginx/sites-available/sovereign-home';
+  let gatewayRead = { at: -Infinity, onSocket: false };
+  function homeBaseOnSocket() {
+    if (Date.now() - gatewayRead.at < (config.gatewayReadIntervalMs ?? 2000)) return gatewayRead.onSocket;
+    let text = '';
+    try { text = fs.readFileSync(gatewaySite, 'utf8'); } catch { /* no gateway: not cut over */ }
+    gatewayRead = { at: Date.now(), onSocket: gatewayReachesHomeBaseSocket(text) };
+    return gatewayRead.onSocket;
+  }
+
+  // Where a loopback request goes once Home Base is on its socket, or null to serve it here. The port is not
+  // Home Base any more: a local process could set X-Forwarded-For on it and be taken for any member. It keeps
+  // the health probe (the installer and updates call it, and with the directory on it says nothing) and
+  // redirects reads to Home Base's hostname; anything else is refused.
+  function loopbackAnswer(req, method, pathname, url, effectiveConfig) {
+    if (req.homeBaseVia === 'socket' || !homeBaseOnSocket()) return null;
     if (method === 'GET' && pathname === '/api/homebase/health') return null;
-    const { hostname } = ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog }).find((service) => service.key === HOMEBASE_SERVICE);
-    const location = `https://${hostname}${url.pathname}${url.search}`;
-    if (read) return { statusCode: 308, headers: { location }, payload: null };
-    return { statusCode: 421, payload: { error: `Home Base is at https://${hostname}/ now; this port only redirects there.`, code: 'HOME_BASE_MOVED', location } };
+    const domain = String(effectiveConfig.defaultDomain || '').toLowerCase();
+    const hostname = effectiveConfig.instance && domain
+      ? ingressServices({ instance: effectiveConfig.instance, domain, apps: catalog }).find((service) => service.key === HOMEBASE_SERVICE).hostname
+      : null;
+    const origin = hostname ? `https://${hostname}` : null;
+    if (origin && (method === 'GET' || method === 'HEAD')) return { statusCode: 308, headers: { location: `${origin}${url.pathname}${url.search}` }, payload: null };
+    return { statusCode: 421, payload: { error: `Home Base is on its own hostname now${origin ? `, ${origin}/` : ''}; this port only redirects there.`, code: 'HOME_BASE_MOVED', ...(origin ? { location: `${origin}${url.pathname}${url.search}` } : {}) } };
   }
 
   // HOME_BASE_LOOPBACK=off closes the port once Home Base is on its socket, and opens it again if the ingress is
   // rolled back (Serve's restored route reaches Home Base there). Checked at start and every 15 seconds.
   function loopbackWanted() {
-    if (config.loopback !== 'off') return true;
-    const state = stateStore.loadState();
-    return currentIngress(state.ingressJobs, mergeHomeBaseConfig(config, stateStore.getHomeBaseConfig() || {}))?.homeBase !== 'socket';
+    return config.loopback !== 'off' || !homeBaseOnSocket();
   }
 
   // Setup links follow the host's ingress, like Open buttons.
@@ -2539,7 +2552,7 @@ function createApp(config) {
       }
       // Home Base on its own socket, in the same directory, once the cutover has made it (SID-006).
       if (config.adminSocket) {
-        stoppers.push(startIdentitySocketWhenReady({ server: socketServer, socketPath: config.adminSocket, label: 'Home Base', log: (message) => console.log(`Home Base ${message}`) }));
+        stoppers.push(startIdentitySocketWhenReady({ server: socketServer, socketPath: config.adminSocket, label: 'admin and passkeys', intervalMs: config.adminSocketIntervalMs ?? 2000, log: (message) => console.log(`Home Base ${message}`) }));
         stoppers.push(() => { socketServer.close(); socketServer.closeAllConnections(); });
       }
     },
