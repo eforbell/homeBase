@@ -46,6 +46,9 @@ function createIngressRoutes({
   // enough, even on a plan-only host. duringBootstrap: allowed while the household directory is in setup,
   // which needs the cutover and Home Base's own service (runbook 2.5); everything else waits for active.
   async function authorize(req, res, config, { action, target, executes = true, duringBootstrap = false }) {
+    // What was authorized depends on the state (setup takes the passphrase, active the hardware key), so a request
+    // starts only if the state is the same when it starts (startAction).
+    const lifecycle = lifecycleState();
     const auth = await requireAdmin(req, stateStore, executes
       ? { privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs === true, executionModeMissing: config.homeBaseExecutionModeMissing === true, duringBootstrap }
       : { privilegedJobsEnabled: true, duringBootstrap });
@@ -54,7 +57,7 @@ function createIngressRoutes({
       sendJson(res, auth.statusCode, auth.payload);
       return null;
     }
-    return auth;
+    return { ...auth, lifecycle };
   }
 
   function refuse(res, { action, target, auth, statusCode = 409, error, code }) {
@@ -71,6 +74,12 @@ function createIngressRoutes({
     }
     if (!canExecuteMutations(capabilities) || !capabilities.actions?.includes(action.action)) {
       return sendJson(res, 409, { error: `The executor does not support ${action.action} yet; update it with install.sh --repair.`, code: 'EXECUTOR_INCOMPATIBLE' });
+    }
+    // Everything above waits (the admin check, Tailscale, the executor); Home Base may have been activated or
+    // entered recovery meanwhile, and what authorized this request may no longer be enough. Checked last, with no
+    // wait before the job starts.
+    if (auth?.lifecycle !== undefined && lifecycleState() !== auth.lifecycle) {
+      return refuse(res, { action: auditAction, target, auth, error: `Not started: Home Base moved from ${auth.lifecycle} to ${lifecycleState()} while this request was checked; try again.`, code: 'STATE_CHANGED' });
     }
     if (beforeStart) {
       try { beforeStart(); } catch (error) { return refuse(res, { action: auditAction, target, auth, error: `Not started: ${error.message}.`, code: error.code || 'NOT_STARTED' }); }
@@ -183,8 +192,10 @@ function createIngressRoutes({
       const auth = await authorize(req, res, config, { action: 'service-publish', target: key, duringBootstrap: key === 'homebase' });
       if (!auth) return true;
       const control = controlFor(config);
-      const { entry } = await control.service(key);
+      const { all, entry } = await control.service(key);
       if (!entry) { refuse(res, { action: 'service-publish', target: key, auth, statusCode: 404, error: `${key} is not a service this host can serve.`, code: 'NOT_FOUND' }); return true; }
+      // The gate below was decided in this state; startAction checks it is still the one authorized.
+      if (all.lifecycleState !== auth.lifecycle) { refuse(res, { action: 'service-publish', target: entry.name, auth, error: 'Not started: Home Base changed state while this request was checked; try again.', code: 'STATE_CHANGED' }); return true; }
       if (!entry.gates.publish.allowed) { refuse(res, { action: 'service-publish', target: entry.name, auth, error: `Cannot publish ${entry.name}: ${entry.gates.publish.reason}.`, code: 'SERVICE_GATE' }); return true; }
       await startAction(res, config, {
         auth, auditAction: 'service-publish', target: entry.name, kind: 'service-publish',
@@ -234,6 +245,7 @@ function createIngressRoutes({
         if (app.runtime?.identity !== 'tailnet') { cannot('this version does not support it', 'TAILNET_UNSUPPORTED'); return true; }
         if (!currentIngress(state.ingressJobs, config)) { cannot('this host is not cut over to socket ingress', 'NOT_CUT_OVER'); return true; }
         const status = await controlFor(config).status();
+        if (status.lifecycleState !== auth.lifecycle) { cannot('Home Base changed state while this request was checked; try again', 'STATE_CHANGED'); return true; }
         if (!status.self?.tagged) { cannot('this host is user-owned (untagged) (D2)', 'HOST_UNTAGGED'); return true; }
         const entry = (status.services || []).find((candidate) => candidate.apps.includes(appId));
         if (!entry) { cannot('no service on this host serves it', 'NOT_FOUND'); return true; }

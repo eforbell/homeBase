@@ -258,9 +258,11 @@ test('routes: tailnet mode is refused until the app, the host, the service and H
   assert.match(await code({ lifecycle: 'setup' }, 'SERVICE_GATE'), /only once it is active/);
   assert.match(await code({ lifecycle: 'none' }, 'SERVICE_GATE'), /no household directory/);
   await code({ appBlock: () => ({ error: 'Family Pulse already has job #3 (restart) in progress; wait for it to finish.', code: 'APP_BUSY' }) }, 'APP_BUSY');
-  // Recovery opened while the route waited on Tailscale: checked again just before the job starts.
-  let reads = 0;
-  await code({ lifecycle: () => (reads++ === 0 ? 'active' : 'recovery') }, 'SERVICE_GATE');
+  // Recovery opened while the route waited (on the admin check, Tailscale or the executor): refused at the start.
+  for (const at of [1, 2]) {
+    let reads = 0;
+    await code({ lifecycle: () => (reads++ < at ? 'active' : 'recovery') }, 'STATE_CHANGED');
+  }
   const old = await routes(t, { actions: ['install', 'restart'] });
   assert.equal((await old.post('/api/ingress/apps/family-pulse/tailnet-mode', { confirm: 'TAILNET' })).body.code, 'EXECUTOR_INCOMPATIBLE');
   assert.equal((await old.post('/api/ingress/apps/no-such-app/local-mode', { confirm: 'LOCAL' })).status, 404);
@@ -290,6 +292,20 @@ test('routes: a confirmation is recorded as the hardware key only when the key c
   assert.equal(await confirm('setup'), 'passphrase-session');
   // Authorized in setup with the passphrase, finished after activation: still the passphrase.
   assert.equal(await confirm('active'), 'passphrase-session');
+});
+
+test('routes: a publish or cutover authorized in one state never starts in another', async (t) => {
+  // Authorized in setup (where the passphrase is enough), activated while the route waited: no job, nothing claimed.
+  for (const [pathname, body, at] of [['/api/ingress/services/homebase/publish', { confirm: 'PUBLISH' }, 1], ['/api/ingress/services/homebase/publish', { confirm: 'PUBLISH' }, 2], ['/api/ingress/cutover', { confirm: 'CUTOVER' }, 1]]) {
+    let reads = 0;
+    const { post, jobs } = await routes(t, { lifecycle: () => (reads++ < at ? 'setup' : 'active'), actions: ['install', 'service-publish', 'ingress-cutover'] });
+    const answer = await post(pathname, body);
+    assert.equal(answer.body.code, 'STATE_CHANGED', `${pathname} after ${at}: ${JSON.stringify(answer.body)}`);
+    assert.equal(jobs.length, 0);
+  }
+  // Unchanged, it starts.
+  const steady = await routes(t, { lifecycle: 'setup', actions: ['install', 'service-publish'] });
+  assert.equal((await steady.post('/api/ingress/services/homebase/publish', { confirm: 'PUBLISH' })).status, 202);
 });
 
 test('the job runner records local mode when the switch completes, and the record survives updates', async (t) => {
