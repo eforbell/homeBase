@@ -206,7 +206,14 @@ Until the household directory exists, services may be published but no app can u
 - **Decided with the administrator:** plans resolved when they run are frozen. Restore names its backup; executor install, adopt and move-user confirm the resolved action. A recovery opened while a plan resolves refuses it.
 - **Passphrase rotation** asks for the key last, and refuses if another rotation landed while it waited.
 - **Codex:** five rounds, the fifth clean after a sweep of every input behind all 18 routes. **Test VM proof** with the real hardware key is pending.
-- **Next:** slice 3, Home Base admin onto its nginx-only socket, with :3080 redirected then retired.
+- **Merged:** #33.
+
+**SID-006 slice 3, Home Base on its own socket (2026-11-05).**
+- **Where Home Base listens:** also on a socket beside the identity socket, which only nginx can open. The cutover sends Home Base's hostname and every passkey mount there, once Home Base answers on it.
+- **The switch** (decided with the administrator) is running the cutover again: **Move Home Base to its socket** on the Network page.
+- **The port:** once nginx has reloaded a gateway that reaches the socket, `:3080` only redirects to Home Base's hostname and answers the health probe. `HOME_BASE_LOOPBACK=off` closes it after the redirect period.
+- **Proven on the test VM:** before, a local unprivileged user faking `X-Forwarded-For` on `:3080` was taken for every member device tried (13, six of them the administrator's); after, all 13 were redirected.
+- **Codex:** three rounds. The signal moved from job records, to a marker in the gateway, to a record of what nginx last reloaded. Two remaining cases need a failed nginx reload (a rollback, an executor downgrade) and are documented in the runbook by agreement.
 
 ## Review
 
