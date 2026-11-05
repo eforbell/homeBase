@@ -205,7 +205,7 @@ Until the household directory exists, services may be published but no app can u
 - **What it's bound to:** the route as called, the saved settings and the installation records, since plans are built from these when they run and an unlocked session can change them without the key.
 - **Decided with the administrator:** plans resolved when they run are frozen. Restore names its backup; executor install, adopt and move-user confirm the resolved action. A recovery opened while a plan resolves refuses it.
 - **Passphrase rotation** asks for the key last, and refuses if another rotation landed while it waited.
-- **Codex:** five rounds, the fifth clean after a sweep of every input behind all 18 routes. **Test VM proof** with the real hardware key is pending.
+- **Codex:** five rounds, the fifth clean after a sweep of every input behind all 18 routes. **Proven on the test VM** with the real hardware key.
 - **Merged:** #33.
 
 **SID-006 slice 3, Home Base on its own socket (2026-11-05).**
@@ -214,6 +214,8 @@ Until the household directory exists, services may be published but no app can u
 - **The port:** once nginx has reloaded a gateway that reaches the socket, `:3080` only redirects to Home Base's hostname and answers the health probe. `HOME_BASE_LOOPBACK=off` closes it after the redirect period.
 - **Proven on the test VM:** before, a local unprivileged user faking `X-Forwarded-For` on `:3080` was taken for every member device tried (13, six of them the administrator's); after, all 13 were redirected.
 - **Codex:** three rounds. The signal moved from job records, to a marker in the gateway, to a record of what nginx last reloaded. Two remaining cases need a failed nginx reload (a rollback, an executor downgrade). By agreement the runbook checks `sudo nginx -t` before each ingress step instead, and forbids executor downgrades.
+- **Merged:** #34.
+- **SID-006 passes** (slices 1-3 merged: #31, #32, #33, #34). Redemption sockets stay deferred with SID-005's; each host closes `:3080` after its redirect period. Next: SID-007, the pilot apps (one low-friction, one sensitive canary).
 
 ## Review
 
