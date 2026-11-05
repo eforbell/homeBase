@@ -141,6 +141,18 @@ test('the executor refuses tailnet mode wherever identity headers or the snapsho
   await refused({ [IDENTITY_SNAPSHOT]: { kind: 'link', target: '/tmp/x' } }, /has not published/);
   const { set } = host({ [PULSE_ENV]: { kind: 'link', target: '/etc/shadow' } });
   await assert.rejects(() => set('local'), /has no \.env/);
+  // Installed before SID-002 and not moved yet: it still runs as the shared user, whose other apps reach its socket.
+  await refused({ '/opt/sovereign-home/apps/familyPulse': { kind: 'dir', uid: 1001 }, [PULSE_ENV]: { kind: 'file', content: 'PLAID_ENV=sandbox\n', uid: 1001, mode: 0o640 } }, /still runs as sovereign; move it to sovereign-pulse first/);
+});
+
+test('a low-friction app shares the user by design, so it may trust tailnet identity on its socket', async () => {
+  // Family Plan as slice 2 will make it: on its socket, the shared user.
+  const app = getAppById('family-plan');
+  const layout = appLayout({ ...app, runtime: { ...app.runtime, listen: 'unix', identity: 'tailnet' } });
+  assert.equal(layout.identity.own, false);
+  const { fsImpl, set } = host({ '/opt/sovereign-home/apps/familyPlan': { kind: 'dir', uid: 1001 }, '/opt/sovereign-home/apps/familyPlan/.env': { kind: 'file', content: 'PORT=3001\n', uid: 1001, mode: 0o640 } });
+  assert.match(await set('tailnet', layout), /trusts tailnet identity/);
+  assert.match(fsImpl.readFileSync('/opt/sovereign-home/apps/familyPlan/.env'), /^SOVEREIGN_AUTH_MODE=tailnet$/m);
 });
 
 // The route module, with the admin check, Tailscale and the executor faked; Home Base active by default.
@@ -170,7 +182,7 @@ async function routes(t, { lifecycle = 'active', installations = { 'family-pulse
     adminStatus: async () => ({ unlocked: true }),
     requireAdmin: async () => ({ ok: true, sessionTokenHash: 'h' }),
     executorCapabilities: async () => ({ protocolVersions: [PROTOCOL_VERSION], mutationsEnabled: true, actions }),
-    lifecycleState: () => lifecycle,
+    lifecycleState: typeof lifecycle === 'function' ? lifecycle : () => lifecycle,
     appBlock,
   });
   const server = http.createServer(async (req, res) => {
@@ -218,6 +230,9 @@ test('routes: tailnet mode is refused until the app, the host, the service and H
   assert.match(await code({ lifecycle: 'setup' }, 'SERVICE_GATE'), /only once it is active/);
   assert.match(await code({ lifecycle: 'none' }, 'SERVICE_GATE'), /no household directory/);
   await code({ appBlock: () => ({ error: 'Family Pulse already has job #3 (restart) in progress; wait for it to finish.', code: 'APP_BUSY' }) }, 'APP_BUSY');
+  // Recovery opened while the route waited on Tailscale: checked again just before the job starts.
+  let reads = 0;
+  await code({ lifecycle: () => (reads++ === 0 ? 'active' : 'recovery') }, 'SERVICE_GATE');
   const old = await routes(t, { actions: ['install', 'restart'] });
   assert.equal((await old.post('/api/ingress/apps/family-pulse/tailnet-mode', { confirm: 'TAILNET' })).body.code, 'EXECUTOR_INCOMPATIBLE');
   assert.equal((await old.post('/api/ingress/apps/no-such-app/local-mode', { confirm: 'LOCAL' })).status, 404);

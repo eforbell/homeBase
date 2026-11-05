@@ -240,7 +240,12 @@ function createIngressRoutes({
         if (!entry.gates.tailnetMode.allowed) { cannot(entry.gates.tailnetMode.reason, 'SERVICE_GATE'); return true; }
         // Recorded before the switch starts, so an ingress rollback is refused from that moment, even if the
         // switch fails part way; switching back to local clears it.
-        beforeStart = () => stateStore.setIdentityMode(appId, 'tailnet');
+        // The checks above wait on Tailscale; Home Base may have entered recovery meanwhile, so check again last.
+        beforeStart = () => {
+          const now = lifecycleState();
+          if (now !== 'active') throw Object.assign(new Error(`Home Base is in ${now}; apps enter tailnet mode only once it is active`), { code: 'SERVICE_GATE' });
+          stateStore.setIdentityMode(appId, 'tailnet');
+        };
       }
       await startAction(res, config, { auth, auditAction, target: appId, kind: 'identity-mode', action: { action: 'identity-mode', appId, mode }, beforeStart });
       return true;

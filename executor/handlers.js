@@ -1075,6 +1075,12 @@ END $$;
         deny('mode must be tailnet or local.');
       }
       const owner = identityFor(layout);
+      // A sensitive app still running as the shared user has its socket directory open to every app that runs as
+      // that user, and any of them could forge identity headers on it. Low-friction apps share the user by design
+      // (and so each other's files: the PRD's accepted risk), so only an app meant to run as its own must have moved.
+      if (operation.mode === 'tailnet' && layout.identity.own && (!owner.own || owner.pendingMove)) {
+        deny(`${layout.app.name} still runs as ${owner.name}; move it to ${layout.identity.user} first (Apps page, Runs as), so no other app can reach its socket.`);
+      }
       asUser(owner, () => {
         const stat = lstatOrNull(fsImpl, layout.envPath);
         if (!stat || !stat.isFile()) deny(`${layout.app.name} has no .env; install it first.`);
