@@ -92,12 +92,17 @@ test('the .env says which identity the app trusts, and an update or restore keep
     // Inside another key's multi-line quoted value, these lines are not assignments at all.
     `NOTES="\n${written}"`, `NOTES='\n${written}'\n`, `${written}KEY="-----BEGIN\nabc\n-----END"`,
     `SOVEREIGN_AUTH_MODE\n=local\nNOTES=\n"\n${written}"\n`, `${written}# a note\n`, `${written}\n`, written.replace(/\n/g, '\r\n'),
+    // dotenv doesn't decode JSON escapes: it reads this literally, which sovereignAuth refuses.
+    'SOVEREIGN_AUTH_MODE="\\u0074ailnet"\nSOVEREIGN_HOMEBASE_UID=990\n', `NOTES="\\q"\n${written}`, `A="x\u2028y"\n${written}`,
   ]) {
     assert.deepEqual(keepIdentityEnv({ A: '1', 'export SOVEREIGN_AUTH_MODE': 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' }, content, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, JSON.stringify(content));
   }
-  // Home Base's own one-line values (escaped quotes, a trailing backslash) are not multi-line.
+  // Home Base's own values: plain or quoted ones keep tailnet; one that needs escaping (a backslash, a quote) is read
+  // differently by different loaders, so that file falls back to local too.
   const { renderEnv } = require('../src/operations/env');
-  assert.deepEqual(keepIdentityEnv({ A: '1' }, renderEnv({ PATH_LIKE: 'C:\\dir\\', QUOTE: 'say "hi"', ...tailnet }), capable), { A: '1', ...tailnet });
+  assert.deepEqual(keepIdentityEnv({ A: '1' }, renderEnv({ PATHS: '/a b/c', NOTE: 'say hi # not a comment', ...tailnet }), capable), { A: '1', ...tailnet });
+  assert.deepEqual(keepIdentityEnv({ A: '1' }, renderEnv({ QUOTE: 'say "hi"', ...tailnet }), capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' });
+  assert.doesNotThrow(() => keepIdentityEnv({}, 'NOTES="\\q"\nSOVEREIGN_AUTH_MODE=local\n', capable));
   for (const content of ['export SOVEREIGN_AUTH_MODE=tailnet', 'SOVEREIGN_AUTH_MODE: tailnet', 'SOVEREIGN_AUTH_MODE=tailnet # pilot', `${written}SOVEREIGN_AUTH_MODE: local`, 'SOVEREIGN_AUTH_MODE\n=tailnet\nSOVEREIGN_HOMEBASE_UID=990']) {
     assert.equal(trustsIdentityHeaders(content), true, `the rollback guard still counts ${JSON.stringify(content)}`);
   }

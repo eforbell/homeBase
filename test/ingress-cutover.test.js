@@ -219,19 +219,21 @@ test('rollback refuses when it cannot tell who owns an installed app', async () 
 
 test('rollback reads the identity mode the way dotenv loaders do, and fails closed', async () => {
   const { trustsIdentityHeaders } = require('../executor/handlers');
+  // Without parsing: the app trusts unless every appearance of a mode key's name is a line that is exactly KEY=local.
+  const { renderEnv } = require('../src/operations/env');
   for (const key of ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE']) {
-    // A file as Home Base writes it is read line by line: it trusts unless every mode it sets is local.
-    for (const content of [`${key}=tailnet\n`, `${key}=headers`, `${key}=`, `${key}=local\n${key}=tailnet\n`, `SOVEREIGN_AUTH_MODE=local\n${key}=tailnet\n`, `A=1\n${key}="tailnet"\n`]) {
-      assert.equal(trustsIdentityHeaders(content), true, JSON.stringify(content));
-    }
-    for (const content of ['', `${key}=local\n`, `A=1\n${key}="local"\nB="x y"\n`, `OTHER_${key}X=tailnet\n`]) {
+    for (const content of ['', `${key}=local\n`, `A=1\n${key}=local\nB="x y"\n`, `${key}=local`, '# notes\nA = 1\n']) {
       assert.equal(trustsIdentityHeaders(content), false, JSON.stringify(content));
     }
-    // Any other file is a hand edit: naming the mode at all counts, however dotenv would lay it out.
-    for (const content of [`${key}=tailnet # pilot`, `export ${key}=tailnet`, `${key} = "tailnet"`, `${key}: tailnet`, `${key}=\n"tailnet"`, `${key}\n=tailnet`, `${key}=local # default`, `${key}=local#pilot`, `# ${key}=tailnet`, `${key}=tailnet\r\n`]) {
+    for (const content of [
+      `${key}=tailnet\n`, `${key}=headers`, `${key}=`, `${key}=local\n${key}=tailnet\n`, `A=1\n${key}="tailnet"\n`, `${key}="local"\n`,
+      `${key}=tailnet # pilot`, `export ${key}=tailnet`, `${key} = "tailnet"`, `${key}: tailnet`, `${key}=\n"tailnet"`, `${key}\n=tailnet`,
+      `${key}=local # default`, `${key}=local#pilot`, `# ${key}=tailnet`, `${key}=local\r\n`, `OTHER_${key}X=1\n`,
+      // A file in renderEnv's own form that dotenv reads differently (a trailing backslash, then a line separator).
+      renderEnv({ [key]: 'local', A: '\\', B: `#\u2028${key}=tailnet#\u2028x` }),
+    ]) {
       assert.equal(trustsIdentityHeaders(content), true, JSON.stringify(content));
     }
-    assert.equal(trustsIdentityHeaders('# notes\nA = 1\n'), false, 'a hand-edited file that never names the mode');
   }
   const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/familyPulse/.env': { kind: 'link', target: '/opt/sovereign-home/apps/familyPulse/real.env' }, '/opt/sovereign-home/apps/familyPulse/real.env': 'SOVEREIGN_IDENTITY_MODE=tailnet\n' });
   const handlers = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: () => ({ uid: 1001, gid: 1002 }), asUser: (_user, fn) => fn() });

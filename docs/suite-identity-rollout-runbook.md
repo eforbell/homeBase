@@ -112,7 +112,7 @@ Run from Home Base admin (`POST /api/ingress/...`; admin unlock, privileged jobs
 | 3.5 | Add the new OAuth callback URLs at the providers: Plaid for Pulse (`https://<instance>-pulse.<tailnet>/pulse/oauth/callback`), Google for Plan (`https://<instance>-home.<tailnet>/plan/api/google-calendar/oauth/callback`) | Linking still works | Keep the old URLs listed until the rollback window has passed |
 | 3.6 | Tell members the new addresses; update bookmarks and the iOS wrapper's start URL | — | — |
 
-The rollback re-renders every app snippet for TCP, restores the TCP gateway, then re-applies the Serve services exactly as they were before the cutover. It refuses while any app has `SOVEREIGN_AUTH_MODE=tailnet` in its `.env` (or the older name `SOVEREIGN_IDENTITY_MODE`), and while any app's hand-edited `.env` names either at all; **Return to its own sign-in** on the Network page rewrites it. If the host still has a node-level Serve entry on `:443`, nginx can't bind 443; remove that entry and restart nginx.
+The rollback re-renders every app snippet for TCP, restores the TCP gateway, then re-applies the Serve services exactly as they were before the cutover. It refuses while any app has `SOVEREIGN_AUTH_MODE=tailnet` in its `.env` (or the older name `SOVEREIGN_IDENTITY_MODE`), and wherever either name appears other than as a line `SOVEREIGN_AUTH_MODE=local` (a hand edit); **Return to its own sign-in** on the Network page rewrites it. If the host still has a node-level Serve entry on `:443`, nginx can't bind 443; remove that entry and restart nginx.
 
 Verify after 3.x, from a member device and from the host:
 - [ ] `https://<service>.<tailnet>/<app>/` loads for each installed app.

@@ -223,41 +223,49 @@ function applyListenEnv(env, layout) {
 // gets one. The Home Base user's uid, which the snapshot reader needs, comes with tailnet mode only.
 // SOVEREIGN_IDENTITY_MODE, a name used before the contract settled, is dropped.
 const IDENTITY_ENV_KEYS = Object.freeze(['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_HOMEBASE_UID', 'SOVEREIGN_IDENTITY_MODE']);
-// The form renderEnv writes: one KEY=value per line, the value simple or JSON-quoted, nothing spanning lines,
-// no comments. dotenv reads such a file exactly as its lines say (no value continues, nothing else is an
-// assignment), so only a file in this form is read line by line here; any other is a hand edit.
-const CANONICAL_LINE = /^[A-Za-z_][A-Za-z0-9_]*=(?:[A-Za-z0-9_./:@-]*|"(?:[^"\\\r\n]|\\.)*")$/;
-function canonicalEnv(content) {
-  const text = String(content || '');
-  if (text.includes('\r')) return null;
-  const rows = text.split('\n');
-  if (rows.at(-1) === '') rows.pop();
-  if (!rows.every((row) => CANONICAL_LINE.test(row))) return null;
-  return rows.map((row) => {
-    const index = row.indexOf('=');
-    const raw = row.slice(index + 1);
-    return [row.slice(0, index), raw.startsWith('"') ? JSON.parse(raw) : raw];
-  });
-}
 const MODE_KEYS = ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE'];
 
 // The executor's rollback guard: does this .env put the app in tailnet mode? Fail closed, since this only ever
-// refuses a rollback. A file in renderEnv's form trusts unless every mode it sets is local; any other file trusts
-// if a mode key's name appears in it at all (dotenv never splits a key name, however it lays out the rest).
+// refuses a rollback, and without parsing: a loader's assignment of a mode key starts where the key's name appears
+// in the file (no loader splits a name), and a line that is exactly KEY=local can only read as local. So the app
+// trusts unless every appearance of either name is such a line.
 function trustsIdentityHeaders(content) {
-  const entries = canonicalEnv(content);
-  if (!entries) return MODE_KEYS.some((key) => String(content || '').includes(key));
-  return entries.some(([key, value]) => MODE_KEYS.includes(key) && value !== 'local');
+  const text = String(content || '');
+  const local = new Set(MODE_KEYS.map((key) => `${key}=local`));
+  return MODE_KEYS.some((key) => {
+    for (let at = text.indexOf(key); at !== -1; at = text.indexOf(key, at + 1)) {
+      const start = text.lastIndexOf('\n', at) + 1;
+      const end = text.indexOf('\n', at);
+      if (start !== at || !local.has(text.slice(start, end === -1 ? text.length : end))) return true;
+    }
+    return false;
+  });
 }
 
-// The mode an update or restore keeps. Tailnet only in a file in renderEnv's form, with exactly the executor's
-// two lines; a hand edit never turns trust on (it would skip every gate). Anything else falls back to local, the
-// safe direction: the guard above still counts a hand-edited file that names the mode, and Home Base's record
-// stays tailnet, so a rollback waits until the administrator returns the app to its own sign-in.
+// A file whose every line is KEY=value, the value plain or in double quotes with no backslash, quote or line
+// separator inside: dotenv and python-dotenv both read it exactly as its lines say (nothing continues, nothing is
+// escaped). renderEnv writes this form unless a value needs escaping. Returns its entries, or null.
+const STRICT_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=(?:([A-Za-z0-9_./:@-]*)|"([^"\\\r\n\u0085\u2028\u2029]*)")$/;
+function strictEnv(content) {
+  const rows = String(content || '').split('\n');
+  if (rows.at(-1) === '') rows.pop();
+  const entries = [];
+  for (const row of rows) {
+    const match = STRICT_LINE.exec(row);
+    if (!match) return null;
+    entries.push([match[1], match[2] ?? match[3]]);
+  }
+  return entries;
+}
+
+// The mode an update or restore keeps. Tailnet only from a file in the strict form above, with exactly the
+// executor's two lines; a hand edit never turns trust on (it would skip every gate). Anything else falls back to
+// local, the safe direction: the guard above still counts it, and Home Base's record stays tailnet, so a rollback
+// waits until the administrator returns the app to its own sign-in.
 function currentIdentity(content) {
-  const entries = canonicalEnv(content);
-  const modes = (entries || []).filter(([key]) => MODE_KEYS.includes(key));
-  const uids = (entries || []).filter(([key]) => key === 'SOVEREIGN_HOMEBASE_UID');
+  const entries = strictEnv(content) || [];
+  const modes = entries.filter(([key]) => MODE_KEYS.includes(key));
+  const uids = entries.filter(([key]) => key === 'SOVEREIGN_HOMEBASE_UID');
   if (modes.length === 1 && modes[0][0] === 'SOVEREIGN_AUTH_MODE' && modes[0][1] === 'tailnet' && uids.length === 1 && /^[1-9][0-9]*$/.test(uids[0][1])) {
     return { mode: 'tailnet', homeBaseUid: Number(uids[0][1]) };
   }
