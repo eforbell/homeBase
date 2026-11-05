@@ -616,6 +616,14 @@ function createApp(config) {
     adminStatus: (req, store) => getAdminStatus(req, store, adminOptions),
     requireAdmin: (req, store, options) => requireAdminForExecute(req, store, { ...adminOptions, ...options }),
     homeBaseOnSocket: () => homeBaseOnSocket(),
+    lifecycleState: () => (directory ? directory.state() : 'none'),
+    // The same checks every other app action makes before anything runs.
+    appBlock: (effectiveConfig, state, appId) => {
+      const name = getAppById(appId)?.name || appId;
+      if (!(state.installations || {})[appId]) return { error: `${name} is not installed.`, code: 'NOT_INSTALLED' };
+      if (!executorManagesApp(effectiveConfig, state, appId)) return { error: `${name} is not managed by the executor; adopt it first.`, code: 'EXECUTOR_REQUIRED' };
+      return appMutationBlock(stateStore, state, appId);
+    },
   });
   try {
     jobRunner.reconcileStaleUpdateJobs();
@@ -998,6 +1006,11 @@ function createApp(config) {
       const name = getAppById(appAction[1])?.name || appAction[1];
       const verb = { execute: 'install or update', 'adopt/execute': 'adopt', 'restart/execute': 'restart', 'move-user/execute': 'move to its own user', 'backup/execute': 'back up', 'restore/execute': 'restore', 'uninstall/execute': 'uninstall' }[appAction[2]];
       return `${verb} ${name}`;
+    }
+    const identityMode = planPath.match(/^\/api\/ingress\/apps\/([^/]+)\/(tailnet|local)-mode$/);
+    if (identityMode) {
+      const name = getAppById(identityMode[1])?.name || identityMode[1];
+      return identityMode[2] === 'tailnet' ? `let ${name} trust members' tailnet identity` : `return ${name} to its own sign-in`;
     }
     const service = planPath.match(/^\/api\/ingress\/services\/([a-z0-9-]+)\/(confirm|publish)$/);
     if (service) return service[2] === 'confirm' ? `record ${service[1]}'s address as verified` : `publish ${service[1]}'s address`;

@@ -112,7 +112,7 @@ Run from Home Base admin (`POST /api/ingress/...`; admin unlock, privileged jobs
 | 3.5 | Add the new OAuth callback URLs at the providers: Plaid for Pulse (`https://<instance>-pulse.<tailnet>/pulse/oauth/callback`), Google for Plan (`https://<instance>-home.<tailnet>/plan/api/google-calendar/oauth/callback`) | Linking still works | Keep the old URLs listed until the rollback window has passed |
 | 3.6 | Tell members the new addresses; update bookmarks and the iOS wrapper's start URL | — | — |
 
-The rollback re-renders every app snippet for TCP, restores the TCP gateway, then re-applies the Serve services exactly as they were before the cutover. It refuses while any app has `SOVEREIGN_IDENTITY_MODE=tailnet` in its `.env`. If the host still has a node-level Serve entry on `:443`, nginx can't bind 443; remove that entry and restart nginx.
+The rollback re-renders every app snippet for TCP, restores the TCP gateway, then re-applies the Serve services exactly as they were before the cutover. It refuses while any app has `SOVEREIGN_AUTH_MODE=tailnet` in its `.env` (or the older name `SOVEREIGN_IDENTITY_MODE`), and wherever either name appears other than as a line `SOVEREIGN_AUTH_MODE=local` (a hand edit); **Return to its own sign-in** on the Network page rewrites it. If the host still has a node-level Serve entry on `:443`, nginx can't bind 443; remove that entry and restart nginx.
 
 Verify after 3.x, from a member device and from the host:
 - [ ] `https://<service>.<tailnet>/<app>/` loads for each installed app.
@@ -231,15 +231,15 @@ Rollback: return every app to local mode (section 6) first. Then restore the pre
 ## 6. Cutover: apps (SID-007, then per-app waves)
 
 Per app:
-1. Install the app version that supports the socket listen contract and sovereignAuth.
-2. Home Base renders its socket and identity env; the app restarts in `tailnet` mode.
-3. Link local members to directory members (one-time, the administrator confirms each).
+1. Install the app version that supports the socket listen contract and sovereignAuth (its catalog entry says `runtime.identity: 'tailnet'`). Until the switch it runs in `local` mode: `SOVEREIGN_AUTH_MODE=local`, its own sign-in.
+2. On the Network page, the app's row under its service: **Use tailnet identity**, confirmed with the hardware key. Home Base offers it only when Home Base is active, the host is cut over and tagged, and the app's service is published and verified (or confirmed with the hardware key). The executor checks again that the app supports it and is on its socket, that the host is cut over, and that the directory snapshot is in place, then writes `SOVEREIGN_AUTH_MODE=tailnet` and `SOVEREIGN_HOMEBASE_UID` into the app's `.env` and restarts it. Updates and restores keep whichever mode the app is in.
+3. Link local members to directory members (one-time): a parent does it in the app, and in a sensitive app with a passkey check too.
 4. Verify:
    - [ ] the member lands as themselves;
    - [ ] a kid sees only kid scope, and parent-only actions refuse kids;
    - [ ] unknown logins see "ask the administrator";
    - [ ] sensitive apps ask for a passkey tap.
-5. Rollback: set the app back to `local` mode. Its local credentials still work.
+5. Rollback: **Return to its own sign-in** on the same row. Its local credentials still work. Home Base counts the app as trusting tailnet identity from the moment the switch starts, so an ingress rollback is refused until it is back on its own sign-in, even if the switch failed part way.
 
 ## 7. Tailnet rename
 

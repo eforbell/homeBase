@@ -5,7 +5,7 @@ const {
   lookupSystemUser, runAsUser, readExistingDatabasePassword,
   lstatOrNull, readSmallFileNoFollow, SUPERUSER_SQL_PREAMBLE, writeFileAtomic, requireLayout, deny,
 } = require('./handlers');
-const { applyListenEnv, parseDotEnv, renderEnv, storageEnvOverrides } = require('../src/operations/env');
+const { applyListenEnv, keepIdentityEnv, parseDotEnv, renderEnv, storageEnvOverrides } = require('../src/operations/env');
 
 // Backup, restore, and uninstall primitives. Anything inside app-owned directories (the checkout,
 // .env, backups, storage) is read, written, or removed as the app's user (its own for a sensitive app,
@@ -180,7 +180,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       if (present.env) {
         asUser(owner, () => {
           const restoredEnv = parseDotEnv(readSmallFileNoFollow(fsImpl, `${archiveDir}/.env.backup`) ?? deny('The backup .env is not a regular file.'));
-          const current = parseDotEnv(readSmallFileNoFollow(fsImpl, layout.envPath) ?? '');
+          const currentContent = readSmallFileNoFollow(fsImpl, layout.envPath) ?? '';
+          const current = parseDotEnv(currentContent);
           for (const key of PRESERVED_DB_ENV_KEYS) {
             if (!current[key]) continue;
             delete restoredEnv[key];
@@ -188,8 +189,9 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
           }
           // A backup taken before the catalog declared its storage env key must not point the app away from the archived root.
           Object.assign(restoredEnv, storageEnvOverrides(layout.app));
-          // Nor listen where nginx no longer points (a backup from before the app's socket, or HOST=0.0.0.0).
-          writeFileAtomic(fsImpl, layout.envPath, renderEnv(applyListenEnv(restoredEnv, layout)), owner.own ? 0o600 : 0o640);
+          // Nor listen where nginx no longer points (a backup from before the app's socket, or HOST=0.0.0.0), nor
+          // trust identity headers it no longer should (a backup taken in tailnet mode, restored after the switch back).
+          writeFileAtomic(fsImpl, layout.envPath, renderEnv(keepIdentityEnv(applyListenEnv(restoredEnv, layout), currentContent, layout)), owner.own ? 0o600 : 0o640);
         });
         restored.push('.env');
       }

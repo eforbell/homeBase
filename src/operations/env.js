@@ -218,6 +218,82 @@ function applyListenEnv(env, layout) {
   return layout.listen?.kind === 'unix' ? { ...rest, SOVEREIGN_LISTEN: `unix:${layout.listen.socket}` } : { ...rest, HOST: '127.0.0.1' };
 }
 
+// Which identity the app trusts (Feature-10 SID-007), never left to an old .env either. SOVEREIGN_AUTH_MODE is
+// what sovereignAuth reads, and it refuses to start without one, so an app that supports tailnet identity always
+// gets one. The Home Base user's uid, which the snapshot reader needs, comes with tailnet mode only.
+// SOVEREIGN_IDENTITY_MODE, a name used before the contract settled, is dropped.
+const IDENTITY_ENV_KEYS = Object.freeze(['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_HOMEBASE_UID', 'SOVEREIGN_IDENTITY_MODE']);
+const MODE_KEYS = ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE'];
+
+// The executor's rollback guard: does this .env put the app in tailnet mode? Fail closed, since this only ever
+// refuses a rollback, and without parsing: a loader's assignment of a mode key starts where the key's name appears
+// in the file (no loader splits a name), and a line that is exactly KEY=local can only read as local. So the app
+// trusts unless every appearance of either name is such a line.
+function trustsIdentityHeaders(content) {
+  const text = String(content || '');
+  const local = new Set(MODE_KEYS.map((key) => `${key}=local`));
+  return MODE_KEYS.some((key) => {
+    for (let at = text.indexOf(key); at !== -1; at = text.indexOf(key, at + 1)) {
+      const start = text.lastIndexOf('\n', at) + 1;
+      const end = text.indexOf('\n', at);
+      if (start !== at || !local.has(text.slice(start, end === -1 ? text.length : end))) return true;
+    }
+    return false;
+  });
+}
+
+// A file whose every line is KEY=value, the value plain or in double quotes with no backslash, quote or line
+// separator inside: dotenv and python-dotenv both see exactly its lines as its assignments (nothing continues,
+// nothing is escaped; python-dotenv may still expand ${VAR} inside a quoted value, which can't change which keys
+// are assigned or the literal values read here). renderEnv writes this form unless a value needs escaping.
+// Returns its entries, or null.
+const STRICT_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=(?:([A-Za-z0-9_./:@-]*)|"([^"\\\r\n\u0085\u2028\u2029]*)")$/;
+function strictEnv(content) {
+  const rows = String(content || '').split('\n');
+  if (rows.at(-1) === '') rows.pop();
+  const entries = [];
+  for (const row of rows) {
+    const match = STRICT_LINE.exec(row);
+    if (!match) return null;
+    entries.push([match[1], match[2] ?? match[3]]);
+  }
+  return entries;
+}
+
+// The mode an update or restore keeps. Tailnet only from a file in the strict form above, with exactly the
+// executor's two lines; a hand edit never turns trust on (it would skip every gate). Anything else falls back to
+// local, the safe direction: the guard above still counts it, and Home Base's record stays tailnet, so a rollback
+// waits until the administrator returns the app to its own sign-in.
+function currentIdentity(content) {
+  const entries = strictEnv(content) || [];
+  const modes = entries.filter(([key]) => MODE_KEYS.includes(key));
+  const uids = entries.filter(([key]) => key === 'SOVEREIGN_HOMEBASE_UID');
+  if (modes.length === 1 && modes[0][0] === 'SOVEREIGN_AUTH_MODE' && modes[0][1] === 'tailnet' && uids.length === 1 && /^[1-9][0-9]{0,9}$/.test(uids[0][1]) && Number(uids[0][1]) < 2 ** 32 - 1) {
+    return { mode: 'tailnet', homeBaseUid: Number(uids[0][1]) };
+  }
+  return { mode: 'local' };
+}
+
+// parseDotEnv keeps `export KEY` as a key; those go too.
+function withoutIdentityEnv(env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !IDENTITY_ENV_KEYS.includes(String(key).replace(/^export\s+/, '').trim())));
+}
+// mode: 'tailnet' (with homeBaseUid) or 'local'. Returns a new object.
+function setIdentityEnv(env, { mode, homeBaseUid = null }) {
+  if (mode === 'tailnet') {
+    if (!Number.isInteger(homeBaseUid) || homeBaseUid <= 0) throw new Error('tailnet mode needs the Home Base user\'s uid');
+    return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'tailnet', SOVEREIGN_HOMEBASE_UID: String(homeBaseUid) };
+  }
+  if (mode !== 'local') throw new Error(`unknown identity mode ${mode}`);
+  return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'local' };
+}
+// What a re-rendered or restored .env says about identity: the app's current .env (its raw content) decides,
+// never the template or a backup. An app that can't trust the directory gets no mode at all.
+function keepIdentityEnv(env, currentContent, layout) {
+  if (!layout.identityModes?.includes('tailnet')) return withoutIdentityEnv(env);
+  return setIdentityEnv(env, currentIdentity(currentContent));
+}
+
 function storageEnvOverrides(app) {
   const root = String(app?.storage?.absoluteRoot || '').replace(/\/+$/, '');
   if (!root) return {};
@@ -233,6 +309,11 @@ function storageEnvOverrides(app) {
 module.exports = {
   EnvTemplateError,
   applyListenEnv,
+  IDENTITY_ENV_KEYS,
+  trustsIdentityHeaders,
+  currentIdentity,
+  setIdentityEnv,
+  keepIdentityEnv,
   storageEnvOverrides,
   DATABASE_KEYS,
   quoteEnvValue,

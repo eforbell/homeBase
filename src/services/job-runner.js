@@ -249,7 +249,7 @@ class JobRunner {
       return;
     }
     const app = action.appId ? getAppById(action.appId) : null;
-    if (['install', 'adopt', 'restart', 'restore', 'move-user'].includes(action.action)) {
+    if (['install', 'adopt', 'restart', 'restore', 'move-user', 'identity-mode'].includes(action.action)) {
       // Installed/restored only after the app answers readiness, never merely because systemd started it.
       this.stateStore.appendJobLog(jobId, `[executor] waiting for ${app.name} readiness\n`);
       const viaExecutor = app.runtime?.listen === 'unix'
@@ -261,6 +261,9 @@ class JobRunner {
       const { stateRecord } = buildExecutorInstallRecord({ appId: action.appId, ref: action.ref, config: { defaultHostname: action.site.hostname, defaultDomain: action.site.domain, householdTimezone: action.site.householdTimezone } });
       this.stateStore.upsertInstallation({ ...stateRecord, updatedAt: new Date().toISOString(), status: 'installed' });
     }
+    // A switch to tailnet mode was recorded before it started (src/ingress-routes.js); local is recorded only
+    // once the app is back on its own sign-in.
+    if (action.action === 'identity-mode') this.stateStore.setIdentityMode(action.appId, action.mode);
     if (action.action === 'uninstall') {
       this.stateStore.deleteInstallation(action.appId);
       // Backup records follow the archives on disk: kept unless the backups were removed too.

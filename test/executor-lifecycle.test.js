@@ -99,6 +99,25 @@ test('restore brings back env, database (as the app role), and storage while kee
   await assert.rejects(() => handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20200101T000000Z' }), { layout: SOURCE }), /does not exist/);
 });
 
+test('restore keeps the identity mode the app is in now, never the one in the backup (SID-007)', async () => {
+  const app = getAppById('home-source');
+  const capable = appLayout({ ...app, runtime: { ...app.runtime, identity: 'tailnet' } });
+  // Taken while it trusted tailnet identity; it has since gone back to its own sign-in.
+  const { fsImpl, handlers } = harness({
+    [ENV]: { kind: 'file', content: 'DATABASE_URL=postgresql://homesource:Live-pass-123@127.0.0.1:5432/homesource\nSOVEREIGN_AUTH_MODE=local\n', uid: 1001 },
+    [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: 'DATABASE_URL=postgresql://homesource:Live-pass-123@127.0.0.1:5432/homesource\nSOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n', uid: 1001 },
+    ...done(ARCHIVE),
+    [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 },
+  });
+  await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: capable });
+  const env = fsImpl.readFileSync(ENV);
+  assert.match(env, /^SOVEREIGN_AUTH_MODE=local$/m);
+  assert.doesNotMatch(env, /SOVEREIGN_HOMEBASE_UID|SOVEREIGN_AUTH_MODE=tailnet/);
+  // An app that can't trust the directory gets no mode at all, whatever the backup said.
+  await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  assert.doesNotMatch(fsImpl.readFileSync(ENV), /SOVEREIGN_AUTH_MODE|SOVEREIGN_HOMEBASE_UID/);
+});
+
 test('uninstall removes only root-owned layout artifacts as root and app files as sovereign', async () => {
   const { fsImpl, calls, identities, handlers } = harness({
     '/etc/systemd/system/home-source.service': 'unit',

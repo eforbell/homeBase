@@ -3,6 +3,7 @@ const { getExecutorCapabilities, canExecuteMutations } = require('./executor/cap
 const { createIngressControl, currentIngress, setupSheet } = require('./services/ingress-control');
 const { createTailscaleApi } = require('./services/tailscale-api');
 const { appsInTailnetMode } = require('./operations/compilers/ingress');
+const { getAppById } = require('./catalog');
 
 // Feature-10 SID-001 admin routes: cut the host over to socket ingress, confirm or verify each service's
 // hosts (D23), publish services one at a time, and roll back. Every change runs as a typed executor action;
@@ -13,6 +14,8 @@ const { appsInTailnetMode } = require('./operations/compilers/ingress');
 //   POST /api/ingress/services/:key/confirm    { hostNodeId }  (no API credential: the console check)
 //   POST /api/ingress/services/:key/publish    { confirm: 'PUBLISH' }
 //   POST /api/ingress/rollback                 { confirm: 'ROLLBACK' }
+//   POST /api/ingress/apps/:id/tailnet-mode    { confirm: 'TAILNET' }  (SID-007: the app trusts the directory)
+//   POST /api/ingress/apps/:id/local-mode      { confirm: 'LOCAL' }    (back to the app's own sign-in)
 //
 // handle.checkServices() is D23's daily check: an approval added after a publish shows up within a day.
 
@@ -22,7 +25,7 @@ function createIngressRoutes({
   stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
   controlFactory = createIngressControl, apiFactory = createTailscaleApi, now = Date.now,
   adminStatus = getAdminStatus, requireAdmin = requireAdminForExecute, executorCapabilities = getExecutorCapabilities,
-  homeBaseOnSocket = () => false,
+  homeBaseOnSocket = () => false, appBlock = () => null, lifecycleState = () => 'none',
 }) {
   // One API client per process, so its access token is reused; a credential added later is picked up.
   let api = null;
@@ -36,12 +39,16 @@ function createIngressRoutes({
     return api;
   }
   // A credential that exists but can't be loaded fails closed: no automatic check, and no confirmations.
-  const controlFor = (config) => { const client = apiFor(config); return controlFactory({ config, api: client, apiProblem: client ? null : apiProblem }); };
+  // The household directory's state decides what may be published and what may enter tailnet mode (D16, D23).
+  const controlFor = (config) => { const client = apiFor(config); return controlFactory({ config, api: client, apiProblem: client ? null : apiProblem, lifecycleState }); };
 
   // executes: false for a record that runs nothing on the host (a confirmation): an unlocked admin session is
   // enough, even on a plan-only host. duringBootstrap: allowed while the household directory is in setup,
   // which needs the cutover and Home Base's own service (runbook 2.5); everything else waits for active.
   async function authorize(req, res, config, { action, target, executes = true, duringBootstrap = false }) {
+    // What was authorized depends on the state (setup takes the passphrase, active the hardware key), so a request
+    // starts only if the state is the same when it starts (startAction).
+    const lifecycle = lifecycleState();
     const auth = await requireAdmin(req, stateStore, executes
       ? { privilegedJobsEnabled: config.homeBaseEnablePrivilegedJobs === true, executionModeMissing: config.homeBaseExecutionModeMissing === true, duringBootstrap }
       : { privilegedJobsEnabled: true, duringBootstrap });
@@ -50,7 +57,7 @@ function createIngressRoutes({
       sendJson(res, auth.statusCode, auth.payload);
       return null;
     }
-    return auth;
+    return { ...auth, lifecycle };
   }
 
   function refuse(res, { action, target, auth, statusCode = 409, error, code }) {
@@ -67,6 +74,12 @@ function createIngressRoutes({
     }
     if (!canExecuteMutations(capabilities) || !capabilities.actions?.includes(action.action)) {
       return sendJson(res, 409, { error: `The executor does not support ${action.action} yet; update it with install.sh --repair.`, code: 'EXECUTOR_INCOMPATIBLE' });
+    }
+    // Everything above waits (the admin check, Tailscale, the executor); Home Base may have been activated or
+    // entered recovery meanwhile, and what authorized this request may no longer be enough. Checked last, with no
+    // wait before the job starts.
+    if (auth?.lifecycle !== undefined && lifecycleState() !== auth.lifecycle) {
+      return refuse(res, { action: auditAction, target, auth, error: `Not started: Home Base moved from ${auth.lifecycle} to ${lifecycleState()} while this request was checked; try again.`, code: 'STATE_CHANGED' });
     }
     if (beforeStart) {
       try { beforeStart(); } catch (error) { return refuse(res, { action: auditAction, target, auth, error: `Not started: ${error.message}.`, code: error.code || 'NOT_STARTED' }); }
@@ -106,7 +119,17 @@ function createIngressRoutes({
       }
       const status = await controlFor(config).status();
       const installedAppIds = Object.keys(state.installations || {});
-      const services = (status.services || []).map((entry) => ({ ...entry, installed: entry.key === 'home' || entry.key === 'homebase' || entry.apps.some((id) => installedAppIds.includes(id)) }));
+      const services = (status.services || []).map((entry) => ({
+        ...entry,
+        installed: entry.key === 'home' || entry.key === 'homebase' || entry.apps.some((id) => installedAppIds.includes(id)),
+        // SID-007: which identity each installed app on the service trusts, and whether it can trust the directory.
+        identity: entry.apps.filter((id) => installedAppIds.includes(id)).map((id) => ({
+          appId: id,
+          name: getAppById(id)?.name || id,
+          mode: state.installations[id].identityMode === 'tailnet' ? 'tailnet' : 'local',
+          supportsTailnet: getAppById(id)?.runtime?.identity === 'tailnet',
+        })),
+      }));
       sendJson(res, 200, {
         ...status,
         services,
@@ -148,7 +171,11 @@ function createIngressRoutes({
       if (!auth) return true;
       if (apiFor(config) || apiProblem) { refuse(res, { action: 'ingress-confirm', target: key, auth, error: apiProblem ? `The Tailscale API credential is configured but unusable (${apiProblem}); fix it, or remove it to confirm hosts by hand.` : 'An API credential is configured, so service hosts are verified automatically.', code: 'CONFIRMATION_NOT_USED' }); return true; }
       try {
-        const record = await controlFor(config).confirm(key, { hostNodeId: String(body.hostNodeId || ''), confirmedBy: config.administratorLogin || null });
+        // In active Home Base this route is a privileged plan, so the administrator taps their hardware key for it
+        // (route matrix). Recorded from that proof, never from the state now: one authorized in setup may finish
+        // after activation.
+        const assurance = auth.confirmation ? 'hardware-key' : 'passphrase-session';
+        const record = await controlFor(config).confirm(key, { hostNodeId: String(body.hostNodeId || ''), confirmedBy: config.administratorLogin || null, assurance });
         recordAdminAudit(stateStore, { action: 'ingress-confirm', target: record.service, dryRun: false, outcome: 'recorded', sessionTokenHash: auth.sessionTokenHash });
         sendJson(res, 200, { ok: true, confirmation: record });
       } catch (error) {
@@ -165,8 +192,10 @@ function createIngressRoutes({
       const auth = await authorize(req, res, config, { action: 'service-publish', target: key, duringBootstrap: key === 'homebase' });
       if (!auth) return true;
       const control = controlFor(config);
-      const { entry } = await control.service(key);
+      const { all, entry } = await control.service(key);
       if (!entry) { refuse(res, { action: 'service-publish', target: key, auth, statusCode: 404, error: `${key} is not a service this host can serve.`, code: 'NOT_FOUND' }); return true; }
+      // The gate below was decided in this state; startAction checks it is still the one authorized.
+      if (all.lifecycleState !== auth.lifecycle) { refuse(res, { action: 'service-publish', target: entry.name, auth, error: 'Not started: Home Base changed state while this request was checked; try again.', code: 'STATE_CHANGED' }); return true; }
       if (!entry.gates.publish.allowed) { refuse(res, { action: 'service-publish', target: entry.name, auth, error: `Cannot publish ${entry.name}: ${entry.gates.publish.reason}.`, code: 'SERVICE_GATE' }); return true; }
       await startAction(res, config, {
         auth, auditAction: 'service-publish', target: entry.name, kind: 'service-publish',
@@ -189,6 +218,49 @@ function createIngressRoutes({
       const trusting = appsInTailnetMode(state.installations);
       if (trusting.length) { refuse(res, { action: 'ingress-rollback', target, auth, error: `Return ${trusting.join(', ')} to local mode before restoring TCP ingress.`, code: 'APPS_IN_TAILNET_MODE' }); return true; }
       await startAction(res, config, { auth, auditAction: 'ingress-rollback', target, kind: 'ingress-rollback', action: { action: 'ingress-rollback' } });
+      return true;
+    }
+
+    // SID-007: an installed app trusts members' tailnet identity, or goes back to its own sign-in. Tailnet mode
+    // needs the app's support, the cutover, a tagged host, and its service published and verified (D23) with
+    // Home Base active; the executor checks the app, its socket, the cutover and the snapshot again.
+    const tailnetMatch = pathname.match(/^\/api\/ingress\/apps\/([^/]+)\/tailnet-mode$/);
+    const localMatch = pathname.match(/^\/api\/ingress\/apps\/([^/]+)\/local-mode$/);
+    if (method === 'POST' && (tailnetMatch || localMatch)) {
+      const body = await parseBody(req);
+      const appId = (tailnetMatch || localMatch)[1];
+      const mode = tailnetMatch ? 'tailnet' : 'local';
+      const app = getAppById(appId);
+      if (!app) { sendJson(res, 404, { error: 'Not found' }); return true; }
+      const word = mode === 'tailnet' ? 'TAILNET' : 'LOCAL';
+      if (body.confirm !== word) { sendJson(res, 400, { error: `Changing ${app.name}'s identity mode requires confirm=${word}.` }); return true; }
+      const auditAction = `app-${mode}-mode`;
+      const auth = await authorize(req, res, config, { action: auditAction, target: appId });
+      if (!auth) return true;
+      const blocked = appBlock(config, state, appId);
+      if (blocked) { refuse(res, { action: auditAction, target: appId, auth, error: blocked.error, code: blocked.code }); return true; }
+      let beforeStart = null;
+      if (mode === 'tailnet') {
+        const cannot = (reason, code) => refuse(res, { action: auditAction, target: appId, auth, error: `${app.name} can't trust tailnet identity: ${reason}.`, code });
+        if (app.runtime?.identity !== 'tailnet') { cannot('this version does not support it', 'TAILNET_UNSUPPORTED'); return true; }
+        if (!currentIngress(state.ingressJobs, config)) { cannot('this host is not cut over to socket ingress', 'NOT_CUT_OVER'); return true; }
+        const status = await controlFor(config).status();
+        if (status.lifecycleState !== auth.lifecycle) { cannot('Home Base changed state while this request was checked; try again', 'STATE_CHANGED'); return true; }
+        if (!status.self?.tagged) { cannot('this host is user-owned (untagged) (D2)', 'HOST_UNTAGGED'); return true; }
+        const entry = (status.services || []).find((candidate) => candidate.apps.includes(appId));
+        if (!entry) { cannot('no service on this host serves it', 'NOT_FOUND'); return true; }
+        if (!entry.published) { cannot(`${entry.name} is not published yet`, 'SERVICE_NOT_PUBLISHED'); return true; }
+        if (!entry.gates.tailnetMode.allowed) { cannot(entry.gates.tailnetMode.reason, 'SERVICE_GATE'); return true; }
+        // Recorded before the switch starts, so an ingress rollback is refused from that moment, even if the
+        // switch fails part way; switching back to local clears it.
+        // The checks above wait on Tailscale; Home Base may have entered recovery meanwhile, so check again last.
+        beforeStart = () => {
+          const now = lifecycleState();
+          if (now !== 'active') throw Object.assign(new Error(`Home Base is in ${now}; apps enter tailnet mode only once it is active`), { code: 'SERVICE_GATE' });
+          stateStore.setIdentityMode(appId, 'tailnet');
+        };
+      }
+      await startAction(res, config, { auth, auditAction, target: appId, kind: 'identity-mode', action: { action: 'identity-mode', appId, mode }, beforeStart });
       return true;
     }
 

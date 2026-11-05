@@ -29,7 +29,8 @@
         "ingress-cutover",
         "ingress-rollback",
         "service-publish",
-        "app-move-user"
+        "app-move-user",
+        "app-identity-mode"
       ]
     },
     "target": {
@@ -57,7 +58,8 @@
         "ingress-cutover-v1",
         "ingress-rollback-v1",
         "service-publish-v1",
-        "app-move-user-v1"
+        "app-move-user-v1",
+        "app-identity-mode-v1"
       ]
     },
     "operations": {
@@ -242,6 +244,9 @@
         },
         {
           "$ref": "#/$defs/tmpfilesApply"
+        },
+        {
+          "$ref": "#/$defs/appIdentityMode"
         }
       ]
     },
@@ -1275,6 +1280,41 @@
             "dependsOn": true,
             "preconditions": true,
             "secretRefs": true
+          }
+        }
+      ]
+    },
+    "appIdentityMode": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/common"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "type": {
+              "const": "app.set-identity-mode"
+            },
+            "id": true,
+            "title": true,
+            "risk": {
+              "const": "write"
+            },
+            "timeoutMs": true,
+            "idempotencyKey": true,
+            "dependsOn": true,
+            "preconditions": true,
+            "secretRefs": true,
+            "mode": {
+              "enum": [
+                "local",
+                "tailnet"
+              ]
+            }
           }
         }
       ]

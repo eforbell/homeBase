@@ -66,6 +66,10 @@ class SqliteStateStore {
     return runSqliteOp(this.dbPath, 'delete_backups', { appId });
   }
 
+  setIdentityMode(appId, identityMode) {
+    return runSqliteOp(this.dbPath, 'set_identity_mode', { appId, identityMode });
+  }
+
   setManagedBy(appId, managedBy) {
     return runSqliteOp(this.dbPath, 'set_managed_by', { appId, managedBy });
   }

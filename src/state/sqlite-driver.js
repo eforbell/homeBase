@@ -135,6 +135,9 @@ if op == "init":
     installation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(installations)")}
     if "managed_by" not in installation_columns:
         conn.execute("ALTER TABLE installations ADD COLUMN managed_by TEXT")
+    # Feature-10 SID-007: which identity the app trusts ('local' or 'tailnet'); the upsert never touches it.
+    if "identity_mode" not in installation_columns:
+        conn.execute("ALTER TABLE installations ADD COLUMN identity_mode TEXT")
     # Feature-10 SID-004: with the household directory on, a session belongs to one tailnet identity.
     session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(homebase_admin_sessions)")}
     if "user_id" not in session_columns:
@@ -183,6 +186,7 @@ elif op == "load_state":
             "plannedAt": record["planned_at"],
             "updatedAt": record["updated_at"],
             "managedBy": record.get("managed_by") or "",
+            "identityMode": "tailnet" if record.get("identity_mode") == "tailnet" else "local",
             "updateStatus": update_status,
         }
     def serialize_job(row):
@@ -536,6 +540,16 @@ elif op == "set_managed_by":
     conn.execute(
         "UPDATE installations SET managed_by = ? WHERE app_id = ?",
         (payload.get("managedBy") or None, payload["appId"]),
+    )
+    conn.commit()
+    emit({"ok": True})
+
+elif op == "set_identity_mode":
+    if payload.get("identityMode") not in ("local", "tailnet"):
+        raise ValueError("identityMode must be local or tailnet")
+    conn.execute(
+        "UPDATE installations SET identity_mode = ? WHERE app_id = ?",
+        (payload["identityMode"], payload["appId"]),
     )
     conn.commit()
     emit({"ok": True})

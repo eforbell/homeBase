@@ -132,4 +132,16 @@ function buildAppMoveUserPlan({ appId, site, generatedAt = new Date().toISOStrin
   return planEnvelope({ kind: 'app-move-user', target: layout.app.id, policyProfile: 'app-move-user-v1', operations, generatedAt, catalogRevision });
 }
 
-module.exports = { archiveNameFor, buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan, buildAppMoveUserPlan };
+// Feature-10 SID-007: switches which identity the app trusts, then restarts it so it reads the new mode.
+// Tailnet mode only for an app whose catalog entry supports it; the executor checks the host is ready.
+function buildAppIdentityModePlan({ appId, mode, generatedAt = new Date().toISOString(), catalogRevision } = {}) {
+  const layout = layoutFor(appId);
+  if (!layout.identityModes.includes(mode)) throw Object.assign(new Error(`${layout.app.name} does not support ${mode} identity.`), { code: 'POLICY_DENIED' });
+  const { operations, add } = sequence();
+  add({ id: 'set-identity-mode', type: 'app.set-identity-mode', title: mode === 'tailnet' ? `Trust tailnet identity in ${layout.app.name}` : `Return ${layout.app.name} to its own sign-in`, mode });
+  startUnits(layout, add);
+  waitReady(layout, add);
+  return planEnvelope({ kind: 'app-identity-mode', target: layout.app.id, policyProfile: 'app-identity-mode-v1', operations, generatedAt, catalogRevision });
+}
+
+module.exports = { archiveNameFor, buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan, buildAppMoveUserPlan, buildAppIdentityModePlan };

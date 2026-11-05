@@ -199,11 +199,14 @@ test('app snippets follow the ingress mode: TCP before cutover, identity after, 
 });
 
 test('rollback refuses while any app reads identity from headers, by its own .env', async () => {
-  const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/familyPulse/.env': 'SOVEREIGN_IDENTITY_MODE=tailnet\n', '/opt/sovereign-home/apps/familyDinner/.env': 'SOVEREIGN_IDENTITY_MODE=local\n' });
-  const reads = [];
-  const handlers = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: () => ({ uid: 1001, gid: 1002 }), asUser: (user, fn) => { reads.push(user.uid); return fn(); } });
-  await assert.rejects(() => handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' })), /family-pulse still trusts identity headers \(SOVEREIGN_IDENTITY_MODE=tailnet\)/);
-  assert.ok(reads.length > 0 && reads.every((uid) => uid === 1001), 'app files are read as sovereign, never as root');
+  // SOVEREIGN_AUTH_MODE is what sovereignAuth reads (SID-007); the name used before the contract settled counts too.
+  for (const key of ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE']) {
+    const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/familyPulse/.env': `${key}=tailnet\n`, '/opt/sovereign-home/apps/familyDinner/.env': 'SOVEREIGN_AUTH_MODE=local\n' });
+    const reads = [];
+    const handlers = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: () => ({ uid: 1001, gid: 1002 }), asUser: (user, fn) => { reads.push(user.uid); return fn(); } });
+    await assert.rejects(() => handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' })), /family-pulse still trusts identity headers \(SOVEREIGN_AUTH_MODE=tailnet\)/, key);
+    assert.ok(reads.length > 0 && reads.every((uid) => uid === 1001), 'app files are read as sovereign, never as root');
+  }
 });
 
 test('rollback refuses when it cannot tell who owns an installed app', async () => {
@@ -216,11 +219,21 @@ test('rollback refuses when it cannot tell who owns an installed app', async () 
 
 test('rollback reads the identity mode the way dotenv loaders do, and fails closed', async () => {
   const { trustsIdentityHeaders } = require('../executor/handlers');
-  for (const content of ['SOVEREIGN_IDENTITY_MODE=tailnet # pilot', 'export SOVEREIGN_IDENTITY_MODE=tailnet', 'SOVEREIGN_IDENTITY_MODE = "tailnet"', "  SOVEREIGN_IDENTITY_MODE='Tailnet'", 'SOVEREIGN_IDENTITY_MODE=tailnet\r', 'SOVEREIGN_IDENTITY_MODE=headers', 'SOVEREIGN_IDENTITY_MODE=local\nSOVEREIGN_IDENTITY_MODE=tailnet']) {
-    assert.equal(trustsIdentityHeaders(content), true, JSON.stringify(content));
-  }
-  for (const content of ['', 'SOVEREIGN_IDENTITY_MODE=local', 'SOVEREIGN_IDENTITY_MODE=', 'SOVEREIGN_IDENTITY_MODE="local" # default', '# SOVEREIGN_IDENTITY_MODE=tailnet', 'OTHER_SOVEREIGN_IDENTITY_MODE=tailnet']) {
-    assert.equal(trustsIdentityHeaders(content), false, JSON.stringify(content));
+  // Without parsing: the app trusts unless every appearance of a mode key's name is a line that is exactly KEY=local.
+  const { renderEnv } = require('../src/operations/env');
+  for (const key of ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE']) {
+    for (const content of ['', `${key}=local\n`, `A=1\n${key}=local\nB="x y"\n`, `${key}=local`, '# notes\nA = 1\n']) {
+      assert.equal(trustsIdentityHeaders(content), false, JSON.stringify(content));
+    }
+    for (const content of [
+      `${key}=tailnet\n`, `${key}=headers`, `${key}=`, `${key}=local\n${key}=tailnet\n`, `A=1\n${key}="tailnet"\n`, `${key}="local"\n`,
+      `${key}=tailnet # pilot`, `export ${key}=tailnet`, `${key} = "tailnet"`, `${key}: tailnet`, `${key}=\n"tailnet"`, `${key}\n=tailnet`,
+      `${key}=local # default`, `${key}=local#pilot`, `# ${key}=tailnet`, `${key}=local\r\n`, `OTHER_${key}X=1\n`,
+      // A file in renderEnv's own form that dotenv reads differently (a trailing backslash, then a line separator).
+      renderEnv({ [key]: 'local', A: '\\', B: `#\u2028${key}=tailnet#\u2028x` }),
+    ]) {
+      assert.equal(trustsIdentityHeaders(content), true, JSON.stringify(content));
+    }
   }
   const fsImpl = createFakeFs({ '/opt/sovereign-home/apps/familyPulse/.env': { kind: 'link', target: '/opt/sovereign-home/apps/familyPulse/real.env' }, '/opt/sovereign-home/apps/familyPulse/real.env': 'SOVEREIGN_IDENTITY_MODE=tailnet\n' });
   const handlers = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: () => ({ uid: 1001, gid: 1002 }), asUser: (_user, fn) => fn() });

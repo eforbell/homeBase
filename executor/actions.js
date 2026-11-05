@@ -3,7 +3,7 @@ const { ProtocolError } = require('./protocol-error');
 const { buildHostBootstrapPlan } = require('../src/operations/compilers/bootstrap');
 const { buildAppInstallPlan, buildAppAdoptPlan } = require('../src/operations/compilers/install');
 const { buildIngressCutoverPlan, buildIngressRollbackPlan, buildServicePublishPlan } = require('../src/operations/compilers/ingress');
-const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan, buildAppMoveUserPlan } = require('../src/operations/compilers/lifecycle');
+const { buildAppRestartPlan, buildAppBackupPlan, buildAppRestorePlan, buildAppUninstallPlan, buildAppMoveUserPlan, buildAppIdentityModePlan } = require('../src/operations/compilers/lifecycle');
 const { validateOperationPolicy } = require('../src/operations/policy');
 const { digestOperationPlan } = require('../src/operations/digest');
 const { getAppById } = require('../src/catalog');
@@ -21,6 +21,9 @@ const ACTIONS = Object.freeze({
   uninstall: { fields: ['appId', 'keepBackups'] },
   // Feature-10 SID-002: move a sensitive app installed before it to its own user (site: its units' timezone).
   'move-user': { fields: ['appId', 'site'] },
+  // Feature-10 SID-007: which identity an app trusts. Home Base gates tailnet mode first (D23, active directory);
+  // the executor checks the app, its socket, the cutover and the snapshot itself.
+  'identity-mode': { fields: ['appId', 'mode'] },
   // Feature-10 SID-001 socket ingress. Home Base gates each one first (D23); the executor still binds
   // service names to its own cutover record and checks app identity modes itself before a rollback.
   'ingress-cutover': { fields: ['instance', 'domain', 'legacyService'] },
@@ -30,7 +33,7 @@ const ACTIONS = Object.freeze({
 // Apps the executor manages. Each entry has passed the runbook (docs/executor-app-runbook.md),
 // including a container run; since 2026-09-25 that is the whole catalog.
 const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-plan', 'fast-to-eat', 'family-help', 'home-ops', 'family-pulse', 'bug-base', 'helm', 'bitcoin-accounting', 'home-drop', 'remind-me']);
-const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups', 'instance', 'domain', 'legacyService', 'serviceKey'];
+const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups', 'instance', 'domain', 'legacyService', 'serviceKey', 'mode'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }
 
@@ -73,6 +76,10 @@ function normalizeAction(request) {
     if (typeof request.keepBackups !== 'boolean') invalid('keepBackups must be true or false.');
     return { action: 'uninstall', appId: request.appId, keepBackups: request.keepBackups };
   }
+  if (request.action === 'identity-mode') {
+    if (!['local', 'tailnet'].includes(request.mode)) invalid('mode must be local or tailnet.');
+    return { action: 'identity-mode', appId: request.appId, mode: request.mode };
+  }
   if (request.action === 'move-user') {
     if (!isValidSite(request.site)) invalid('site must be exactly { hostname, domain, householdTimezone } with valid values.');
     return { action: 'move-user', appId: request.appId, site: { hostname: request.site.hostname, domain: request.site.domain, householdTimezone: request.site.householdTimezone } };
@@ -112,6 +119,8 @@ function compileAction(action, { generatedAt = new Date().toISOString(), adoptAl
     plan = buildAppUninstallPlan({ appId: action.appId, keepBackups: action.keepBackups, generatedAt });
   } else if (action.action === 'move-user') {
     plan = buildAppMoveUserPlan({ appId: action.appId, site: action.site, generatedAt });
+  } else if (action.action === 'identity-mode') {
+    plan = buildAppIdentityModePlan({ appId: action.appId, mode: action.mode, generatedAt });
   } else {
     deny('Unsupported action.');
   }

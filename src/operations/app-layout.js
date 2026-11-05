@@ -150,12 +150,23 @@ function listenLayout(app) {
   return { kind: 'unix', directory, socket: `${directory}/app.sock`, tmpfiles: `/etc/tmpfiles.d/sovereign-app-${app.id}.conf` };
 }
 
+// Which identities the app can run with (SID-007): its own sign-in always, and tailnet identity when its code
+// reads SOVEREIGN_AUTH_MODE. Only an app on its socket may trust identity headers.
+function identityModesLayout(app, listen) {
+  const identity = app.runtime?.identity ?? 'local';
+  if (identity === 'local') return ['local'];
+  if (identity !== 'tailnet') unsupported(app, "runtime.identity must be 'local' or 'tailnet'");
+  if (listen.kind !== 'unix') unsupported(app, "runtime.identity 'tailnet' needs runtime.listen 'unix'");
+  return ['local', 'tailnet'];
+}
+
 function validPort(port) { return Number.isInteger(port) && port >= 1024 && port <= 65535; }
 
 function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
   if (!app || !NAME.test(app.id)) throw new OperationPlanError('POLICY_DENIED', 'Unknown or malformed catalog app.');
   if (!REPO_KEY.test(app.repoKey || '')) unsupported(app, 'catalog entry has no usable repoKey');
   const runtime = runtimeLayout(app);
+  const listen = listenLayout(app);
   const checkout = path.posix.join(APPS_ROOT, app.repoKey);
   // Units live in systemd's global namespace; every unit an app writes is namespaced under its id so a
   // catalog entry can never replace a system unit (e.g. ssh.service) or another app's unit.
@@ -239,7 +250,8 @@ function appLayout(app, { catalogApps = require('../catalog').catalog } = {}) {
       ssh: app.repository.sshUrl ? `ssh://${String(app.repository.sshUrl).replace(':', '/')}` : null,
     },
     runtime,
-    listen: listenLayout(app),
+    listen,
+    identityModes: identityModesLayout(app, listen),
     port,
     mountPath: app.network.preferredMountPath,
     preserveMountPath: app.network.preserveMountPath === true,

@@ -25,6 +25,8 @@ const manifestSchema = {
         startCommand: { type: 'string' },
         // Feature-10 SID-002: 'unix' apps read SOVEREIGN_LISTEN and serve on a socket nginx alone can reach.
         listen: { enum: ['tcp', 'unix'] },
+        // Feature-10 SID-007: 'tailnet' apps read SOVEREIGN_AUTH_MODE (sovereignAuth) and can trust the directory.
+        identity: { enum: ['local', 'tailnet'] },
       },
     },
     network: {
@@ -119,6 +121,9 @@ function validateManifestEntry(entry) {
     expectString(entry.runtime.installCommand, 'runtime.installCommand');
     expectString(entry.runtime.startCommand, 'runtime.startCommand');
     if (entry.runtime.listen != null && !['tcp', 'unix'].includes(entry.runtime.listen)) errors.push("runtime.listen must be 'tcp' or 'unix'");
+    if (entry.runtime.identity != null && !['local', 'tailnet'].includes(entry.runtime.identity)) errors.push("runtime.identity must be 'local' or 'tailnet'");
+    // Identity headers are trustworthy only on a socket nginx alone can reach.
+    if (entry.runtime.identity === 'tailnet' && entry.runtime.listen !== 'unix') errors.push("runtime.identity 'tailnet' needs runtime.listen 'unix'");
   }
   if (expectObject(entry.network, 'network')) {
     expectString(entry.network.preferredMountPath, 'network.preferredMountPath');

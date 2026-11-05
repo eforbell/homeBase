@@ -105,6 +105,9 @@ const ROUTES = [
   ['POST', '/api/ingress/rollback', 'administrator', 'privileged-plan'],
   ['POST', '/api/ingress/services/:id/confirm', 'administrator', 'privileged-plan'],
   ['POST', '/api/ingress/services/:id/publish', 'administrator', 'privileged-plan'],
+  // SID-007: which identity an installed app trusts.
+  ['POST', '/api/ingress/apps/:id/tailnet-mode', 'administrator', 'privileged-plan'],
+  ['POST', '/api/ingress/apps/:id/local-mode', 'administrator', 'privileged-plan'],
   ['POST', '/api/apps/:id/discard-plan', 'administrator', 'open-admin'],
   ['POST', '/api/apps/:id/install-plan', 'administrator', 'open-admin'],
   // Saves a planned install record; nothing runs.

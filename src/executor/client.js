@@ -92,6 +92,7 @@ const ACTION_FIELD_NAMES = {
   restore: ['appId', 'backupId'],
   uninstall: ['appId', 'keepBackups'],
   'move-user': ['appId', 'site'],
+  'identity-mode': ['appId', 'mode'],
   'ingress-cutover': ['instance', 'domain', 'legacyService'],
   'service-publish': ['serviceKey'],
   'ingress-rollback': [],

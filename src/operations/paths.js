@@ -13,4 +13,7 @@ module.exports = Object.freeze({
   NGINX_GROUP: 'www-data',
   // A move to an app's own user in progress (SID-002): root-only markers, one per app, removed when it finishes.
   MOVE_STATE_ROOT: '/var/lib/homebase-executor/moves',
+  // The household directory snapshot apps read (sovereignAuth's DEFAULT_SNAPSHOT_PATH), in a directory the
+  // Home Base user owns.
+  IDENTITY_SNAPSHOT: '/var/lib/sovereign-home/identity/snapshot.json',
 });
