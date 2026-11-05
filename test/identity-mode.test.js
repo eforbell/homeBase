@@ -91,13 +91,14 @@ test('the .env says which identity the app trusts, and an update or restore keep
     'SOVEREIGN_AUTH_MODE=tailnet', `${written}export SOVEREIGN_HOMEBASE_UID=0`, 'SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=0',
     // Inside another key's multi-line quoted value, these lines are not assignments at all.
     `NOTES="\n${written}"`, `NOTES='\n${written}'\n`, `${written}KEY="-----BEGIN\nabc\n-----END"`,
+    `SOVEREIGN_AUTH_MODE\n=local\nNOTES=\n"\n${written}"\n`, `${written}# a note\n`, `${written}\n`, written.replace(/\n/g, '\r\n'),
   ]) {
     assert.deepEqual(keepIdentityEnv({ A: '1', 'export SOVEREIGN_AUTH_MODE': 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' }, content, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, JSON.stringify(content));
   }
   // Home Base's own one-line values (escaped quotes, a trailing backslash) are not multi-line.
   const { renderEnv } = require('../src/operations/env');
   assert.deepEqual(keepIdentityEnv({ A: '1' }, renderEnv({ PATH_LIKE: 'C:\\dir\\', QUOTE: 'say "hi"', ...tailnet }), capable), { A: '1', ...tailnet });
-  for (const content of ['export SOVEREIGN_AUTH_MODE=tailnet', 'SOVEREIGN_AUTH_MODE: tailnet', 'SOVEREIGN_AUTH_MODE=tailnet # pilot', `${written}SOVEREIGN_AUTH_MODE: local`]) {
+  for (const content of ['export SOVEREIGN_AUTH_MODE=tailnet', 'SOVEREIGN_AUTH_MODE: tailnet', 'SOVEREIGN_AUTH_MODE=tailnet # pilot', `${written}SOVEREIGN_AUTH_MODE: local`, 'SOVEREIGN_AUTH_MODE\n=tailnet\nSOVEREIGN_HOMEBASE_UID=990']) {
     assert.equal(trustsIdentityHeaders(content), true, `the rollback guard still counts ${JSON.stringify(content)}`);
   }
 });
