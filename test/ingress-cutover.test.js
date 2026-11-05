@@ -61,6 +61,27 @@ test('after cutover, an install or repair refreshes the socket gateway and never
   assert.match(fsImpl.readFileSync(SITE), /^# sovereign-ingress: sockets/);
 });
 
+test('SID-006: a cutover that puts Home Base on its socket records it, refreshes keep it, and an older cutover keeps TCP until run again', async () => {
+  const { fsImpl, handlers } = harness();
+  const homeBaseUpstreams = () => fsImpl.readFileSync(SITE).match(/proxy_pass http:\/\/(?:unix:\/run\/homebase-identity\/homebase\.sock|127\.0\.0\.1:3080);/g);
+  // A host cut over before SID-006: its record has no homeBase, so nginx keeps Home Base on the loopback port.
+  await handlers['nginx.ensure-socket-gateway'](cutover());
+  assert.ok(homeBaseUpstreams().every((line) => line.includes('127.0.0.1:3080')));
+  await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.ok(homeBaseUpstreams().every((line) => line.includes('127.0.0.1:3080')), 'a refresh never moves Home Base on its own');
+  // Running the cutover again moves Home Base and its passkey mounts (every strict hostname) onto its socket.
+  await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' }));
+  assert.deepEqual(JSON.parse(fsImpl.readFileSync(INGRESS_STATE_PATH)), { mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'socket' });
+  assert.equal(homeBaseUpstreams().length, 6, "homebase's location / plus /_sovereign/auth/ on homebase and the four sensitive apps");
+  assert.ok(homeBaseUpstreams().every((line) => line.includes('homebase.sock')));
+  assert.doesNotMatch(fsImpl.readFileSync(SITE), /127\.0\.0\.1:3080/);
+  await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.doesNotMatch(fsImpl.readFileSync(SITE), /127\.0\.0\.1:3080/, 'refreshes keep the socket');
+  // A record naming anything else is unreadable, not quietly TCP.
+  fsImpl.writeFileSync(INGRESS_STATE_PATH, JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'tcp' }));
+  await assert.rejects(() => handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway')), /is unreadable/);
+});
+
 test('an unreadable cutover record is refused, never read as "not cut over"', async () => {
   for (const content of ['not json', '{"mode":"tcp"}', '{"mode":"sockets","instance":"Bad","domain":"example-tailnet.ts.net"}']) {
     const { handlers } = harness({ [INGRESS_STATE_PATH]: content });
@@ -97,6 +118,7 @@ test('planner: cutover and rollback plans pass policy; rollback waits for every 
   const plan = buildIngressCutoverPlan({ instance: 'smith', domain: 'Example-Tailnet.ts.net' });
   assert.equal(validateOperationPolicy(plan), plan);
   assert.equal(plan.operations[0].domain, DOMAIN, 'the domain is lowercased');
+  assert.equal(plan.operations[0].homeBase, 'socket', 'SID-006: nginx reaches Home Base on its socket');
   assert.throws(() => buildIngressCutoverPlan({ instance: 'smith', domain: 'example.com' }), /<tailnet>\.ts\.net/);
   assert.throws(() => buildIngressCutoverPlan({ instance: 'Smith--x', domain: DOMAIN }), /instance must be/);
   const rollback = buildIngressRollbackPlan({ installations: { 'family-dinner': { identityMode: 'local' } } });

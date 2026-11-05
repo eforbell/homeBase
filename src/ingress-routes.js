@@ -110,6 +110,10 @@ function createIngressRoutes({
         ...status,
         services,
         cutOver: Boolean(currentIngress(state.ingressJobs, config)),
+        // SID-006: where nginx reaches Home Base ('socket', or 'tcp' on a host cut over before it), and what
+        // the loopback port does once it is the socket.
+        homeBase: currentIngress(state.ingressJobs, config)?.homeBase || null,
+        loopback: config.loopback === 'off' ? 'off' : 'redirect',
         apiCredential: apiFor(config) ? 'configured' : (apiProblem ? `unusable: ${apiProblem}` : 'none'),
         dailyCheck: lastCheck,
         setup: status.configured ? setupSheet({ instance: status.instance, services, installedAppIds, administratorLogin: config.administratorLogin }) : null,

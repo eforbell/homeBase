@@ -466,6 +466,14 @@ EOF
 }
 
 # Proves the runtime user reaches a mutation-enabled protocol v2 executor through the socket.
+# Home Base answers its health probe on the loopback port, or, once that is closed (HOME_BASE_LOOPBACK=off,
+# SID-006), only on its own socket.
+homebase_healthy() {
+  curl --fail --silent "http://127.0.0.1:$1/api/homebase/health" >/dev/null && return 0
+  [ -S /run/homebase-identity/homebase.sock ] \
+    && curl --fail --silent --unix-socket /run/homebase-identity/homebase.sock http://homebase/api/homebase/health >/dev/null
+}
+
 probe_executor() {
   runuser -u "$RUNTIME_USER" -- "$NODE_BIN" - "$EXECUTOR_SOCKET_PATH" <<'NODE'
 const net = require('net');
@@ -797,7 +805,7 @@ if [ "$ADD_EXECUTOR" -eq 1 ]; then
       WEB_PORT="$(env_value PORT)"
       WEB_HEALTHY=0
       for _attempt in $(seq 1 30); do
-        if curl --fail --silent "http://127.0.0.1:${WEB_PORT:-$PORT}/api/homebase/health" >/dev/null; then WEB_HEALTHY=1; break; fi
+        if homebase_healthy "${WEB_PORT:-$PORT}"; then WEB_HEALTHY=1; break; fi
         sleep 1
       done
       [ "$WEB_HEALTHY" -eq 1 ] || log 'WARNING: Home Base did not answer its health check within 30s after the restart; inspect journalctl -u homebase'
@@ -1036,7 +1044,7 @@ if [ "$TEST_MODE" != '1' ]; then
       SERVICE_PORT="${SERVICE_PORT:-$PORT}"
       HEALTHY=0
       for _attempt in $(seq 1 30); do
-        if curl --fail --silent "http://127.0.0.1:${SERVICE_PORT}/api/homebase/health" >/dev/null; then
+        if homebase_healthy "${SERVICE_PORT}"; then
           HEALTHY=1
           break
         fi

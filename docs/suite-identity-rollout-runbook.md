@@ -203,7 +203,7 @@ Home Base signs assurance cookies with an Ed25519 key it creates beside its data
 Set up health alerts (Config, a webhook URL) before setup: opening recovery always sends a notice naming the tailnet account that did it. So does a Home Base start that finds an administrator without an attested hardware key, after a sovereignAuth release removed the root their key verified against. Those keys are demoted at that start, and the administrator enters recovery to register a new one. Each check and one-time confirmation is in the admin audit with its session ID or token ID, signing key and passkey, so any cookie or token can be traced to the check that issued it.
 
 1. Upgrade Home Base to the identity-capable version, **before** moving it to its socket. The directory and passkey service come up in `setup`.
-2. Move Home Base admin to its socket (it is already reachable at `svc:<instance>-homebase`). Keep `:3080` as a redirect for the transition period.
+2. Move Home Base admin to its socket (it is already reachable at `svc:<instance>-homebase`): on the Network page, **Move Home Base to its socket** runs the cutover again (section 3). nginx then reaches Home Base, and the passkey mount on every sensitive hostname, on `/run/homebase-identity/homebase.sock`, which only nginx can connect to. Once that job finishes, `:3080` stops being Home Base: pages and reads redirect to `https://<instance>-homebase.<tailnet>/` (same path), other requests get `421 HOME_BASE_MOVED`, and only `GET /api/homebase/health` is still answered there, for the installer and updates. That closes the loopback port to any local process that sets `X-Forwarded-For` to pass as a member. A host cut over before this release keeps Home Base on `:3080` until the cutover runs again; rolling back the ingress puts it back on `:3080`. Keep `:3080` as a redirect for the transition period.
 3. The founder unlocks with the passphrase on Admin. Their tailnet identity is recorded as the administrator. Then, under **Passkeys**, they register:
    - a synced passkey (daily);
    - an attested hardware key (keyring), with **It's a hardware security key** ticked: the key is asked to prove its maker, and only a chain to a vendor root pinned in sovereignAuth counts as hardware;
@@ -251,6 +251,6 @@ A renamed tailnet changes the RP ID, so every passkey stops working.
 ## 8. Clean-up
 
 - Remove spike-only and rehearsal-only tailnet grants, services, tags and credentials.
-- Retire the `:3080` redirect.
+- Retire the `:3080` redirect: `HOME_BASE_LOOPBACK=off` in `/etc/sovereign-home/homebase.env`, then restart Home Base. Once Home Base is on its socket nothing listens on `:3080`, and the installer checks health on the socket instead. A rollback of the ingress opens the port again.
 - Retire per-app passphrases and PINs only after each app has run in `tailnet` mode for the full rollback window. Retiring them ends that app's local-mode rollback.
 - Keep the Home Base passphrase for setup and recovery.

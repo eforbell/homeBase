@@ -71,6 +71,16 @@ test('each block includes only its own mounts and answers only for its own hostn
   for (const name of ['svc:smith-home', 'svc:smith-pulse']) assert.match(site[name], /location \/ \{\n {8}return 404;/, 'admin routes exist only on homebase');
 });
 
+test('SID-006: with Home Base on its socket, nginx reaches it and its passkey mounts there and nowhere on TCP', () => {
+  const site = renderGatewaySite({ ...SITE, homeBase: 'socket' });
+  assert.doesNotMatch(site, /127\.0\.0\.1:3080/);
+  assert.match(blocks(site)['svc:smith-homebase'], /location \/ \{\n {8}proxy_pass http:\/\/unix:\/run\/homebase-identity\/homebase\.sock;\n {8}include \/etc\/nginx\/sovereign-identity\.conf;/);
+  for (const [name, block] of Object.entries(blocks(site)).filter(([name]) => name !== 'svc:smith-home')) {
+    assert.match(block, /location \/_sovereign\/auth\/ \{\n {8}proxy_pass http:\/\/unix:\/run\/homebase-identity\/homebase\.sock;/, name);
+  }
+  assert.throws(() => renderGatewaySite({ ...SITE, homeBase: 'elsewhere' }), /on a socket or TCP/);
+});
+
 test('passkey pages and the no-framing header exist only on Home Base and sensitive hostnames (D20, D21)', () => {
   const site = blocks(renderGatewaySite(SITE));
   for (const [name, block] of Object.entries(site)) {
@@ -130,7 +140,8 @@ test('after cutover, Open links and app URLs use each app\'s service hostname (b
   const job = (id, kind, extra = {}) => ({ id, kind, status: 'completed', dryRun: false, finishedAt: `2026-10-27T10:0${id}:00Z`, ...extra });
   assert.equal(currentIngress([], config), null);
   assert.equal(currentIngress([job(1, 'ingress-cutover')], { ...config, instance: '' }), null);
-  assert.deepEqual(currentIngress([job(1, 'ingress-cutover')], config), { instance: 'smith', domain: 'example-tailnet.ts.net' });
+  assert.deepEqual(currentIngress([job(1, 'ingress-cutover')], config), { instance: 'smith', domain: 'example-tailnet.ts.net', homeBase: 'tcp' });
+  assert.equal(currentIngress([job(1, 'ingress-cutover', { homeBaseOnSocket: true })], config).homeBase, 'socket', 'SID-006: the cutover the executor ran put Home Base on its socket');
   assert.equal(currentIngress([job(1, 'ingress-cutover'), job(2, 'ingress-rollback')], config), null);
   assert.ok(currentIngress([job(1, 'ingress-cutover'), job(2, 'ingress-rollback'), job(3, 'ingress-cutover')], config));
   assert.equal(currentIngress([job(1, 'ingress-cutover', { status: 'failed' })], config), null);

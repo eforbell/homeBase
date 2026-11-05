@@ -422,7 +422,7 @@ function readIngressRecord(fsImpl = fs) {
   if (!stat.isFile()) deny(`${INGRESS_STATE_PATH} is not a regular file.`);
   let state;
   try { state = JSON.parse(readSmallFileNoFollow(fsImpl, INGRESS_STATE_PATH)); } catch { state = null; }
-  if (!state || state.mode !== 'sockets' || validateInstance(state.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(state.domain || ''))) {
+  if (!state || state.mode !== 'sockets' || validateInstance(state.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(state.domain || '')) || ![undefined, 'socket'].includes(state.homeBase)) {
     deny(`${INGRESS_STATE_PATH} is unreadable; fix or remove it by hand (removing it means the host is not cut over).`);
   }
   return state;
@@ -485,7 +485,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     if (!dir || !dir.isDirectory() || dir.uid !== 0 || (dir.mode & 0o077) !== 0) deny(`${SERVE_SOCKET_DIR} must be a root-owned 0700 directory.`);
     writeFileAtomic(fsImpl, IDENTITY_SNIPPET, renderIdentitySnippet(), 0o644);
     const rewritten = rewriteAppSnippets({ identity: true });
-    writeGatewaySite(renderGatewaySite({ instance: ingress.instance, domain: ingress.domain, apps: catalog }));
+    // A host cut over before SID-006 keeps Home Base on loopback TCP until its cutover runs again.
+    writeGatewaySite(renderGatewaySite({ instance: ingress.instance, domain: ingress.domain, apps: catalog, homeBase: ingress.homeBase === 'socket' ? 'socket' : 'tcp' }));
     return rewritten;
   }
   // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
@@ -809,7 +810,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       return 'installed managed nginx gateway site';
     },
     'nginx.ensure-socket-gateway': async (operation) => {
-      const ingress = { mode: 'sockets', instance: operation.instance, domain: operation.domain };
+      const ingress = { mode: 'sockets', instance: operation.instance, domain: operation.domain, ...(operation.homeBase === 'socket' ? { homeBase: 'socket' } : {}) };
       if (validateInstance(ingress.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(ingress.domain || ''))) deny('The ingress instance or tailnet domain is malformed.');
       const existing = readIngressState();
       if (existing && (existing.instance !== ingress.instance || existing.domain !== ingress.domain)) {

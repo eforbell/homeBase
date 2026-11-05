@@ -211,9 +211,18 @@ elif op == "load_state":
             "SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY id DESC"
         )
     ]
+    # Whether nginx reaches Home Base on its socket (SID-006): the plan the executor ran for a cutover says so.
+    def home_base_on_socket(row):
+        try:
+            plan = json.loads(row["plan_json"] or "null")
+        except ValueError:
+            return False
+        operations = ((plan or {}).get("operationPlan") or {}).get("operations") or [] if isinstance(plan, dict) else []
+        return any(isinstance(op, dict) and op.get("type") == "nginx.ensure-socket-gateway" and op.get("homeBase") == "socket" for op in operations)
+
     # Whether the host is cut over comes from its last real ingress job, however long ago it ran.
     ingress_jobs = [
-        serialize_job(row)
+        {**serialize_job(row), "homeBaseOnSocket": home_base_on_socket(row)}
         for row in conn.execute(
             "SELECT * FROM jobs WHERE kind IN ('ingress-cutover', 'ingress-rollback') AND status = 'completed' AND dry_run = 0 ORDER BY finished_at DESC, id DESC LIMIT 1"
         )

@@ -15,6 +15,12 @@ function executionModeFromEnv(value) {
   return ['legacy-sudo', 'executor'].includes(mode) ? mode : 'plan-only';
 }
 
+// Anything but 'off' redirects: both close the port to the app, and redirecting is the one that can't strand a
+// member at an old bookmark.
+function loopbackFromEnv(value) {
+  return String(value || '').trim().toLowerCase() === 'off' ? 'off' : 'redirect';
+}
+
 function loadConfig(env = process.env) {
   const rootDir = process.cwd();
   const dataDir = env.HOME_BASE_DATA_DIR || path.join(rootDir, '.data');
@@ -49,6 +55,11 @@ function loadConfig(env = process.env) {
     // SID-005: the key that signs assurance cookies and action tokens; Home Base's alone, beside its database.
     identitySigningKeyFile: env.HOME_BASE_IDENTITY_SIGNING_KEY || path.join(path.dirname(stateDbPath), 'identity-signing-key.pem'),
     identitySocket: env.HOME_BASE_IDENTITY_SOCKET === 'off' ? '' : (env.HOME_BASE_IDENTITY_SOCKET || '/run/homebase-identity/identity.sock'),
+    // SID-006: Home Base itself on a socket beside it, where only nginx connects; 'off' disables it.
+    adminSocket: env.HOME_BASE_ADMIN_SOCKET === 'off' ? '' : (env.HOME_BASE_ADMIN_SOCKET || '/run/homebase-identity/homebase.sock'),
+    // Once nginx reaches Home Base on that socket, the loopback port only redirects there ('redirect', the
+    // default) or is closed ('off', after the redirect period).
+    loopback: loopbackFromEnv(env.HOME_BASE_LOOPBACK),
     // Feature-10 SID-001: this household's instance name (svc:<instance>-home, ...), unset until cutover.
     instance: String(env.HOME_BASE_INSTANCE || '').trim(),
     // A read-only Tailscale trust credential for D23 verification; absent means administrator confirmation.

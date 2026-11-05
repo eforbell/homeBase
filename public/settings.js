@@ -713,6 +713,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
         <li class="hb-row"><strong>Instance</strong><span>${esc(data.instance)} on ${esc(data.domain)}</span></li>
         <li class="hb-row"><strong>This host</strong><span>${self.tagged ? (self.holdsHostTag ? `<span class="hb-ok">tagged ${esc(self.hostTag)}</span>` : `<span class="hb-warn">tagged, but not ${esc(self.hostTag)}</span>`) : '<span class="hb-err">untagged: service hosts must be tagged</span>'}</span></li>
         <li class="hb-row"><strong>Ingress</strong><span>${data.cutOver ? '<span class="hb-ok">per-service sockets</span>' : '<span class="hb-muted">TCP gateway (not cut over)</span>'}</span></li>
+        ${data.cutOver ? `<li class="hb-row"><strong>Home Base</strong><span>${data.homeBase === 'socket' ? `<span class="hb-ok">on its socket</span> · port 3080 ${data.loopback === 'off' ? 'closed' : 'redirects here'}` : '<span class="hb-warn">still on port 3080</span>'}</span></li>` : ''}
         <li class="hb-row"><strong>Host verification</strong><span>${verificationLabel}</span></li>
         ${data.dailyCheck ? `<li class="hb-row"><strong>Daily check</strong><span class="${data.dailyCheck.problems.length ? 'hb-warn' : 'hb-ok'}">${data.dailyCheck.problems.length ? esc(data.dailyCheck.problems.map((problem) => `${problem.service || 'ingress'}: ${problem.detail}`).join('; ')) : 'every published service verified'} · ${esc(window.HB.formatTimestamp(data.dailyCheck.checkedAt))}</span></li>` : ''}
         <li class="hb-row"><strong>Tailnet identity</strong><span class="hb-muted">${data.lifecycleState === 'none' ? 'off until the household directory exists' : esc(data.lifecycleState)}</span></li>
@@ -721,6 +722,12 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
       ${sheet}
       <h3 style="margin:1rem 0 0.4rem;">Services</h3>
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">${rows}</ul>
+      ${data.cutOver && data.homeBase !== 'socket' ? `
+        <form class="hb-form-grid" data-action="ingress-cutover" style="margin-top:1rem;">
+          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Move Home Base onto its own socket: runs the cutover again, then port 3080 only redirects here (runbook section 5)</label>
+          <button class="hb-btn hb-btn-primary" type="submit">Move Home Base to its socket</button>
+          <p class="hb-muted" data-result style="margin:0;"></p>
+        </form>` : ''}
       ${data.cutOver ? `
         <form class="hb-form-grid" data-action="ingress-rollback" style="margin-top:1rem;">
           <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Restore the TCP gateway and the Serve services from before the cutover</label>

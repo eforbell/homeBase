@@ -54,7 +54,10 @@ function currentIngress(jobs = [], config = {}) {
     .filter((job) => ['ingress-cutover', 'ingress-rollback'].includes(job.kind) && job.status === 'completed' && !job.dryRun)
     .sort((a, b) => String(a.finishedAt || '').localeCompare(String(b.finishedAt || '')) || a.id - b.id)
     .at(-1);
-  return latest?.kind === 'ingress-cutover' ? { instance: config.instance, domain: String(config.defaultDomain || '').toLowerCase() } : null;
+  // homeBase: where nginx reaches Home Base. 'socket' once a cutover ran with SID-006's executor; a host cut
+  // over before then stays on loopback TCP until the cutover is run again.
+  if (latest?.kind !== 'ingress-cutover') return null;
+  return { instance: config.instance, domain: String(config.defaultDomain || '').toLowerCase(), homeBase: latest.homeBaseOnSocket ? 'socket' : 'tcp' };
 }
 
 // What the administrator sets up in the Tailscale console (runbook section 2), for the services this
