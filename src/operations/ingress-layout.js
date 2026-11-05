@@ -18,12 +18,18 @@ const FONTS_MOUNT = '/_sovereign/fonts/';
 const FONTS_DIR = '/opt/sovereign-home/assets/fonts/';
 // Home Base answers identity lookups on its own socket (D1); nginx reaches it, apps never do.
 const HOMEBASE_IDENTITY_SOCKET = '/run/homebase-identity/identity.sock'; // inside HOMEBASE_RUNTIME_DIR
-// Home Base admin stays on loopback TCP until SID-005 moves it to its socket.
-const HOMEBASE_UPSTREAM = 'http://127.0.0.1:3080';
+// Home Base admin and its passkey service (SID-006): on Home Base's own socket beside the identity socket,
+// where only nginx connects. A host cut over before then keeps loopback TCP until its cutover runs again.
+const HOMEBASE_SOCKET = '/run/homebase-identity/homebase.sock'; // inside HOMEBASE_RUNTIME_DIR
+const HOMEBASE_UPSTREAMS = { socket: `http://unix:${HOMEBASE_SOCKET}`, tcp: 'http://127.0.0.1:3080' };
 const HOME_SERVICE = 'home';
 const HOMEBASE_SERVICE = 'homebase';
 // First line of the socket gateway; the executor reads it to refuse writing a TCP gateway over it.
 const SOCKET_GATEWAY_MARKER = '# sovereign-ingress: sockets';
+// SID-006: where nginx, as it runs, reaches Home Base. The executor writes this (root, world-readable) only
+// after nginx validated and reloaded the gateway, from the gateway it reloaded; rewriting the gateway never
+// touches it, so it stays what nginx runs while a rewrite waits for its reload, or after a reload fails.
+const APPLIED_PATH = '/etc/nginx/sovereign-ingress-applied.json';
 const TMPFILES_PATH = '/etc/tmpfiles.d/sovereign-serve.conf';
 // The identity socket's directory: Home Base listens there and only nginx's group may enter (D1). Not
 // /run/homebase: that is the root executor's, and it must stay root-owned (executor/maintenance.js).
@@ -210,7 +216,7 @@ function nginxRegexLiteral(value) {
   return value.replace(/\./g, '\\.');
 }
 
-function renderServerBlock(service) {
+function renderServerBlock(service, homeBaseUpstream) {
   const indent = (lines) => lines.map((line) => (line ? `    ${line}` : line));
   const lookup = [
     `location = ${IDENTITY_LOCATION} {`,
@@ -229,13 +235,13 @@ function renderServerBlock(service) {
     // The passkey service (SID-005). Never on the home hostname: ceremonies and credential management
     // only run where a sibling app cannot drive them (D17, D21).
     `location ${AUTH_MOUNT} {`,
-    `    proxy_pass ${HOMEBASE_UPSTREAM};`,
+    `    proxy_pass ${homeBaseUpstream};`,
     `    include ${IDENTITY_SNIPPET};`,
     '}',
   ] : [];
   const admin = service.key === HOMEBASE_SERVICE ? [
     'location / {',
-    `    proxy_pass ${HOMEBASE_UPSTREAM};`,
+    `    proxy_pass ${homeBaseUpstream};`,
     `    include ${IDENTITY_SNIPPET};`,
     '}',
   ] : [
@@ -274,24 +280,47 @@ function renderServerBlock(service) {
 // The managed gateway site: one socket server block per service and no TCP listener (spike 1: a 0.0.0.0
 // listener also blocks Serve's own :443). Every service block is rendered whether or not its apps are
 // installed, so installing or removing an app never changes which hostnames nginx answers for.
-function renderGatewaySite({ instance, domain, apps }) {
+// homeBase: where Home Base listens, 'socket' or (a host cut over before SID-006) 'tcp'.
+function renderGatewaySite({ instance, domain, apps, homeBase = 'tcp' }) {
+  const upstream = HOMEBASE_UPSTREAMS[homeBase];
+  if (!upstream) fail(`Home Base listens on a socket or TCP, not ${homeBase}`);
   const services = ingressServices({ instance, domain, apps });
   return [
     SOCKET_GATEWAY_MARKER,
     '# Managed by Home Base (Feature-10 SID-001). Tailscale Serve targets one socket per service;',
     '# nothing here listens on TCP. Apps mount from sovereign-home.d/<service>--<app>.conf.',
     '',
-    services.map(renderServerBlock).join('\n\n'),
+    services.map((service) => renderServerBlock(service, upstream)).join('\n\n'),
     '',
   ].join('\n');
 }
 
+// Whether a gateway site sends Home Base's traffic only to its socket.
+function gatewayReachesHomeBaseSocket(siteText) {
+  const text = String(siteText || '');
+  return text.startsWith(SOCKET_GATEWAY_MARKER)
+    && text.includes(`proxy_pass ${HOMEBASE_UPSTREAMS.socket};`)
+    && !text.includes(HOMEBASE_UPSTREAMS.tcp);
+}
+
+// SID-006: whether Home Base may stop serving on loopback TCP. Both must say so: what nginx last reloaded
+// (the applied record), and the gateway on disk, which an older executor may have rewritten back to the port
+// and reloaded without updating the record. Any doubt keeps the port, which can't strand anyone behind a
+// redirect to itself.
+function homeBaseOnSocket({ appliedText, siteText }) {
+  let applied = null;
+  try { applied = JSON.parse(String(appliedText || '')); } catch { applied = null; }
+  return applied?.homeBase === 'socket' && gatewayReachesHomeBaseSocket(siteText);
+}
+
 module.exports = {
+  APPLIED_PATH,
   APP_SNIPPET_DIR,
   AUTH_MOUNT,
   HOMEBASE_IDENTITY_SOCKET,
   HOMEBASE_RUNTIME_DIR,
   HOMEBASE_SERVICE,
+  HOMEBASE_SOCKET,
   HOME_SERVICE,
   IDENTITY_LOCATION,
   IDENTITY_SNIPPET,
@@ -303,6 +332,8 @@ module.exports = {
   appPublicBase,
   appServiceKey,
   appSnippetPath,
+  gatewayReachesHomeBaseSocket,
+  homeBaseOnSocket,
   ingressServices,
   legacyAppSnippetPath,
   renderAppLocations,

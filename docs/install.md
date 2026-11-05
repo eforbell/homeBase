@@ -91,6 +91,8 @@ ssh -L 3080:127.0.0.1:3080 operator@home-server
 
 Then open `http://127.0.0.1:3080/` locally. Configure the intended Tailscale/private-network publishing path only after reviewing the generated network plan. Do not expose Home Base directly to the public internet.
 
+The tunnel is for setup only. Once the host is cut over and Home Base is on its own socket (rollout runbook, section 5), `:3080` redirects to `https://<instance>-homebase.<tailnet>/` and answers nothing but the health probe. From then on, open Home Base on its tailnet hostname.
+
 ## Reruns and upgrades
 
 Rerunning the installer with the same version preserves application code, the environment file, and state while refreshing the systemd unit. An unmanaged install directory or a different installed version causes a safe stop.

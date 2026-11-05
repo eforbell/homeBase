@@ -22,6 +22,7 @@ function createIngressRoutes({
   stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
   controlFactory = createIngressControl, apiFactory = createTailscaleApi, now = Date.now,
   adminStatus = getAdminStatus, requireAdmin = requireAdminForExecute, executorCapabilities = getExecutorCapabilities,
+  homeBaseOnSocket = () => false,
 }) {
   // One API client per process, so its access token is reused; a credential added later is picked up.
   let api = null;
@@ -110,6 +111,10 @@ function createIngressRoutes({
         ...status,
         services,
         cutOver: Boolean(currentIngress(state.ingressJobs, config)),
+        // SID-006: where nginx, as it runs, reaches Home Base ('socket', or 'tcp' on a host cut over before
+        // it), and what the loopback port does once it is the socket.
+        homeBase: currentIngress(state.ingressJobs, config) ? (homeBaseOnSocket() ? 'socket' : 'tcp') : null,
+        loopback: config.loopback === 'off' ? 'off' : 'redirect',
         apiCredential: apiFor(config) ? 'configured' : (apiProblem ? `unusable: ${apiProblem}` : 'none'),
         dailyCheck: lastCheck,
         setup: status.configured ? setupSheet({ instance: status.instance, services, installedAppIds, administratorLogin: config.administratorLogin }) : null,

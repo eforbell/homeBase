@@ -25,7 +25,9 @@ function buildIngressCutoverPlan({ instance, domain, legacyService = null, gener
   const tailnetDomain = String(domain || '').toLowerCase();
   if (!/\.ts\.net$/.test(tailnetDomain)) refuse('Cannot plan the ingress cutover: the domain must be the tailnet domain (<tailnet>.ts.net).');
   const operations = [
-    operation({ id: 'install-socket-gateway', type: 'nginx.ensure-socket-gateway', title: 'Install the per-service nginx socket gateway', instance, domain: tailnetDomain }),
+    // homeBase: nginx reaches Home Base on its own socket (SID-006). Home Base reads this from the plan the
+    // executor ran, and only then stops serving on loopback TCP.
+    operation({ id: 'install-socket-gateway', type: 'nginx.ensure-socket-gateway', title: 'Install the per-service nginx socket gateway', instance, domain: tailnetDomain, homeBase: 'socket' }),
     operation({ id: 'reload-nginx', type: 'nginx.validate-and-reload', title: 'Validate and reload nginx', dependsOn: ['install-socket-gateway'] }),
     ...(legacyService ? [operation({ id: 'retire-legacy-service', type: 'tailscale.retire-service', title: `Retire ${legacyService} from this host`, risk: 'destructive', dependsOn: ['reload-nginx'], service: legacyService })] : []),
   ];

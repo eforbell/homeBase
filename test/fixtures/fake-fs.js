@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Minimal in-memory filesystem covering the synchronous calls executor handlers make.
-// Entries: { kind: 'dir' | 'file' | 'link', content?, target?, mode, uid, gid }.
+// Entries: { kind: 'dir' | 'file' | 'link' | 'socket', content?, target?, mode, uid, gid }.
 function createFakeFs(initial = {}) {
   const entries = new Map();
   const calls = [];
@@ -31,6 +31,7 @@ function createFakeFs(initial = {}) {
     isFile: () => entry.kind === 'file',
     isDirectory: () => entry.kind === 'dir',
     isSymbolicLink: () => entry.kind === 'link',
+    isSocket: () => entry.kind === 'socket',
   });
 
   const fsImpl = {

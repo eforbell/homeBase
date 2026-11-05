@@ -158,8 +158,9 @@ function listenIdentitySocket(server, socketPath, callback) {
 }
 
 // The cutover creates the socket's directory; until then there is nothing to listen in. Checks again
-// every interval and starts once, so Home Base needs no restart after a cutover.
-function startIdentitySocketWhenReady({ server, socketPath, intervalMs = 15_000, log = () => {}, statFn = (target) => fs.statSync(target) }) {
+// every interval and starts once, so Home Base needs no restart after a cutover. Home Base's own socket
+// (SID-006) starts the same way: label says which it is.
+function startIdentitySocketWhenReady({ server, socketPath, label = 'identity lookups', intervalMs = 15_000, log = () => {}, statFn = (target) => fs.statSync(target) }) {
   let timer = null;
   const attempt = () => {
     let dir;
@@ -167,7 +168,7 @@ function startIdentitySocketWhenReady({ server, socketPath, intervalMs = 15_000,
     if (!dir || !dir.isDirectory()) return false;
     if (timer) clearInterval(timer);
     timer = null;
-    listenIdentitySocket(server, socketPath, () => log(`identity lookups on ${socketPath}`));
+    listenIdentitySocket(server, socketPath, () => log(`${label} on ${socketPath}`));
     return true;
   };
   if (!attempt()) {

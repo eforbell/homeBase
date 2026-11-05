@@ -1,5 +1,6 @@
 const fs = require('fs');
 const crypto = require('crypto');
+const http = require('http');
 const path = require('path');
 const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
@@ -12,8 +13,8 @@ const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const {
-  appPublicBase, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
-  IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
+  appPublicBase, gatewayReachesHomeBaseSocket, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
+  APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
 const { applyListenEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
@@ -416,19 +417,32 @@ function trustsIdentityHeaders(content) {
 }
 
 // The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
+// Whether Home Base answers its health probe on its socket (SID-006).
+function probeHomeBaseSocket(socketPath, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    const req = http.request({ socketPath, method: 'GET', path: '/api/homebase/health', timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
 function readIngressRecord(fsImpl = fs) {
   const stat = lstatOrNull(fsImpl, INGRESS_STATE_PATH);
   if (!stat) return null;
   if (!stat.isFile()) deny(`${INGRESS_STATE_PATH} is not a regular file.`);
   let state;
   try { state = JSON.parse(readSmallFileNoFollow(fsImpl, INGRESS_STATE_PATH)); } catch { state = null; }
-  if (!state || state.mode !== 'sockets' || validateInstance(state.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(state.domain || ''))) {
+  if (!state || state.mode !== 'sockets' || validateInstance(state.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(state.domain || '')) || ![undefined, 'socket'].includes(state.homeBase)) {
     deny(`${INGRESS_STATE_PATH} is unreadable; fix or remove it by hand (removing it means the host is not cut over).`);
   }
   return state;
 }
 
-function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser } = {}) {
+function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), probeHomeBase = probeHomeBaseSocket } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   // Who this app runs as on this host: its own user, or sovereign until it is moved (identity.js).
   // planKind: only the move plan may continue a move that was interrupted (identity.js).
@@ -478,6 +492,18 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     return rewritten;
   }
 
+  // SID-006: nginx moves Home Base to its socket only if Home Base listens there, so a Home Base older than
+  // the executor keeps the loopback port. A first cutover makes the socket's directory just now; Home Base
+  // checks for it every 2 seconds, so this waits a little for the socket.
+  async function homeBaseListensOnSocket() {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      // Answering, not just present: an older Home Base leaves a newer one's socket file behind.
+      if (lstatOrNull(fsImpl, HOMEBASE_SOCKET)?.isSocket() && await probeHomeBase(HOMEBASE_SOCKET)) return true;
+      await sleep(500);
+    }
+    return false;
+  }
+
   async function installSocketGateway(ingress, operation) {
     writeFileAtomic(fsImpl, TMPFILES_PATH, TMPFILES_CONTENT, 0o644);
     await run({ binary: '/usr/bin/systemd-tmpfiles', args: ['--create', TMPFILES_PATH], ...rootIdentity, timeoutMs: operation?.timeoutMs || 30000, env: ROOT_ENV });
@@ -485,7 +511,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     if (!dir || !dir.isDirectory() || dir.uid !== 0 || (dir.mode & 0o077) !== 0) deny(`${SERVE_SOCKET_DIR} must be a root-owned 0700 directory.`);
     writeFileAtomic(fsImpl, IDENTITY_SNIPPET, renderIdentitySnippet(), 0o644);
     const rewritten = rewriteAppSnippets({ identity: true });
-    writeGatewaySite(renderGatewaySite({ instance: ingress.instance, domain: ingress.domain, apps: catalog }));
+    // A host cut over before SID-006 keeps Home Base on loopback TCP until its cutover runs again.
+    writeGatewaySite(renderGatewaySite({ instance: ingress.instance, domain: ingress.domain, apps: catalog, homeBase: ingress.homeBase === 'socket' ? 'socket' : 'tcp' }));
     return rewritten;
   }
   // dpkg-query exits non-zero when any name is unknown but still reports the known ones on stdout.
@@ -822,9 +849,22 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
         deny(`Could not read the active nginx configuration (nginx -T): ${error.message}. Fix nginx, then retry.`);
       }
       if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook 3.3), then run the cutover again.');
-      writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify(ingress)}\n`, 0o600);
-      const rewritten = await installSocketGateway(ingress, operation);
-      return `installed the per-service socket gateway for ${ingress.instance} on ${ingress.domain}; app snippets: ${rewritten.join(', ') || 'none installed'}`;
+      // The socket's directory comes from the tmpfiles entry the gateway installs, so the record is written
+      // twice: first as it was (or without Home Base's socket), then with it once Home Base listens there.
+      const keep = existing?.homeBase === 'socket' ? { homeBase: 'socket' } : {};
+      writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify({ ...ingress, ...keep })}\n`, 0o600);
+      let rewritten = await installSocketGateway({ ...ingress, ...keep }, operation);
+      let homeBase = keep.homeBase ? 'on its socket' : 'on port 3080';
+      if (operation.homeBase === 'socket' && !keep.homeBase) {
+        if (await homeBaseListensOnSocket()) {
+          writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify({ ...ingress, homeBase: 'socket' })}\n`, 0o600);
+          rewritten = await installSocketGateway({ ...ingress, homeBase: 'socket' }, operation);
+          homeBase = 'on its socket';
+        } else {
+          homeBase = 'on port 3080: it is not listening on its socket yet (update Home Base, then run the cutover again)';
+        }
+      }
+      return `installed the per-service socket gateway for ${ingress.instance} on ${ingress.domain}; Home Base ${homeBase}; app snippets: ${rewritten.join(', ') || 'none installed'}`;
     },
     'nginx.restore-tcp-gateway': async () => {
       // Over TCP any local process can forge identity headers, so no app may still trust them. Home Base
@@ -957,6 +997,14 @@ END $$;
     'nginx.validate-and-reload': async (operation) => {
       await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
+      // Where nginx now reaches Home Base, for Home Base (SID-006): only after a reload that succeeded, from
+      // the gateway it reloaded. Rewriting the gateway leaves this as it was until its own reload.
+      // A host never cut over has nothing to record.
+      const socketMode = gatewayIsSocketMode();
+      if (socketMode || lstatOrNull(fsImpl, APPLIED_PATH)) {
+        const site = socketMode ? String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '') : '';
+        writeFileAtomic(fsImpl, APPLIED_PATH, `${JSON.stringify({ homeBase: gatewayReachesHomeBaseSocket(site) ? 'socket' : 'tcp' })}\n`, 0o644);
+      }
       return 'validated and reloaded nginx';
     },
     'filesystem.ensure-directory': async (operation, { layout, planKind } = {}) => {

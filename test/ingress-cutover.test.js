@@ -17,7 +17,8 @@ function base(type, fields = {}) {
 }
 
 // systemd-tmpfiles creates the socket directory the way the tmpfiles.d entry says; nginx -T prints `dump`.
-function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookupUser, asUser } = {}) {
+// answers: whether Home Base answers its health probe on its socket.
+function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookupUser, asUser, answers = true } = {}) {
   // Present on every host: the executor's state directory (its job journal lives there) and tmpfiles.d.
   const fsImpl = createFakeFs({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700 }, '/etc/tmpfiles.d': { kind: 'dir' }, '/etc/nginx/sites-enabled': { kind: 'dir' }, '/etc/nginx/sites-available': { kind: 'dir' }, ...files });
   const calls = [];
@@ -27,7 +28,7 @@ function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookup
     if (input.binary === '/usr/sbin/nginx') return { stdout: dump, stderr: '' };
     return { stdout: '' };
   };
-  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
+  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, sleep: async () => {}, probeHomeBase: async () => answers, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
 }
 
 const cutover = (fields = {}) => base('nginx.ensure-socket-gateway', { instance: 'smith', domain: DOMAIN, ...fields });
@@ -59,6 +60,66 @@ test('after cutover, an install or repair refreshes the socket gateway and never
   fsImpl.unlinkSync(INGRESS_STATE_PATH);
   await assert.rejects(() => handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway')), /is a socket gateway but .* is missing/);
   assert.match(fsImpl.readFileSync(SITE), /^# sovereign-ingress: sockets/);
+});
+
+test('SID-006: a cutover moves Home Base onto its socket only once it listens there, and refreshes keep it', async () => {
+  const { fsImpl, handlers } = harness();
+  const homeBaseUpstreams = () => fsImpl.readFileSync(SITE).match(/proxy_pass http:\/\/(?:unix:\/run\/homebase-identity\/homebase\.sock|127\.0\.0\.1:3080);/g);
+  const onPort = () => homeBaseUpstreams().every((line) => line.includes('127.0.0.1:3080'));
+  // A host cut over before SID-006: its record has no homeBase, so nginx keeps Home Base on the loopback port.
+  await handlers['nginx.ensure-socket-gateway'](cutover());
+  assert.ok(onPort());
+  await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.ok(onPort(), 'a refresh never moves Home Base on its own');
+  // A Home Base older than the executor never opens its socket: nginx keeps it on the port (no 502).
+  assert.match(await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on port 3080: it is not listening on its socket yet/);
+  assert.ok(onPort());
+  assert.equal(JSON.parse(fsImpl.readFileSync(INGRESS_STATE_PATH)).homeBase, undefined);
+  // A socket file nobody answers on (a newer Home Base's, left by an older one): nginx keeps the port.
+  const stale = harness({ '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } }, { answers: false });
+  assert.match(await stale.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on port 3080: it is not listening on its socket yet/);
+  assert.doesNotMatch(stale.fsImpl.readFileSync(SITE), /homebase-identity\/homebase\.sock/);
+  // Listening: Home Base and its passkey mounts (every strict hostname) move onto its socket.
+  const listening = harness({ '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } });
+  assert.match(await listening.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on its socket/);
+  assert.deepEqual(JSON.parse(listening.fsImpl.readFileSync(INGRESS_STATE_PATH)), { mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'socket' });
+  const upstreams = listening.fsImpl.readFileSync(SITE).match(/proxy_pass http:\/\/(?:unix:\/run\/homebase-identity\/homebase\.sock|127\.0\.0\.1:3080);/g);
+  assert.equal(upstreams.length, 6, "homebase's location / plus /_sovereign/auth/ on homebase and the four sensitive apps");
+  assert.ok(upstreams.every((line) => line.includes('homebase.sock')));
+  await listening.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.doesNotMatch(listening.fsImpl.readFileSync(SITE), /127\.0\.0\.1:3080/, 'refreshes keep the socket');
+  listening.fsImpl.unlinkSync('/run/homebase-identity/homebase.sock');
+  assert.match(await listening.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on its socket/, 'running the cutover again while Home Base restarts keeps it');
+  // A record naming anything else is unreadable, not quietly TCP.
+  listening.fsImpl.writeFileSync(INGRESS_STATE_PATH, JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'tcp' }));
+  await assert.rejects(() => listening.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway')), /is unreadable/);
+});
+
+test('SID-006: the applied record says where the gateway nginx last reloaded reaches Home Base, whatever is written since', async () => {
+  const { APPLIED_PATH, homeBaseOnSocket } = require('../src/operations/ingress-layout');
+  const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } };
+  const { fsImpl, handlers } = harness(files);
+  const applied = () => (fsImpl.existsSync(APPLIED_PATH) ? JSON.parse(fsImpl.readFileSync(APPLIED_PATH)).homeBase : null);
+  const onSocket = () => homeBaseOnSocket({ appliedText: fsImpl.existsSync(APPLIED_PATH) ? fsImpl.readFileSync(APPLIED_PATH) : '', siteText: fsImpl.readFileSync(SITE) });
+  await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' }));
+  assert.equal(applied(), null, 'written, not yet reloaded');
+  assert.equal(onSocket(), false);
+  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
+  assert.equal(applied(), 'socket');
+  assert.equal(onSocket(), true);
+  assert.equal(fsImpl.statSync(APPLIED_PATH).mode & 0o777, 0o644, 'Home Base reads it');
+  // An app install rewrites the gateway: nginx still runs the reloaded one until the next reload succeeds.
+  await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.equal(onSocket(), true);
+  const refusing = createBaseHandlers({ fsImpl, sleep: async () => {}, run: async (input) => { if (input.binary === '/usr/sbin/nginx') throw Object.assign(new Error('nginx -t failed'), { code: 'OPERATION_FAILED' }); return { stdout: '' }; } });
+  await assert.rejects(() => refusing['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /nginx -t failed/);
+  assert.equal(applied(), 'socket', 'a refused reload changes nothing nginx runs');
+  // A rollback writes the TCP gateway; once nginx reloads it, Home Base is back on the port.
+  await handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' }));
+  assert.doesNotMatch(fsImpl.readFileSync(SITE), /^# sovereign-ingress: sockets/);
+  assert.equal(onSocket(), false, 'the gateway on disk already sends Home Base the port');
+  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
+  assert.equal(applied(), 'tcp');
 });
 
 test('an unreadable cutover record is refused, never read as "not cut over"', async () => {
@@ -97,6 +158,7 @@ test('planner: cutover and rollback plans pass policy; rollback waits for every 
   const plan = buildIngressCutoverPlan({ instance: 'smith', domain: 'Example-Tailnet.ts.net' });
   assert.equal(validateOperationPolicy(plan), plan);
   assert.equal(plan.operations[0].domain, DOMAIN, 'the domain is lowercased');
+  assert.equal(plan.operations[0].homeBase, 'socket', 'SID-006: nginx reaches Home Base on its socket');
   assert.throws(() => buildIngressCutoverPlan({ instance: 'smith', domain: 'example.com' }), /<tailnet>\.ts\.net/);
   assert.throws(() => buildIngressCutoverPlan({ instance: 'Smith--x', domain: DOMAIN }), /instance must be/);
   const rollback = buildIngressRollbackPlan({ installations: { 'family-dinner': { identityMode: 'local' } } });
