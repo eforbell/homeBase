@@ -80,6 +80,12 @@ test('the .env says which identity the app trusts, and an update or restore keep
   assert.deepEqual(keepIdentityEnv({ A: '1', ...tailnet }, { SOVEREIGN_AUTH_MODE: 'local' }, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, 'a backup taken in tailnet mode does not bring it back');
   assert.deepEqual(keepIdentityEnv({ A: '1' }, {}, capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' }, 'sovereignAuth refuses to start without a mode');
   assert.deepEqual(keepIdentityEnv({ A: '1', ...tailnet, SOVEREIGN_IDENTITY_MODE: 'tailnet' }, tailnet, plain), { A: '1' }, 'an app that cannot trust the directory gets no mode');
+  // Read as dotenv loaders read them (parseDotEnv keeps `export KEY` and inline comments), failing closed as the
+  // rollback guard does: a hand-edited .env never downgrades the app on the next update.
+  for (const content of ['export SOVEREIGN_AUTH_MODE=tailnet\nexport SOVEREIGN_HOMEBASE_UID=990', 'SOVEREIGN_AUTH_MODE=tailnet # pilot\nSOVEREIGN_HOMEBASE_UID="990" # Home Base', "SOVEREIGN_AUTH_MODE='Tailnet'\nSOVEREIGN_HOMEBASE_UID=990", 'SOVEREIGN_IDENTITY_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990']) {
+    assert.deepEqual(keepIdentityEnv({ A: '1', 'export SOVEREIGN_AUTH_MODE': 'local' }, parseDotEnv(content), capable), { A: '1', ...tailnet }, JSON.stringify(content));
+  }
+  assert.deepEqual(keepIdentityEnv({ A: '1' }, parseDotEnv('SOVEREIGN_AUTH_MODE=local # default'), capable), { A: '1', SOVEREIGN_AUTH_MODE: 'local' });
 });
 
 test('an update re-renders the .env and keeps the identity mode the app is in', () => {

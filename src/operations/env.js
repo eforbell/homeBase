@@ -223,11 +223,25 @@ function applyListenEnv(env, layout) {
 // gets one: the mode it already had, else local. The Home Base user's uid, which the snapshot reader needs,
 // comes with tailnet mode only. SOVEREIGN_IDENTITY_MODE, a name used before the contract settled, is dropped.
 const IDENTITY_ENV_KEYS = Object.freeze(['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_HOMEBASE_UID', 'SOVEREIGN_IDENTITY_MODE']);
+// parseDotEnv keeps `export KEY` as the key and an inline comment in the value; dotenv loaders don't. The identity
+// keys are read the way the loaders (and the executor's rollback guard) read them, whatever else parseDotEnv does.
+const identityKey = (key) => String(key).replace(/^export\s+/, '').trim();
+const identityValue = (value) => {
+  const text = String(value ?? '').trim();
+  const quoted = /^(['"])(.*?)\1/.exec(text);
+  return (quoted ? quoted[2] : text.replace(/\s+#.*$/, '')).trim();
+};
 function withoutIdentityEnv(env) {
-  return Object.fromEntries(Object.entries(env).filter(([key]) => !IDENTITY_ENV_KEYS.includes(key)));
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !IDENTITY_ENV_KEYS.includes(identityKey(key))));
 }
+// Fail closed, as the rollback guard does: any mode other than empty or local counts as tailnet.
 function identityModeOf(env) {
-  return String(env?.SOVEREIGN_AUTH_MODE || '').trim() === 'tailnet' ? 'tailnet' : 'local';
+  return Object.entries(env || {}).some(([key, value]) => ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE'].includes(identityKey(key)) && !['', 'local'].includes(identityValue(value).toLowerCase()))
+    ? 'tailnet' : 'local';
+}
+function homeBaseUidOf(env) {
+  const entry = Object.entries(env || {}).find(([key]) => identityKey(key) === 'SOVEREIGN_HOMEBASE_UID');
+  return entry && /^[1-9][0-9]*$/.test(identityValue(entry[1])) ? identityValue(entry[1]) : null;
 }
 // mode: 'tailnet' (with homeBaseUid) or 'local'. Returns a new object.
 function setIdentityEnv(env, { mode, homeBaseUid = null }) {
@@ -243,7 +257,8 @@ function setIdentityEnv(env, { mode, homeBaseUid = null }) {
 function keepIdentityEnv(env, current, layout) {
   if (!layout.identityModes?.includes('tailnet')) return withoutIdentityEnv(env);
   if (identityModeOf(current) === 'local') return setIdentityEnv(env, { mode: 'local' });
-  return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'tailnet', ...(current.SOVEREIGN_HOMEBASE_UID ? { SOVEREIGN_HOMEBASE_UID: current.SOVEREIGN_HOMEBASE_UID } : {}) };
+  const uid = homeBaseUidOf(current);
+  return { ...withoutIdentityEnv(env), SOVEREIGN_AUTH_MODE: 'tailnet', ...(uid ? { SOVEREIGN_HOMEBASE_UID: uid } : {}) };
 }
 
 function storageEnvOverrides(app) {
