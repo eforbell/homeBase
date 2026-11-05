@@ -13,7 +13,7 @@ const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const {
-  appPublicBase, gatewayReachesHomeBaseSocket, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
+  appPublicBase, gatewayReachesHomeBaseSocket, listenAsDeployed, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
   APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
 const { applyListenEnv, keepIdentityEnv, setIdentityEnv, trustsIdentityHeaders, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
@@ -479,7 +479,9 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       for (const [target, stat] of [[layout.nginxSnippet, current], [layout.legacyNginxSnippet, legacy]]) {
         if (stat && !stat.isFile()) deny(`${target} is not a regular file.`);
       }
-      writeFileAtomic(fsImpl, layout.nginxSnippet, renderAppLocations(layout, { identity }), 0o644);
+      // Each app stays on the transport its snippet uses; only its own update moves it to its socket.
+      const text = readSmallFileNoFollow(fsImpl, current ? layout.nginxSnippet : layout.legacyNginxSnippet) ?? '';
+      writeFileAtomic(fsImpl, layout.nginxSnippet, renderAppLocations(listenAsDeployed(layout, text), { identity }), 0o644);
       if (legacy) fsImpl.unlinkSync(layout.legacyNginxSnippet);
       rewritten.push(app.id);
     }

@@ -5,6 +5,7 @@ const {
   lookupSystemUser, runAsUser, readExistingDatabasePassword,
   lstatOrNull, readSmallFileNoFollow, SUPERUSER_SQL_PREAMBLE, writeFileAtomic, requireLayout, deny,
 } = require('./handlers');
+const { listenAsDeployed } = require('../src/operations/ingress-layout');
 const { applyListenEnv, keepIdentityEnv, parseDotEnv, renderEnv, storageEnvOverrides } = require('../src/operations/env');
 
 // Backup, restore, and uninstall primitives. Anything inside app-owned directories (the checkout,
@@ -179,8 +180,7 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       const restored = [];
       // Where nginx points now decides where the app listens, not the catalog: an app whose catalog entry moved
       // to a socket keeps its loopback port until an update moves it (socket directory, nginx and all).
-      const snippet = isRealFile(layout.nginxSnippet) ? readSmallFileNoFollow(fsImpl, layout.nginxSnippet) : null;
-      const listenNow = layout.listen.kind === 'unix' && snippet != null && !snippet.includes(`unix:${layout.listen.socket}`) ? { ...layout, listen: { kind: 'tcp' } } : layout;
+      const listenNow = listenAsDeployed(layout, isRealFile(layout.nginxSnippet) ? readSmallFileNoFollow(fsImpl, layout.nginxSnippet) : null);
       if (present.env) {
         asUser(owner, () => {
           const restoredEnv = parseDotEnv(readSmallFileNoFollow(fsImpl, `${archiveDir}/.env.backup`) ?? deny('The backup .env is not a regular file.'));
