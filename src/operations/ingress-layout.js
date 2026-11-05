@@ -26,9 +26,10 @@ const HOME_SERVICE = 'home';
 const HOMEBASE_SERVICE = 'homebase';
 // First line of the socket gateway; the executor reads it to refuse writing a TCP gateway over it.
 const SOCKET_GATEWAY_MARKER = '# sovereign-ingress: sockets';
-// Last line, added by the executor only once nginx has validated and reloaded exactly this file (SID-006).
-// A file without it may not be what nginx runs: its reload failed, or an older executor wrote it.
-const APPLIED_MARKER = '# sovereign-ingress: applied';
+// SID-006: where nginx, as it runs, reaches Home Base. The executor writes this (root, world-readable) only
+// after nginx validated and reloaded the gateway, from the gateway it reloaded; rewriting the gateway never
+// touches it, so it stays what nginx runs while a rewrite waits for its reload, or after a reload fails.
+const APPLIED_PATH = '/etc/nginx/sovereign-ingress-applied.json';
 const TMPFILES_PATH = '/etc/tmpfiles.d/sovereign-serve.conf';
 // The identity socket's directory: Home Base listens there and only nginx's group may enter (D1). Not
 // /run/homebase: that is the root executor's, and it must stay root-owned (executor/maintenance.js).
@@ -294,19 +295,26 @@ function renderGatewaySite({ instance, domain, apps, homeBase = 'tcp' }) {
   ].join('\n');
 }
 
-// SID-006: whether nginx, as it runs now, reaches Home Base only on its socket, read from the gateway site
-// (world-readable). Only then may Home Base stop serving on loopback TCP; any doubt keeps it there, which
-// can't strand anyone behind a redirect to itself.
+// Whether a gateway site sends Home Base's traffic only to its socket.
 function gatewayReachesHomeBaseSocket(siteText) {
   const text = String(siteText || '');
   return text.startsWith(SOCKET_GATEWAY_MARKER)
-    && text.trimEnd().endsWith(APPLIED_MARKER)
     && text.includes(`proxy_pass ${HOMEBASE_UPSTREAMS.socket};`)
     && !text.includes(HOMEBASE_UPSTREAMS.tcp);
 }
 
+// SID-006: whether Home Base may stop serving on loopback TCP. Both must say so: what nginx last reloaded
+// (the applied record), and the gateway on disk, which an older executor may have rewritten back to the port
+// and reloaded without updating the record. Any doubt keeps the port, which can't strand anyone behind a
+// redirect to itself.
+function homeBaseOnSocket({ appliedText, siteText }) {
+  let applied = null;
+  try { applied = JSON.parse(String(appliedText || '')); } catch { applied = null; }
+  return applied?.homeBase === 'socket' && gatewayReachesHomeBaseSocket(siteText);
+}
+
 module.exports = {
-  APPLIED_MARKER,
+  APPLIED_PATH,
   APP_SNIPPET_DIR,
   AUTH_MOUNT,
   HOMEBASE_IDENTITY_SOCKET,
@@ -325,6 +333,7 @@ module.exports = {
   appServiceKey,
   appSnippetPath,
   gatewayReachesHomeBaseSocket,
+  homeBaseOnSocket,
   ingressServices,
   legacyAppSnippetPath,
   renderAppLocations,

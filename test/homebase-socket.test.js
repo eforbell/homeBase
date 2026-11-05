@@ -9,17 +9,16 @@ const os = require('os');
 const path = require('path');
 const { catalog } = require('../src/catalog');
 const { SqliteStateStore } = require('../src/state/sqlite-store');
-const { APPLIED_MARKER, renderGatewaySite } = require('../src/operations/ingress-layout');
+const { renderGatewaySite } = require('../src/operations/ingress-layout');
 const { NGINX_GATEWAY_CONTENT } = require('../executor/handlers');
 const { DOMAIN, PARENT, browser, startServer } = require('./support/household');
 
 const HOMEBASE_ORIGIN = `https://smith-homebase.${DOMAIN}`;
 
-// The gateway site as the executor leaves it: rendered with Home Base on its socket or the port, and marked
-// applied only once nginx has validated and reloaded it.
-function writeGateway(file, { homeBase = 'socket', applied = true } = {}) {
-  const site = renderGatewaySite({ instance: 'smith', domain: DOMAIN, apps: catalog, homeBase });
-  fs.writeFileSync(file, applied ? `${site.trimEnd()}\n${APPLIED_MARKER}\n` : site);
+// The gateway on disk, and the executor's record of where the gateway nginx last reloaded reaches Home Base.
+function writeGateway({ gateway, applied }, { site = 'socket', reloaded = site } = {}) {
+  fs.writeFileSync(gateway, site === 'rolled-back' ? NGINX_GATEWAY_CONTENT : renderGatewaySite({ instance: 'smith', domain: DOMAIN, apps: catalog, homeBase: site }));
+  fs.writeFileSync(applied, `${JSON.stringify({ homeBase: reloaded === 'socket' ? 'socket' : 'tcp' })}\n`);
 }
 
 // What nginx sends on the socket: the member's tailnet address and hostname, from Serve.
@@ -45,15 +44,15 @@ async function until(condition, what) {
 
 const loopback = (base, method, url, headers = {}) => fetch(`${base}${url}`, { method, redirect: 'manual', headers: { 'x-forwarded-for': PARENT, 'x-forwarded-host': `smith-homebase.${DOMAIN}`, ...headers } });
 
-// adminSocket 'in-root': Home Base listens on homebase.sock in the test's own directory. gateway: the nginx
-// gateway site Home Base reads (none yet). The household is cut over, as far as Home Base's jobs know.
+// adminSocket 'in-root': Home Base listens on homebase.sock in the test's own directory. files: the nginx
+// gateway site and the applied record Home Base reads (none yet). The household is cut over, as far as Home Base's jobs know.
 async function socketHousehold(t, { adminSocket = '', ...config } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-sock-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const socket = path.join(dir, 'homebase.sock');
-  const gateway = path.join(dir, 'sovereign-home');
-  const server = await startServer(t, { config: { adminSocket: adminSocket === 'in-root' ? socket : adminSocket, nginxGatewaySite: gateway, gatewayReadIntervalMs: 0, ...config } });
-  return { ...server, socket, gateway };
+  const files = { gateway: path.join(dir, 'sovereign-home'), applied: path.join(dir, 'sovereign-ingress-applied.json') };
+  const server = await startServer(t, { config: { adminSocket: adminSocket === 'in-root' ? socket : adminSocket, nginxGatewaySite: files.gateway, nginxGatewayApplied: files.applied, gatewayReadIntervalMs: 0, ...config } });
+  return { ...server, socket, files };
 }
 
 test('Home Base answers on its socket as it does on the port, and only the directory decides who connects', async (t) => {
@@ -67,21 +66,22 @@ test('Home Base answers on its socket as it does on the port, and only the direc
 });
 
 test('the port stays Home Base until nginx runs a gateway that reaches it on its socket, then only redirects', async (t) => {
-  const { base, gateway, root } = await socketHousehold(t);
+  const { base, files, root } = await socketHousehold(t);
   const parent = browser(base, PARENT);
   const served = async (why) => assert.equal((await parent.get('/api/identity/whoami')).status, 200, why);
-  await served('no gateway site: the port is Home Base');
+  const redirected = async (why) => assert.equal((await loopback(base, 'GET', '/api/identity/whoami')).status, 308, why);
+  await served('no gateway: the port is Home Base');
   // The jobs may say otherwise (a cutover that put Home Base on its socket), but nginx runs the gateway.
   const store = new SqliteStateStore(path.join(root, 'state.sqlite3'));
   const operations = [{ id: 'install-socket-gateway', type: 'nginx.ensure-socket-gateway', instance: 'smith', domain: DOMAIN, homeBase: 'socket' }];
   const { id } = store.createJob({ kind: 'ingress-cutover', target: 'local-host', status: 'queued', dryRun: false, createdAt: new Date().toISOString(), currentStep: null, planJson: JSON.stringify({ operationPlan: { operations } }) });
   store.updateJob(id, { status: 'completed', finishedAt: new Date(Date.now() + 1000).toISOString() });
-  writeGateway(gateway, { homeBase: 'tcp' });
-  await served('an older executor refreshed the gateway back to the port: redirecting would loop');
-  writeGateway(gateway, { applied: false });
-  await served('nginx refused this gateway, or has not reloaded it: it may still send Home Base the port');
+  writeGateway(files, { site: 'tcp' });
+  await served('a gateway from before SID-006 reaches Home Base on the port');
+  writeGateway(files, { site: 'socket', reloaded: 'tcp' });
+  await served('the socket gateway is written but nginx has not reloaded it (or refused it)');
 
-  writeGateway(gateway);
+  writeGateway(files);
   const page = await loopback(base, 'GET', '/apps?tab=updates');
   assert.equal(page.status, 308);
   assert.equal(page.headers.get('location'), `${HOMEBASE_ORIGIN}/apps?tab=updates`);
@@ -100,18 +100,24 @@ test('the port stays Home Base until nginx runs a gateway that reaches it on its
   // A path can't send the redirect to another host.
   assert.ok((await loopback(base, 'GET', '//evil.example/x')).headers.get('location').startsWith(`${HOMEBASE_ORIGIN}/`));
 
-  fs.writeFileSync(gateway, NGINX_GATEWAY_CONTENT);
+  // An app install rewrites the gateway: until its reload, nginx still runs the one it had.
+  fs.writeFileSync(files.gateway, renderGatewaySite({ instance: 'smith', domain: DOMAIN, apps: catalog, homeBase: 'socket' }));
+  await redirected('a rewrite waiting for its reload (or whose reload failed) keeps the port closed to Home Base');
+  // An older executor rewrote the gateway back to the port and reloaded, leaving the record behind.
+  fs.writeFileSync(files.gateway, renderGatewaySite({ instance: 'smith', domain: DOMAIN, apps: catalog, homeBase: 'tcp' }));
+  await served('redirecting would loop: nginx sends Home Base the port');
+  writeGateway(files, { site: 'rolled-back' });
   await served('rolled back to the TCP gateway: Serve reaches Home Base on the port again');
 });
 
 test('HOME_BASE_LOOPBACK=off closes the port once Home Base is on its socket, and reopens it on a rollback', async (t) => {
-  const { app, base, gateway } = await socketHousehold(t, { loopback: 'off', loopbackCheckIntervalMs: 20 });
+  const { app, base, files } = await socketHousehold(t, { loopback: 'off', loopbackCheckIntervalMs: 20 });
   const port = app.server.address().port;
   assert.equal(app.server.listening, true, 'not on the socket yet: the port is still Home Base');
-  writeGateway(gateway);
+  writeGateway(files);
   await until(() => !app.server.listening, 'the port to close');
   await assert.rejects(() => fetch(`${base}/api/homebase/health`), 'nothing listens on the port');
-  fs.writeFileSync(gateway, NGINX_GATEWAY_CONTENT);
+  writeGateway(files, { site: 'rolled-back' });
   await until(() => app.server.listening, 'the port to reopen');
   assert.equal(app.server.address().port, port);
   assert.equal((await fetch(`${base}/api/homebase/health`)).status, 200);

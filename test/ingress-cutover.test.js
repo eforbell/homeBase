@@ -17,7 +17,8 @@ function base(type, fields = {}) {
 }
 
 // systemd-tmpfiles creates the socket directory the way the tmpfiles.d entry says; nginx -T prints `dump`.
-function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookupUser, asUser } = {}) {
+// answers: whether Home Base answers its health probe on its socket.
+function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookupUser, asUser, answers = true } = {}) {
   // Present on every host: the executor's state directory (its job journal lives there) and tmpfiles.d.
   const fsImpl = createFakeFs({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700 }, '/etc/tmpfiles.d': { kind: 'dir' }, '/etc/nginx/sites-enabled': { kind: 'dir' }, '/etc/nginx/sites-available': { kind: 'dir' }, ...files });
   const calls = [];
@@ -27,7 +28,7 @@ function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookup
     if (input.binary === '/usr/sbin/nginx') return { stdout: dump, stderr: '' };
     return { stdout: '' };
   };
-  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, sleep: async () => {}, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
+  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, sleep: async () => {}, probeHomeBase: async () => answers, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
 }
 
 const cutover = (fields = {}) => base('nginx.ensure-socket-gateway', { instance: 'smith', domain: DOMAIN, ...fields });
@@ -74,6 +75,10 @@ test('SID-006: a cutover moves Home Base onto its socket only once it listens th
   assert.match(await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on port 3080: it is not listening on its socket yet/);
   assert.ok(onPort());
   assert.equal(JSON.parse(fsImpl.readFileSync(INGRESS_STATE_PATH)).homeBase, undefined);
+  // A socket file nobody answers on (a newer Home Base's, left by an older one): nginx keeps the port.
+  const stale = harness({ '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } }, { answers: false });
+  assert.match(await stale.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on port 3080: it is not listening on its socket yet/);
+  assert.doesNotMatch(stale.fsImpl.readFileSync(SITE), /homebase-identity\/homebase\.sock/);
   // Listening: Home Base and its passkey mounts (every strict hostname) move onto its socket.
   const listening = harness({ '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } });
   assert.match(await listening.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on its socket/);
@@ -90,27 +95,31 @@ test('SID-006: a cutover moves Home Base onto its socket only once it listens th
   await assert.rejects(() => listening.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway')), /is unreadable/);
 });
 
-test('SID-006: only a gateway nginx has validated and reloaded is marked applied, which is what Home Base reads', async () => {
-  const { gatewayReachesHomeBaseSocket } = require('../src/operations/ingress-layout');
+test('SID-006: the applied record says where the gateway nginx last reloaded reaches Home Base, whatever is written since', async () => {
+  const { APPLIED_PATH, homeBaseOnSocket } = require('../src/operations/ingress-layout');
   const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } };
   const { fsImpl, handlers } = harness(files);
+  const applied = () => (fsImpl.existsSync(APPLIED_PATH) ? JSON.parse(fsImpl.readFileSync(APPLIED_PATH)).homeBase : null);
+  const onSocket = () => homeBaseOnSocket({ appliedText: fsImpl.existsSync(APPLIED_PATH) ? fsImpl.readFileSync(APPLIED_PATH) : '', siteText: fsImpl.readFileSync(SITE) });
   await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' }));
-  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false, 'written, not yet reloaded');
+  assert.equal(applied(), null, 'written, not yet reloaded');
+  assert.equal(onSocket(), false);
   await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
-  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), true);
-  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
-  assert.equal(fsImpl.readFileSync(SITE).match(/# sovereign-ingress: applied/g).length, 1, 'marked once');
-  // A refresh rewrites the site: unmarked until its own reload succeeds. If nginx -t refuses it, it stays so.
+  assert.equal(applied(), 'socket');
+  assert.equal(onSocket(), true);
+  assert.equal(fsImpl.statSync(APPLIED_PATH).mode & 0o777, 0o644, 'Home Base reads it');
+  // An app install rewrites the gateway: nginx still runs the reloaded one until the next reload succeeds.
   await handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
-  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false);
+  assert.equal(onSocket(), true);
   const refusing = createBaseHandlers({ fsImpl, sleep: async () => {}, run: async (input) => { if (input.binary === '/usr/sbin/nginx') throw Object.assign(new Error('nginx -t failed'), { code: 'OPERATION_FAILED' }); return { stdout: '' }; } });
   await assert.rejects(() => refusing['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /nginx -t failed/);
-  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false);
-  // The TCP gateway a rollback writes never reaches Home Base's socket.
+  assert.equal(applied(), 'socket', 'a refused reload changes nothing nginx runs');
+  // A rollback writes the TCP gateway; once nginx reloads it, Home Base is back on the port.
   await handlers['nginx.restore-tcp-gateway'](base('nginx.restore-tcp-gateway', { risk: 'destructive' }));
   assert.doesNotMatch(fsImpl.readFileSync(SITE), /^# sovereign-ingress: sockets/);
+  assert.equal(onSocket(), false, 'the gateway on disk already sends Home Base the port');
   await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
-  assert.equal(gatewayReachesHomeBaseSocket(fsImpl.readFileSync(SITE)), false);
+  assert.equal(applied(), 'tcp');
 });
 
 test('an unreadable cutover record is refused, never read as "not cut over"', async () => {

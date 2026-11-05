@@ -34,7 +34,7 @@ const { STATIC_ROUTE, routeFor } = require('./route-matrix');
 const { ATTESTATION_ROOTS, createSnapshotReader, policyFor, requestDigest, resolveMember } = require('sovereign-auth');
 const { createIngressRoutes } = require('./ingress-routes');
 const { createSuiteRequestGuard, refuseUnsafeRequest } = require('./request-guard');
-const { HOMEBASE_SERVICE, appPublicBase, appServiceKey, gatewayReachesHomeBaseSocket, ingressServices } = require('./operations/ingress-layout');
+const { APPLIED_PATH, HOMEBASE_SERVICE, appPublicBase, appServiceKey, homeBaseOnSocket: nginxReachesHomeBaseSocket, ingressServices } = require('./operations/ingress-layout');
 const { currentIngress } = require('./services/ingress-control');
 const {
   mergeHomeBaseConfig,
@@ -2409,17 +2409,16 @@ function createApp(config) {
   const server = http.createServer(handleRequest);
   const socketServer = http.createServer((req, res) => { req.homeBaseVia = 'socket'; return handleRequest(req, res); });
 
-  // SID-006: whether nginx, as it runs now, reaches Home Base on its socket: the gateway site the executor marks
-  // applied once nginx has reloaded it (world-readable). Not the job record, which a recovered or partly
-  // failed job leaves behind the host, and an older executor's refresh would leave stale. Read at most every
-  // 2 seconds.
+  // SID-006: whether nginx, as it runs now, reaches Home Base on its socket: the executor's record of the gateway
+  // nginx last reloaded, and the gateway on disk (both world-readable; ingress-layout.js homeBaseOnSocket). Not
+  // the job record, which a recovered or partly failed job leaves behind the host. Read at most every 2 seconds.
   const gatewaySite = config.nginxGatewaySite || '/etc/nginx/sites-available/sovereign-home';
+  const gatewayApplied = config.nginxGatewayApplied || APPLIED_PATH;
   let gatewayRead = { at: -Infinity, onSocket: false };
   function homeBaseOnSocket() {
     if (Date.now() - gatewayRead.at < (config.gatewayReadIntervalMs ?? 2000)) return gatewayRead.onSocket;
-    let text = '';
-    try { text = fs.readFileSync(gatewaySite, 'utf8'); } catch { /* no gateway: not cut over */ }
-    gatewayRead = { at: Date.now(), onSocket: gatewayReachesHomeBaseSocket(text) };
+    const read = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } };
+    gatewayRead = { at: Date.now(), onSocket: nginxReachesHomeBaseSocket({ appliedText: read(gatewayApplied), siteText: read(gatewaySite) }) };
     return gatewayRead.onSocket;
   }
 

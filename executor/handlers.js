@@ -1,5 +1,6 @@
 const fs = require('fs');
 const crypto = require('crypto');
+const http = require('http');
 const path = require('path');
 const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
@@ -12,8 +13,8 @@ const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const {
-  appPublicBase, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
-  APPLIED_MARKER, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
+  appPublicBase, gatewayReachesHomeBaseSocket, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
+  APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
 const { applyListenEnv, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
 
@@ -416,6 +417,19 @@ function trustsIdentityHeaders(content) {
 }
 
 // The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
+// Whether Home Base answers its health probe on its socket (SID-006).
+function probeHomeBaseSocket(socketPath, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    const req = http.request({ socketPath, method: 'GET', path: '/api/homebase/health', timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
 function readIngressRecord(fsImpl = fs) {
   const stat = lstatOrNull(fsImpl, INGRESS_STATE_PATH);
   if (!stat) return null;
@@ -428,7 +442,7 @@ function readIngressRecord(fsImpl = fs) {
   return state;
 }
 
-function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), probeHomeBase = probeHomeBaseSocket } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   // Who this app runs as on this host: its own user, or sovereign until it is moved (identity.js).
   // planKind: only the move plan may continue a move that was interrupted (identity.js).
@@ -483,7 +497,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
   // checks for it every 2 seconds, so this waits a little for the socket.
   async function homeBaseListensOnSocket() {
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (lstatOrNull(fsImpl, HOMEBASE_SOCKET)?.isSocket()) return true;
+      // Answering, not just present: an older Home Base leaves a newer one's socket file behind.
+      if (lstatOrNull(fsImpl, HOMEBASE_SOCKET)?.isSocket() && await probeHomeBase(HOMEBASE_SOCKET)) return true;
       await sleep(500);
     }
     return false;
@@ -982,11 +997,13 @@ END $$;
     'nginx.validate-and-reload': async (operation) => {
       await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
-      // nginx now runs exactly this socket gateway: say so in it, for Home Base (SID-006). A failed reload
-      // never gets here, so a gateway nginx refused is never marked applied.
-      if (gatewayIsSocketMode()) {
-        const site = String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '');
-        if (!site.trimEnd().endsWith(APPLIED_MARKER)) writeGatewaySite(`${site.trimEnd()}\n${APPLIED_MARKER}\n`);
+      // Where nginx now reaches Home Base, for Home Base (SID-006): only after a reload that succeeded, from
+      // the gateway it reloaded. Rewriting the gateway leaves this as it was until its own reload.
+      // A host never cut over has nothing to record.
+      const socketMode = gatewayIsSocketMode();
+      if (socketMode || lstatOrNull(fsImpl, APPLIED_PATH)) {
+        const site = socketMode ? String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '') : '';
+        writeFileAtomic(fsImpl, APPLIED_PATH, `${JSON.stringify({ homeBase: gatewayReachesHomeBaseSocket(site) ? 'socket' : 'tcp' })}\n`, 0o644);
       }
       return 'validated and reloaded nginx';
     },
