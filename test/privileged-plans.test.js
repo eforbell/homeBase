@@ -10,7 +10,8 @@ const path = require('path');
 const { createExecutorServer } = require('../executor/server');
 const { MATRIX } = require('../src/route-matrix');
 const { SqliteStateStore } = require('../src/state/sqlite-store');
-const { PASSPHRASE, activeHousehold } = require('./support/household');
+const { verifyPassphrase } = require('../src/admin-auth');
+const { PASSPHRASE, PEER_WHOIS, activeHousehold } = require('./support/household');
 
 const APP = 'home-source';
 const BACKUPS = '/var/lib/sovereign-home/backups/home-source';
@@ -83,7 +84,7 @@ test('every privileged plan asks the unlocked administrator for the hardware key
     assert.equal(res.body.error, 'step_up_required', url);
     assert.equal(res.body.policy, 'privileged-plan');
     assert.equal(res.body.kind, 'hardware');
-    assert.match(res.body.target, new RegExp(`^POST ${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} settings [A-Za-z0-9_-]{16}`), `${url}: target ${res.body.target}`);
+    assert.match(res.body.target, new RegExp(`^POST ${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} settings [A-Za-z0-9_-]{16} installs [A-Za-z0-9_-]{16}`), `${url}: target ${res.body.target}`);
     assert.match(res.body.digest, /^[A-Za-z0-9_-]{43}$/);
     assert.match(res.body.message, /^Confirm with your hardware key to /);
   }
@@ -120,7 +121,7 @@ test('restore freezes "latest" to the backup it names: a newer backup before the
   const { parent, yubikey, backup, received } = household;
   const url = `/api/apps/${APP}/restore/execute`;
   const asked = await parent.post(url, REAL);
-  assert.match(asked.body.target, new RegExp(`^POST ${url} settings [A-Za-z0-9_-]{16} backup 20260924T101010123Z$`));
+  assert.match(asked.body.target, new RegExp(`^POST ${url} settings [A-Za-z0-9_-]{16} installs [A-Za-z0-9_-]{16} backup 20260924T101010123Z$`));
   const token = await parent.actionToken(yubikey, asked.body);
   backup('20260925T090000000Z');
   const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
@@ -180,7 +181,7 @@ test('a plan resolved when it runs is confirmed resolved: a setting that changes
   const url = `/api/apps/${APP}/execute`;
   const asked = await parent.post(url, REAL);
   assert.equal(asked.status, 401, JSON.stringify(asked.body));
-  assert.match(asked.body.target, new RegExp(`^POST ${url} settings [A-Za-z0-9_-]{16} plan [A-Za-z0-9_-]{22}$`));
+  assert.match(asked.body.target, new RegExp(`^POST ${url} settings [A-Za-z0-9_-]{16} installs [A-Za-z0-9_-]{16} plan [A-Za-z0-9_-]{22}$`));
   const token = await parent.actionToken(yubikey, asked.body);
   // The install's site values come from the settings, which change between the tap and the retry.
   store.setHomeBaseConfig({ hostname: 'otherhost', domain: 'example-tailnet.ts.net', gitTransport: 'https', gitSshKeyPath: '', healthAlertsEnabled: false, healthAlertsWebhookUrl: '', tailscaleManagedServiceId: 'svc:home', updatedAt: new Date().toISOString() });
@@ -209,6 +210,22 @@ test('a plan whose Home Base leaves active while it resolves is refused, not run
   assert.equal(received.filter((spec) => spec.action === 'install').length, 0, 'nothing ran');
 });
 
+test('a legacy plan built from an installation record is confirmed with it: a changed install root refuses the retry', async (t) => {
+  const { parent, yubikey, root } = await activeHousehold(t, { config: { homeBaseExecutionMode: 'legacy-sudo', homeBaseEnablePrivilegedJobs: true } });
+  const store = new SqliteStateStore(path.join(root, 'state.sqlite3'));
+  const record = (installRoot) => store.upsertInstallation({ appId: 'family-help', name: 'Family Help', purpose: 'x', port: 3010, mountPath: '/help/', externalUrl: 'https://homebase.tailnet/help/', installRoot, serviceName: 'family-help', ref: 'main', status: 'planned', plannedAt: '2026-04-03T00:00:00.000Z', updatedAt: '2026-04-03T00:00:00.000Z' });
+  record('/opt/confirmed/familyHelp');
+  const url = '/api/apps/family-help/uninstall/execute';
+  const asked = await parent.post(url, REAL);
+  assert.equal(asked.status, 401, JSON.stringify(asked.body));
+  const token = await parent.actionToken(yubikey, asked.body);
+  // What the open install route can do with only the session: point the record somewhere else.
+  record('/opt/unconfirmed/familyHelp');
+  const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
+  assert.equal(retried.status, 401, JSON.stringify(retried.body));
+  assert.notEqual(retried.body.target, asked.body.target);
+});
+
 test('a legacy plan built from the settings is confirmed with them: a change before the retry refuses it', async (t) => {
   const { parent, yubikey, root } = await activeHousehold(t, { config: { homeBaseExecutionMode: 'legacy-sudo', homeBaseEnablePrivilegedJobs: true } });
   const store = new SqliteStateStore(path.join(root, 'state.sqlite3'));
@@ -221,4 +238,35 @@ test('a legacy plan built from the settings is confirmed with them: a change bef
   const retried = await parent.post(url, REAL, { 'x-sovereign-action-token': token.body.token });
   assert.equal(retried.status, 401, JSON.stringify(retried.body));
   assert.notEqual(retried.body.target, asked.body.target);
+});
+
+test('a passphrase rotated while another rotation waits on its confirmation is not overwritten by that stale check', async (t) => {
+  // Holds the armed lookup until released: a rotate's retry makes three, the last its confirmation's.
+  const gate = { armed: false, skip: 0 };
+  const whois = async (addr) => {
+    if (gate.armed && gate.skip-- === 0) {
+      gate.armed = false;
+      gate.reached();
+      await gate.released;
+    }
+    return PEER_WHOIS(addr);
+  };
+  const { parent, yubikey, root } = await activeHousehold(t, { whois });
+  const rotate = (newPassphrase) => ({ currentPassphrase: PASSPHRASE, newPassphrase });
+  const askA = await parent.post('/api/admin/rotate', rotate('passphrase from rotation A'));
+  const tokenA = await parent.actionToken(yubikey, askA.body);
+  let release;
+  const reached = new Promise((resolve) => { gate.reached = resolve; });
+  gate.released = new Promise((resolve) => { release = resolve; });
+  Object.assign(gate, { armed: true, skip: 2 });
+  const pendingA = parent.post('/api/admin/rotate', rotate('passphrase from rotation A'), { 'x-sovereign-action-token': tokenA.body.token });
+  await reached;
+  const b = await parent.confirmed(yubikey, '/api/admin/rotate', rotate('passphrase from rotation B'));
+  assert.equal(b.retry.status, 200, JSON.stringify(b.retry.body));
+  release();
+  const a = await pendingA;
+  assert.equal(a.status, 409, JSON.stringify(a.body));
+  assert.equal(a.body.code, 'PASSPHRASE_CHANGED');
+  const stored = new SqliteStateStore(path.join(root, 'state.sqlite3')).getAdminCredential();
+  assert.ok(verifyPassphrase('passphrase from rotation B', stored.passphraseHash), 'rotation B stands');
 });

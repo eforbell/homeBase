@@ -1035,11 +1035,14 @@ function createApp(config) {
       const refused = await authorizeRoute(route, req);
       if (refused) return sendJson(res, refused.statusCode, refused.payload);
       // A privileged plan's confirmation is bound to the route as it was called (a handler may freeze more).
-      // It covers the saved settings too: legacy plans read the git transport and key from them when they
-      // run, so a settings change between the tap and the retry refuses the retry.
+      // It covers what legacy plans are built from when they run, too: the saved settings (the git transport
+      // and key) and the installation records (install roots, units, ports), which an unlocked session can
+      // change without the hardware key. A change between the tap and the retry refuses the retry. Update
+      // checks write only updateStatus, which no plan reads, so it is left out.
       if (route.policy === 'privileged-plan') {
-        const settings = crypto.createHash('sha256').update(canonicalJson(homeBaseConfigOverride)).digest('base64url').slice(0, 16);
-        req.planTarget = `${method} ${pathname} settings ${settings}`;
+        const fingerprint = (value, length) => crypto.createHash('sha256').update(canonicalJson(value)).digest('base64url').slice(0, length);
+        const records = Object.values(state.installations || {}).map(({ updateStatus, ...record }) => record);
+        req.planTarget = `${method} ${pathname} settings ${fingerprint(homeBaseConfigOverride, 16)} installs ${fingerprint(records, 16)}`;
         req.planLabel = describePlan(pathname);
       }
 

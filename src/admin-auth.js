@@ -191,6 +191,8 @@ async function rotateAdmin(req, res, body, stateStore, { directory = null } = {}
   // mistyped passphrase doesn't spend the confirmation.
   const confirmed = await confirmPrivileged(req, directory, status, null);
   if (!confirmed.ok) return { statusCode: confirmed.statusCode, payload: confirmed.payload };
+  // The passphrase was checked before the tap: one rotated meanwhile is not overwritten with this stale check.
+  if (stateStore.getAdminCredential()?.passphraseHash !== credential.passphraseHash) return PASSPHRASE_CHANGED;
 
   const nowIso = new Date().toISOString();
   const passphraseHash = hashPassphrase(newPassphrase);
