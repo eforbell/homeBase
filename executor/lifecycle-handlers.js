@@ -177,6 +177,10 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       // Never report success for a database-backed app without restoring its database.
       if (layout.database && !present.dump) deny(`Backup ${operation.archiveName} has no database dump; refusing a partial restore of ${layout.app.name}.`);
       const restored = [];
+      // Where nginx points now decides where the app listens, not the catalog: an app whose catalog entry moved
+      // to a socket keeps its loopback port until an update moves it (socket directory, nginx and all).
+      const snippet = isRealFile(layout.nginxSnippet) ? readSmallFileNoFollow(fsImpl, layout.nginxSnippet) : null;
+      const listenNow = layout.listen.kind === 'unix' && snippet != null && !snippet.includes(`unix:${layout.listen.socket}`) ? { ...layout, listen: { kind: 'tcp' } } : layout;
       if (present.env) {
         asUser(owner, () => {
           const restoredEnv = parseDotEnv(readSmallFileNoFollow(fsImpl, `${archiveDir}/.env.backup`) ?? deny('The backup .env is not a regular file.'));
@@ -191,7 +195,7 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
           Object.assign(restoredEnv, storageEnvOverrides(layout.app));
           // Nor listen where nginx no longer points (a backup from before the app's socket, or HOST=0.0.0.0), nor
           // trust identity headers it no longer should (a backup taken in tailnet mode, restored after the switch back).
-          writeFileAtomic(fsImpl, layout.envPath, renderEnv(keepIdentityEnv(applyListenEnv(restoredEnv, layout), currentContent, layout)), owner.own ? 0o600 : 0o640);
+          writeFileAtomic(fsImpl, layout.envPath, renderEnv(keepIdentityEnv(applyListenEnv(restoredEnv, listenNow), currentContent, layout)), owner.own ? 0o600 : 0o640);
         });
         restored.push('.env');
       }
