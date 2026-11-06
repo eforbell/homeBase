@@ -23,7 +23,9 @@ function loopbackFromEnv(value) {
 
 function loadConfig(env = process.env) {
   const rootDir = process.cwd();
-  const dataDir = env.HOME_BASE_DATA_DIR || path.join(rootDir, '.data');
+  // Beside the database when only that is set: an older env file may not name a data directory, and the checkout is
+  // not writable on a hardened host. The database's own directory has to be.
+  const dataDir = env.HOME_BASE_DATA_DIR || (env.HOME_BASE_STATE_DB ? path.dirname(env.HOME_BASE_STATE_DB) : path.join(rootDir, '.data'));
   const stateDbPath = env.HOME_BASE_STATE_DB || path.join(dataDir, 'home-base.sqlite3');
   const baseInstallDir = env.HOME_BASE_INSTALL_DIR || '/opt/sovereign-home/apps';
   const sharedRoot = env.HOME_BASE_SHARED_ROOT || path.dirname(baseInstallDir);

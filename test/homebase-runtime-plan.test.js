@@ -19,6 +19,7 @@ test('homebase runtime plan renders hardened plan-only service scaffolding', () 
   assert.match(plan.files['homebase.service'], /Description=Home Base Control Plane/);
   assert.match(plan.files['homebase.service'], /NoNewPrivileges=true/);
   assert.match(plan.files['homebase.service'], /ProtectSystem=strict/);
+  assert.match(plan.files['homebase.env'], /^HOME_BASE_DATA_DIR=\/var\/lib\/sovereign-home\/homebase$/m, 'beside the database (#155)');
   assert.match(plan.files['homebase.env'], /HOME_BASE_STATE_DB=\/var\/lib\/sovereign-home\/homebase\/home-base\.sqlite3/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_BIND_HOST=127\.0\.0\.1/);
   assert.match(plan.files['homebase.env'], /HOME_BASE_EXECUTION_MODE=plan-only/);
@@ -92,4 +93,26 @@ test('homebase runtime plan rejects multiline environment values', () => {
     port: 3080,
     defaultHostname: 'homebase\nEOF\ntouch /tmp/pwned',
   }), /single-line value/i);
+});
+
+test('the data directory follows the database when an env file names only that (#155)', () => {
+  const { loadConfig } = require('../src/config');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { createIngressControl } = require('../src/services/ingress-control');
+  assert.equal(loadConfig({ HOME_BASE_STATE_DB: '/var/lib/x/home-base.sqlite3' }).dataDir, '/var/lib/x');
+  assert.equal(loadConfig({ HOME_BASE_STATE_DB: '/var/lib/x/home-base.sqlite3' }).stateDbPath, '/var/lib/x/home-base.sqlite3', 'the database stays where it is');
+  assert.equal(loadConfig({ HOME_BASE_DATA_DIR: '/data', HOME_BASE_STATE_DB: '/var/lib/x/db' }).dataDir, '/data', 'an explicit setting wins');
+  assert.equal(loadConfig({ HOME_BASE_DATA_DIR: '/data' }).stateDbPath, '/data/home-base.sqlite3');
+  assert.equal(loadConfig({}).dataDir, path.join(process.cwd(), '.data'), 'a checkout with neither (development) is unchanged');
+  // A confirmation is written where the database lives, and is there for the next process to read.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'data-dir-'));
+  const config = { ...loadConfig({ HOME_BASE_STATE_DB: path.join(root, 'home-base.sqlite3') }), instance: 'smith', defaultDomain: 'example-tailnet.ts.net' };
+  const cli = async (args) => (args[0] === 'status' ? { Self: { ID: 'nSelf', Tags: ['tag:smith-host'] } } : { version: '0.0.1', services: {} });
+  const control = createIngressControl({ config, cli });
+  return control.confirm('home', { hostNodeId: 'nSelf', confirmedBy: null, assurance: 'passphrase-session' }).then(() => {
+    assert.deepEqual(fs.readdirSync(root), ['ingress-confirmations.json']);
+    fs.rmSync(root, { recursive: true });
+  });
 });
