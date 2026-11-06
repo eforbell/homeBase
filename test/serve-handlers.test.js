@@ -25,7 +25,7 @@ const frontendForScheme = (target) => {
 const portsFromExport = (endpoints, frontends = {}) => Object.fromEntries(Object.entries(endpoints).map(([endpoint, exported]) => {
   const port = endpoint.slice(4);
   const frontend = frontends[port] || frontendForScheme(exported);
-  const target = exported.replace(/^https:\/\/unix:/, 'unix:').replace(/^tls-terminated-tcp:/, 'tcp:');
+  const target = exported.replace(/^https?:\/\/unix:/, 'unix:').replace(/^tls-terminated-tcp:/, 'tcp:');
   return [port, { frontend, handlers: { '/': target } }];
 }));
 const NUMENOR = () => ({
@@ -43,7 +43,7 @@ function fakeTailscale({ services = NUMENOR(), tags = ['tag:smith-host'], fsImpl
     const root = entry.handlers['/'];
     if (entry.frontend === 'tcp') return root;
     if (entry.frontend === 'tls') return root.replace(/^tcp:/, 'tls-terminated-tcp:');
-    return root.startsWith('unix:') ? `https://${root}` : root;
+    return root.startsWith('unix:') ? `${entry.frontend}://${root}` : root;
   };
   const exportService = (name) => {
     const service = state.services[name];
@@ -180,7 +180,24 @@ test('a publish that changes another entry is reported, not passed off as succes
     if (input.args?.[1] === '--bg') state.services[FOREIGN_NAME].ports[443].frontend = 'http';
     return result;
   } });
-  await assert.rejects(() => publish(handlers, 'home'), /changed another Serve entry/);
+  await assert.rejects(() => publish(handlers, 'home'), /was applied, but svc:lightning also changed/);
+});
+
+test('a change made by someone else mid-job is named, and running the job again finishes it', async () => {
+  const { state, run } = fakeTailscale({ fsImpl: null });
+  const fsImpl = createFakeFs({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700 }, [INGRESS_STATE_PATH]: JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN }) });
+  const interfere = async (input) => {
+    const result = await run(input);
+    if (input.args?.[1] === '--bg' || input.args?.[1] === 'clear') state.node.TCP[9999] = { HTTPS: true };
+    return result;
+  };
+  const handlers = createServeHandlers({ fsImpl, run: interfere });
+  await assert.rejects(() => publish(handlers, 'home'), /was applied, but node-level entries also changed/);
+  assert.match(await publish(handlers, 'home'), /already targets/);
+  delete state.node.TCP[9999];
+  await assert.rejects(() => retire(handlers, LEGACY_NAME), /was applied, but node-level entries also changed/);
+  assert.match(await retire(handlers, LEGACY_NAME), /not served by this host/);
+  assert.ok(fsImpl.existsSync(PRE_INGRESS_SNAPSHOT), 'the record of what was retired survives');
 });
 
 test('retiring removes only the legacy service, and saves it first (#156)', async () => {
@@ -225,6 +242,7 @@ test('every endpoint shape measured on the CLI maps to the flag that recreates i
   assert.deepEqual(restoreArgs('svc:x', 'tcp:5432', 'tcp://localhost:5432', { TCPForward: 'localhost:5432' }), [...scoped, '--tcp=5432', 'tcp://localhost:5432']);
   assert.deepEqual(restoreArgs('svc:x', 'tcp:6000', 'tls-terminated-tcp://localhost:6000', { TCPForward: 'localhost:6000', TerminateTLS: 'x' }), [...scoped, '--tls-terminated-tcp=6000', 'tcp://localhost:6000']);
   assert.deepEqual(restoreArgs('svc:x', 'tcp:443', 'https://unix:/run/x.sock', { HTTPS: true }), [...scoped, '--https=443', 'unix:/run/x.sock']);
+  assert.deepEqual(restoreArgs('svc:x', 'tcp:8082', 'http://unix:/run/x.sock', { HTTP: true }), [...scoped, '--http=8082', 'unix:/run/x.sock']);
   assert.deepEqual(restoreArgs('svc:x', 'tcp:3080', 'http://127.0.0.1:3080'), [...scoped, '--https=3080', 'http://127.0.0.1:3080'], 'an unknown frontend is never guessed as plain HTTP');
 });
 
@@ -254,6 +272,36 @@ test('rollback restores the retired service exactly, removes socket services, an
   assert.ok(!writesWholeConfig(state), 'never writes the whole Serve config');
   assert.equal(fsImpl.existsSync(PRE_INGRESS_SNAPSHOT), false);
   assert.match(await restore(handlers), /restored no retired services; removed no socket services/);
+});
+
+test('a retired service on an HTTP frontend with a socket upstream comes back the same', async () => {
+  const services = { 'svc:old': { advertised: true, ports: { 8082: { frontend: 'http', handlers: { '/': 'unix:/run/legacy-app.sock' } } } } };
+  const original = JSON.parse(JSON.stringify(services));
+  const { state, handlers } = host({ services });
+  await retire(handlers, 'svc:old');
+  await restore(handlers);
+  assert.deepEqual(state.services, original);
+});
+
+test('rollback clears only the exact shape a publish creates', async () => {
+  const site = (port, handlers, frontend = 'https') => ({ [port]: { frontend, handlers } });
+  const socket = 'unix:/run/sovereign-serve/home.sock';
+  const services = {
+    'svc:mixed-path': { advertised: true, ports: site(443, { '/': 'http://127.0.0.1:9000', '/home': socket }) },
+    'svc:mixed-port': { advertised: true, ports: { ...site(443, { '/': socket }), ...site(9443, { '/': 'http://127.0.0.1:9001' }) } },
+    'svc:other-port': { advertised: true, ports: site(9443, { '/': socket }) },
+    'svc:traversal': { advertised: true, ports: site(443, { '/': 'unix:/run/sovereign-serve/../unrelated.sock' }) },
+    'svc:plain-http': { advertised: true, ports: site(443, { '/': socket }, 'http') },
+    'svc:smith-home': { advertised: true, ports: site(443, { '/': socket }) },
+  };
+  const { 'svc:smith-home': removed, ...kept } = services;
+  const { state, handlers } = host({ services });
+  const message = await restore(handlers);
+  assert.deepEqual(state.services, kept, 'nothing someone else may own is cleared');
+  assert.match(message, /removed svc:smith-home/);
+  assert.match(message, /left svc:mixed-path, svc:mixed-port, svc:other-port, svc:plain-http in place/);
+  assert.doesNotMatch(message, /svc:traversal/, 'it is not a Home Base socket at all');
+  assert.ok(removed);
 });
 
 test('rollback with no record still takes the socket services down', async () => {
@@ -296,6 +344,24 @@ test('a rollback stopped before its drain still drains when run again', async ()
   assert.equal(state.services[LEGACY_NAME].advertised, false);
 });
 
+test('an interrupted restore from an older snapshot finishes every endpoint and the drain when run again', async () => {
+  let fail = true;
+  const failOn = (args) => {
+    if (fail && args.includes('--tcp=5432')) { fail = false; return true; }
+    return false;
+  };
+  const { [LEGACY_NAME]: gone, ...kept } = NUMENOR();
+  const snapshot = { version: '0.0.1', services: { [LEGACY_NAME]: { endpoints: CAPTURED[LEGACY_NAME].endpoints, advertised: false } } };
+  const { fsImpl, state, handlers } = host({ services: kept, snapshot, failOn });
+  await assert.rejects(() => restore(handlers), /injected failure/);
+  assert.ok(state.services[LEGACY_NAME], 'the first endpoint was restored');
+  assert.ok(fsImpl.existsSync(PRE_INGRESS_SNAPSHOT));
+  assert.match(await restore(handlers), /restored svc:bitcoin/);
+  assert.deepEqual(state.services[LEGACY_NAME].ports, gone.ports, 'nothing is abandoned');
+  assert.equal(state.services[LEGACY_NAME].advertised, false, 'it was drained in the snapshot');
+  assert.equal(fsImpl.existsSync(PRE_INGRESS_SNAPSHOT), false);
+});
+
 test('a snapshot from an older Home Base: restores what is gone behind HTTPS and leaves what is present', async () => {
   const snapshot = { version: '0.0.1', services: {
     [LEGACY_NAME]: CAPTURED[LEGACY_NAME],
@@ -307,7 +373,9 @@ test('a snapshot from an older Home Base: restores what is gone behind HTTPS and
   const { fsImpl, state, handlers } = host({ services: kept, snapshot });
   const lightning = JSON.stringify(state.services[FOREIGN_NAME]);
   await publish(handlers, 'home');
-  assert.match(await restore(handlers), /restored svc:bitcoin, svc:home; removed svc:smith-home/);
+  const message = await restore(handlers);
+  assert.match(message, /restored svc:bitcoin, svc:home; removed svc:smith-home/);
+  assert.match(message, /svc:home :3080 came back on HTTPS because the older record doesn't name a frontend/, 'a guess is reported, never passed off as exact');
   assert.equal(JSON.stringify(state.services[FOREIGN_NAME]), lightning, 'a present service is not rolled back to its old export');
   assert.equal(state.services['svc:home'].ports[3080].frontend, 'https', 'never guessed as plain HTTP');
   assert.deepEqual(state.services[LEGACY_NAME].ports, gone.ports);

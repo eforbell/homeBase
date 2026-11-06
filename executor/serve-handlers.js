@@ -22,7 +22,7 @@ const SERVE_STATE_DIR = '/var/lib/homebase-executor';
 const PRE_INGRESS_SNAPSHOT = `${SERVE_STATE_DIR}/serve-before-ingress.json`;
 const HTTPS_ENDPOINT = 'tcp:443';
 const HTTPS_PORT = '443';
-const SOCKET_PROXY_PREFIX = `unix:${SERVE_SOCKET_DIR}/`;
+const SOCKET_TARGET = new RegExp(`^unix:${SERVE_SOCKET_DIR}/[a-z0-9][a-z0-9-]*\\.sock$`);
 const SERVICE_NAME = /^svc:[a-z0-9][a-z0-9-]{0,62}$/;
 
 function serviceEndpoints(key) {
@@ -61,16 +61,29 @@ function restoreArgs(name, endpoint, target, frontend) {
   if (target.startsWith('tls-terminated-tcp://')) return [...scoped, `--tls-terminated-tcp=${port}`, target.replace(/^tls-terminated-tcp:/, 'tcp:')];
   if (!/^(https\+insecure|https|http):\/\//.test(target)) deny(`${name} has an endpoint Home Base can't restore (${endpoint} → ${target}).`);
   const flag = frontend?.HTTP ? 'http' : 'https';
-  return [...scoped, `--${flag}=${port}`, target.replace(/^https:\/\/unix:/, 'unix:')];
+  return [...scoped, `--${flag}=${port}`, target.replace(/^https?:\/\/unix:/, 'unix:')];
 }
 
 const hasPathHandlers = (entry) => Object.values(entry?.Web || {}).some((site) => Object.keys(site?.Handlers || {}).some((path) => path !== '/'));
-const targetsSocket = (entry) => Object.values(entry?.Web || {}).some((site) => Object.values(site?.Handlers || {}).some((handler) => String(handler?.Proxy || '').startsWith(SOCKET_PROXY_PREFIX)));
+const handlersOf = (entry) => Object.values(entry?.Web || {}).flatMap((site) => Object.entries(site?.Handlers || {}));
+const usesSocket = (entry) => handlersOf(entry).some(([, handler]) => SOCKET_TARGET.test(String(handler?.Proxy || '')));
+// Exactly what a publish creates. Anything more belongs at least partly to someone else, so a rollback must
+// not clear it: `serve clear` removes the whole service.
+function isSocketService(entry) {
+  const ports = Object.keys(entry?.TCP || {});
+  const handlers = handlersOf(entry);
+  return ports.length === 1 && ports[0] === HTTPS_PORT && entry.TCP[HTTPS_PORT]?.HTTPS === true
+    && handlers.length === 1 && handlers[0][0] === '/' && SOCKET_TARGET.test(String(handlers[0][1]?.Proxy || ''));
+}
+const exportsSocket = (target) => SOCKET_TARGET.test(String(target).replace(/^https?:\/\//, ''));
 
-// Everything `serve status` shows except the named services, for proving a change touched nothing else.
-function othersFingerprint(status, except) {
-  const services = Object.fromEntries(Object.entries(status.Services || {}).filter(([name]) => !except.includes(name)).sort(([a], [b]) => a.localeCompare(b)));
-  return JSON.stringify({ services, node: { TCP: status.TCP || null, Web: status.Web || null } });
+// What `serve status` shows differently, leaving out the services this operation changed on purpose.
+function otherChanges(before, after, except) {
+  const differs = (left, right) => JSON.stringify(left ?? null) !== JSON.stringify(right ?? null);
+  const names = new Set([...Object.keys(before.Services || {}), ...Object.keys(after.Services || {})]);
+  const changed = [...names].filter((name) => !except.includes(name) && differs(before.Services?.[name], after.Services?.[name])).sort();
+  if (differs(before.TCP, after.TCP) || differs(before.Web, after.Web)) changed.push('node-level entries');
+  return changed;
 }
 
 function createServeHandlers({ fsImpl = fs, run = runApproved } = {}) {
@@ -85,8 +98,12 @@ function createServeHandlers({ fsImpl = fs, run = runApproved } = {}) {
     if (!stat.isFile()) deny(`${PRE_INGRESS_SNAPSHOT} is not a regular file.`);
     return parseSnapshot(readSmallFileNoFollow(fsImpl, PRE_INGRESS_SNAPSHOT, 1024 * 1024) || '');
   };
+  const writeSnapshot = (snapshot) => writeFileAtomic(fsImpl, PRE_INGRESS_SNAPSHOT, `${JSON.stringify(snapshot, null, 2)}\n`, 0o600);
+  // Runs after the change, so it can't undo anything; it may also be an administrator's change made at the
+  // same moment. Every operation here is safe to run again, which is how the job is finished once that's clear.
   const assertOthersUnchanged = (before, after, changed, action) => {
-    if (othersFingerprint(before, changed) !== othersFingerprint(after, changed)) deny(`${action} changed another Serve entry; check "tailscale serve status --json".`);
+    const others = otherChanges(before, after, changed);
+    if (others.length) deny(`${action} was applied, but ${others.join(', ')} also changed; check "tailscale serve status --json". If that was expected, run this again to finish.`);
   };
   const ingressOrDeny = () => readIngressRecord(fsImpl) || deny('This host is not cut over to socket ingress; run the ingress cutover first.');
   const servicesFor = (ingress) => ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog });
@@ -135,7 +152,7 @@ function createServeHandlers({ fsImpl = fs, run = runApproved } = {}) {
       const snapshot = readSnapshot() || { version: '0.0.1', services: {}, frontends: {} };
       snapshot.services[name] = { endpoints, ...(config.advertised === false ? { advertised: false } : {}) };
       snapshot.frontends[name] = frontends;
-      writeFileAtomic(fsImpl, PRE_INGRESS_SNAPSHOT, `${JSON.stringify(snapshot, null, 2)}\n`, 0o600);
+      writeSnapshot(snapshot);
       await tailscale(['serve', 'clear', name], operation.timeoutMs);
       const after = await readStatus(operation.timeoutMs);
       if (after.Services?.[name]) deny(`Serve still has ${name}; check "tailscale serve status --json".`);
@@ -150,31 +167,44 @@ function createServeHandlers({ fsImpl = fs, run = runApproved } = {}) {
       const before = await readStatus(operation.timeoutMs);
       const touched = [];
       const restored = [];
+      const assumedHttps = [];
       for (const [name, saved] of Object.entries(snapshot?.services || {})) {
         if (!SERVICE_NAME.test(name)) deny(`${PRE_INGRESS_SNAPSHOT} names ${name}, which is not a Tailscale service name.`);
         const endpoints = saved?.endpoints && typeof saved.endpoints === 'object' ? saved.endpoints : {};
         // A socket service has nothing behind it once nginx is back on TCP.
-        if (Object.values(endpoints).some((target) => String(target).startsWith(`https://${SOCKET_PROXY_PREFIX}`))) continue;
-        const frontends = snapshot.frontends[name];
+        const targets = Object.values(endpoints);
+        if (targets.length && targets.every(exportsSocket)) continue;
         const present = before.Services?.[name];
-        // Older snapshots list every service, and one still present was not retired. Only an entry this
-        // version wrote (it has frontends) can be a restore that stopped part way.
-        if (present && !frontends) continue;
+        // Older snapshots list every service, and one still present was not retired. Only an entry with
+        // frontends can be a restore that stopped part way, so one is recorded before the first change.
+        if (present && !snapshot.frontends[name]) continue;
+        if (!snapshot.frontends[name]) {
+          snapshot.frontends[name] = {};
+          writeSnapshot(snapshot);
+        }
+        const frontends = snapshot.frontends[name];
+        for (const [endpoint, target] of Object.entries(endpoints)) {
+          if (!frontends[endpoint.slice(4)] && String(target).startsWith('http://')) assumedHttps.push(`${name} :${endpoint.slice(4)}`);
+        }
         const live = present ? await readService(name, operation.timeoutMs) : {};
         const missing = Object.entries(endpoints).filter(([endpoint, target]) => live.endpoints?.[endpoint] !== target);
         // Publishing advertises, so a service that was drained before the cutover has to be drained again.
         const drain = saved?.advertised === false && (missing.length > 0 || live.advertised !== false);
         if (!missing.length && !drain) continue;
         touched.push(name);
-        for (const [endpoint, target] of missing) await tailscale(restoreArgs(name, endpoint, target, frontends?.[endpoint.slice(4)]), operation.timeoutMs);
+        for (const [endpoint, target] of missing) await tailscale(restoreArgs(name, endpoint, target, frontends[endpoint.slice(4)]), operation.timeoutMs);
         if (drain) await tailscale(['serve', 'drain', name], operation.timeoutMs);
         const after = (await readService(name, operation.timeoutMs)).endpoints;
         if (!sameEndpoints(after, endpoints)) deny(`Serve did not restore ${name}; check "tailscale serve status --json". Run the rollback again once it is fixed.`);
         restored.push(name);
       }
       const removed = [];
+      const leftInPlace = [];
       for (const [name, entry] of Object.entries(before.Services || {})) {
-        if (!targetsSocket(entry)) continue;
+        if (!isSocketService(entry)) {
+          if (usesSocket(entry)) leftInPlace.push(name);
+          continue;
+        }
         if (!SERVICE_NAME.test(name)) deny(`Serve lists ${name}, which is not a Tailscale service name.`);
         touched.push(name);
         await tailscale(['serve', 'clear', name], operation.timeoutMs);
@@ -182,7 +212,11 @@ function createServeHandlers({ fsImpl = fs, run = runApproved } = {}) {
       }
       assertOthersUnchanged(before, await readStatus(operation.timeoutMs), touched, 'The rollback');
       if (snapshot) fsImpl.unlinkSync(PRE_INGRESS_SNAPSHOT);
-      return `restored ${restored.join(', ') || 'no retired services'}; removed ${removed.join(', ') || 'no socket services'}`;
+      return [
+        `restored ${restored.join(', ') || 'no retired services'}; removed ${removed.join(', ') || 'no socket services'}`,
+        ...(assumedHttps.length ? [`${assumedHttps.join(', ')} came back on HTTPS because the older record doesn't name a frontend; change it by hand if it was plain HTTP`] : []),
+        ...(leftInPlace.length ? [`left ${leftInPlace.join(', ')} in place because it also serves something else; remove its socket handler by hand`] : []),
+      ].join('; ');
     },
   };
 }
