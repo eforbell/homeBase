@@ -112,7 +112,7 @@ Run from Home Base admin (`POST /api/ingress/...`; admin unlock, privileged jobs
 | 3.5 | Add the new OAuth callback URLs at the providers: Plaid for Pulse (`https://<instance>-pulse.<tailnet>/pulse/oauth/callback`), Google for Plan (`https://<instance>-home.<tailnet>/plan/api/google-calendar/oauth/callback`) | Linking still works | Keep the old URLs listed until the rollback window has passed |
 | 3.6 | Tell members the new addresses; update bookmarks and the iOS wrapper's start URL | — | — |
 
-The rollback re-renders every app snippet for TCP, restores the TCP gateway, then re-applies the Serve services exactly as they were before the cutover. It refuses while any app has `SOVEREIGN_AUTH_MODE=tailnet` in its `.env` (or the older name `SOVEREIGN_IDENTITY_MODE`), and wherever either name appears other than as a line `SOVEREIGN_AUTH_MODE=local` (a hand edit); **Return to its own sign-in** on the Network page rewrites it. If the host still has a node-level Serve entry on `:443`, nginx can't bind 443; remove that entry and restart nginx.
+The rollback re-renders every app snippet for TCP, restores the TCP gateway, then takes the socket services down and puts back the service the cutover retired, with the same endpoints and frontends. Services Home Base didn't retire are not touched. It refuses while any app has `SOVEREIGN_AUTH_MODE=tailnet` in its `.env` (or the older name `SOVEREIGN_IDENTITY_MODE`), and wherever either name appears other than as a line `SOVEREIGN_AUTH_MODE=local` (a hand edit); **Return to its own sign-in** on the Network page rewrites it. If the host still has a node-level Serve entry on `:443`, nginx can't bind 443; remove that entry and restart nginx.
 
 Verify after 3.x, from a member device and from the host:
 - [ ] `https://<service>.<tailnet>/<app>/` loads for each installed app.
@@ -134,7 +134,9 @@ Verify after 3.x, from a member device and from the host:
 
 ### Tailscale behaviors this depends on (1.102.4, checked 2026-10-27)
 
-- Apply service config with `tailscale serve set-config --all <file>`: it sets every service declaratively, advertises them, removes ones left out, and keeps node-level entries. **Never `set-raw` with `get-config` output**: it replaces the whole Serve config, dropping node entries and leaving services with null endpoints.
+- Change one service at a time: `tailscale serve --bg --yes --service=<svc> --https=443 <target>` and `tailscale serve clear <svc>`. Each leaves every other service and node-level entry unchanged, and is safe to repeat. Publishing also advertises a drained service. (Checked on 1.104.4, 2026-11-06.)
+- **Never write the whole config back, with `set-config --all` or `set-raw`.** The export names only the upstream, so an HTTPS frontend with an HTTP upstream exports as `http://…`, which `set-config` reads as plain HTTP. It refuses that over a live HTTPS port (`want to serve "http", but port 443 is already serving "https"`) and, if the service has since been removed, silently brings it back on plain HTTP. `set-raw` also drops node entries and leaves services with null endpoints.
+- `tailscale serve get-config --all` exits 1 if any service has only a path handler (`root handler not set`). `tailscale serve status --json` still answers, and it is the only one that shows a port's frontend.
 - A socket target is stored as `"tcp:443": "https://unix:<path>"`.
 - A service host can't resolve its own service names unless the policy grants it access; use the service address from the API (`getService` `addrs`).
 - `listServiceHosts` names each host's ID `nodeId` (the published schema says `stableNodeID`); it equals the device list's `nodeId` and `tailscale status` `Self.ID`. A service with no hosts answers `{}`.
