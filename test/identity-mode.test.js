@@ -38,6 +38,9 @@ function supportTailnet(t, appId) {
 }
 
 const PULSE_ENV = '/opt/sovereign-home/apps/familyPulse/.env';
+const PLAN_ENV = '/opt/sovereign-home/apps/familyPlan/.env';
+// What an install on the app's socket writes (applyListenEnv).
+const listenOn = (appId) => `SOVEREIGN_LISTEN=unix:/run/sovereign-apps/${appId}/app.sock\n`;
 const CUT_OVER = JSON.stringify({ mode: 'sockets', instance: 'smith', domain: 'example-tailnet.ts.net' });
 const base = (fields = {}) => ({ id: 'op', type: 'app.set-identity-mode', title: 't', risk: 'write', timeoutMs: 1000, dependsOn: [], preconditions: [], secretRefs: [], ...fields });
 
@@ -45,7 +48,7 @@ const base = (fields = {}) => ({ id: 'op', type: 'app.set-identity-mode', title:
 function host(files = {}) {
   const fsImpl = createFakeFs(Object.fromEntries(Object.entries({
     '/opt/sovereign-home/apps/familyPulse': { kind: 'dir', uid: 1101 },
-    [PULSE_ENV]: { kind: 'file', content: 'DATABASE_URL=postgresql://familypulse:pw@127.0.0.1:5432/familypulse\nPLAID_ENV=sandbox\nSOVEREIGN_IDENTITY_MODE=local\n', uid: 1101, mode: 0o600 },
+    [PULSE_ENV]: { kind: 'file', content: `DATABASE_URL=postgresql://familypulse:pw@127.0.0.1:5432/familypulse\nPLAID_ENV=sandbox\n${listenOn('family-pulse')}SOVEREIGN_IDENTITY_MODE=local\n`, uid: 1101, mode: 0o600 },
     [INGRESS_STATE_PATH]: CUT_OVER,
     '/var/lib/sovereign-home/identity': { kind: 'dir', uid: 990, mode: 0o755 },
     [IDENTITY_SNAPSHOT]: { kind: 'file', content: '{}', uid: 990, mode: 0o644 },
@@ -152,7 +155,7 @@ test('the executor switches to tailnet mode only on a cut-over host with the sna
   assert.deepEqual([back.SOVEREIGN_AUTH_MODE, back.SOVEREIGN_HOMEBASE_UID], ['local', undefined]);
   // An app that can't trust the directory: back to local leaves no mode in its .env (as an update would).
   await set('local', appLayout(getAppById('family-pulse')));
-  assert.doesNotMatch(fsImpl.readFileSync(PULSE_ENV), /SOVEREIGN_/);
+  assert.doesNotMatch(fsImpl.readFileSync(PULSE_ENV), /SOVEREIGN_(?:AUTH|HOMEBASE|IDENTITY)/);
 });
 
 test('the executor refuses tailnet mode wherever identity headers or the snapshot could not be trusted', async () => {
@@ -177,9 +180,16 @@ test('a low-friction app shares the user by design, so it may trust tailnet iden
   // Family Plan, the pilot: its catalog entry, on its socket, the shared user.
   const layout = appLayout(getAppById('family-plan'));
   assert.deepEqual([layout.identityModes, layout.listen.kind, layout.identity.own], [['local', 'tailnet'], 'unix', false]);
-  const { fsImpl, set } = host({ '/opt/sovereign-home/apps/familyPlan': { kind: 'dir', uid: 1001 }, '/opt/sovereign-home/apps/familyPlan/.env': { kind: 'file', content: 'PORT=3001\n', uid: 1001, mode: 0o640 } });
+  const plan = (content) => host({ '/opt/sovereign-home/apps/familyPlan': { kind: 'dir', uid: 1001 }, [PLAN_ENV]: { kind: 'file', content, uid: 1001, mode: 0o640 } });
+  // Installed before its catalog entry moved to the socket, and not updated since: it still listens on its port.
+  for (const content of ['PORT=3001\nHOST=127.0.0.1\n', 'SOVEREIGN_LISTEN=unix:/run/sovereign-apps/family-pulse/app.sock\n']) {
+    const old = plan(content);
+    await assert.rejects(() => old.set('tailnet', layout), /Family Plan still listens on its port here; update it first/);
+    assert.equal(old.fsImpl.readFileSync(PLAN_ENV), content, 'nothing written');
+  }
+  const { fsImpl, set } = plan(`PORT=3001\n${listenOn('family-plan')}`);
   assert.match(await set('tailnet', layout), /trusts tailnet identity/);
-  const switched = fsImpl.readFileSync('/opt/sovereign-home/apps/familyPlan/.env');
+  const switched = fsImpl.readFileSync(PLAN_ENV);
   assert.match(switched, /^SOVEREIGN_AUTH_MODE=tailnet$/m);
   // An update re-renders the .env and keeps the mode, rather than putting the household back on the picker.
   const site = { hostname: 'host', domain: 'example-tailnet.ts.net', householdTimezone: 'America/New_York' };
