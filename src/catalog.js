@@ -302,6 +302,8 @@ const catalog = [
       nodeEnv: 'production',
       // SID-007: the low-friction pilot listens on the unix socket SOVEREIGN_LISTEN names (lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // and reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members' roles replace its picker and PINs.
+      identity: 'tailnet',
     },
     network: {
       preferredMountPath: '/plan/',

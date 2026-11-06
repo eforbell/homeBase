@@ -23,7 +23,7 @@ const { createFakeFs } = require('./fixtures/fake-fs');
 const { users } = require('./fixtures/users');
 
 // Feature-10 SID-007 slice 1: Home Base switches an installed app between its own sign-in and members' tailnet
-// identity. No catalog app supports tailnet identity yet, so these tests give one (Pulse, on its socket) the flag.
+// identity. Family Plan, the pilot, supports it; these tests also give Pulse, on its socket, the flag.
 
 const withIdentity = (appId, identity = 'tailnet') => {
   const app = getAppById(appId);
@@ -174,12 +174,18 @@ test('the executor refuses tailnet mode wherever identity headers or the snapsho
 });
 
 test('a low-friction app shares the user by design, so it may trust tailnet identity on its socket', async () => {
-  // Family Plan, the pilot: on its socket, the shared user.
-  const layout = appLayout(withIdentity('family-plan'));
-  assert.equal(layout.identity.own, false);
+  // Family Plan, the pilot: its catalog entry, on its socket, the shared user.
+  const layout = appLayout(getAppById('family-plan'));
+  assert.deepEqual([layout.identityModes, layout.listen.kind, layout.identity.own], [['local', 'tailnet'], 'unix', false]);
   const { fsImpl, set } = host({ '/opt/sovereign-home/apps/familyPlan': { kind: 'dir', uid: 1001 }, '/opt/sovereign-home/apps/familyPlan/.env': { kind: 'file', content: 'PORT=3001\n', uid: 1001, mode: 0o640 } });
   assert.match(await set('tailnet', layout), /trusts tailnet identity/);
-  assert.match(fsImpl.readFileSync('/opt/sovereign-home/apps/familyPlan/.env'), /^SOVEREIGN_AUTH_MODE=tailnet$/m);
+  const switched = fsImpl.readFileSync('/opt/sovereign-home/apps/familyPlan/.env');
+  assert.match(switched, /^SOVEREIGN_AUTH_MODE=tailnet$/m);
+  // An update re-renders the .env and keeps the mode, rather than putting the household back on the picker.
+  const site = { hostname: 'host', domain: 'example-tailnet.ts.net', householdTimezone: 'America/New_York' };
+  const updated = parseDotEnv(renderAppEnvFile({ layout, password: 'pw-123456789012', site, existingContent: switched, fsImpl: createFakeFs() }));
+  assert.equal(updated.SOVEREIGN_AUTH_MODE, 'tailnet');
+  assert.match(updated.SOVEREIGN_HOMEBASE_UID, /^[1-9][0-9]*$/);
 });
 
 // The route module, with the admin check, Tailscale and the executor faked; Home Base active by default.
