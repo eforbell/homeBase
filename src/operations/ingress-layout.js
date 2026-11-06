@@ -1,5 +1,3 @@
-const crypto = require('crypto');
-
 // Identity-safe ingress (Feature-10 SID-001, D14/D20/D21). Each Tailscale Service targets its own root-only
 // nginx socket; each socket's server block serves only that service's mounts. The planner's preview and
 // the root executor both render from here, so the two deployment paths cannot drift apart.
@@ -17,9 +15,11 @@ const IDENTITY_LOCATION = '/_sovereign/identity';
 const AUTH_MOUNT = '/_sovereign/auth/';
 // Shared fonts, served on every hostname so each app loads them from its own origin (local font mode).
 const FONTS_MOUNT = '/_sovereign/fonts/';
-// Answered by nginx itself on every hostname, with the gateway's fingerprint (gatewayGeneration).
+// Answered by nginx itself on every hostname, with the token the executor wrote just before the last reload. It's
+// the one way to learn what nginx's workers are running: when nginx rejects a reload (a listener conflict elsewhere,
+// say), the reload still reports success and nginx -T prints the new files, while the old workers keep serving.
 const GATEWAY_LOCATION = '/_sovereign/gateway';
-const GATEWAY_GENERATION_SLOT = '@generation@';
+const RELOAD_TOKEN_SNIPPET = '/etc/nginx/sovereign-reload-token.conf';
 const FONTS_DIR = '/opt/sovereign-home/assets/fonts/';
 // Home Base answers identity lookups on its own socket (D1); nginx reaches it, apps never do.
 const HOMEBASE_IDENTITY_SOCKET = '/run/homebase-identity/identity.sock'; // inside HOMEBASE_RUNTIME_DIR
@@ -282,7 +282,7 @@ function renderServerBlock(service, homeBaseUpstream) {
       '',
       `location = ${GATEWAY_LOCATION} {`,
       '    default_type text/plain;',
-      `    return 200 "${GATEWAY_GENERATION_SLOT}";`,
+      `    include ${RELOAD_TOKEN_SNIPPET};`,
       '}',
       '',
       `location ${FONTS_MOUNT} {`,
@@ -300,18 +300,21 @@ function renderServerBlock(service, homeBaseUpstream) {
 // listener also blocks Serve's own :443). Every service block is rendered whether or not its apps are
 // installed, so installing or removing an app never changes which hostnames nginx answers for.
 // homeBase: where Home Base listens, 'socket' or (a host cut over before SID-006) 'tcp'.
-// A fingerprint of the gateway, which every server block answers at GATEWAY_LOCATION: the one way to learn what
-// nginx's workers are running. When nginx rejects a reload (a listener conflict elsewhere, say), the reload still
-// reports success and nginx -T prints the new file, while the old workers keep serving.
-function gatewayGeneration(siteText) {
-  return /location = \/_sovereign\/gateway \{\s+default_type text\/plain;\s+return 200 "([0-9a-f]+)";/.exec(String(siteText || ''))?.[1] || null;
+// The reload token snippet: GATEWAY_LOCATION's whole answer.
+function renderReloadToken(token) {
+  return `return 200 "${token}";\n`;
+}
+
+// Whether this gateway answers with the token; one from before it only has to answer until its next refresh.
+function gatewayReportsReload(siteText) {
+  return String(siteText || '').includes(`include ${RELOAD_TOKEN_SNIPPET};`);
 }
 
 function renderGatewaySite({ instance, domain, apps, homeBase = 'tcp' }) {
   const upstream = HOMEBASE_UPSTREAMS[homeBase];
   if (!upstream) fail(`Home Base listens on a socket or TCP, not ${homeBase}`);
   const services = ingressServices({ instance, domain, apps });
-  const site = [
+  return [
     SOCKET_GATEWAY_MARKER,
     '# Managed by Home Base (Feature-10 SID-001). Tailscale Serve targets one socket per service;',
     '# nothing here listens on TCP. Apps mount from sovereign-home.d/<service>--<app>.conf.',
@@ -319,8 +322,6 @@ function renderGatewaySite({ instance, domain, apps, homeBase = 'tcp' }) {
     services.map((service) => renderServerBlock(service, upstream)).join('\n\n'),
     '',
   ].join('\n');
-  const generation = crypto.createHash('sha256').update(site).digest('hex').slice(0, 16);
-  return site.split(GATEWAY_GENERATION_SLOT).join(generation);
 }
 
 // Whether a gateway site sends Home Base's traffic only to its socket.
@@ -343,7 +344,9 @@ function homeBaseOnSocket({ appliedText, siteText }) {
 
 module.exports = { listenAsDeployed,
   GATEWAY_LOCATION,
-  gatewayGeneration,
+  RELOAD_TOKEN_SNIPPET,
+  gatewayReportsReload,
+  renderReloadToken,
   APPLIED_PATH,
   APP_SNIPPET_DIR,
   AUTH_MOUNT,

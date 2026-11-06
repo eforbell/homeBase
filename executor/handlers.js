@@ -13,7 +13,7 @@ const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, includesFile, loadsContent, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const {
-  appPublicBase, GATEWAY_LOCATION, gatewayGeneration, gatewayReachesHomeBaseSocket, ingressServices, listenAsDeployed, renderAppLocations, renderGatewaySite, renderIdentitySnippet, serviceSocket, validateInstance,
+  appPublicBase, GATEWAY_LOCATION, gatewayReachesHomeBaseSocket, gatewayReportsReload, renderReloadToken, RELOAD_TOKEN_SNIPPET, ingressServices, listenAsDeployed, renderAppLocations, renderGatewaySite, renderIdentitySnippet, serviceSocket, validateInstance,
   APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
 const { applyListenEnv, keepIdentityEnv, setIdentityEnv, trustsIdentityHeaders, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
@@ -415,7 +415,7 @@ function probeHomeBaseSocket(socketPath, timeoutMs = 2000) {
   });
 }
 
-// What the gateway serving this socket says it is: its generation, '' from one too old to have any, null when
+// What the gateway serving this socket says: the token of its last reload, '' from one too old to have any, null when
 // nothing answers (a file left by a stopped nginx doesn't count). nginx refuses other hostnames, so it asks by the
 // service's own.
 function probeGatewaySocket(socketPath, host, timeoutMs = 1000) {
@@ -471,13 +471,13 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
   const GATEWAY_INCLUDE_HELP = `Add "include ${NGINX_GATEWAY_LINK};" inside the http block of /etc/nginx/nginx.conf, keeping everything else there (a stream block too), and check it with nginx -t`;
 
   // A reload reports success whether or not the gateway is part of the configuration, and whether or not nginx
-  // accepted it. So this is the proof: the configuration includes the file on disk, and each service's socket
-  // answers from that version. Workers can take a moment after a reload. A gateway older than the generation
-  // only has to answer, until its next refresh.
-  async function assertGatewayActive(site, timeoutMs) {
+  // accepted it. So this is the proof: the configuration includes the file on disk, and each service's socket answers
+  // with the token written for this reload, which only a reload nginx accepted can do, whatever else it changed.
+  // Workers can take a moment. A gateway from before the token only has to answer, until its next refresh.
+  async function assertGatewayActive(site, token, timeoutMs) {
     if (!loadsContent(await nginxConfigDump(timeoutMs), site)) deny(`nginx reloaded, but its configuration doesn't load the socket gateway. ${GATEWAY_INCLUDE_HELP}, then run this again.`);
     const ingress = readIngressState();
-    const expected = gatewayGeneration(site);
+    const expected = gatewayReportsReload(site) ? token : null;
     let waiting = ingress ? ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog }).map((service) => ({ socket: serviceSocket(service.key), host: service.hostname })) : [];
     let answers = [];
     for (let attempt = 0; attempt < 20 && waiting.length; attempt += 1) {
@@ -489,7 +489,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     }
     if (!waiting.length) return;
     const stale = waiting.filter((_, index) => answers[index] !== null);
-    if (stale.length) deny(`nginx is still running an earlier gateway on ${stale.map(({ socket }) => socket).join(', ')}: it rejected the reload. Check "sudo journalctl -u nginx", fix what it names, then run this again.`);
+    if (stale.length) deny(`nginx is still running its earlier configuration on ${stale.map(({ socket }) => socket).join(', ')}: it rejected the reload. Check "sudo journalctl -u nginx", fix what it names, then run this again.`);
     deny(`nginx loaded the socket gateway, but nothing is listening on ${waiting.map(({ socket }) => socket).join(', ')}; check "sudo journalctl -u nginx" and run this again.`);
   }
 
@@ -549,6 +549,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     const dir = lstatOrNull(fsImpl, SERVE_SOCKET_DIR);
     if (!dir || !dir.isDirectory() || dir.uid !== 0 || (dir.mode & 0o077) !== 0) deny(`${SERVE_SOCKET_DIR} must be a root-owned 0700 directory.`);
     writeFileAtomic(fsImpl, IDENTITY_SNIPPET, renderIdentitySnippet(), 0o644);
+    // The gateway includes it, so nginx -t needs it from the start; each reload writes its own.
+    if (!lstatOrNull(fsImpl, RELOAD_TOKEN_SNIPPET)) writeFileAtomic(fsImpl, RELOAD_TOKEN_SNIPPET, renderReloadToken('none'), 0o644);
     const rewritten = rewriteAppSnippets({ identity: true });
     // A host cut over before SID-006 keeps Home Base on loopback TCP until its cutover runs again.
     writeGatewaySite(renderGatewaySite({ instance: ingress.instance, domain: ingress.domain, apps: catalog, homeBase: ingress.homeBase === 'socket' ? 'socket' : 'tcp' }));
@@ -1041,6 +1043,8 @@ END $$;
       return `ensured ${listen.directory} (${owner.name}:${NGINX_GROUP} 2750)`;
     },
     'nginx.validate-and-reload': async (operation) => {
+      const token = crypto.randomBytes(8).toString('hex');
+      if (gatewayIsSocketMode()) writeFileAtomic(fsImpl, RELOAD_TOKEN_SNIPPET, renderReloadToken(token), 0o644);
       await run({ binary: '/usr/sbin/nginx', args: ['-t'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       await run({ binary: '/usr/bin/systemctl', args: ['reload', 'nginx.service'], ...rootIdentity, timeoutMs: operation.timeoutMs, env: ROOT_ENV });
       // Where nginx now reaches Home Base, for Home Base (SID-006): only after a reload that succeeded, from
@@ -1051,7 +1055,7 @@ END $$;
         const site = socketMode ? String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '') : '';
         // On failure the record stays as it was: a host not yet on its socket keeps :3080, and one already there
         // doesn't reopen it (an identity-trusting TCP path) because a later reload went wrong.
-        if (socketMode) await assertGatewayActive(site, operation.timeoutMs);
+        if (socketMode) await assertGatewayActive(site, token, operation.timeoutMs);
         writeFileAtomic(fsImpl, APPLIED_PATH, `${JSON.stringify({ homeBase: gatewayReachesHomeBaseSocket(site) ? 'socket' : 'tcp' })}\n`, 0o644);
       }
       return 'validated and reloaded nginx';
