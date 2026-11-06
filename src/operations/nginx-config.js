@@ -142,9 +142,33 @@ function operatorServesAppSnippets(nginxT, managedGatewayFile) {
   return parseNginxDump(nginxT).servers.some((server) => server.file !== managedGatewayFile && server.includes.includes(APP_SNIPPETS));
 }
 
+// Whether this nginx configuration reads `file`: already loaded, or named by an active include. A host's own
+// nginx.conf may have no sites-enabled include, and then a file written there is silently ignored: nginx -t and
+// a reload both succeed without it.
+function includesFile(nginxT, file) {
+  const text = String(nginxT || '');
+  if (text.includes(`# configuration file ${file}:`)) return true;
+  const patterns = [];
+  for (const line of text.split('\n')) {
+    for (const match of line.replace(/#.*$/, '').matchAll(/(?:^|[\s;{}])include\s+([^;\s]+)\s*;/g)) patterns.push(match[1]);
+  }
+  return patterns.some((pattern) => {
+    const absolute = pattern.startsWith('/') ? pattern : `/etc/nginx/${pattern}`;
+    const source = absolute.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]');
+    return new RegExp(`^${source}$`).test(file);
+  });
+}
+
+// Whether nginx -T printed this file's content. It prints every file it loaded verbatim, so this holds whichever
+// path the operator included it by, and only for the version on disk now.
+function loadsContent(nginxT, content) {
+  const body = String(content || '').trim();
+  return Boolean(body) && String(nginxT || '').includes(body);
+}
+
 // Kept for tests and diagnostics.
 function serverBlocks(nginxT) {
   return parseNginxDump(nginxT).servers;
 }
 
-module.exports = { LEGACY_SNIPPETS, APP_SNIPPETS, NginxParseError, parseNginxDump, serverBlocks, appSnippetIncludeCheck, appSnippetIncludeProblem, operatorServesAppSnippets };
+module.exports = { LEGACY_SNIPPETS, APP_SNIPPETS, NginxParseError, parseNginxDump, serverBlocks, appSnippetIncludeCheck, appSnippetIncludeProblem, includesFile, loadsContent, operatorServesAppSnippets };

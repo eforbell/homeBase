@@ -1,6 +1,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
+const net = require('net');
 const path = require('path');
 const { ProtocolError } = require('./protocol');
 const { runApproved } = require('./spawn');
@@ -11,9 +12,9 @@ const { MIRROR_ROOT, appLayout } = require('../src/operations/app-layout');
 const { APP_SOCKET_ROOT, IDENTITY_SNAPSHOT, NGINX_GROUP } = require('../src/operations/paths');
 const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
-const { appSnippetIncludeCheck, operatorServesAppSnippets } = require('../src/operations/nginx-config');
+const { appSnippetIncludeCheck, includesFile, loadsContent, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const {
-  appPublicBase, gatewayReachesHomeBaseSocket, listenAsDeployed, renderAppLocations, renderGatewaySite, renderIdentitySnippet, validateInstance,
+  appPublicBase, gatewayReachesHomeBaseSocket, ingressServices, listenAsDeployed, renderAppLocations, renderGatewaySite, renderIdentitySnippet, serviceSocket, validateInstance,
   APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
 const { applyListenEnv, keepIdentityEnv, setIdentityEnv, trustsIdentityHeaders, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
@@ -415,6 +416,17 @@ function probeHomeBaseSocket(socketPath, timeoutMs = 2000) {
   });
 }
 
+// Something is listening on this socket: a connection is accepted, so a file left by a stopped nginx doesn't count.
+function probeSocketListening(socketPath, timeoutMs = 1000) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ path: socketPath });
+    const finish = (listening) => { socket.destroy(); resolve(listening); };
+    socket.setTimeout(timeoutMs, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
 function readIngressRecord(fsImpl = fs) {
   const stat = lstatOrNull(fsImpl, INGRESS_STATE_PATH);
   if (!stat) return null;
@@ -427,7 +439,7 @@ function readIngressRecord(fsImpl = fs) {
   return state;
 }
 
-function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), probeHomeBase = probeHomeBaseSocket } = {}) {
+function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = runApproved, lookupUser = (name) => lookupSystemUser(name, fsImpl), asUser = runAsUser, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), probeHomeBase = probeHomeBaseSocket, probeListening = probeSocketListening } = {}) {
   const rootIdentity = { uid: 0, gid: 0 };
   // Who this app runs as on this host: its own user, or sovereign until it is moved (identity.js).
   // planKind: only the move plan may continue a move that was interrupted (identity.js).
@@ -448,6 +460,22 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     const defaultSite = lstatOrNull(fsImpl, NGINX_DEFAULT_LINK);
     if (defaultSite && !defaultSite.isSymbolicLink()) deny(`${NGINX_DEFAULT_LINK} is a regular file; disable it manually so the managed gateway can own the default server.`);
     if (defaultSite) fsImpl.unlinkSync(NGINX_DEFAULT_LINK);
+  }
+
+  const GATEWAY_INCLUDE_HELP = `Add "include ${NGINX_GATEWAY_LINK};" inside the http block of /etc/nginx/nginx.conf, keeping everything else there (a stream block too), and check it with nginx -t`;
+
+  // A reload succeeds whether or not the gateway is part of the configuration, so this is the proof it is: nginx
+  // loaded the file on disk, and every service's socket accepts connections. They can take a moment after a reload.
+  async function assertGatewayActive(site, timeoutMs) {
+    if (!loadsContent(await nginxConfigDump(timeoutMs), site)) deny(`nginx reloaded, but its configuration doesn't load the socket gateway. ${GATEWAY_INCLUDE_HELP}, then run this again.`);
+    const ingress = readIngressState();
+    let silent = ingress ? ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog }).map((service) => serviceSocket(service.key)) : [];
+    for (let attempt = 0; attempt < 20 && silent.length; attempt += 1) {
+      if (attempt) await sleep(250);
+      const answers = await Promise.all(silent.map((socket) => probeListening(socket)));
+      silent = silent.filter((_, index) => !answers[index]);
+    }
+    if (silent.length) deny(`nginx loaded the socket gateway, but nothing is listening on ${silent.join(', ')}; check "sudo journalctl -u nginx" and run this again.`);
   }
 
   function gatewayIsSocketMode() {
@@ -841,10 +869,16 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       // An operator's own server block that includes the app snippets would keep serving them over TCP,
       // where any local process can forge identity headers. It has to go first.
       let operatorGateway;
-      try { operatorGateway = operatorServesAppSnippets(await nginxConfigDump(operation.timeoutMs), NGINX_GATEWAY_LINK); } catch (error) {
+      let dump;
+      try {
+        dump = await nginxConfigDump(operation.timeoutMs);
+        operatorGateway = operatorServesAppSnippets(dump, NGINX_GATEWAY_LINK);
+      } catch (error) {
         deny(`Could not read the active nginx configuration (nginx -T): ${error.message}. Fix nginx, then retry.`);
       }
       if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook 3.3), then run the cutover again.');
+      // Refused here, before anything is written: this host's nginx would ignore the gateway and still reload.
+      if (!includesFile(dump, NGINX_GATEWAY_LINK)) deny(`nginx wouldn't load the socket gateway: nothing in its configuration includes ${NGINX_GATEWAY_LINK}. ${GATEWAY_INCLUDE_HELP}, then run the cutover again.`);
       // The socket's directory comes from the tmpfiles entry the gateway installs, so the record is written
       // twice: first as it was (or without Home Base's socket), then with it once Home Base listens there.
       const keep = existing?.homeBase === 'socket' ? { homeBase: 'socket' } : {};
@@ -999,6 +1033,9 @@ END $$;
       const socketMode = gatewayIsSocketMode();
       if (socketMode || lstatOrNull(fsImpl, APPLIED_PATH)) {
         const site = socketMode ? String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '') : '';
+        // On failure the record stays as it was: a host not yet on its socket keeps :3080, and one already there
+        // doesn't reopen it (an identity-trusting TCP path) because a later reload went wrong.
+        if (socketMode) await assertGatewayActive(site, operation.timeoutMs);
         writeFileAtomic(fsImpl, APPLIED_PATH, `${JSON.stringify({ homeBase: gatewayReachesHomeBaseSocket(site) ? 'socket' : 'tcp' })}\n`, 0o644);
       }
       return 'validated and reloaded nginx';
@@ -1121,6 +1158,7 @@ module.exports = {
   GITHUB_KNOWN_HOSTS,
   NGINX_GATEWAY_CONTENT,
   INGRESS_STATE_PATH,
+  probeSocketListening,
   readIngressRecord,
   ROOT_ENV,
   lookupSystemUser,

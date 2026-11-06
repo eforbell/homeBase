@@ -17,18 +17,22 @@ function base(type, fields = {}) {
 }
 
 // systemd-tmpfiles creates the socket directory the way the tmpfiles.d entry says; nginx -T prints `dump`.
-// answers: whether Home Base answers its health probe on its socket.
-function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookupUser, asUser, answers = true } = {}) {
+// answers: whether Home Base answers its health probe on its socket. loadsGateway: whether nginx -T shows the
+// gateway on disk, as it does when the configuration includes it. listening: which sockets accept a connection.
+function harness(files = {}, { dump = FRESH_NGINX, socketDirMode = 0o700, lookupUser, asUser, answers = true, loadsGateway = true, listening = async () => true } = {}) {
   // Present on every host: the executor's state directory (its job journal lives there) and tmpfiles.d.
   const fsImpl = createFakeFs({ '/var/lib/homebase-executor': { kind: 'dir', mode: 0o700 }, '/etc/tmpfiles.d': { kind: 'dir' }, '/etc/nginx/sites-enabled': { kind: 'dir' }, '/etc/nginx/sites-available': { kind: 'dir' }, ...files });
   const calls = [];
   const run = async (input) => {
     calls.push(input);
     if (input.binary === '/usr/bin/systemd-tmpfiles' && !fsImpl.existsSync('/run/sovereign-serve')) fsImpl.mkdirSync('/run/sovereign-serve', { mode: socketDirMode });
-    if (input.binary === '/usr/sbin/nginx') return { stdout: dump, stderr: '' };
+    if (input.binary === '/usr/sbin/nginx') {
+      const site = loadsGateway && fsImpl.existsSync(SITE) ? `# configuration file /etc/nginx/sites-enabled/sovereign-home:\n${fsImpl.readFileSync(SITE)}\n` : '';
+      return { stdout: `${dump}${site}`, stderr: '' };
+    }
     return { stdout: '' };
   };
-  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, sleep: async () => {}, probeHomeBase: async () => answers, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
+  return { fsImpl, calls, handlers: createBaseHandlers({ fsImpl, run, sleep: async () => {}, probeHomeBase: async () => answers, probeListening: listening, ...(lookupUser ? { lookupUser } : {}), ...(asUser ? { asUser } : {}) }) };
 }
 
 const cutover = (fields = {}) => base('nginx.ensure-socket-gateway', { instance: 'smith', domain: DOMAIN, ...fields });
@@ -120,6 +124,95 @@ test('SID-006: the applied record says where the gateway nginx last reloaded rea
   assert.equal(onSocket(), false, 'the gateway on disk already sends Home Base the port');
   await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
   assert.equal(applied(), 'tcp');
+});
+
+// A host's own nginx.conf: a stream block and a site of its own, and no sites-enabled include (bugBase #154).
+const CUSTOM_NGINX = '# configuration file /etc/nginx/nginx.conf:\nstream {\n  server { listen 50002; proxy_pass 127.0.0.1:50001; }\n}\nhttp {\n  # include /etc/nginx/sites-enabled/*;\n  server { listen 8080; }\n}\n';
+
+test('a cutover refuses a nginx that would ignore the gateway, before writing anything (#154)', async () => {
+  const { fsImpl, calls, handlers } = harness({}, { dump: CUSTOM_NGINX, loadsGateway: false });
+  await assert.rejects(() => handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), (error) => {
+    assert.match(error.message, /wouldn't load the socket gateway/);
+    assert.match(error.message, /include \/etc\/nginx\/sites-enabled\/sovereign-home;/);
+    assert.match(error.message, /a stream block too/);
+    return true;
+  });
+  assert.equal(fsImpl.existsSync(INGRESS_STATE_PATH), false);
+  assert.equal(fsImpl.existsSync(SITE), false);
+  assert.ok(!calls.some((call) => call.binary === '/usr/bin/systemd-tmpfiles'), 'nothing was installed');
+});
+
+test('what counts as nginx including the gateway', () => {
+  const { includesFile } = require('../src/operations/nginx-config');
+  const LINK = '/etc/nginx/sites-enabled/sovereign-home';
+  const http = (line) => `# configuration file /etc/nginx/nginx.conf:\nhttp {\n  ${line}\n}\n`;
+  for (const yes of ['include /etc/nginx/sites-enabled/*;', 'include /etc/nginx/sites-enabled/sovereign-home;', 'include sites-enabled/*;', 'include /etc/nginx/sites-enabled/sovereign-*;', 'server { listen 80; } include /etc/nginx/sites-enabled/*;']) assert.ok(includesFile(http(yes), LINK), yes);
+  for (const no of ['# include /etc/nginx/sites-enabled/*;', 'include /etc/nginx/sites-enabled/*.conf;', 'include /etc/nginx/conf.d/*;', 'include /etc/nginx/sites-enabled/;', 'xinclude /etc/nginx/sites-enabled/*;', '']) assert.ok(!includesFile(http(no), LINK), no);
+  assert.ok(includesFile(`${http('')}# configuration file ${LINK}:\nserver {}\n`, LINK), 'already loaded');
+});
+
+test('a reload that leaves the gateway out is reported and does not retire the port (#154)', async () => {
+  const { APPLIED_PATH, homeBaseOnSocket } = require('../src/operations/ingress-layout');
+  const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } };
+  const { fsImpl, handlers } = harness(files, { loadsGateway: false });
+  await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' }));
+  await assert.rejects(() => handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /nginx reloaded, but its configuration doesn't load the socket gateway/);
+  assert.equal(fsImpl.existsSync(APPLIED_PATH), false, 'nothing recorded as applied');
+  assert.equal(homeBaseOnSocket({ appliedText: '', siteText: fsImpl.readFileSync(SITE) }), false, 'the port stays Home Base');
+});
+
+test('a gateway file nginx loaded in an older version does not count', async () => {
+  const { handlers, fsImpl } = harness({}, { loadsGateway: false, dump: `${FRESH_NGINX}# configuration file /etc/nginx/sites-enabled/sovereign-home:\n# sovereign-ingress: sockets\nserver {}\n` });
+  await handlers['nginx.ensure-socket-gateway'](cutover());
+  await assert.rejects(() => handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /doesn't load the socket gateway/);
+  assert.equal(fsImpl.existsSync('/etc/nginx/sovereign-ingress-applied.json'), false);
+});
+
+test('every service socket must accept connections, and gets a moment after the reload (#154)', async () => {
+  const { APPLIED_PATH } = require('../src/operations/ingress-layout');
+  const silent = harness({}, { listening: async (socket) => !socket.endsWith('/home.sock') });
+  await silent.handlers['nginx.ensure-socket-gateway'](cutover());
+  await assert.rejects(() => silent.handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /nothing is listening on \/run\/sovereign-serve\/home\.sock/);
+  assert.equal(silent.fsImpl.existsSync(APPLIED_PATH), false);
+
+  let probes = 0;
+  const slow = harness({}, { listening: async () => { probes += 1; return probes > 20; } });
+  await slow.handlers['nginx.ensure-socket-gateway'](cutover());
+  assert.match(await slow.handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /validated and reloaded/);
+  assert.ok(slow.fsImpl.existsSync(APPLIED_PATH));
+});
+
+test('a later failed proof on a host already on its socket does not reopen the port', async () => {
+  const { APPLIED_PATH } = require('../src/operations/ingress-layout');
+  const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } };
+  let listening = true;
+  const { fsImpl, handlers } = harness(files, { listening: async () => listening });
+  await handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' }));
+  await handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
+  assert.equal(JSON.parse(fsImpl.readFileSync(APPLIED_PATH)).homeBase, 'socket');
+  listening = false;
+  await assert.rejects(() => handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload')), /nothing is listening/);
+  assert.equal(JSON.parse(fsImpl.readFileSync(APPLIED_PATH)).homeBase, 'socket', 'it stays closed');
+});
+
+test('the listening probe needs a live listener, not a file', async () => {
+  const net = require('node:net');
+  const os = require('node:os');
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const { probeSocketListening } = require('../executor/handlers');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-'));
+  const socket = path.join(dir, 'x.sock');
+  assert.equal(await probeSocketListening(socket), false, 'no file');
+  const server = net.createServer((client) => client.destroy());
+  await new Promise((resolve) => server.listen(socket, resolve));
+  assert.equal(await probeSocketListening(socket), true);
+  // A stale socket file: the path exists, and nothing accepts on it.
+  server.close();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  fs.writeFileSync(socket, '');
+  assert.equal(await probeSocketListening(socket), false, 'a stale file');
+  fs.rmSync(dir, { recursive: true });
 });
 
 test('an unreadable cutover record is refused, never read as "not cut over"', async () => {

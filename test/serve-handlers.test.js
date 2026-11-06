@@ -73,7 +73,10 @@ function fakeTailscale({ services = NUMENOR(), tags = ['tag:smith-host'], fsImpl
   };
   const run = async (input) => {
     state.calls.push(input);
-    if (input.binary === '/usr/sbin/nginx') return { stdout: '# configuration file /etc/nginx/nginx.conf:\nhttp {\n}\n' };
+    if (input.binary === '/usr/sbin/nginx') {
+      const site = '/etc/nginx/sites-available/sovereign-home';
+      return { stdout: `# configuration file /etc/nginx/nginx.conf:\nhttp {\n  include /etc/nginx/sites-enabled/*;\n}\n${fsImpl?.existsSync(site) ? fsImpl.readFileSync(site) : ''}\n` };
+    }
     if (input.binary !== '/usr/bin/tailscale') return { stdout: '' };
     const args = input.args.join(' ');
     if (failOn && failOn(args, state)) throw new Error(`injected failure: ${args}`);
@@ -440,7 +443,7 @@ test('end to end on one host: cutover, publish, rollback', async () => {
     if (input.binary === '/usr/bin/systemd-tmpfiles') fsImpl.mkdirSync('/run/sovereign-serve', { mode: 0o700 });
     return run(input);
   };
-  const handlers = { ...createBaseHandlers({ fsImpl, run: tmpfilesRun }), ...createServeHandlers({ fsImpl, run: tmpfilesRun }) };
+  const handlers = { ...createBaseHandlers({ fsImpl, run: tmpfilesRun, probeListening: async () => true }), ...createServeHandlers({ fsImpl, run: tmpfilesRun }) };
   const execute = async (plan) => { validateOperationPolicy(plan); for (const operation of plan.operations) await handlers[operation.type](operation); };
   await execute(buildIngressCutoverPlan({ instance: 'smith', domain: DOMAIN, legacyService: LEGACY_NAME }));
   for (const serviceKey of ['homebase', 'home']) await execute(buildServicePublishPlan({ serviceKey }));
