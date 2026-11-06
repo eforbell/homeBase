@@ -1071,6 +1071,11 @@ END $$;
         const stat = lstatOrNull(fsImpl, layout.envPath);
         if (!stat || !stat.isFile()) deny(`${layout.app.name} has no .env; install it first.`);
         const current = parseDotEnv(readSmallFileNoFollow(fsImpl, layout.envPath) ?? deny(`${layout.app.name}'s .env is not a regular file.`));
+        // The catalog says where the app listens once it is updated; an install from before still listens on its
+        // port, and an app told to trust identity headers there refuses to start.
+        if (operation.mode === 'tailnet' && current.SOVEREIGN_LISTEN !== `unix:${layout.listen.socket}`) {
+          deny(`${layout.app.name} still listens on its port here; update it first, so it moves to its socket.`);
+        }
         // Local follows the update rule: an app that can't trust the directory carries no mode at all.
         const next = operation.mode === 'tailnet' ? setIdentityEnv(current, { mode: 'tailnet', homeBaseUid }) : keepIdentityEnv(current, '', layout);
         writeFileAtomic(fsImpl, layout.envPath, renderEnv(next), owner.own ? 0o600 : 0o640);

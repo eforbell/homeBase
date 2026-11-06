@@ -108,7 +108,9 @@ test('every catalog app: a fresh executor .env equals the legacy planner output 
       // Secrets are random per render; the reinstall contract keeps the legacy values, as on a real host.
       const executor = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv(legacy), fsImpl: createFakeFs() }));
       const listenEnv = layout.listen.kind === 'unix' ? { SOVEREIGN_LISTEN: `unix:${layout.listen.socket}` } : { HOST: '127.0.0.1' };
-      const runtimeEnv = { ...listenEnv, ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) };
+      // An app that can trust tailnet identity always carries a mode; a fresh install starts local.
+      const identityEnv = layout.identityModes.includes('tailnet') ? { SOVEREIGN_AUTH_MODE: 'local' } : {};
+      const runtimeEnv = { ...listenEnv, ...identityEnv, ...(layout.runtime.kind === 'node' ? { NODE_ENV: layout.runtime.nodeEnv } : {}) };
       assert.deepEqual(executor, { ...legacy, ...runtimeEnv }, app.id);
     }
   } finally {
