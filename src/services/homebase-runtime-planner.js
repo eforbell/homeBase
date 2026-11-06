@@ -1,3 +1,5 @@
+const path = require('path');
+
 const SAFE_RUNTIME_USER_PATTERN = /^[a-z_][a-z0-9_-]*$/;
 const SAFE_PATH_PATTERN = /^\/[A-Za-z0-9._/-]+$/;
 
@@ -91,6 +93,7 @@ function renderEnvFile({
   return [
     `PORT=${port}`,
     `HOME_BASE_BIND_HOST=${bindHost}`,
+    `HOME_BASE_DATA_DIR=${path.dirname(stateDbPath)}`,
     `HOME_BASE_STATE_DB=${stateDbPath}`,
     `HOME_BASE_INSTALL_DIR=${baseInstallDir}`,
     `HOME_BASE_SHARED_ROOT=${sharedRoot}`,
