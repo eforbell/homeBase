@@ -19,15 +19,17 @@ function appsInTailnetMode(installations = {}) {
 
 // legacyService: the pre-SID-001 managed service (svc:home), which targets nginx's TCP :443 and so stops
 // answering once the socket gateway replaces it. Retiring it is part of the cutover.
-function buildIngressCutoverPlan({ instance, domain, legacyService = null, generatedAt, catalogRevision } = {}) {
+// moveHomeBase: a separate, later run. :3080 is how an administrator reaches the page that publishes Home Base's
+// own service, so it stays until that service answers (bugBase #157).
+function buildIngressCutoverPlan({ instance, domain, legacyService = null, moveHomeBase = false, generatedAt, catalogRevision } = {}) {
   const problem = validateInstance(instance);
   if (problem) refuse(`Cannot plan the ingress cutover: ${problem}.`);
   const tailnetDomain = String(domain || '').toLowerCase();
   if (!/\.ts\.net$/.test(tailnetDomain)) refuse('Cannot plan the ingress cutover: the domain must be the tailnet domain (<tailnet>.ts.net).');
   const operations = [
-    // homeBase: nginx reaches Home Base on its own socket (SID-006). Home Base reads this from the plan the
-    // executor ran, and only then stops serving on loopback TCP.
-    operation({ id: 'install-socket-gateway', type: 'nginx.ensure-socket-gateway', title: 'Install the per-service nginx socket gateway', instance, domain: tailnetDomain, homeBase: 'socket' }),
+    // homeBase: nginx reaches Home Base on its own socket (SID-006). Home Base stops serving on loopback TCP once
+    // nginx has reloaded that gateway (the applied record).
+    operation({ id: 'install-socket-gateway', type: 'nginx.ensure-socket-gateway', title: 'Install the per-service nginx socket gateway', instance, domain: tailnetDomain, ...(moveHomeBase ? { homeBase: 'socket' } : {}) }),
     operation({ id: 'reload-nginx', type: 'nginx.validate-and-reload', title: 'Validate and reload nginx', dependsOn: ['install-socket-gateway'] }),
     ...(legacyService ? [operation({ id: 'retire-legacy-service', type: 'tailscale.retire-service', title: `Retire ${legacyService} from this host`, risk: 'destructive', dependsOn: ['reload-nginx'], service: legacyService })] : []),
   ];

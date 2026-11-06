@@ -151,7 +151,7 @@ test('executor actions: the three ingress actions compile to policy-valid plans 
 });
 
 // The route module behind a real HTTP server, with the admin check, executor, and jobs faked.
-async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeApi(), apiFactory = () => api, capabilities = { protocolVersions: [PROTOCOL_VERSION], mutationsEnabled: true, actions: ['install', 'ingress-cutover', 'service-publish', 'ingress-rollback'] }, executorDelayMs = 0, installations = {} } = {}) {
+async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeApi(), apiFactory = () => api, capabilities = { protocolVersions: [PROTOCOL_VERSION], mutationsEnabled: true, actions: ['install', 'ingress-cutover', 'service-publish', 'ingress-rollback'] }, executorDelayMs = 0, installations = {}, ingressJobs = [], warmUp = null, serve = undefined } = {}) {
   const audits = [];
   const jobs = [];
   const logs = [];
@@ -162,14 +162,17 @@ async function routes(t, { unlocked = true, config = CONFIG(tmp()), api = fakeAp
     parseBody: (req) => new Promise((resolve) => { let text = ''; req.on('data', (chunk) => { text += chunk; }); req.on('end', () => resolve(text ? JSON.parse(text) : {})); }),
     recordAdminAudit: (_store, record) => audits.push(record),
     executionBlockOutcome: () => 'blocked-auth',
-    controlFactory: (options) => createIngressControl({ ...options, cli: cli() }),
+    controlFactory: (options) => {
+      const control = createIngressControl({ ...options, cli: cli(serve ? { services: serve } : {}) });
+      return warmUp ? { ...control, warmUp } : control;
+    },
     apiFactory,
     adminStatus: async () => ({ unlocked }),
     requireAdmin: async () => (unlocked ? { ok: true, sessionTokenHash: 'h' } : { ok: false, statusCode: 401, payload: { error: 'Admin unlock is required before real execution.' } }),
     executorCapabilities: async () => { await new Promise((resolve) => setTimeout(resolve, executorDelayMs)); return capabilities; },
   });
   const server = http.createServer(async (req, res) => {
-    const handled = await handle({ req, res, method: req.method, pathname: new URL(req.url, 'http://x').pathname, config, state: { installations } });
+    const handled = await handle({ req, res, method: req.method, pathname: new URL(req.url, 'http://x').pathname, config, state: { installations, ingressJobs } });
     if (!handled) { res.writeHead(418); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -201,6 +204,42 @@ test('routes: cutover asks the executor for the cutover, retiring the legacy ser
   assert.equal((await old.post('/api/ingress/cutover', { confirm: 'CUTOVER' })).body.code, 'EXECUTOR_INCOMPATIBLE');
   const legacy = await routes(t, { config: CONFIG(tmp(), { homeBaseExecutionMode: 'legacy-sudo' }) });
   assert.equal((await legacy.post('/api/ingress/cutover', { confirm: 'CUTOVER' })).body.code, 'EXECUTOR_REQUIRED');
+});
+
+test('routes: Home Base moves to its socket only once its new address answers (#157)', async (t) => {
+  const ingressJobs = [{ id: 1, kind: 'ingress-cutover', status: 'completed', dryRun: false, finishedAt: '2026-10-27T00:00:00.000Z' }];
+  const serve = { 'svc:smith-homebase': { endpoints: { 'tcp:443': 'https://unix:/run/sovereign-serve/homebase.sock' } } };
+  const move = { confirm: 'CUTOVER', moveHomeBase: true };
+  const noApi = { apiFactory: () => { throw new Error('no credential'); } };
+  const refused = async (options, body, code, pattern) => {
+    const { post, jobs, audits } = await routes(t, options);
+    const answer = await post('/api/ingress/cutover', body);
+    assert.equal(answer.body.code, code);
+    assert.match(answer.body.error, pattern);
+    assert.equal(jobs.length, 0, 'nothing started');
+    assert.equal(audits.at(-1).outcome, 'blocked-policy');
+  };
+  await refused({ serve }, move, 'NOT_CUT_OVER', /Run the cutover first/);
+  await refused({ ingressJobs, serve: {} }, move, 'HOMEBASE_NOT_PUBLISHED', /Publish svc:smith-homebase first: port 3080 stays/);
+  await refused({ ingressJobs, serve, warmUp: async () => ({ ok: false, detail: 'no answer within 60 s' }) }, move, 'HOMEBASE_UNREACHABLE', /doesn't answer yet, so port 3080 stays: no answer within 60 s.*approved for svc:smith-homebase/);
+  await refused({ ingressJobs, serve, ...noApi }, move, 'HOMEBASE_NOT_CONFIRMED', /Open https:\/\/smith-homebase\.example-tailnet\.ts\.net\/ and check that it loads/);
+  // The administrator's confirmation stands in only when Home Base can't ask for itself.
+  await refused({ ingressJobs, serve, warmUp: async () => ({ ok: false, detail: 'refused' }) }, { ...move, reachedConfirmed: true }, 'HOMEBASE_UNREACHABLE', /refused/);
+
+  const asked = await routes(t, { ingressJobs, serve, warmUp: async () => ({ ok: true, detail: 'answered' }) });
+  assert.equal((await asked.post('/api/ingress/cutover', move)).status, 202);
+  assert.equal(asked.jobs[0].action.moveHomeBase, true);
+  const confirmed = await routes(t, { ingressJobs, serve, ...noApi });
+  assert.equal((await confirmed.post('/api/ingress/cutover', { ...move, reachedConfirmed: true })).status, 202);
+  assert.equal(confirmed.jobs[0].action.moveHomeBase, true);
+  // A plain cutover never asks for the move, however the body reads.
+  const plain = await routes(t, { serve: {} });
+  assert.equal((await plain.post('/api/ingress/cutover', { confirm: 'CUTOVER', moveHomeBase: 'yes' })).status, 202);
+  assert.equal(plain.jobs[0].action.moveHomeBase, undefined);
+  assert.equal(normalizeAction({ action: 'ingress-cutover', instance: 'smith', domain: 'example-tailnet.ts.net', moveHomeBase: true }).moveHomeBase, true);
+  assert.equal(compileAction(normalizeAction({ action: 'ingress-cutover', instance: 'smith', domain: 'example-tailnet.ts.net', moveHomeBase: true })).plan.operations[0].homeBase, 'socket');
+  assert.equal(compileAction(normalizeAction({ action: 'ingress-cutover', instance: 'smith', domain: 'example-tailnet.ts.net' })).plan.operations[0].homeBase, undefined);
+  assert.throws(() => normalizeAction({ action: 'ingress-cutover', instance: 'smith', domain: 'example-tailnet.ts.net', moveHomeBase: 'yes' }), /moveHomeBase/);
 });
 
 test('routes: publish is gated per service (D23) and warms the certificate after the job', async (t) => {

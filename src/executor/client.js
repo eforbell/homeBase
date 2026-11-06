@@ -93,7 +93,7 @@ const ACTION_FIELD_NAMES = {
   uninstall: ['appId', 'keepBackups'],
   'move-user': ['appId', 'site'],
   'identity-mode': ['appId', 'mode'],
-  'ingress-cutover': ['instance', 'domain', 'legacyService'],
+  'ingress-cutover': ['instance', 'domain', 'legacyService', 'moveHomeBase'],
   'service-publish': ['serviceKey'],
   'ingress-rollback': [],
 };

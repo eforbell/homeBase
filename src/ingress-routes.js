@@ -1,6 +1,7 @@
 const { getAdminStatus, requireAdminForExecute } = require('./admin-auth');
 const { getExecutorCapabilities, canExecuteMutations } = require('./executor/capabilities');
 const { createIngressControl, currentIngress, setupSheet } = require('./services/ingress-control');
+const { HOMEBASE_SERVICE } = require('./operations/ingress-layout');
 const { createTailscaleApi } = require('./services/tailscale-api');
 const { appsInTailnetMode } = require('./operations/compilers/ingress');
 const { getAppById } = require('./catalog');
@@ -156,9 +157,25 @@ function createIngressRoutes({
       if (!setup.ok) { refuse(res, { action: 'ingress-cutover', target, auth, error: `Cannot cut over: ${setup.problem}.`, code: 'INGRESS_NOT_CONFIGURED' }); return true; }
       const status = await control.status();
       if (!status.self?.tagged) { refuse(res, { action: 'ingress-cutover', target, auth, error: 'This host is user-owned (untagged); tag it with its own host tag before the cutover (D2, D14).', code: 'HOST_UNTAGGED' }); return true; }
+      // Moving Home Base retires :3080, so the address that replaces it has to answer first (bugBase #157). With an
+      // API credential Home Base asks that address itself; without one, the administrator has opened it.
+      const moveHomeBase = body.moveHomeBase === true;
+      if (moveHomeBase) {
+        const entry = (status.services || []).find((candidate) => candidate.key === HOMEBASE_SERVICE);
+        const notYet = (error, code) => refuse(res, { action: 'ingress-cutover', target, auth, error, code });
+        if (!currentIngress(state.ingressJobs, config)) { notYet('Run the cutover first: Home Base can only move to its socket after it.', 'NOT_CUT_OVER'); return true; }
+        if (!entry?.published) { notYet(`Publish ${entry?.name || 'Home Base\'s service'} first: port 3080 stays until the address that replaces it answers.`, 'HOMEBASE_NOT_PUBLISHED'); return true; }
+        const reached = await control.warmUp(HOMEBASE_SERVICE);
+        if (reached.skipped) {
+          if (body.reachedConfirmed !== true) { notYet(`Open https://${entry.hostname}/ and check that it loads first: port 3080 stays until it does.`, 'HOMEBASE_NOT_CONFIRMED'); return true; }
+        } else if (!reached.ok) {
+          notYet(`Home Base's new address doesn't answer yet, so port 3080 stays: ${reached.detail}. Check that this host is approved for ${entry.name} in the Tailscale console, then try again.`, 'HOMEBASE_UNREACHABLE');
+          return true;
+        }
+      }
       await startAction(res, config, {
         auth, auditAction: 'ingress-cutover', target, kind: 'ingress-cutover',
-        action: { action: 'ingress-cutover', instance: status.instance, domain: status.domain, ...(status.legacyServicePresent ? { legacyService: status.legacyService } : {}) },
+        action: { action: 'ingress-cutover', instance: status.instance, domain: status.domain, ...(status.legacyServicePresent ? { legacyService: status.legacyService } : {}), ...(moveHomeBase ? { moveHomeBase: true } : {}) },
       });
       return true;
     }

@@ -13,7 +13,7 @@ const { hostSupport } = require('../src/operations/host-support');
 const { FLOORS, compareVersions } = require('../src/operations/security-floors');
 const { appSnippetIncludeCheck, includesFile, loadsContent, operatorServesAppSnippets } = require('../src/operations/nginx-config');
 const {
-  appPublicBase, GATEWAY_LOCATION, gatewayReachesHomeBaseSocket, gatewayReportsReload, renderReloadToken, RELOAD_TOKEN_SNIPPET, ingressServices, listenAsDeployed, renderAppLocations, renderGatewaySite, renderIdentitySnippet, serviceSocket, validateInstance,
+  appPublicBase, GATEWAY_LOCATION, gatewayReachesHomeBaseSocket, gatewayReportsReload, HOMEBASE_SERVICE, serveTarget, serviceHostname, serviceName, renderReloadToken, RELOAD_TOKEN_SNIPPET, ingressServices, listenAsDeployed, renderAppLocations, renderGatewaySite, renderIdentitySnippet, serviceSocket, validateInstance,
   APPLIED_PATH, HOMEBASE_SOCKET, IDENTITY_SNIPPET, SERVE_SOCKET_DIR, SOCKET_GATEWAY_MARKER, TMPFILES_CONTENT, TMPFILES_PATH,
 } = require('../src/operations/ingress-layout');
 const { applyListenEnv, keepIdentityEnv, setIdentityEnv, trustsIdentityHeaders, parseDotEnv, renderEnv, renderAppEnv, hasExistingDbConfig, resolveExistingDbContext } = require('../src/operations/env');
@@ -403,9 +403,9 @@ function directoryFor(operation, layout) {
 
 // The cutover record, or null before cutover. Anything unreadable is refused, never treated as TCP.
 // Whether Home Base answers its health probe on its socket (SID-006).
-function probeHomeBaseSocket(socketPath, timeoutMs = 2000) {
+function probeHomeBaseSocket(socketPath, { host, timeoutMs = 2000 } = {}) {
   return new Promise((resolve) => {
-    const req = http.request({ socketPath, method: 'GET', path: '/api/homebase/health', timeout: timeoutMs }, (res) => {
+    const req = http.request({ socketPath, method: 'GET', path: '/api/homebase/health', timeout: timeoutMs, ...(host ? { headers: { host, 'x-forwarded-host': host, 'sec-fetch-site': 'same-origin' } } : {}) }, (res) => {
       res.resume();
       resolve(res.statusCode === 200);
     });
@@ -491,6 +491,22 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     const stale = waiting.filter((_, index) => answers[index] !== null);
     if (stale.length) deny(`nginx is still running its earlier configuration on ${stale.map(({ socket }) => socket).join(', ')}: it rejected the reload. Check "sudo journalctl -u nginx", fix what it names, then run this again.`);
     deny(`nginx loaded the socket gateway, but nothing is listening on ${waiting.map(({ socket }) => socket).join(', ')}; check "sudo journalctl -u nginx" and run this again.`);
+  }
+
+  // The executor's own check before :3080 retires, whatever the caller says: Home Base's service is published here,
+  // and nginx reaches Home Base through it. Whether the tailnet reaches it needs the console too; the route asks
+  // for that proof (src/ingress-routes.js).
+  async function assertHomeBaseServiceReady(ingress, timeoutMs) {
+    const name = serviceName(ingress.instance, HOMEBASE_SERVICE);
+    const publishFirst = `publish ${name} on the Network page first, and check that it loads. Port 3080 stays until then`;
+    if (!ingress.cutOver) deny(`Home Base can't move to its socket before the cutover: run the cutover, then ${publishFirst}.`);
+    const result = await run({ binary: '/usr/bin/tailscale', args: ['serve', 'get-config', `--service=${name}`], ...rootIdentity, timeoutMs, env: ROOT_ENV });
+    let config;
+    try { config = JSON.parse(String(result.stdout || '{}')); } catch { config = null; }
+    const target = config?.endpoints?.['tcp:443'];
+    if (target !== `https://${serveTarget(HOMEBASE_SERVICE)}` || Object.keys(config.endpoints).length !== 1 || config.advertised === false) deny(`${name} isn't published on this host: ${publishFirst}.`);
+    const reached = await probeHomeBase(serviceSocket(HOMEBASE_SERVICE), { host: serviceHostname(ingress.instance, HOMEBASE_SERVICE, ingress.domain) });
+    if (!reached) deny(`nginx doesn't reach Home Base through ${name}'s socket; port 3080 stays. Check "sudo nginx -T" and the Home Base log, then try again.`);
   }
 
   function gatewayIsSocketMode() {
@@ -897,6 +913,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook 3.3), then run the cutover again.');
       // Refused here, before anything is written: this host's nginx would ignore the gateway and still reload.
       if (!includesGateway) deny(`nginx wouldn't load the socket gateway: nothing in its http block includes ${NGINX_GATEWAY_LINK}. ${GATEWAY_INCLUDE_HELP}, then run the cutover again.`);
+      const moving = operation.homeBase === 'socket' && existing?.homeBase !== 'socket';
+      if (moving) await assertHomeBaseServiceReady({ ...ingress, cutOver: Boolean(existing) }, operation.timeoutMs);
       // The socket's directory comes from the tmpfiles entry the gateway installs, so the record is written
       // twice: first as it was (or without Home Base's socket), then with it once Home Base listens there.
       const keep = existing?.homeBase === 'socket' ? { homeBase: 'socket' } : {};
@@ -1179,6 +1197,7 @@ module.exports = {
   NGINX_GATEWAY_CONTENT,
   INGRESS_STATE_PATH,
   probeGatewaySocket,
+  probeHomeBaseSocket,
   readIngressRecord,
   ROOT_ENV,
   lookupSystemUser,

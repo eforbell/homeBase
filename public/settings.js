@@ -323,6 +323,7 @@
         const key = encodeURIComponent(ingressForm.dataset.key || '');
         const request = {
           'ingress-cutover': ['/api/ingress/cutover', { confirm: 'CUTOVER' }],
+          'ingress-move-homebase': ['/api/ingress/cutover', { confirm: 'CUTOVER', moveHomeBase: true, reachedConfirmed: true }],
           'ingress-rollback': ['/api/ingress/rollback', { confirm: 'ROLLBACK' }],
           'ingress-publish': [`/api/ingress/services/${key}/publish`, { confirm: 'PUBLISH' }],
           'ingress-confirm': [`/api/ingress/services/${key}/confirm`, { hostNodeId: '' }],
@@ -714,6 +715,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
           </div>
         </li>`;
     }).join('');
+    const homeBaseEntry = (data.services || []).find((entry) => entry.key === 'homebase');
     const sheet = data.setup ? `
       <details style="margin-top:0.8rem;">
         <summary><strong>Tailscale console setup sheet</strong> <span class="hb-muted">(define these services, then paste the policy)</span></summary>
@@ -736,12 +738,13 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
       ${sheet}
       <h3 style="margin:1rem 0 0.4rem;">Services</h3>
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">${rows}</ul>
-      ${data.cutOver && data.homeBase !== 'socket' ? `
-        <form class="hb-form-grid" data-action="ingress-cutover" style="margin-top:1rem;">
-          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Move Home Base onto its own socket: runs the cutover again, then port 3080 only redirects here (runbook section 5)</label>
+      ${data.cutOver && data.homeBase !== 'socket' ? (homeBaseEntry?.published ? `
+        <form class="hb-form-grid" data-action="ingress-move-homebase" style="margin-top:1rem;">
+          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> <span>I opened <a href="https://${esc(homeBaseEntry.hostname)}/" target="_blank" rel="noopener" style="overflow-wrap:anywhere;">https://${esc(homeBaseEntry.hostname)}/</a> and it loads. Move Home Base onto its own socket: port 3080 then only redirects there (runbook section 5)</span></label>
           <button class="hb-btn hb-btn-primary" type="submit">Move Home Base to its socket</button>
           <p class="hb-muted" data-result style="margin:0;"></p>
-        </form>` : ''}
+        </form>` : `
+        <p class="hb-muted" style="margin:1rem 0 0;">Home Base stays on port 3080 until ${esc(homeBaseEntry?.name || 'its own service')} is published and you've checked that it loads.</p>`) : ''}
       ${data.cutOver ? `
         <form class="hb-form-grid" data-action="ingress-rollback" style="margin-top:1rem;">
           <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Restore the TCP gateway and the Serve services from before the cutover</label>
@@ -749,7 +752,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>` : `
         <form class="hb-form-grid" data-action="ingress-cutover" style="margin-top:1rem;">
-          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Move nginx to one private socket per service (runbook section 3). Apps stay reachable only at their new addresses once published.</label>
+          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Move nginx to one private socket per service (runbook section 3). Apps stay reachable only at their new addresses once published. Home Base stays on port 3080 until you move it.</label>
           <button class="hb-btn hb-btn-primary" type="submit">Cut over to per-service sockets</button>
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>`}

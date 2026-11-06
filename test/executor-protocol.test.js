@@ -304,6 +304,9 @@ test('the ingress actions get through the protocol layer with exactly their own 
   await withExecutor(async (socketPath) => {
     const cutover = await planAction(socketPath, { action: 'ingress-cutover', instance: 'smith', domain: 'example-tailnet.ts.net', legacyService: 'svc:home' });
     assert.deepEqual(cutover.plan.operations.map((operation) => operation.type), ['nginx.ensure-socket-gateway', 'nginx.validate-and-reload', 'tailscale.retire-service']);
+    assert.equal(cutover.plan.operations[0].homeBase, undefined, 'a first cutover leaves Home Base on the port (#157)');
+    const moved = await planAction(socketPath, { action: 'ingress-cutover', instance: 'smith', domain: 'example-tailnet.ts.net', moveHomeBase: true });
+    assert.equal(moved.plan.operations[0].homeBase, 'socket', 'the request to move survives the client and the protocol');
     assert.equal((await planAction(socketPath, { action: 'service-publish', serviceKey: 'home' })).plan.kind, 'service-publish');
     assert.equal((await planAction(socketPath, { action: 'ingress-rollback' })).plan.kind, 'ingress-rollback');
     await assert.rejects(() => sendRequest(socketPath, { protocolVersion: PROTOCOL_VERSION, requestId: crypto.randomUUID(), type: 'plan-action', action: 'service-publish', serviceKey: 'home', instance: 'smith' }), /instance is not accepted for service-publish/);
