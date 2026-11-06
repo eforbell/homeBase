@@ -26,14 +26,14 @@ const ACTIONS = Object.freeze({
   'identity-mode': { fields: ['appId', 'mode'] },
   // Feature-10 SID-001 socket ingress. Home Base gates each one first (D23); the executor still binds
   // service names to its own cutover record and checks app identity modes itself before a rollback.
-  'ingress-cutover': { fields: ['instance', 'domain', 'legacyService'] },
+  'ingress-cutover': { fields: ['instance', 'domain', 'legacyService', 'moveHomeBase'] },
   'service-publish': { fields: ['serviceKey'] },
   'ingress-rollback': { fields: [] },
 });
 // Apps the executor manages. Each entry has passed the runbook (docs/executor-app-runbook.md),
 // including a container run; since 2026-09-25 that is the whole catalog.
 const INSTALLABLE_APPS = Object.freeze(['family-dinner', 'home-source', 'family-plan', 'fast-to-eat', 'family-help', 'home-ops', 'family-pulse', 'bug-base', 'helm', 'bitcoin-accounting', 'home-drop', 'remind-me']);
-const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups', 'instance', 'domain', 'legacyService', 'serviceKey', 'mode'];
+const ACTION_FIELDS = ['action', 'appId', 'ref', 'transport', 'site', 'backupId', 'keepBackups', 'instance', 'domain', 'legacyService', 'moveHomeBase', 'serviceKey', 'mode'];
 
 function deny(message) { throw new ProtocolError('POLICY_DENIED', message); }
 
@@ -64,7 +64,8 @@ function normalizeAction(request) {
   if (request.action === 'ingress-cutover') {
     if (typeof request.instance !== 'string' || typeof request.domain !== 'string') invalid('instance and domain are required.');
     if (request.legacyService != null && (typeof request.legacyService !== 'string' || !/^svc:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(request.legacyService))) invalid('legacyService must be a service name.');
-    return { action: 'ingress-cutover', instance: request.instance, domain: request.domain, ...(request.legacyService ? { legacyService: request.legacyService } : {}) };
+    if (request.moveHomeBase != null && typeof request.moveHomeBase !== 'boolean') invalid('moveHomeBase must be true or false.');
+    return { action: 'ingress-cutover', instance: request.instance, domain: request.domain, ...(request.legacyService ? { legacyService: request.legacyService } : {}), ...(request.moveHomeBase ? { moveHomeBase: true } : {}) };
   }
   if (typeof request.appId !== 'string' || !getAppById(request.appId)) invalid('appId must name a catalog app.');
   if (request.action === 'restart' || request.action === 'backup') return { action: request.action, appId: request.appId };
@@ -96,7 +97,7 @@ function compileAction(action, { generatedAt = new Date().toISOString(), adoptAl
   if (action.action === 'bootstrap') {
     plan = buildHostBootstrapPlan({ generatedAt });
   } else if (action.action === 'ingress-cutover') {
-    plan = buildIngressCutoverPlan({ instance: action.instance, domain: action.domain, legacyService: action.legacyService || null, generatedAt });
+    plan = buildIngressCutoverPlan({ instance: action.instance, domain: action.domain, legacyService: action.legacyService || null, moveHomeBase: action.moveHomeBase === true, generatedAt });
   } else if (action.action === 'service-publish') {
     plan = buildServicePublishPlan({ serviceKey: action.serviceKey, generatedAt });
   } else if (action.action === 'ingress-rollback') {

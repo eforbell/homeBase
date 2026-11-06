@@ -604,6 +604,10 @@ function createApp(config) {
   // came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain. homeBase: it is
   // Home Base's own hostname, where everything runs; a sensitive app's hostname gets checks only (D21).
   function passkeySite(req, state, effectiveConfig) {
+    // Passkeys only on Home Base's socket. Until it moves there :3080 is still Home Base, where a local process can
+    // set X-Forwarded-For and pass as a member, so no credential is enrolled, checked or activated over it.
+    // passkeysOverTcp is for tests only (loadConfig never sets it).
+    if (req.homeBaseVia !== 'socket' && !config.passkeysOverTcp) return null;
     const ingress = directory ? currentIngress(state.ingressJobs, effectiveConfig) : null;
     if (!ingress) return null;
     // nginx admits the hostname with or without the default port (ingress-layout.js); nothing else.
