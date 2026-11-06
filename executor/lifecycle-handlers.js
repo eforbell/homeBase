@@ -180,7 +180,8 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
       const restored = [];
       // Where nginx points now decides where the app listens, not the catalog: an app whose catalog entry moved
       // to a socket keeps its loopback port until an update moves it (socket directory, nginx and all).
-      const listenNow = listenAsDeployed(layout, isRealFile(layout.nginxSnippet) ? readSmallFileNoFollow(fsImpl, layout.nginxSnippet) : null);
+      const deployedSnippet = [layout.nginxSnippet, layout.legacyNginxSnippet].find(isRealFile);
+      const listenNow = listenAsDeployed(layout, deployedSnippet ? readSmallFileNoFollow(fsImpl, deployedSnippet) : null);
       if (present.env) {
         asUser(owner, () => {
           const restoredEnv = parseDotEnv(readSmallFileNoFollow(fsImpl, `${archiveDir}/.env.backup`) ?? deny('The backup .env is not a regular file.'));

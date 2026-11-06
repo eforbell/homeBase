@@ -106,6 +106,11 @@ test('restore keeps the app where nginx points now, even when its catalog entry 
   await tcp.handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
   assert.match(tcp.fsImpl.readFileSync(ENV), /^HOST=127\.0\.0\.1$/m);
   assert.doesNotMatch(tcp.fsImpl.readFileSync(ENV), /SOVEREIGN_LISTEN/);
+  // The same with only the legacy snippet (installed before per-app snippet names).
+  const legacy = harness({ ...backup, [SOURCE.legacyNginxSnippet]: { kind: 'file', content: `location /source/ { proxy_pass http://127.0.0.1:${SOURCE.port}/; }\n` } });
+  await legacy.handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  assert.match(legacy.fsImpl.readFileSync(ENV), /^HOST=127\.0\.0\.1$/m);
+  assert.doesNotMatch(legacy.fsImpl.readFileSync(ENV), /SOVEREIGN_LISTEN/);
   // Updated: nginx proxies to the socket, so that's where it listens, whatever the backup said.
   const unix = harness({ ...backup, [SOURCE.nginxSnippet]: { kind: 'file', content: `location /source/ { proxy_pass http://unix:${SOURCE.listen.socket}:/; }\n` } });
   await unix.handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
