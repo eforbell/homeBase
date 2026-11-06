@@ -207,6 +207,35 @@ test('a move that never reloaded proves nothing: a retry starts it again or goes
   assert.equal(JSON.parse(refreshed.fsImpl.readFileSync(APPLIED_PATH)).homeBase, 'tcp', ':3080 stays');
 });
 
+test('with the applied record missing or unreadable, the readiness check decides; a working host is not downgraded', async () => {
+  const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' }, [INGRESS_STATE_PATH]: JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'socket' }) };
+  const { APPLIED_PATH } = require('../src/operations/ingress-layout');
+  for (const extra of [{}, { [APPLIED_PATH]: 'not json' }]) {
+    const label = extra[APPLIED_PATH] ? 'unreadable' : 'missing';
+    // Working: published here, and nginx reaches Home Base through it. Neither a refresh nor a retry moves it back.
+    const working = harness({ ...files, ...extra });
+    await working.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+    assert.match(working.fsImpl.readFileSync(SITE), /homebase-identity\/homebase\.sock/, `${label}: a refresh keeps the socket`);
+    assert.match(await working.handlers['nginx.ensure-socket-gateway'](cutover()), /Home Base on its socket/, `${label}: a retry keeps the socket`);
+    assert.equal(JSON.parse(working.fsImpl.readFileSync(INGRESS_STATE_PATH)).homeBase, 'socket');
+    // Nothing behind the new address: a failed move, not a working host. The port stays.
+    for (const broken of [{ homeBaseService: {} }, { reaches: false }]) {
+      const failed = harness({ ...files, ...extra }, broken);
+      assert.match(await failed.handlers['nginx.ensure-socket-gateway'](cutover()), /Home Base on port 3080/, `${label}: ${JSON.stringify(broken)}`);
+      assert.doesNotMatch(failed.fsImpl.readFileSync(SITE), /homebase-identity\/homebase\.sock/);
+    }
+  }
+  // A check that can't run at all is a failure to report, not an answer.
+  const fsFiles = { ...files };
+  const down = harness(fsFiles);
+  const tailscaleDown = createBaseHandlers({ fsImpl: down.fsImpl, sleep: async () => {}, probeHomeBase: async () => true, probeGateway: async () => null, run: async (input) => {
+    if (input.binary === '/usr/bin/tailscale') throw Object.assign(new Error('tailscaled is down'), { code: 'OPERATION_FAILED' });
+    return { stdout: FRESH_NGINX };
+  } });
+  await assert.rejects(() => tailscaleDown['nginx.ensure-gateway'](base('nginx.ensure-gateway')), /tailscaled is down/);
+  assert.equal(down.fsImpl.existsSync(SITE), false, 'nothing rewritten');
+});
+
 test('a host already on its socket stays there without those checks', async () => {
   const { APPLIED_PATH } = require('../src/operations/ingress-layout');
   const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' }, [APPLIED_PATH]: JSON.stringify({ homeBase: 'socket' }) };
