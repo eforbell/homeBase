@@ -75,6 +75,9 @@ function isSocketService(entry) {
   return ports.length === 1 && ports[0] === HTTPS_PORT && entry.TCP[HTTPS_PORT]?.HTTPS === true
     && handlers.length === 1 && handlers[0][0] === '/' && SOCKET_TARGET.test(String(handlers[0][1]?.Proxy || ''));
 }
+// What the CLI exports once an endpoint is restored: a socket target takes the frontend's scheme, so one that
+// an older snapshot saved as http://unix: reads back as https://unix: when it comes back behind HTTPS.
+const restoredExport = (target, frontend) => (frontend?.HTTP ? target : String(target).replace(/^http:\/\/unix:/, 'https://unix:'));
 const exportsSocket = (target) => SOCKET_TARGET.test(String(target).replace(/^https?:\/\//, ''));
 
 // What `serve status` shows differently, leaving out the services this operation changed on purpose.
@@ -150,9 +153,13 @@ function createServeHandlers({ fsImpl = fs, run = runApproved } = {}) {
       for (const [endpoint, target] of Object.entries(endpoints)) restoreArgs(name, endpoint, target, frontends[endpoint.slice(4)]);
       // Saved before the removal: an interruption between the two still leaves a complete record.
       const snapshot = readSnapshot() || { version: '0.0.1', services: {}, frontends: {} };
-      snapshot.services[name] = { endpoints, ...(config.advertised === false ? { advertised: false } : {}) };
-      snapshot.frontends[name] = frontends;
-      writeSnapshot(snapshot);
+      // `serve clear` removes the advertisement before the config, so a service found here with the endpoints
+      // already on record is a retire that stopped part way, and the record still has its real state.
+      if (!snapshot.frontends[name] || !sameEndpoints(snapshot.services[name]?.endpoints, endpoints)) {
+        snapshot.services[name] = { endpoints, ...(config.advertised === false ? { advertised: false } : {}) };
+        snapshot.frontends[name] = frontends;
+        writeSnapshot(snapshot);
+      }
       await tailscale(['serve', 'clear', name], operation.timeoutMs);
       const after = await readStatus(operation.timeoutMs);
       if (after.Services?.[name]) deny(`Serve still has ${name}; check "tailscale serve status --json".`);
@@ -187,15 +194,20 @@ function createServeHandlers({ fsImpl = fs, run = runApproved } = {}) {
           if (!frontends[endpoint.slice(4)] && String(target).startsWith('http://')) assumedHttps.push(`${name} :${endpoint.slice(4)}`);
         }
         const live = present ? await readService(name, operation.timeoutMs) : {};
-        const missing = Object.entries(endpoints).filter(([endpoint, target]) => live.endpoints?.[endpoint] !== target);
-        // Publishing advertises, so a service that was drained before the cutover has to be drained again.
-        const drain = saved?.advertised === false && (missing.length > 0 || live.advertised !== false);
-        if (!missing.length && !drain) continue;
+        const expected = Object.fromEntries(Object.entries(endpoints).map(([endpoint, target]) => [endpoint, restoredExport(target, frontends[endpoint.slice(4)])]));
+        const missing = Object.entries(endpoints).filter(([endpoint]) => live.endpoints?.[endpoint] !== expected[endpoint]);
+        // Publishing advertises, so a service that was drained before the cutover has to be drained again; one
+        // that wasn't can be left drained by a retire that stopped inside `serve clear`.
+        const wantsDrained = saved?.advertised === false;
+        const drain = wantsDrained && (missing.length > 0 || live.advertised !== false);
+        const advertise = !wantsDrained && !missing.length && live.advertised === false;
+        if (!missing.length && !drain && !advertise) continue;
         touched.push(name);
         for (const [endpoint, target] of missing) await tailscale(restoreArgs(name, endpoint, target, frontends[endpoint.slice(4)]), operation.timeoutMs);
         if (drain) await tailscale(['serve', 'drain', name], operation.timeoutMs);
-        const after = (await readService(name, operation.timeoutMs)).endpoints;
-        if (!sameEndpoints(after, endpoints)) deny(`Serve did not restore ${name}; check "tailscale serve status --json". Run the rollback again once it is fixed.`);
+        if (advertise) await tailscale(['serve', 'advertise', name], operation.timeoutMs);
+        const after = await readService(name, operation.timeoutMs);
+        if (!sameEndpoints(after.endpoints, expected) || (after.advertised === false) !== wantsDrained) deny(`Serve did not restore ${name}; check "tailscale serve status --json". Run the rollback again once it is fixed.`);
         restored.push(name);
       }
       const removed = [];

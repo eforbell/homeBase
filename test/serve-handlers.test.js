@@ -101,6 +101,7 @@ function fakeTailscale({ services = NUMENOR(), tags = ['tag:smith-host'], fsImpl
     }
     if (input.args[1] === 'clear') { delete state.services[input.args[2]]; return { stdout: '' }; }
     if (input.args[1] === 'drain') { state.services[input.args[2]].advertised = false; return { stdout: '' }; }
+    if (input.args[1] === 'advertise') { state.services[input.args[2]].advertised = true; return { stdout: '' }; }
     if (input.args[1] === '--bg') {
       assert.equal(input.args[2], '--yes', 'the executor has no terminal, so a prompt must not be possible');
       assert.match(input.args[3], /^--service=svc:/, 'every change names one service');
@@ -220,6 +221,42 @@ test('an interrupted retire leaves a complete record and the service in place', 
   await assert.rejects(() => retire(handlers, LEGACY_NAME), /injected failure/);
   assert.ok(state.services[LEGACY_NAME]);
   assert.ok(JSON.parse(fsImpl.readFileSync(PRE_INGRESS_SNAPSHOT)).services[LEGACY_NAME]);
+});
+
+test('a retire that stopped inside serve clear keeps the real state, whichever way it continues', async () => {
+  const services = { 'svc:home': { advertised: true, ports: portsFromExport({ 'tcp:443': 'https+insecure://localhost:443' }) } };
+  const original = JSON.parse(JSON.stringify(services));
+  // As the CLI does it: the advertisement goes first, then the config.
+  const interrupted = () => {
+    let fail = true;
+    return (args, state) => {
+      if (!fail || !args.startsWith('serve clear')) return false;
+      fail = false;
+      state.services['svc:home'].advertised = false;
+      return true;
+    };
+  };
+  const rolledBack = host({ services, failOn: interrupted() });
+  await assert.rejects(() => retire(rolledBack.handlers, 'svc:home'), /injected failure/);
+  assert.equal(rolledBack.state.services['svc:home'].advertised, false);
+  assert.match(await restore(rolledBack.handlers), /restored svc:home/);
+  assert.deepEqual(rolledBack.state.services, original, 'advertised again, not left unavailable');
+  assert.equal(rolledBack.fsImpl.existsSync(PRE_INGRESS_SNAPSHOT), false);
+
+  const retried = host({ services, failOn: interrupted() });
+  await assert.rejects(() => retire(retried.handlers, 'svc:home'), /injected failure/);
+  assert.match(await retire(retried.handlers, 'svc:home'), /retired svc:home/);
+  assert.equal(JSON.parse(retried.fsImpl.readFileSync(PRE_INGRESS_SNAPSHOT)).services['svc:home'].advertised, undefined, 'the retry does not record the half-cleared state');
+  await restore(retried.handlers);
+  assert.deepEqual(retried.state.services, original);
+});
+
+test('retiring a service again records it afresh if it has changed since the last record', async () => {
+  const snapshot = { version: '0.0.1', services: { 'svc:home': { endpoints: { 'tcp:443': 'http://localhost:1' } } }, frontends: { 'svc:home': { 443: { HTTPS: true } } } };
+  const services = { 'svc:home': { advertised: true, ports: portsFromExport({ 'tcp:443': 'https+insecure://localhost:443' }) } };
+  const { fsImpl, handlers } = host({ services, snapshot });
+  await retire(handlers, 'svc:home');
+  assert.deepEqual(JSON.parse(fsImpl.readFileSync(PRE_INGRESS_SNAPSHOT)).services['svc:home'].endpoints, { 'tcp:443': 'https+insecure://localhost:443' });
 });
 
 test('retiring refuses what a rollback could not restore, and socket services', async () => {
@@ -359,6 +396,14 @@ test('an interrupted restore from an older snapshot finishes every endpoint and 
   assert.match(await restore(handlers), /restored svc:bitcoin/);
   assert.deepEqual(state.services[LEGACY_NAME].ports, gone.ports, 'nothing is abandoned');
   assert.equal(state.services[LEGACY_NAME].advertised, false, 'it was drained in the snapshot');
+  assert.equal(fsImpl.existsSync(PRE_INGRESS_SNAPSHOT), false);
+});
+
+test('an older snapshot with an HTTP socket upstream restores behind HTTPS, and the rollback finishes', async () => {
+  const snapshot = { version: '0.0.1', services: { 'svc:old': { endpoints: { 'tcp:8082': 'http://unix:/run/legacy-app.sock' } } } };
+  const { fsImpl, state, handlers } = host({ services: {}, snapshot });
+  assert.match(await restore(handlers), /restored svc:old; removed no socket services; svc:old :8082 came back on HTTPS/);
+  assert.deepEqual(state.services['svc:old'].ports, { 8082: { frontend: 'https', handlers: { '/': 'unix:/run/legacy-app.sock' } } });
   assert.equal(fsImpl.existsSync(PRE_INGRESS_SNAPSHOT), false);
 });
 
