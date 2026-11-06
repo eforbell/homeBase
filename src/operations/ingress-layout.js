@@ -15,6 +15,11 @@ const IDENTITY_LOCATION = '/_sovereign/identity';
 const AUTH_MOUNT = '/_sovereign/auth/';
 // Shared fonts, served on every hostname so each app loads them from its own origin (local font mode).
 const FONTS_MOUNT = '/_sovereign/fonts/';
+// Answered by nginx itself on every hostname, with the token the executor wrote just before the last reload. It's
+// the one way to learn what nginx's workers are running: when nginx rejects a reload (a listener conflict elsewhere,
+// say), the reload still reports success and nginx -T prints the new files, while the old workers keep serving.
+const GATEWAY_LOCATION = '/_sovereign/gateway';
+const RELOAD_TOKEN_SNIPPET = '/etc/nginx/sovereign-reload-token.conf';
 const FONTS_DIR = '/opt/sovereign-home/assets/fonts/';
 // Home Base answers identity lookups on its own socket (D1); nginx reaches it, apps never do.
 const HOMEBASE_IDENTITY_SOCKET = '/run/homebase-identity/identity.sock'; // inside HOMEBASE_RUNTIME_DIR
@@ -275,6 +280,11 @@ function renderServerBlock(service, homeBaseUpstream) {
       '',
       ...lookup,
       '',
+      `location = ${GATEWAY_LOCATION} {`,
+      '    default_type text/plain;',
+      `    include ${RELOAD_TOKEN_SNIPPET};`,
+      '}',
+      '',
       `location ${FONTS_MOUNT} {`,
       `    alias ${FONTS_DIR};`,
       '}',
@@ -290,6 +300,16 @@ function renderServerBlock(service, homeBaseUpstream) {
 // listener also blocks Serve's own :443). Every service block is rendered whether or not its apps are
 // installed, so installing or removing an app never changes which hostnames nginx answers for.
 // homeBase: where Home Base listens, 'socket' or (a host cut over before SID-006) 'tcp'.
+// The reload token snippet: GATEWAY_LOCATION's whole answer.
+function renderReloadToken(token) {
+  return `return 200 "${token}";\n`;
+}
+
+// Whether this gateway answers with the token; one from before it only has to answer until its next refresh.
+function gatewayReportsReload(siteText) {
+  return String(siteText || '').includes(`include ${RELOAD_TOKEN_SNIPPET};`);
+}
+
 function renderGatewaySite({ instance, domain, apps, homeBase = 'tcp' }) {
   const upstream = HOMEBASE_UPSTREAMS[homeBase];
   if (!upstream) fail(`Home Base listens on a socket or TCP, not ${homeBase}`);
@@ -323,6 +343,10 @@ function homeBaseOnSocket({ appliedText, siteText }) {
 }
 
 module.exports = { listenAsDeployed,
+  GATEWAY_LOCATION,
+  RELOAD_TOKEN_SNIPPET,
+  gatewayReportsReload,
+  renderReloadToken,
   APPLIED_PATH,
   APP_SNIPPET_DIR,
   AUTH_MOUNT,
