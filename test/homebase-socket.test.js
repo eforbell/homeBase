@@ -55,6 +55,16 @@ async function socketHousehold(t, { adminSocket = '', ...config } = {}) {
   return { ...server, socket, files };
 }
 
+test('passkeys run only on Home Base\'s socket: over TCP a local process could pass as a member', async (t) => {
+  const { base, app, socket } = await socketHousehold(t, { adminSocket: 'in-root', passkeysOverTcp: false });
+  await until(() => app.socketServer.listening, 'the socket');
+  const headers = { 'x-forwarded-for': PARENT, 'x-forwarded-host': `smith-homebase.${DOMAIN}`, origin: `https://smith-homebase.${DOMAIN}`, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' };
+  const tcp = await loopback(base, 'POST', '/_sovereign/auth/check/options', headers);
+  const viaSocket = await overSocket(socket, 'POST', '/_sovereign/auth/check/options', headers);
+  assert.equal(tcp.status, 404, 'not there over TCP, whoever the headers name');
+  assert.notEqual(viaSocket.status, 404, 'the same request reaches the passkey service on the socket');
+});
+
 test('Home Base answers on its socket as it does on the port, and only the directory decides who connects', async (t) => {
   // The cutover makes the socket's directory (tmpfiles.d, 0750 homebase:www-data); here it already exists.
   const { app, socket } = await socketHousehold(t, { adminSocket: 'in-root' });

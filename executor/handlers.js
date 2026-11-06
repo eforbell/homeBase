@@ -509,6 +509,10 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     if (!reached) deny(`nginx doesn't reach Home Base through ${name}'s socket; port 3080 stays. Check "sudo nginx -T" and the Home Base log, then try again.`);
   }
 
+  function appliedHomeBase() {
+    try { return JSON.parse(readSmallFileNoFollow(fsImpl, APPLIED_PATH) || '{}').homeBase || null; } catch { return null; }
+  }
+
   function gatewayIsSocketMode() {
     return lstatOrNull(fsImpl, NGINX_GATEWAY_SITE)?.isFile() && String(readSmallFileNoFollow(fsImpl, NGINX_GATEWAY_SITE) || '').startsWith(SOCKET_GATEWAY_MARKER);
   }
@@ -875,7 +879,8 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       // A cut-over host keeps its socket gateway; this only refreshes it (new catalog services included).
       const ingress = readIngressState();
       if (ingress) {
-        await installSocketGateway(ingress, operation);
+        // A refresh never finishes a move: a record ahead of what nginx accepted stays on the port (ensure-socket-gateway).
+        await installSocketGateway({ ...ingress, homeBase: ingress.homeBase === 'socket' && appliedHomeBase() === 'socket' ? 'socket' : undefined }, operation);
         return 'refreshed the per-service socket gateway';
       }
       if (gatewayIsSocketMode()) deny(`${NGINX_GATEWAY_SITE} is a socket gateway but ${INGRESS_STATE_PATH} is missing; re-run the ingress cutover rather than restoring a TCP listener.`);
@@ -913,11 +918,15 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook 3.3), then run the cutover again.');
       // Refused here, before anything is written: this host's nginx would ignore the gateway and still reload.
       if (!includesGateway) deny(`nginx wouldn't load the socket gateway: nothing in its http block includes ${NGINX_GATEWAY_LINK}. ${GATEWAY_INCLUDE_HELP}, then run the cutover again.`);
-      const moving = operation.homeBase === 'socket' && existing?.homeBase !== 'socket';
+      // Moved means nginx accepted it (the applied record). A record saying socket with no such reload is a move
+      // that failed part way, by this version or an older one: it proves intent only, and proves nothing about
+      // the new address, so it starts again with the checks, or goes back to the port.
+      const moved = existing?.homeBase === 'socket' && appliedHomeBase() === 'socket';
+      const moving = operation.homeBase === 'socket' && !moved;
       if (moving) await assertHomeBaseServiceReady({ ...ingress, cutOver: Boolean(existing) }, operation.timeoutMs);
       // The socket's directory comes from the tmpfiles entry the gateway installs, so the record is written
       // twice: first as it was (or without Home Base's socket), then with it once Home Base listens there.
-      const keep = existing?.homeBase === 'socket' ? { homeBase: 'socket' } : {};
+      const keep = moved ? { homeBase: 'socket' } : {};
       writeFileAtomic(fsImpl, INGRESS_STATE_PATH, `${JSON.stringify({ ...ingress, ...keep })}\n`, 0o600);
       let rewritten = await installSocketGateway({ ...ingress, ...keep }, operation);
       let homeBase = keep.homeBase ? 'on its socket' : 'on port 3080';

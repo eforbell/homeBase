@@ -58,6 +58,8 @@ async function startServer(t, { cutOver = true, whois = PEER_WHOIS, again = null
     ...(alerts ? { healthAlertsEnabled: true, healthAlertsWebhookUrl: 'https://alerts.example/hook', notificationsPostJson: async (url, body) => { alerts.push(body); } } : {}),
     identityWhois: whois,
     identityStatus: async () => ({ Self: { TailscaleIPs: ['100.64.0.100'] } }),
+    // Most tests reach Home Base over TCP; outside tests passkeys need its socket (homebase-socket.test.js).
+    passkeysOverTcp: true,
     ...config,
   });
   await new Promise((resolve) => app.listen(resolve));

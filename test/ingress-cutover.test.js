@@ -101,6 +101,7 @@ test('SID-006: a cutover moves Home Base onto its socket only once it listens th
   const upstreams = listening.fsImpl.readFileSync(SITE).match(/proxy_pass http:\/\/(?:unix:\/run\/homebase-identity\/homebase\.sock|127\.0\.0\.1:3080);/g);
   assert.equal(upstreams.length, 6, "homebase's location / plus /_sovereign/auth/ on homebase and the four sensitive apps");
   assert.ok(upstreams.every((line) => line.includes('homebase.sock')));
+  await listening.handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
   await listening.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
   assert.doesNotMatch(listening.fsImpl.readFileSync(SITE), /127\.0\.0\.1:3080/, 'refreshes keep the socket');
   listening.fsImpl.unlinkSync('/run/homebase-identity/homebase.sock');
@@ -185,8 +186,30 @@ test('the executor moves Home Base only once its service is published here and n
   assert.ok(calls.some((call) => call.probe === '/run/sovereign-serve/homebase.sock' && call.host === `smith-homebase.${DOMAIN}`));
 });
 
-test('a host already on its socket stays there without those checks', async () => {
+test('a move that never reloaded proves nothing: a retry starts it again or goes back to the port', async () => {
+  const { APPLIED_PATH } = require('../src/operations/ingress-layout');
   const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' } };
+  const pending = () => ({ ...files, [INGRESS_STATE_PATH]: JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'socket' }), [APPLIED_PATH]: JSON.stringify({ homeBase: 'tcp' }) });
+  const unpublished = { homeBaseService: {} };
+  // A plain retry doesn't finish it.
+  const retried = harness(pending(), unpublished);
+  assert.match(await retried.handlers['nginx.ensure-socket-gateway'](cutover()), /Home Base on port 3080/);
+  assert.equal(JSON.parse(retried.fsImpl.readFileSync(INGRESS_STATE_PATH)).homeBase, undefined);
+  assert.doesNotMatch(retried.fsImpl.readFileSync(SITE), /homebase-identity\/homebase\.sock/);
+  // Asking for the move again takes the checks again.
+  const asked = harness(pending(), unpublished);
+  await assert.rejects(() => asked.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /isn't published on this host/);
+  // A refresh from an app install doesn't finish it either.
+  const refreshed = harness(pending(), unpublished);
+  await refreshed.handlers['nginx.ensure-gateway'](base('nginx.ensure-gateway'));
+  assert.doesNotMatch(refreshed.fsImpl.readFileSync(SITE), /homebase-identity\/homebase\.sock/);
+  await refreshed.handlers['nginx.validate-and-reload'](base('nginx.validate-and-reload'));
+  assert.equal(JSON.parse(refreshed.fsImpl.readFileSync(APPLIED_PATH)).homeBase, 'tcp', ':3080 stays');
+});
+
+test('a host already on its socket stays there without those checks', async () => {
+  const { APPLIED_PATH } = require('../src/operations/ingress-layout');
+  const files = { '/run/homebase-identity': { kind: 'dir', mode: 0o750 }, '/run/homebase-identity/homebase.sock': { kind: 'socket' }, [APPLIED_PATH]: JSON.stringify({ homeBase: 'socket' }) };
   const onSocket = harness({ ...files, [INGRESS_STATE_PATH]: JSON.stringify({ mode: 'sockets', instance: 'smith', domain: DOMAIN, homeBase: 'socket' }) }, { homeBaseService: {}, reaches: false });
   assert.match(await onSocket.handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), /Home Base on its socket/);
   assert.match(await onSocket.handlers['nginx.ensure-socket-gateway'](cutover()), /Home Base on its socket/, 'a plain re-run never moves it back');
