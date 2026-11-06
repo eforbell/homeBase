@@ -4,6 +4,8 @@
 // `nginx -t` and loopback readiness while the public route disappears. Anything this reader cannot
 // account for is refused, never guessed.
 
+const path = require('path');
+
 const LEGACY_SNIPPETS = '/etc/nginx/snippets/*.conf';
 const APP_SNIPPETS = '/etc/nginx/sovereign-home.d/*.conf';
 // Files in /etc/nginx/snippets that are not app routes: shipped by Debian/Ubuntu nginx, or the shared fonts.
@@ -142,21 +144,36 @@ function operatorServesAppSnippets(nginxT, managedGatewayFile) {
   return parseNginxDump(nginxT).servers.some((server) => server.file !== managedGatewayFile && server.includes.includes(APP_SNIPPETS));
 }
 
-// Whether this nginx configuration reads `file`: already loaded, or named by an active include. A host's own
-// nginx.conf may have no sites-enabled include, and then a file written there is silently ignored: nginx -t and
-// a reload both succeed without it.
+// Whether this nginx configuration reads `file` where a server block is allowed: already loaded, or named by an
+// include at http level. A host's own nginx.conf may have no such include, and then a file written there is
+// silently ignored: nginx -t and a reload both succeed without it. An include inside server { } or stream { }
+// would make the gateway invalid instead, and the configuration then fails for a retry and a rollback too. A file
+// other than nginx.conf could be included from anywhere, so its top level counts: the proof after the reload
+// catches a wrong guess.
 function includesFile(nginxT, file) {
-  const text = String(nginxT || '');
-  if (text.includes(`# configuration file ${file}:`)) return true;
-  const patterns = [];
-  for (const line of text.split('\n')) {
-    for (const match of line.replace(/#.*$/, '').matchAll(/(?:^|[\s;{}])include\s+([^;\s]+)\s*;/g)) patterns.push(match[1]);
+  const sections = String(nginxT || '').split(/^# configuration file (.+):$/m);
+  for (let section = 1; section < sections.length; section += 2) {
+    const name = sections[section].trim();
+    if (name === file) return true;
+    const stack = [];
+    let words = [];
+    for (const token of tokenize(sections[section + 1] || '', name)) {
+      if (token.type === 'word') { words.push(token.value); continue; }
+      if (token.type === '{') { stack.push(words[0]); words = []; continue; }
+      if (token.type === '}') { stack.pop(); words = []; continue; }
+      if (words[0] === 'include' && words.length === 2) {
+        const atHttpLevel = stack.length === 1 ? stack[0] === 'http' : (!stack.length && name !== '/etc/nginx/nginx.conf');
+        if (atHttpLevel && includeMatches(words[1], file)) return true;
+      }
+      words = [];
+    }
   }
-  return patterns.some((pattern) => {
-    const absolute = pattern.startsWith('/') ? pattern : `/etc/nginx/${pattern}`;
-    const source = absolute.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]');
-    return new RegExp(`^${source}$`).test(file);
-  });
+  return false;
+}
+
+function includeMatches(pattern, file) {
+  const source = path.posix.normalize(normalizeInclude(pattern)).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]');
+  return new RegExp(`^${source}$`).test(file);
 }
 
 // Whether nginx -T printed this file's content. It prints every file it loaded verbatim, so this holds whichever

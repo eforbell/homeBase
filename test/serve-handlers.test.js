@@ -4,6 +4,7 @@ const { createBaseHandlers, INGRESS_STATE_PATH } = require('../executor/handlers
 const { createServeHandlers, PRE_INGRESS_SNAPSHOT, restoreArgs } = require('../executor/serve-handlers');
 const { buildIngressCutoverPlan, buildIngressRollbackPlan, buildServicePublishPlan } = require('../src/operations/compilers/ingress');
 const { validateOperationPolicy } = require('../src/operations/policy');
+const { gatewayGeneration } = require('../src/operations/ingress-layout');
 const { createFakeFs } = require('./fixtures/fake-fs');
 const numenorCapture = require('./fixtures/tailscale/serve-config-all-numenor.json');
 
@@ -443,7 +444,7 @@ test('end to end on one host: cutover, publish, rollback', async () => {
     if (input.binary === '/usr/bin/systemd-tmpfiles') fsImpl.mkdirSync('/run/sovereign-serve', { mode: 0o700 });
     return run(input);
   };
-  const handlers = { ...createBaseHandlers({ fsImpl, run: tmpfilesRun, probeListening: async () => true }), ...createServeHandlers({ fsImpl, run: tmpfilesRun }) };
+  const handlers = { ...createBaseHandlers({ fsImpl, run: tmpfilesRun, probeGateway: async () => gatewayGeneration(fsImpl.readFileSync('/etc/nginx/sites-available/sovereign-home')) }), ...createServeHandlers({ fsImpl, run: tmpfilesRun }) };
   const execute = async (plan) => { validateOperationPolicy(plan); for (const operation of plan.operations) await handlers[operation.type](operation); };
   await execute(buildIngressCutoverPlan({ instance: 'smith', domain: DOMAIN, legacyService: LEGACY_NAME }));
   for (const serviceKey of ['homebase', 'home']) await execute(buildServicePublishPlan({ serviceKey }));
