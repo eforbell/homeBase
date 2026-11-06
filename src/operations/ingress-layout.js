@@ -195,6 +195,15 @@ function proxyLocation({ mountPath, upstream, clientMaxBodySize = null, identity
 // strips the mount path. Published sidecars get their own, longer (so more specific) location.
 // A socket app (SID-002) keeps the same URI behavior: 'http://unix:<sock>;' passes the request URI through,
 // 'http://unix:<sock>:/;' strips the mount path like 'http://127.0.0.1:<port>/;'.
+// Where nginx sends this app now, from its snippet's text (null: no snippet yet, so the catalog decides). A
+// catalog entry that moved to a socket takes effect with the app's own install or update, which writes its socket
+// directory, .env and snippet together; until then its snippet still proxies to its port, and so does anything
+// else that rewrites the snippet or the .env (a gateway refresh, a restore).
+function listenAsDeployed(layout, snippetText) {
+  if (layout.listen?.kind !== 'unix' || snippetText == null || snippetText.includes(`unix:${layout.listen.socket}`)) return layout;
+  return { ...layout, listen: { kind: 'tcp' } };
+}
+
 function appUpstream(layout) {
   if (layout.listen?.kind === 'unix') return `http://unix:${layout.listen.socket}${layout.preserveMountPath ? '' : ':/'}`;
   return `http://127.0.0.1:${layout.port}${layout.preserveMountPath ? '' : '/'}`;
@@ -313,7 +322,7 @@ function homeBaseOnSocket({ appliedText, siteText }) {
   return applied?.homeBase === 'socket' && gatewayReachesHomeBaseSocket(siteText);
 }
 
-module.exports = {
+module.exports = { listenAsDeployed,
   APPLIED_PATH,
   APP_SNIPPET_DIR,
   AUTH_MOUNT,

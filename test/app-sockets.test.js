@@ -199,12 +199,17 @@ test('readiness and health for a socket app go through the executor', async () =
       probeHttpJson: async () => { throw new Error('never on loopback'); },
       probeApp: async (appId, probe) => { probes.push([appId, probe]); return probe === 'onboarding' ? { statusCode: 200, payload: { household_initialized: true } } : { statusCode: 200 }; },
     });
-    const snapshot = await monitor.getAppHealthSnapshot([{ appId: app.id, status: 'installed', serviceName: 'family-pulse', port: 3003, externalUrl: 'https://x/pulse/' }], { force: true });
+    const snapshot = await monitor.getAppHealthSnapshot([{ appId: app.id, status: 'installed', serviceName: 'family-pulse', port: 3003, externalUrl: 'https://x/pulse/', managedBy: 'executor' }], { force: true });
     assert.deepEqual(probes.map(([, probe]) => probe), ['liveness', 'readiness', 'onboarding']);
     assert.equal(snapshot.byAppId['family-pulse'].readiness.ok, true);
     const silent = new HealthMonitor({ catalogById: new Map([[app.id, app]]), probeServiceState: () => ({ state: 'active', ok: true }), probeUnits: () => new Map(), probeApp: async () => ({ statusCode: null, error: 'ECONNREFUSED' }) });
-    const failing = await silent.getAppHealthSnapshot([{ appId: app.id, status: 'installed', serviceName: 'family-pulse', port: 3003 }], { force: true });
+    const failing = await silent.getAppHealthSnapshot([{ appId: app.id, status: 'installed', serviceName: 'family-pulse', port: 3003, managedBy: 'executor' }], { force: true });
     assert.equal(failing.byAppId['family-pulse'].readiness.ok, false);
     assert.match(failing.byAppId['family-pulse'].readiness.message, /No answer on its socket \(ECONNREFUSED\)/);
+    // A legacy install never moves to the socket: it is asked on its own recorded port.
+    const urls = [];
+    const legacy = new HealthMonitor({ catalogById: new Map([[app.id, app]]), probeServiceState: () => ({ state: 'active', ok: true }), probeUnits: () => new Map(), probeHttp: async (url) => { urls.push(url); return { status: 'ok', ok: true, statusCode: 200 }; }, probeHttpJson: async (url) => { urls.push(url); return { status: 'ok', ok: true, statusCode: 200, payload: {} }; }, probeApp: async () => { throw new Error('never through the executor'); } });
+    await legacy.getAppHealthSnapshot([{ appId: app.id, status: 'installed', serviceName: 'family-pulse', port: 4103, managedBy: '' }], { force: true });
+    assert.ok(urls.length > 0 && urls.every((url) => url.startsWith('http://127.0.0.1:4103/')), urls.join(', '));
   });
 });

@@ -99,6 +99,25 @@ test('restore brings back env, database (as the app role), and storage while kee
   await assert.rejects(() => handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20200101T000000Z' }), { layout: SOURCE }), /does not exist/);
 });
 
+test('restore keeps the app where nginx points now, even when its catalog entry has moved to a socket', async () => {
+  const backup = { [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: 'DATABASE_URL=postgresql://homesource:Live-pass-123@127.0.0.1:5432/homesource\nHOST=127.0.0.1\n', uid: 1001 }, ...done(ARCHIVE), [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 } };
+  // Not updated since the catalog moved it: nginx still proxies to its loopback port, and there's no socket directory.
+  const tcp = harness({ ...backup, [SOURCE.nginxSnippet]: { kind: 'file', content: `location /source/ { proxy_pass http://127.0.0.1:${SOURCE.port}/; }\n` } });
+  await tcp.handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  assert.match(tcp.fsImpl.readFileSync(ENV), /^HOST=127\.0\.0\.1$/m);
+  assert.doesNotMatch(tcp.fsImpl.readFileSync(ENV), /SOVEREIGN_LISTEN/);
+  // The same with only the legacy snippet (installed before per-app snippet names).
+  const legacy = harness({ ...backup, [SOURCE.legacyNginxSnippet]: { kind: 'file', content: `location /source/ { proxy_pass http://127.0.0.1:${SOURCE.port}/; }\n` } });
+  await legacy.handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  assert.match(legacy.fsImpl.readFileSync(ENV), /^HOST=127\.0\.0\.1$/m);
+  assert.doesNotMatch(legacy.fsImpl.readFileSync(ENV), /SOVEREIGN_LISTEN/);
+  // Updated: nginx proxies to the socket, so that's where it listens, whatever the backup said.
+  const unix = harness({ ...backup, [SOURCE.nginxSnippet]: { kind: 'file', content: `location /source/ { proxy_pass http://unix:${SOURCE.listen.socket}:/; }\n` } });
+  await unix.handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  assert.match(unix.fsImpl.readFileSync(ENV), /^SOVEREIGN_LISTEN=unix:\/run\/sovereign-apps\/home-source\/app\.sock$/m);
+  assert.doesNotMatch(unix.fsImpl.readFileSync(ENV), /^HOST=/m);
+});
+
 test('restore keeps the identity mode the app is in now, never the one in the backup (SID-007)', async () => {
   const app = getAppById('home-source');
   const capable = appLayout({ ...app, runtime: { ...app.runtime, identity: 'tailnet' } });

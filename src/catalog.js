@@ -300,6 +300,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // SID-007: the low-friction pilot listens on the unix socket SOVEREIGN_LISTEN names (lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/plan/',
@@ -355,6 +357,7 @@ const catalog = [
         OPENAI_MODEL: 'gpt-4o-mini',
         GOOGLE_CLIENT_ID: '',
         GOOGLE_CLIENT_SECRET: '',
+        APP_PUBLIC_URL: '{{externalUrl}}',
         GOOGLE_REDIRECT_URI: '{{externalUrl}}api/google-calendar/oauth/callback',
         SETTINGS_PIN: '',
         CALENDAR_WRITE_PIN: '',

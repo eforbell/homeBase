@@ -383,7 +383,8 @@ function executorProbe(probeApp, appId, kind) {
 }
 
 async function buildAppHealthRecord({ install, catalogEntry, probeServiceState, probeUnits = defaultProbeUnits, probeHttp, probeHttpJson = defaultProbeHttpJson, probeApp = null, nowIso }) {
-  const onSocket = catalogEntry?.runtime?.listen === 'unix';
+  // Only the executor's installs follow the catalog onto a socket; a legacy install keeps its own port.
+  const onSocket = catalogEntry?.runtime?.listen === 'unix' && ['executor', 'adopting'].includes(install?.managedBy);
   const probe = (kind, path, { json = false } = {}) => {
     if (!onSocket) return (json ? probeHttpJson : probeHttp)(toProbeUrl({ install, path }));
     if (!probeApp) return Promise.resolve({ status: 'unknown', ok: false, message: 'This app listens on a socket only the executor can probe' });

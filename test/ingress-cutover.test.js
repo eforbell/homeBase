@@ -198,6 +198,24 @@ test('app snippets follow the ingress mode: TCP before cutover, identity after, 
   for (const file of ['home--family-dinner.conf', 'source--home-source.conf']) assert.doesNotMatch(fsImpl.readFileSync(`${D}/${file}`), /sovereign-identity/, file);
 });
 
+test('a gateway-wide rewrite keeps each app on the transport its snippet uses; only its own update moves it', async () => {
+  const { appLayout } = require('../src/operations/app-layout');
+  const { getAppById } = require('../src/catalog');
+  const plan = appLayout(getAppById('family-plan'));
+  const source = appLayout(getAppById('home-source'));
+  assert.equal(plan.listen.kind, 'unix');
+  // Family Plan installed before its catalog entry moved to a socket (not updated since); Home Source already moved.
+  const { fsImpl, handlers } = harness({
+    [plan.nginxSnippet]: `location /plan/ { proxy_pass http://127.0.0.1:${plan.port}/; }\n`,
+    [source.nginxSnippet]: `location /source/ { proxy_pass http://unix:${source.listen.socket}:/; }\n`,
+  });
+  await handlers['nginx.ensure-socket-gateway'](cutover());
+  assert.match(fsImpl.readFileSync(plan.nginxSnippet), new RegExp(`proxy_pass http://127\\.0\\.0\\.1:${plan.port}/;`));
+  assert.doesNotMatch(fsImpl.readFileSync(plan.nginxSnippet), /unix:/);
+  assert.match(fsImpl.readFileSync(plan.nginxSnippet), /sovereign-identity/, 'still rewritten for identity lookups');
+  assert.match(fsImpl.readFileSync(source.nginxSnippet), new RegExp(`proxy_pass http://unix:${source.listen.socket.replace(/[./]/g, '\\$&')}:/;`));
+});
+
 test('rollback refuses while any app reads identity from headers, by its own .env', async () => {
   // SOVEREIGN_AUTH_MODE is what sovereignAuth reads (SID-007); the name used before the contract settled counts too.
   for (const key of ['SOVEREIGN_AUTH_MODE', 'SOVEREIGN_IDENTITY_MODE']) {

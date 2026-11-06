@@ -60,9 +60,9 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   assert.equal(IDENTITY_SNAPSHOT, DEFAULT_SNAPSHOT_PATH, 'the executor looks where sovereignAuth reads');
   assert.deepEqual(appLayout(getAppById('family-pulse')).identityModes, ['local']);
   assert.deepEqual(appLayout(withIdentity('family-pulse')).identityModes, ['local', 'tailnet']);
-  // Family Plan still listens on loopback TCP, where any local process could forge identity headers.
-  assert.throws(() => appLayout(withIdentity('family-plan')), /needs runtime.listen 'unix'/);
-  assert.match(validateManifestEntry(withIdentity('family-plan')).join('; '), /runtime.identity 'tailnet' needs runtime.listen 'unix'/);
+  // Family Dinner still listens on loopback TCP, where any local process could forge identity headers.
+  assert.throws(() => appLayout(withIdentity('family-dinner')), /needs runtime.listen 'unix'/);
+  assert.match(validateManifestEntry(withIdentity('family-dinner')).join('; '), /runtime.identity 'tailnet' needs runtime.listen 'unix'/);
   assert.match(validateManifestEntry(withIdentity('family-pulse', 'headers')).join('; '), /runtime.identity must be 'local' or 'tailnet'/);
   assert.deepEqual(validateManifestEntry(withIdentity('family-pulse')), []);
 });
@@ -174,9 +174,8 @@ test('the executor refuses tailnet mode wherever identity headers or the snapsho
 });
 
 test('a low-friction app shares the user by design, so it may trust tailnet identity on its socket', async () => {
-  // Family Plan as slice 2 will make it: on its socket, the shared user.
-  const app = getAppById('family-plan');
-  const layout = appLayout({ ...app, runtime: { ...app.runtime, listen: 'unix', identity: 'tailnet' } });
+  // Family Plan, the pilot: on its socket, the shared user.
+  const layout = appLayout(withIdentity('family-plan'));
   assert.equal(layout.identity.own, false);
   const { fsImpl, set } = host({ '/opt/sovereign-home/apps/familyPlan': { kind: 'dir', uid: 1001 }, '/opt/sovereign-home/apps/familyPlan/.env': { kind: 'file', content: 'PORT=3001\n', uid: 1001, mode: 0o640 } });
   assert.match(await set('tailnet', layout), /trusts tailnet identity/);
@@ -312,21 +311,21 @@ test('the job runner records local mode when the switch completes, and the recor
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-mode-'));
   const store = new SqliteStateStore(path.join(dir, 'state.sqlite3'));
   store.init();
-  const record = { appId: 'family-plan', name: 'Family Plan', port: 3001, mountPath: '/plan/', externalUrl: 'https://host/plan/', installRoot: '/opt/sovereign-home/apps/familyPlan', serviceName: 'family-plan', ref: 'main', status: 'installed', plannedAt: 'x', updatedAt: 'x', managedBy: 'executor' };
+  const record = { appId: 'family-dinner', name: 'Family Dinner', port: 3000, mountPath: '/dinner/', externalUrl: 'https://host/dinner/', installRoot: '/opt/sovereign-home/apps/familyDinner', serviceName: 'family-dinner', ref: 'main', status: 'installed', plannedAt: 'x', updatedAt: 'x', managedBy: 'executor' };
   store.upsertInstallation(record);
-  assert.equal(store.loadState().installations['family-plan'].identityMode, 'local');
-  store.setIdentityMode('family-plan', 'tailnet');
+  assert.equal(store.loadState().installations['family-dinner'].identityMode, 'local');
+  store.setIdentityMode('family-dinner', 'tailnet');
   store.upsertInstallation({ ...record, ref: 'abc', updatedAt: 'y' });
-  assert.equal(store.loadState().installations['family-plan'].identityMode, 'tailnet', 'an update keeps it');
-  assert.throws(() => store.setIdentityMode('family-plan', 'headers'));
+  assert.equal(store.loadState().installations['family-dinner'].identityMode, 'tailnet', 'an update keeps it');
+  assert.throws(() => store.setIdentityMode('family-dinner', 'headers'));
 
   const runner = new JobRunner(store, {
     runExecutorAction: async (_socket, _fields, { onEvent }) => { onEvent({ eventType: 'plan.accepted', planDigest: 'x', plan: { operations: [] } }); return {}; },
     readinessOptions: { attempts: 1, fetchImpl: async () => ({ ok: true, status: 200 }) },
   });
-  const id = runner.startTypedActionJob({ kind: 'identity-mode', target: 'family-plan', action: { action: 'identity-mode', appId: 'family-plan', mode: 'local' } });
+  const id = runner.startTypedActionJob({ kind: 'identity-mode', target: 'family-dinner', action: { action: 'identity-mode', appId: 'family-dinner', mode: 'local' } });
   for (let i = 0; i < 50 && store.getJob(id).status !== 'completed'; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.getJob(id).status, 'completed');
-  assert.equal(store.loadState().installations['family-plan'].identityMode, 'local');
+  assert.equal(store.loadState().installations['family-dinner'].identityMode, 'local');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 });
