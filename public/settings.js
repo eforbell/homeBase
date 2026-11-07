@@ -480,6 +480,7 @@
           statusLine: `<span data-admin-status>Status: ${lock.text}</span>`,
         })}
         ${adminStatus.directoryState ? '<section class="hb-card" data-passkeys><p class="hb-muted" style="margin:0;">Loading passkeys…</p></section>' : ''}
+        ${adminStatus.directoryState && adminStatus.unlocked ? '<section class="hb-card" data-members><p class="hb-muted" style="margin:0;">Loading members…</p></section>' : ''}
         <section class="hb-card">
           <h2 style="margin-top:0;">Admin execution lock</h2>
           <p class="hb-muted" style="margin:0.4rem 0 0.8rem;">
@@ -899,6 +900,11 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
             line.textContent = 'Status: Active · admin is for the household administrator; your passkeys below are for your own apps';
           }
         });
+      }
+      const membersNode = root.querySelector('[data-members]');
+      if (membersNode && window.HBMembers) {
+        window.HBMembers.wire(membersNode);
+        window.HBMembers.mount(membersNode, { sessionExpiresAt: adminStatus.sessionExpiresAt });
       }
       if (page === 'admin' && adminStatus.unlocked) {
         const auditNode = root.querySelector('[data-admin-audit]');

@@ -33,6 +33,15 @@ test('Admin renders while admin is locked: it reads only the lock state, which a
   assert.doesNotMatch(html, /Unlock admin on the Admin page first/);
 });
 
+test('the Members card is on Admin only for an unlocked administrator with the directory on', async () => {
+  const unlocked = await renderPage('admin', { '/api/admin/status': { configured: true, unlocked: true, directoryState: 'active', sessionExpiresAt: new Date().toISOString() }, '/api/admin/audit': { entries: [] } });
+  assert.match(unlocked.html, /data-members/);
+  const locked = await renderPage('admin', { '/api/admin/status': { configured: true, unlocked: false, directoryState: 'active' } });
+  assert.doesNotMatch(locked.html, /data-members/);
+  const noDirectory = await renderPage('admin', { '/api/admin/status': { configured: true, unlocked: true } });
+  assert.doesNotMatch(noDirectory.html, /data-members/);
+});
+
 test('Config still says why it is empty while admin is locked', async () => {
   const { html } = await renderPage('config', { '/api/admin/status': { configured: true, unlocked: false, directoryState: 'active' } });
   assert.match(html, /Unlock admin on the Admin page first/);
