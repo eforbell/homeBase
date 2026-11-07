@@ -53,6 +53,19 @@ a:hover { text-decoration: underline; }
   background: var(--surface-2);
 }
 
+/* Members card (Admin page) */
+.hb-members { list-style: none; padding: 0; margin: 0; }
+.hb-members-row { display: grid; gap: 0.35rem; padding: 0.75rem 0; border-top: 1px solid var(--border); }
+.hb-members-row:first-child { border-top: 0; padding-top: 0; }
+.hb-members-who { display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; align-items: baseline; min-width: 0; }
+.hb-members-who > * { min-width: 0; overflow-wrap: anywhere; }
+.hb-members-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.hb-members-line { margin: 0; overflow-wrap: anywhere; }
+.hb-members-row > .hb-btn { justify-self: start; }
+.hb-members-code p { overflow-wrap: anywhere; }
+.hb-members-code { margin-top: 0.4rem; padding: 0.75rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.hb-members-code code { display: block; margin-bottom: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.1rem; letter-spacing: 0.03em; overflow-wrap: anywhere; user-select: all; }
+
 /* Spinner */
 @keyframes hb-spin {
   to { transform: rotate(360deg); }
