@@ -1,6 +1,6 @@
 # Research: the iPhone as a hardware key, and onboarding members
 
-Issue #44. Started 2026-11-08 and revised after a Codex review the same day. Status: findings and a recommendation. Nothing here is decided, and there's no code.
+Issue #44. Started 2026-11-08 and revised after two Codex reviews the same day. Status: findings, a recommendation, and the founder's answers to decisions 1–3 (see "Decisions"). There's no code.
 
 ## Summary
 
@@ -10,15 +10,17 @@ Issue #44. Started 2026-11-08 and revised after a Codex review the same day. Sta
   - Every approval carries a fresh App Attest assertion, so each one shows that same app instance took part.
   - The app shows the request and asks for Face ID before it signs. The server can't verify the Face ID step: it rests on the app's code.
   - Home Base mints the same 60-second, single-use action token the WebAuthn path mints, so nothing downstream changes.
-- **Its trust model differs from a YubiKey's.** A YubiKey's attestation vouches for the authenticator itself. App Attest vouches for a genuine copy of the operator's app on a genuine device, and the app's code enforces the rest. Whether that counts as `hardware` or as a new kind the policy also accepts is decision 2.
+- **Its trust model differs from a YubiKey's, so it's a different credential.** A YubiKey's attestation vouches for the authenticator itself. App Attest vouches for a genuine copy of the operator's app on a genuine device, and the app's code enforces the rest. Decided: it's a new kind, `attested-device`, never `hardware`.
+- **YubiKeys stay the real hardware key.** A household chooses whether the iPhone may stand in for one. An operator focused on maximum operational security keeps "hardware only", and nothing changes for them. The iPhone is for households that won't take the extra step of buying and carrying security keys.
 - **What it adds:** Home Base, not the browser, describes the operation to the phone. That beats a YubiKey tap, but only if Home Base builds the description from the request it will actually run (see "Approval").
 - **Members, unlike administrators, never need a hardware key.** Session and Recent checks accept synced passkeys (Apple Passwords). For non-operator members, the hard part is onboarding, not the key, and the same native app can take out most of the friction. That's the bigger win for most households.
-- **Recommendation:** one companion app per household, built by the operator. It does the following:
-  - receives push notifications;
-  - approves every-time actions (for administrators);
-  - onboards members;
-  - opens the household's apps.
-- **YubiKeys stay supported.** Households on the hosted route, with no Apple developer account of their own, can't build the app.
+- **A primary app, not the only app.** The suite's push app, already in use during testing, grows into the household's primary app:
+  - push;
+  - identity and keys against Home Base (sovereignAuth);
+  - onboarding;
+  - launching the other apps, at first.
+  Other suite apps stay free to become native apps of their own or to remain web wrappers, whichever suits each one. Tailscale stays a separate, operator-assisted setup that comes first.
+- **Hosted-route households** have no Apple developer account of their own, so they can't build the app and keep YubiKeys.
 
 ## Where Home Base is today
 
@@ -104,9 +106,11 @@ That is a different purpose (`activate`), not an every-time action. It runs unde
 ### Effects on the rules
 
 - **D15:** the pinned roots gain Apple's App Attest root, accepted only for the `device-approval` type. A WebAuthn `packed` attestation chaining to it must not count. The App ID is per install.
-- **D11:** whether an approval key satisfies "at least one hardware" is decision 2.
+- **Household policy:** a Home Base setting, chosen by the operator: every-time actions accept **hardware only** (today's rule, the maximum-opsec choice) or **hardware or attested-device**. The setting itself is an administrator action, so changing it needs an every-time check that satisfies the current setting.
+- **D11:** with "hardware only", unchanged. With "hardware or attested-device", it reads "at least two administrator credentials, at least one of them hardware or attested-device". A second such credential is strongly encouraged, and required while the approval app is distributed through TestFlight (decision 4).
+- **Members card and audit** show the kind honestly: "hardware key", "iPhone (attested app)", "synced passkey".
 - **Loss and recovery:**
-  - If the lost phone was the only hardware credential, the remaining synced passkey can still open admin but **can't** authorize a replacement hardware credential, so D16 recovery is needed.
+  - If the lost phone was the only hardware or attested-device credential, the remaining synced passkey can still open admin but **can't** authorize a replacement hardware credential, so D16 recovery is needed.
   - A second hardware credential (a YubiKey or a second phone) avoids that.
 - **sovereignAuth:**
   - `verifyAppAttestEnrollment`, `verifyAppAttestAssertion` and `verifyDeviceApproval`, plus a credential type beside the WebAuthn ones;
@@ -127,20 +131,28 @@ That is a different purpose (`activate`), not an every-time action. It runs unde
 
 That's three apps to install, two codes passed by hand, two time windows, and several back-and-forths with the operator. It works for the operator, but it's a lot to ask of a partner, a grandparent or a twelve-year-old.
 
-### With the companion app
+### With the primary app
 
 The guiding rule: the app removes the typing and the timing, **not** the operator's decision about which tailnet identity becomes which member.
 
-1. **The member** installs Tailscale and signs in (unavoidable, see below), then installs the companion app and scans the household's **join code**. The code carries Home Base's address only; it grants nothing. Showing it on the Admin page, or printing it, is fine.
-2. **The app opens Home Base** over the tailnet. That request is today's "opened Home Base once" step: the member's tailnet identity becomes a candidate, and the app shows "Waiting for <operator> to add you".
-3. **The operator, on the Members card,** sees the candidate with their tailnet login, admits them as today (role, apps), and the app is told. Admission stays bound to the observed identity, never to whoever holds a code.
-4. **Passkey enrollment stays a member-bound grant.** The operator issues it as today, and the app gets it for its own member over the tailnet, so nobody types or forwards a code. The app opens Safari on Home Base's address with the grant attached, the 15-minute deadline still applies, and **the grant is consumed when the registration verifies**, as now, never when the app fetches it. The associated-domains limit keeps the ceremony itself in Safari. Spike 3 checks whether `ASWebAuthenticationSession` can run it without leaving the app.
-5. **The app registers for push** once for the whole household, instead of a secret pasted into each app, and becomes the launcher: it opens each app at the right hostname, replacing bookmarks and the wrapper's start URL.
-6. **Administrators** also enroll the approval key, with the authority described above.
+1. **Before the app:** the member's phone is already on the tailnet. That is a separate step the operator helps with, deliberately kept out of the app (see "What stays manual").
+2. **The member** installs the primary app and scans the household's **join code**. The code carries Home Base's address only; it grants nothing. Showing it on the Admin page, or printing it, is fine.
+3. **The app opens Home Base** over the tailnet. That request is today's "opened Home Base once" step: the member's tailnet identity becomes a candidate, and the app shows "Waiting for <operator> to add you".
+4. **The operator, on the Members card,** sees the candidate with their tailnet login, admits them as today (role, apps), and the app is told. Admission stays bound to the observed identity, never to whoever holds a code.
+5. **Passkey enrollment stays a member-bound grant.** The operator issues it as today, and the app gets it for its own member over the tailnet, so nobody types or forwards a code. The app opens Safari on Home Base's address with the grant attached, the 15-minute deadline still applies, and **the grant is consumed when the registration verifies**, as now, never when the app fetches it. The associated-domains limit keeps the ceremony itself in Safari. Spike 3 checks whether `ASWebAuthenticationSession` can run it without leaving the app.
+6. **The app registers for push** once for the whole household, instead of a secret pasted into each app.
+7. **To begin with, the app is also the launcher.** It opens each web app at the right hostname, replacing bookmarks and the wrapper's start URL. Apps that become native apps later appear there as links to themselves.
+8. **Administrators** also enroll the approval key, with the authority described above, if the household allows `attested-device`.
+
+**Room for more native apps.** Another native suite app, such as Home Source capture (eforbell/homeSource#50), shouldn't have to repeat onboarding. Two ways to look at in spikes:
+- **Shared storage:** the operator signs every app with the same team, so they can share a keychain access group and an App Group with the primary app.
+- **Asking the primary app:** the other app asks the primary app to approve or identify, by universal link or URL scheme.
+
+Either way the primary app is the one place a member's keys and identity live on the phone.
 
 ### What stays manual
 
-- **Tailscale.** An app can't bundle its own VPN beside Tailscale (only one VPN runs at a time), so installing and signing in to Tailscale stays a step. With a user-owned Tailscale API key, Home Base might create the tailnet invite link itself (`POST /api/v2/tailnet/{tailnet}/user-invites`, link-only when no email is given). To confirm in spike 4. Home Base's current API credential is read-only by design (D23), so this would be an optional second credential, and that is the operator's choice.
+- **Tailscale, by design.** Joining the tailnet is its own registration and setup, done first, with the operator's help. The primary app assumes it and doesn't take it on. (An app couldn't bundle its own VPN beside Tailscale anyway: only one VPN runs at a time.) With a user-owned Tailscale API key, Home Base might create the tailnet invite link itself (`POST /api/v2/tailnet/{tailnet}/user-invites`, link-only when no email is given). To confirm in spike 4. Home Base's current API credential is read-only by design (D23), so this would be an optional second credential, and that is the operator's choice.
 - **The operator's decisions:** admitting the member and issuing their grant stay two taps on the Members card. The flow above only removes the hand-offs.
 - **Getting the app** depends on the operator's distribution route:
   - **Every TestFlight build expires after 90 days, internal and external alike.** An expired build stops launching until a newer one is installed. The keys survive an update of the same app, but if no newer build is out in time, approvals stop and the administrator falls back to another credential or to recovery. A TestFlight-distributed approval app needs a standing renewal habit, or a second hardware credential, or both.
@@ -149,13 +161,17 @@ The guiding rule: the app removes the typing and the timing, **not** the operato
   - An unlisted App Store build doesn't expire but needs a full review.
 - **Profile linking in each app** (step 6 today) is separate work: apps could read the directory identity and skip it.
 
-## Decisions for the founder
+## Decisions
 
-1. **Same device.** May an administrator approve from the phone that's also running the admin browser? Recommendation: yes. The approval app is a separate boundary from the browser, and Home Base, not the browser, describes the request. The cost: a compromised phone OS defeats both at once.
-2. **What it counts as.** Is a `device-approval` credential `hardware` under D11 and D15, or a new kind (say `attested-device`) that the every-time policy also accepts? Recommendation: a new kind that the policy accepts, so the Members card and audit say honestly what it is. D11 then reads "at least one hardware or attested-device credential", with a second such credential encouraged.
-3. **One companion app** (push, approvals, onboarding, launcher, and later document capture) or separate apps? Recommendation: one. Every app multiplies Apple onboarding and distribution for each operator.
-4. **Distribution:** external TestFlight, App Store Connect roles, or unlisted. Every TestFlight route expires builds after 90 days, which matters most for the administrator's approval app. Recommendation: TestFlight to start, with a renewal reminder and a second hardware credential required while the approval app is on TestFlight; unlisted once the app settles.
-5. **App Attest development environment.** Accept Xcode builds behind a flag, or production (TestFlight and App Store) only?
+1. **Same device. Decided: yes.** An administrator may approve from the phone that's also running the admin browser. The approval app is a separate boundary from the browser, and Home Base, not the browser, describes the request. The cost: a compromised phone OS defeats both at once.
+2. **What it counts as. Decided: a new kind, `attested-device`, distinct from `hardware`.** YubiKeys remain essential for an operator focused on maximum operational security. Each household chooses "hardware only" or "hardware or attested-device" (see "Effects on the rules").
+3. **Apps. Decided: a primary app to start, without locking in a one-app model.**
+   - The push app, already in use during testing, grows into the primary app: push, identity and keys against Home Base, onboarding, and launching the other apps at first.
+   - Tailscale stays a separate, operator-assisted setup.
+   - Other suite apps may become native apps or stay web wrappers as each one suits. Native ones lean on the primary app for identity rather than repeating onboarding.
+4. **Distribution (open).** TestFlight is fine for bootstrapping but isn't the long-term route. The choices: external TestFlight, App Store Connect roles, or unlisted. Every TestFlight route expires builds after 90 days, which matters most for the administrator's approval app. Recommendation: TestFlight to start, with a renewal reminder and a second hardware credential required while the approval app is on TestFlight; unlisted once the app settles.
+5. **App Attest development environment (open).** Accept Xcode builds behind a flag, or production (TestFlight and App Store) only?
+6. **The household policy's default (open).** For a fresh install, "hardware only" (today's behavior, so nothing changes silently) or asked at setup? Recommendation: "hardware only" by default, with the choice offered in setup next to the first administrator credential.
 
 ## Spikes before any build
 
@@ -177,9 +193,9 @@ Each slice is one PR touching few files.
 
 1. sovereignAuth: App Attest enrollment and assertion verification, the approval format, the pinned root, vectors.
 2. Home Base: server-side request freezing and summaries for each every-time action. Worth doing even without the iPhone, since it hardens the WebAuthn path too.
-3. Home Base: the `device-approval` credential, enrollment authority, and the pending-approval claim and mint (plus activation).
+3. Home Base: the `attested-device` kind and `device-approval` credential, the household policy setting (hardware only by default), enrollment authority, and the pending-approval claim and mint (plus activation).
 4. Home Base: the admin UI (enroll the iPhone, the approval wait screen with its code).
-5. The app: enrollment and the approval screen.
+5. The primary app (the push app, grown): enrollment and the approval screen.
 6. Push wake-up for pending approvals.
 7. Onboarding: the join code, candidate admission from the app, the grant handoff to Safari, the launcher.
 
