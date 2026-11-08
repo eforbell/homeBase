@@ -143,9 +143,10 @@ The guiding rule: the app removes the typing and the timing, **not** the operato
 - **Tailscale.** An app can't bundle its own VPN beside Tailscale (only one VPN runs at a time), so installing and signing in to Tailscale stays a step. With a user-owned Tailscale API key, Home Base might create the tailnet invite link itself (`POST /api/v2/tailnet/{tailnet}/user-invites`, link-only when no email is given). To confirm in spike 4. Home Base's current API credential is read-only by design (D23), so this would be an optional second credential, and that is the operator's choice.
 - **The operator's decisions:** admitting the member and issuing their grant stay two taps on the Members card. The flow above only removes the hand-offs.
 - **Getting the app** depends on the operator's distribution route:
-  - Internal TestFlight needs each member to have an App Store Connect role (open question: minors), and builds expire every 90 days.
+  - **Every TestFlight build expires after 90 days, internal and external alike.** An expired build stops launching until a newer one is installed. The keys survive an update of the same app, but if no newer build is out in time, approvals stop and the administrator falls back to another credential or to recovery. A TestFlight-distributed approval app needs a standing renewal habit, or a second hardware credential, or both.
+  - Internal TestFlight needs each member to have an App Store Connect role (open question: minors).
   - External TestFlight needs a beta review but no role.
-  - An unlisted App Store build has neither limit but needs a full review.
+  - An unlisted App Store build doesn't expire but needs a full review.
 - **Profile linking in each app** (step 6 today) is separate work: apps could read the directory identity and skip it.
 
 ## Decisions for the founder
@@ -153,7 +154,7 @@ The guiding rule: the app removes the typing and the timing, **not** the operato
 1. **Same device.** May an administrator approve from the phone that's also running the admin browser? Recommendation: yes. The approval app is a separate boundary from the browser, and Home Base, not the browser, describes the request. The cost: a compromised phone OS defeats both at once.
 2. **What it counts as.** Is a `device-approval` credential `hardware` under D11 and D15, or a new kind (say `attested-device`) that the every-time policy also accepts? Recommendation: a new kind that the policy accepts, so the Members card and audit say honestly what it is. D11 then reads "at least one hardware or attested-device credential", with a second such credential encouraged.
 3. **One companion app** (push, approvals, onboarding, launcher, and later document capture) or separate apps? Recommendation: one. Every app multiplies Apple onboarding and distribution for each operator.
-4. **Distribution for members:** external TestFlight, App Store Connect roles, or unlisted.
+4. **Distribution:** external TestFlight, App Store Connect roles, or unlisted. Every TestFlight route expires builds after 90 days, which matters most for the administrator's approval app. Recommendation: TestFlight to start, with a renewal reminder and a second hardware credential required while the approval app is on TestFlight; unlisted once the app settles.
 5. **App Attest development environment.** Accept Xcode builds behind a flag, or production (TestFlight and App Store) only?
 
 ## Spikes before any build
