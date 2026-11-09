@@ -43,7 +43,7 @@ const catalog = [
         readinessPath: '/api/health',
       },
       notes: [
-        'Plaid OAuth needs PLAID_OAUTH_REDIRECT_URI registered in the Plaid dashboard. Updates set it to the app\'s own address plus oauth/callback, so register that one.',
+        'Plaid OAuth needs PLAID_OAUTH_REDIRECT_URI registered in the Plaid dashboard. A fresh install sets it to the app\'s own address plus oauth/callback; updates keep the value already there.',
         'Current repo uses a second MCP sidecar service on port 3004.',
         'First-run household setup is handled in the browser when family_members is empty.',
       ],
@@ -93,6 +93,9 @@ const catalog = [
       },
     ],
     config: {
+      // The administrator's Plaid choices: sandbox or production, and the redirect URI registered with Plaid. A
+      // fresh install starts with the defaults below; an update keeps what is there.
+      preserveExistingKeys: ['PLAID_ENV', 'PLAID_OAUTH_REDIRECT_URI'],
       env: {
         ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',

@@ -136,9 +136,12 @@ test('Family Pulse is told its own address, which its tailnet mode needs and its
   assert.deepEqual([before.APP_PUBLIC_URL, before.PLAID_OAUTH_REDIRECT_URI], ['https://host.example-tailnet.ts.net/pulse/', 'https://host.example-tailnet.ts.net/pulse/oauth/callback']);
   const ingress = JSON.parse(CUT_OVER);
   const after = render(ingress, 'APP_PUBLIC_URL=https://host.example-tailnet.ts.net/pulse/\nSOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n');
-  assert.deepEqual([after.APP_URL, after.APP_PUBLIC_URL, after.PLAID_OAUTH_REDIRECT_URI, after.SOVEREIGN_AUTH_MODE], [
-    'https://smith-pulse.example-tailnet.ts.net/pulse/', 'https://smith-pulse.example-tailnet.ts.net/pulse/', 'https://smith-pulse.example-tailnet.ts.net/pulse/oauth/callback', 'tailnet',
+  assert.deepEqual([after.APP_URL, after.APP_PUBLIC_URL, after.PLAID_OAUTH_REDIRECT_URI, after.PLAID_ENV, after.SOVEREIGN_AUTH_MODE], [
+    'https://smith-pulse.example-tailnet.ts.net/pulse/', 'https://smith-pulse.example-tailnet.ts.net/pulse/', 'https://smith-pulse.example-tailnet.ts.net/pulse/oauth/callback', 'production', 'tailnet',
   ]);
+  // The administrator's Plaid choices survive an update: sandbox, and the redirect URI registered with Plaid.
+  const kept = render(ingress, 'PLAID_ENV=sandbox\nPLAID_OAUTH_REDIRECT_URI=https://callbacks.example.com/oauth/callback\n');
+  assert.deepEqual([kept.PLAID_ENV, kept.PLAID_OAUTH_REDIRECT_URI, kept.APP_PUBLIC_URL], ['sandbox', 'https://callbacks.example.com/oauth/callback', 'https://smith-pulse.example-tailnet.ts.net/pulse/']);
 });
 
 test('the plan: the switch, then a restart, only for an app that supports the mode', (t) => {
