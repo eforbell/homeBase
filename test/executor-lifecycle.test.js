@@ -137,6 +137,44 @@ test('restore keeps the identity mode the app is in now, never the one in the ba
   assert.doesNotMatch(fsImpl.readFileSync(ENV), /SOVEREIGN_AUTH_MODE|SOVEREIGN_HOMEBASE_UID/);
 });
 
+test('restore keeps the address the app is reached at now, never the one in the backup (SID-007)', async () => {
+  // An app told its address, as Family Pulse and Family Plan are: in tailnet mode it checks every request's origin
+  // against APP_PUBLIC_URL and won't start without one.
+  const app = getAppById('home-source');
+  const told = appLayout({ ...app, runtime: { ...app.runtime, identity: 'tailnet' }, config: { ...app.config, env: { ...app.config.env, APP_PUBLIC_URL: '{{externalUrl}}' } } });
+  const DB = 'DATABASE_URL=postgresql://homesource:Live-pass-123@127.0.0.1:5432/homesource\n';
+  const NOW = 'APP_PUBLIC_URL=https://smith-source.example-tailnet.ts.net/source/\n';
+  const TAILNET = 'SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n';
+  // Taken before the cutover, before the key existed, or naming another host: the current address stays.
+  for (const [backupAddress, layout, expected] of [
+    ['APP_PUBLIC_URL=https://host.example-tailnet.ts.net/source/\n', told, NOW],
+    ['', told, NOW],
+    ['APP_PUBLIC_URL=https://elsewhere.example/source/\n', told, NOW],
+    // An app that isn't told its address keeps whatever the backup has, as before.
+    ['APP_PUBLIC_URL=https://elsewhere.example/source/\n', SOURCE, 'APP_PUBLIC_URL=https://elsewhere.example/source/\n'],
+  ]) {
+    const { fsImpl, handlers } = harness({
+      [ENV]: { kind: 'file', content: `${DB}${NOW}${TAILNET}`, uid: 1001 },
+      [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: `${DB}${backupAddress}`, uid: 1001 },
+      ...done(ARCHIVE),
+      [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 },
+    });
+    await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout });
+    const env = fsImpl.readFileSync(ENV);
+    assert.deepEqual(env.match(/^APP_PUBLIC_URL=.*$/gm), [expected.trim()], JSON.stringify(backupAddress));
+    if (layout === told) assert.match(env, /^SOVEREIGN_AUTH_MODE=tailnet$/m, 'still in tailnet mode, at its own address');
+  }
+  // Not told its address yet (not updated since the catalog gave the key): nor does a backup tell it one.
+  const { fsImpl, handlers } = harness({
+    [ENV]: { kind: 'file', content: DB, uid: 1001 },
+    [`${ARCHIVE}/.env.backup`]: { kind: 'file', content: `${DB}APP_PUBLIC_URL=https://elsewhere.example/source/\n`, uid: 1001 },
+    ...done(ARCHIVE),
+    [`${ARCHIVE}/database.dump`]: { kind: 'file', content: 'dump', uid: 1001 },
+  });
+  await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: told });
+  assert.doesNotMatch(fsImpl.readFileSync(ENV), /APP_PUBLIC_URL/);
+});
+
 test('uninstall removes only root-owned layout artifacts as root and app files as sovereign', async () => {
   const { fsImpl, calls, identities, handlers } = harness({
     '/etc/systemd/system/home-source.service': 'unit',

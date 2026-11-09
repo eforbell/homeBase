@@ -194,6 +194,12 @@ function createLifecycleHandlers({ fsImpl = fs, run = runApproved, lookupUser = 
           }
           // A backup taken before the catalog declared its storage env key must not point the app away from the archived root.
           Object.assign(restoredEnv, storageEnvOverrides(layout.app));
+          // Nor take its address from the backup: in tailnet mode the app checks every request's origin against
+          // APP_PUBLIC_URL, which follows this host's ingress (an update writes it), not the one the backup was taken on.
+          if (Object.hasOwn(layout.app.config?.env || {}, 'APP_PUBLIC_URL')) {
+            delete restoredEnv.APP_PUBLIC_URL;
+            if (current.APP_PUBLIC_URL) restoredEnv.APP_PUBLIC_URL = current.APP_PUBLIC_URL;
+          }
           // Nor listen where nginx no longer points (a backup from before the app's socket, or HOST=0.0.0.0), nor
           // trust identity headers it no longer should (a backup taken in tailnet mode, restored after the switch back).
           writeFileAtomic(fsImpl, layout.envPath, renderEnv(keepIdentityEnv(applyListenEnv(restoredEnv, listenNow), currentContent, layout)), owner.own ? 0o600 : 0o640);

@@ -42,6 +42,9 @@ const PULSE_ENV = '/opt/sovereign-home/apps/familyPulse/.env';
 const PLAN_ENV = '/opt/sovereign-home/apps/familyPlan/.env';
 // What an install on the app's socket writes (applyListenEnv).
 const listenOn = (appId) => `SOVEREIGN_LISTEN=unix:/run/sovereign-apps/${appId}/app.sock\n`;
+// And the address an update writes once the host is cut over: the app's service hostname.
+const PULSE_ADDRESS = 'APP_PUBLIC_URL=https://smith-pulse.example-tailnet.ts.net/pulse/\n';
+const PLAN_ADDRESS = 'APP_PUBLIC_URL=https://smith-home.example-tailnet.ts.net/plan/\n';
 const CUT_OVER = JSON.stringify({ mode: 'sockets', instance: 'smith', domain: 'example-tailnet.ts.net' });
 const base = (fields = {}) => ({ id: 'op', type: 'app.set-identity-mode', title: 't', risk: 'write', timeoutMs: 1000, dependsOn: [], preconditions: [], secretRefs: [], ...fields });
 
@@ -49,7 +52,7 @@ const base = (fields = {}) => ({ id: 'op', type: 'app.set-identity-mode', title:
 function host(files = {}) {
   const fsImpl = createFakeFs(Object.fromEntries(Object.entries({
     '/opt/sovereign-home/apps/familyPulse': { kind: 'dir', uid: 1101 },
-    [PULSE_ENV]: { kind: 'file', content: `DATABASE_URL=postgresql://familypulse:pw@127.0.0.1:5432/familypulse\nPLAID_ENV=sandbox\n${listenOn('family-pulse')}SOVEREIGN_IDENTITY_MODE=local\n`, uid: 1101, mode: 0o600 },
+    [PULSE_ENV]: { kind: 'file', content: `DATABASE_URL=postgresql://familypulse:pw@127.0.0.1:5432/familypulse\nPLAID_ENV=sandbox\n${listenOn('family-pulse')}${PULSE_ADDRESS}SOVEREIGN_IDENTITY_MODE=local\n`, uid: 1101, mode: 0o600 },
     [INGRESS_STATE_PATH]: CUT_OVER,
     '/var/lib/sovereign-home/identity': { kind: 'dir', uid: 990, mode: 0o755 },
     [IDENTITY_SNAPSHOT]: { kind: 'file', content: '{}', uid: 990, mode: 0o644 },
@@ -197,6 +200,15 @@ test('the executor refuses tailnet mode wherever identity headers or the snapsho
   await assert.rejects(() => set('local'), /has no \.env/);
   // Installed before SID-002 and not moved yet: it still runs as the shared user, whose other apps reach its socket.
   await refused({ '/opt/sovereign-home/apps/familyPulse': { kind: 'dir', uid: 1001 }, [PULSE_ENV]: { kind: 'file', content: 'PLAID_ENV=sandbox\n', uid: 1001, mode: 0o640 } }, /still runs as sovereign; move it to sovereign-pulse first/);
+  // Pulse checks every request's origin against its address, and won't start without one. Not updated since the
+  // catalog gave it the key, or since the cutover (the host's own name), or told some other address: update it first.
+  for (const address of ['', 'APP_PUBLIC_URL=https://host.example-tailnet.ts.net/pulse/\n', 'APP_PUBLIC_URL=https://smith-pulse.example-tailnet.ts.net/\n', 'APP_PUBLIC_URL=https://elsewhere.example/pulse/\n']) {
+    const content = `PLAID_ENV=sandbox\n${listenOn('family-pulse')}${address}`;
+    const { fsImpl, set } = host({ [PULSE_ENV]: { kind: 'file', content, uid: 1101, mode: 0o600 } });
+    await assert.rejects(() => set('tailnet'), /Family Pulse doesn't know its address here yet; update it first, so its APP_PUBLIC_URL is https:\/\/smith-pulse\.example-tailnet\.ts\.net\/pulse\/\./, JSON.stringify(address));
+    assert.equal(fsImpl.readFileSync(PULSE_ENV), content, 'nothing written');
+    assert.match(await set('local'), /uses its own sign-in/, 'its own sign-in needs no address');
+  }
 });
 
 test('a low-friction app shares the user by design, so it may trust tailnet identity on its socket', async () => {
@@ -210,7 +222,7 @@ test('a low-friction app shares the user by design, so it may trust tailnet iden
     await assert.rejects(() => old.set('tailnet', layout), /Family Plan still listens on its port here; update it first/);
     assert.equal(old.fsImpl.readFileSync(PLAN_ENV), content, 'nothing written');
   }
-  const { fsImpl, set } = plan(`PORT=3001\n${listenOn('family-plan')}`);
+  const { fsImpl, set } = plan(`PORT=3001\n${listenOn('family-plan')}${PLAN_ADDRESS}`);
   assert.match(await set('tailnet', layout), /trusts tailnet identity/);
   const switched = fsImpl.readFileSync(PLAN_ENV);
   assert.match(switched, /^SOVEREIGN_AUTH_MODE=tailnet$/m);
