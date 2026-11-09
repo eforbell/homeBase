@@ -341,26 +341,29 @@ test('locking forgets the codes shown, and one still being issued: a card unlock
   assert.doesNotMatch(unlocked.innerHTML, /during-lock/, 'not remembered');
 });
 
-test('a code asked for earlier and answering late is dropped: the newer code stays, shown and drawn again', async () => {
-  const hb = fakeHomeBase([{ code: 'older-code', expiresAt: soon() }, { code: 'newer-code', expiresAt: new Date(Date.now() + 12 * 60_000).toISOString() }], { held: true });
-  const { members } = load(hb.read, { post: hb.post });
-  const node = fakeNode();
+test('one action at a time: while a code is issued, the card isn\'t read, added to or asked for another code', async () => {
+  const hb = fakeHomeBase([{ code: 'in-flight', expiresAt: soon() }, { code: 'second', expiresAt: soon() }], { held: true });
+  let reads = 0;
+  const posts = [];
+  const { members } = load(() => { reads += 1; return { ...hb.read(), candidates: [candidate()] }; }, { post: (url, body) => { posts.push(url); return hb.post(url, body); } });
+  const node = { ...fakeNode(), attributes: {}, setAttribute(key, value) { this.attributes[key] = value; } };
   members.wire(node);
   await members.mount(node);
-  const before = grantButton('m_0a', 'A Parent');
-  const older = node.click({ target: before });
+  const button = grantButton('m_0a', 'A Parent');
+  const issuing = node.click({ target: button });
+  assert.equal(node.attributes['aria-busy'], 'true');
   await node.click({ target: refreshButton() });
-  const after = grantButton('m_0a', 'A Parent');
-  const newer = node.click({ target: after });
-  hb.answer(1);
-  await newer;
+  await node.click({ target: addButton('u9', { role: 'kid' }) });
+  await node.click({ target: grantButton('m_0a', 'A Parent') });
+  assert.equal(reads, 1, 'no read while issuing');
+  assert.deepEqual(posts, ['/api/directory/members/m_0a/grant'], 'no add and no second code');
   hb.answer(0);
-  await older;
-  assert.match(after.code.innerHTML, /newer-code/);
-  assert.doesNotMatch(before.code.innerHTML, /older-code/, 'the older answer is shown nowhere');
+  await issuing;
+  assert.match(button.code.innerHTML, /in-flight/, 'the code lands in the row it was asked from');
+  assert.equal(node.attributes['aria-busy'], 'false');
   await node.click({ target: refreshButton() });
-  assert.match(node.innerHTML, /newer-code/);
-  assert.doesNotMatch(node.innerHTML, /older-code/);
+  assert.equal(reads, 2, 'open again once it answered');
+  assert.match(node.innerHTML, /in-flight/);
 });
 
 test('only the latest read of the directory is drawn: an earlier one answering late is dropped', async () => {
@@ -395,28 +398,6 @@ test('a failed re-read keeps the card: Check again says why and can be pressed a
   assert.equal(node.innerHTML, drawn, 'the card stays');
   assert.match(add.error.innerHTML, /Added, but the list couldn&#39;t be read again: Home Base did not answer\. Reload the page/);
   assert.equal(add.disabled, true, 'not offered again: the account is a member now');
-});
-
-test('an add whose re-read is overtaken still says it went through', async () => {
-  const answers = [];
-  const { members } = load(() => new Promise((resolve) => answers.push(resolve)), { post: async () => ({ ok: true, memberId: 'm_0b' }) });
-  const node = fakeNode();
-  members.wire(node);
-  const first = members.mount(node);
-  answers[0]({ state: 'active', members: [member()], candidates: [candidate()] });
-  await first;
-  const add = addButton('u9', { role: 'kid' });
-  const adding = node.click({ target: add });
-  await tick();
-  const refresh = refreshButton();
-  const refreshing = node.click({ target: refresh });
-  answers[1]({ state: 'active', members: [member(), member({ memberId: 'm_0b' })], candidates: [] });
-  answers[2](new Error('Home Base did not answer.'));
-  await adding;
-  await refreshing;
-  assert.match(add.error.innerHTML, /Added\./, 'not left at Adding…');
-  assert.doesNotMatch(add.error.innerHTML, /Adding…/);
-  assert.match(refresh.error.innerHTML, /did not answer/);
 });
 
 test('anyone but an unlocked administrator gets no card: the directory tells them only its state', async () => {
