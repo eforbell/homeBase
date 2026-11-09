@@ -64,6 +64,10 @@ a:hover { text-decoration: underline; }
 .hb-members-row > .hb-btn { justify-self: start; }
 .hb-members-code p { overflow-wrap: anywhere; }
 .hb-members-code { margin-top: 0.4rem; padding: 0.75rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.hb-members-add { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: end; }
+.hb-members-add .hb-label { flex: 1 1 12rem; }
+.hb-members-add .hb-btn { flex: 0 0 auto; }
+[data-members][aria-busy="true"] .hb-btn:not([data-member-copy]) { opacity: 0.6; cursor: progress; }
 .hb-members-code code { display: block; margin-bottom: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.1rem; letter-spacing: 0.03em; overflow-wrap: anywhere; user-select: all; }
 
 /* Spinner */
