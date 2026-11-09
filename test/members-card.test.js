@@ -240,47 +240,127 @@ function refreshButton() {
   return { error, disabled: false, parentElement: { querySelector: () => error }, closest(selector) { return selector === '[data-members-refresh]' ? this : null; } };
 }
 
-test('a code on screen stays when the card is drawn again, until it expires or is used', async () => {
-  let directory = { state: 'active', members: [member({ memberId: 'm_0a' })], candidates: [candidate()] };
-  const { members } = load(() => directory, { post: async () => ({ code: 'still-valid', expiresAt: soon() }) });
+// A Home Base with one member that holds the waiting code's expiry as the directory does: each code it issues
+// replaces the last, in the order asked. answer(i) settles the i-th request when `held`; otherwise each answers at once.
+function fakeHomeBase(codes, { held = false, ...overrides } = {}) {
+  const state = { state: 'active', members: [member(overrides)], candidates: [] };
+  const answers = [];
+  const post = (url) => {
+    const grant = codes[answers.length];
+    state.members[0] = { ...state.members[0], grantExpiresAt: grant.expiresAt };
+    return new Promise((resolve) => { answers.push(() => resolve(grant)); if (!held) resolve(grant); });
+  };
+  return { state, read: () => JSON.parse(JSON.stringify(state)), post, answer: (i) => answers[i]() };
+}
+const lockEvent = { target: { closest: (selector) => (selector === 'form[data-action="admin-lock"]' ? {} : null) } };
+
+test('a code on screen stays when the card is drawn again, until it expires, is used or is replaced elsewhere', async () => {
+  const at = new Date(Date.now() + 10 * 60_000).toISOString();
+  const hb = fakeHomeBase([{ code: 'still-valid', expiresAt: at }]);
+  const { members } = load(hb.read, { post: hb.post });
   const node = fakeNode();
   members.wire(node);
   await members.mount(node);
   await node.click({ target: grantButton('m_0a', 'A Parent') });
   await node.click({ target: refreshButton() });
   assert.match(node.innerHTML, /<code data-code>still-valid<\/code>/, 'kept: Home Base can\'t show it again');
-  directory = { ...directory, members: [member({ memberId: 'm_0a', credentials: [{ credentialId: 'k', kind: 'synced' }] })] };
+  hb.state.members[0].grantExpiresAt = new Date(Date.now() + 12 * 60_000).toISOString();
   await node.click({ target: refreshButton() });
-  assert.doesNotMatch(node.innerHTML, /still-valid/, 'used: the member has a passkey now');
-  const expiring = load({ state: 'active', members: [member()] }, { post: async () => ({ code: 'gone-soon', expiresAt: new Date(Date.now() + 30).toISOString() }) });
-  const other = fakeNode();
-  expiring.members.wire(other);
-  await expiring.members.mount(other);
-  await other.click({ target: grantButton('m_0a', 'A Parent') });
+  assert.doesNotMatch(node.innerHTML, /still-valid/, 'replaced from another tab: the directory waits on a different code');
+  hb.state.members[0].grantExpiresAt = at;
+  hb.state.members[0].status = 'disabled';
+  await node.click({ target: refreshButton() });
+  assert.doesNotMatch(node.innerHTML, /still-valid/, 'the member can\'t use it now');
+  hb.state.members[0] = member({ grantExpiresAt: null, credentials: [{ credentialId: 'k', kind: 'synced' }] });
+  await node.click({ target: refreshButton() });
+  assert.doesNotMatch(node.innerHTML, /still-valid/, 'used: the member has a passkey and no code waits');
+
+  const expiring = fakeHomeBase([{ code: 'gone-soon', expiresAt: new Date(Date.now() + 30).toISOString() }]);
+  const other = load(expiring.read, { post: expiring.post });
+  const otherNode = fakeNode();
+  other.members.wire(otherNode);
+  await other.members.mount(otherNode);
+  await otherNode.click({ target: grantButton('m_0a', 'A Parent') });
   await tick(60);
-  await other.click({ target: refreshButton() });
-  assert.doesNotMatch(other.innerHTML, /gone-soon/, 'expired');
+  await otherNode.click({ target: refreshButton() });
+  assert.doesNotMatch(otherNode.innerHTML, /gone-soon/, 'expired');
   // A background tab's timers run late: a redraw before the expiry timer fires still leaves an expired code out.
-  const late = load({ state: 'active', members: [member()] }, { post: async () => ({ code: 'timer-late', expiresAt: past() }) });
+  const late = fakeHomeBase([{ code: 'timer-late', expiresAt: past() }]);
+  const lateCard = load(late.read, { post: late.post });
   const lateNode = fakeNode();
-  late.members.wire(lateNode);
-  await late.members.mount(lateNode);
+  lateCard.members.wire(lateNode);
+  await lateCard.members.mount(lateNode);
   await lateNode.click({ target: grantButton('m_0a', 'A Parent') });
   await lateNode.click({ target: refreshButton() });
   assert.doesNotMatch(lateNode.innerHTML, /timer-late/, 'expired, timer or not');
 });
 
-test('locking forgets the codes shown: a card unlocked again doesn\'t draw them', async () => {
-  const { members, document } = load({ state: 'active', members: [member()] }, { post: async () => ({ code: 'before-lock', expiresAt: soon() }) });
+test('a code drawn again expires where it is drawn now', async () => {
+  const hb = fakeHomeBase([{ code: 'redrawn', expiresAt: new Date(Date.now() + 40).toISOString() }]);
+  const { members } = load(hb.read, { post: hb.post });
+  const live = { innerHTML: '', querySelector: (selector) => (selector === '[data-code]' && /redrawn/.test(live.innerHTML) ? {} : null) };
+  const asked = [];
+  const node = { ...fakeNode(), querySelector(selector) { asked.push(selector); live.innerHTML = '<code data-code>redrawn</code>'; return live; } };
+  members.wire(node);
+  await members.mount(node);
+  const first = grantButton('m_0a', 'A Parent');
+  await node.click({ target: first });
+  await node.click({ target: refreshButton() });
+  await tick(80);
+  assert.deepEqual(asked, ['[data-member="m_0a"] [data-member-code]']);
+  assert.match(live.innerHTML, /That code has expired/, 'the slot drawn now');
+});
+
+test('locking forgets the codes shown, and one still being issued: a card unlocked again doesn\'t draw them', async () => {
+  const at = soon();
+  const hb = fakeHomeBase([{ code: 'before-lock', expiresAt: at }]);
+  const { members, document } = load(hb.read, { post: hb.post });
   const node = fakeNode();
   members.wire(node);
   await members.mount(node);
   await node.click({ target: grantButton('m_0a', 'A Parent') });
-  document.submit({ target: { closest: (selector) => (selector === 'form[data-action="admin-lock"]' ? {} : null) } });
+  document.submit(lockEvent);
   const again = fakeNode();
   await members.mount(again);
   assert.match(again.innerHTML, /A Parent/);
   assert.doesNotMatch(again.innerHTML, /before-lock/);
+
+  const pending = fakeHomeBase([{ code: 'during-lock', expiresAt: at }], { held: true });
+  const second = load(pending.read, { post: pending.post });
+  const card = fakeNode();
+  second.members.wire(card);
+  await second.members.mount(card);
+  const button = grantButton('m_0a', 'A Parent');
+  const issuing = card.click({ target: button });
+  second.document.submit(lockEvent);
+  pending.answer(0);
+  await issuing;
+  assert.doesNotMatch(button.code.innerHTML, /during-lock/, 'not shown');
+  const unlocked = fakeNode();
+  await second.members.mount(unlocked);
+  assert.doesNotMatch(unlocked.innerHTML, /during-lock/, 'not remembered');
+});
+
+test('a code asked for earlier and answering late is dropped: the newer code stays, shown and drawn again', async () => {
+  const hb = fakeHomeBase([{ code: 'older-code', expiresAt: soon() }, { code: 'newer-code', expiresAt: new Date(Date.now() + 12 * 60_000).toISOString() }], { held: true });
+  const { members } = load(hb.read, { post: hb.post });
+  const node = fakeNode();
+  members.wire(node);
+  await members.mount(node);
+  const before = grantButton('m_0a', 'A Parent');
+  const older = node.click({ target: before });
+  await node.click({ target: refreshButton() });
+  const after = grantButton('m_0a', 'A Parent');
+  const newer = node.click({ target: after });
+  hb.answer(1);
+  await newer;
+  hb.answer(0);
+  await older;
+  assert.match(after.code.innerHTML, /newer-code/);
+  assert.doesNotMatch(before.code.innerHTML, /older-code/, 'the older answer is shown nowhere');
+  await node.click({ target: refreshButton() });
+  assert.match(node.innerHTML, /newer-code/);
+  assert.doesNotMatch(node.innerHTML, /older-code/);
 });
 
 test('only the latest read of the directory is drawn: an earlier one answering late is dropped', async () => {
@@ -315,6 +395,28 @@ test('a failed re-read keeps the card: Check again says why and can be pressed a
   assert.equal(node.innerHTML, drawn, 'the card stays');
   assert.match(add.error.innerHTML, /Added, but the list couldn&#39;t be read again: Home Base did not answer\. Reload the page/);
   assert.equal(add.disabled, true, 'not offered again: the account is a member now');
+});
+
+test('an add whose re-read is overtaken still says it went through', async () => {
+  const answers = [];
+  const { members } = load(() => new Promise((resolve) => answers.push(resolve)), { post: async () => ({ ok: true, memberId: 'm_0b' }) });
+  const node = fakeNode();
+  members.wire(node);
+  const first = members.mount(node);
+  answers[0]({ state: 'active', members: [member()], candidates: [candidate()] });
+  await first;
+  const add = addButton('u9', { role: 'kid' });
+  const adding = node.click({ target: add });
+  await tick();
+  const refresh = refreshButton();
+  const refreshing = node.click({ target: refresh });
+  answers[1]({ state: 'active', members: [member(), member({ memberId: 'm_0b' })], candidates: [] });
+  answers[2](new Error('Home Base did not answer.'));
+  await adding;
+  await refreshing;
+  assert.match(add.error.innerHTML, /Added\./, 'not left at Adding…');
+  assert.doesNotMatch(add.error.innerHTML, /Adding…/);
+  assert.match(refresh.error.innerHTML, /did not answer/);
 });
 
 test('anyone but an unlocked administrator gets no card: the directory tells them only its state', async () => {

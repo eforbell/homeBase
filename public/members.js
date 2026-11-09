@@ -26,11 +26,16 @@
 
   // The codes this page has shown, by member. Home Base keeps only their hash, so when the card is drawn again (after
   // adding someone, or Check again) a code still valid is drawn with it; it goes when it expires or the card clears.
+  // Still valid means the directory still holds it: the waiting code has its expiry. One used, or replaced from
+  // another tab, isn't drawn.
   const shownCodes = new Map();
   const liveCode = (directory, member) => {
     const entry = shownCodes.get(member.memberId);
-    return entry && mayIssue(directory, member) && Date.parse(entry.grant.expiresAt) > Date.now() ? entry : null;
+    return entry && mayIssue(directory, member) && entry.grant.expiresAt === member.grantExpiresAt
+      && Date.parse(entry.grant.expiresAt) > Date.now() ? entry : null;
   };
+  // The latest code asked for, by member: an earlier request answering late holds a code the newer one replaced.
+  const asked = new Map();
 
   function memberRow(directory, member) {
     const tags = [member.role, member.administrator ? 'administrator' : '', member.status !== 'active' ? member.status : ''].filter(Boolean);
@@ -203,6 +208,7 @@
         }
         // The new member is listed with the others, and in active Home Base offered an enrollment code. If the list
         // can't be read again, the row says the add went through; its button stays off, as the account is a member.
+        problem.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">Added. Showing the list again…</p>';
         await mount(node, { failed: (message) => { problem.innerHTML = warn(`Added, but the list couldn't be read again: ${message} Reload the page to see it.`); } });
         return;
       }
@@ -210,12 +216,17 @@
       if (!button) return;
       const slot = button.parentElement.querySelector('[data-member-code]');
       const problem = button.parentElement.querySelector('[data-member-error]');
+      const memberId = button.dataset.memberGrant;
+      const ask = (asked.get(memberId) || 0) + 1;
+      asked.set(memberId, ask);
+      // Locked meanwhile, or a newer code asked for: this answer is shown nowhere and remembered nowhere.
+      const stale = () => cleared.has(node) || asked.get(memberId) !== ask;
       button.disabled = true;
       problem.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">Issuing…</p>';
       try {
-        const grant = await window.HB.postJson(`/api/directory/members/${encodeURIComponent(button.dataset.memberGrant)}/grant`, {});
+        const grant = await window.HB.postJson(`/api/directory/members/${encodeURIComponent(memberId)}/grant`, {});
+        if (stale()) return;
         problem.innerHTML = '';
-        const memberId = button.dataset.memberGrant;
         const entry = { name: button.dataset.memberName, grant };
         shownCodes.set(memberId, entry);
         slot.innerHTML = codeBlock(entry.name, grant);
@@ -226,14 +237,16 @@
           const id = window.CSS && window.CSS.escape ? window.CSS.escape(memberId) : memberId;
           const live = (node.querySelector && node.querySelector(`[data-member="${id}"] [data-member-code]`)) || slot;
           // Drawn again after the code was used, the row shows no code: leave it so.
-          if (live === slot || live.querySelector('[data-code]')) live.innerHTML ='<p class="hb-muted" style="margin:0.4rem 0 0;">That code has expired.</p>';
+          if (live === slot || live.querySelector('[data-code]')) live.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">That code has expired.</p>';
         });
         button.textContent = 'Issue a new code';
       } catch (error) {
+        if (stale()) return;
         // A code already shown stays: a refused replacement leaves it valid, and Home Base can't show it again.
-        problem.innerHTML = `<p class="hb-warn" style="margin:0.4rem 0 0;">${esc(error.message)}</p>`;
+        problem.innerHTML = warn(error.message);
+      } finally {
+        button.disabled = false;
       }
-      button.disabled = false;
     });
   }
 
