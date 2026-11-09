@@ -15,10 +15,10 @@ function member(overrides) {
   return { memberId: 'm_0a', userId: 'u1', login: 'parent@example.com', name: 'A Parent', role: 'parent', administrator: false, status: 'active', apps: ['family-pulse'], credentials: [], grantExpiresAt: null, ...overrides };
 }
 
-// Loads members.js with getJson answering `directory`, and postJson recording what it was asked.
+// Loads members.js with getJson answering `directory` (or what the function `directory` gives, each read), and postJson recording what it was asked.
 function load(directory, { post = async () => ({ code: 'c0de-XYZ', expiresAt: soon() }) } = {}) {
   const posted = [];
-  const window = { HB: { escapeHtml, getJson: async () => { if (directory instanceof Error) throw directory; return directory; }, postJson: async (url, body) => { posted.push([url, body]); return post(url, body); } } };
+  const window = { HB: { escapeHtml, getJson: async () => { const answer = typeof directory === 'function' ? await directory() : directory; if (answer instanceof Error) throw answer; return answer; }, postJson: async (url, body) => { posted.push([url, body]); return post(url, body); } } };
   const document = { addEventListener(type, fn) { if (type === 'submit') document.submit = fn; } };
   // Timers that don't keep the test process alive: a code's expiry is minutes away.
   const timer = (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; };
@@ -233,6 +233,88 @@ test('adding without a role asks for one and posts nothing; a refusal says why a
   assert.match(refused.error.innerHTML, /hb-warn.*already a member/);
   assert.equal(refused.disabled, false);
   assert.match(node.innerHTML, /data-member-add="u9"/, 'the row stays to try again');
+});
+
+function refreshButton() {
+  const error = fakeSlot();
+  return { error, disabled: false, parentElement: { querySelector: () => error }, closest(selector) { return selector === '[data-members-refresh]' ? this : null; } };
+}
+
+test('a code on screen stays when the card is drawn again, until it expires or is used', async () => {
+  let directory = { state: 'active', members: [member({ memberId: 'm_0a' })], candidates: [candidate()] };
+  const { members } = load(() => directory, { post: async () => ({ code: 'still-valid', expiresAt: soon() }) });
+  const node = fakeNode();
+  members.wire(node);
+  await members.mount(node);
+  await node.click({ target: grantButton('m_0a', 'A Parent') });
+  await node.click({ target: refreshButton() });
+  assert.match(node.innerHTML, /<code data-code>still-valid<\/code>/, 'kept: Home Base can\'t show it again');
+  directory = { ...directory, members: [member({ memberId: 'm_0a', credentials: [{ credentialId: 'k', kind: 'synced' }] })] };
+  await node.click({ target: refreshButton() });
+  assert.doesNotMatch(node.innerHTML, /still-valid/, 'used: the member has a passkey now');
+  const expiring = load({ state: 'active', members: [member()] }, { post: async () => ({ code: 'gone-soon', expiresAt: new Date(Date.now() + 30).toISOString() }) });
+  const other = fakeNode();
+  expiring.members.wire(other);
+  await expiring.members.mount(other);
+  await other.click({ target: grantButton('m_0a', 'A Parent') });
+  await tick(60);
+  await other.click({ target: refreshButton() });
+  assert.doesNotMatch(other.innerHTML, /gone-soon/, 'expired');
+  // A background tab's timers run late: a redraw before the expiry timer fires still leaves an expired code out.
+  const late = load({ state: 'active', members: [member()] }, { post: async () => ({ code: 'timer-late', expiresAt: past() }) });
+  const lateNode = fakeNode();
+  late.members.wire(lateNode);
+  await late.members.mount(lateNode);
+  await lateNode.click({ target: grantButton('m_0a', 'A Parent') });
+  await lateNode.click({ target: refreshButton() });
+  assert.doesNotMatch(lateNode.innerHTML, /timer-late/, 'expired, timer or not');
+});
+
+test('locking forgets the codes shown: a card unlocked again doesn\'t draw them', async () => {
+  const { members, document } = load({ state: 'active', members: [member()] }, { post: async () => ({ code: 'before-lock', expiresAt: soon() }) });
+  const node = fakeNode();
+  members.wire(node);
+  await members.mount(node);
+  await node.click({ target: grantButton('m_0a', 'A Parent') });
+  document.submit({ target: { closest: (selector) => (selector === 'form[data-action="admin-lock"]' ? {} : null) } });
+  const again = fakeNode();
+  await members.mount(again);
+  assert.match(again.innerHTML, /A Parent/);
+  assert.doesNotMatch(again.innerHTML, /before-lock/);
+});
+
+test('only the latest read of the directory is drawn: an earlier one answering late is dropped', async () => {
+  const answers = [];
+  const { members } = load(() => new Promise((resolve) => answers.push(resolve)));
+  const node = fakeNode();
+  const first = members.mount(node);
+  const second = members.mount(node);
+  answers[1]({ state: 'active', members: [member({ name: 'Newer' })] });
+  await second;
+  answers[0]({ state: 'active', members: [member({ name: 'Older' })] });
+  assert.equal(await first, null);
+  assert.match(node.innerHTML, /Newer/);
+  assert.doesNotMatch(node.innerHTML, /Older/);
+});
+
+test('a failed re-read keeps the card: Check again says why and can be pressed again; an add says it went through', async () => {
+  let fail = false;
+  const { members } = load(() => (fail ? new Error('Home Base did not answer.') : { state: 'active', members: [member()], candidates: [candidate()] }), { post: async () => ({ ok: true, memberId: 'm_0b' }) });
+  const node = fakeNode();
+  members.wire(node);
+  await members.mount(node);
+  const drawn = node.innerHTML;
+  fail = true;
+  const refresh = refreshButton();
+  await node.click({ target: refresh });
+  assert.equal(node.innerHTML, drawn, 'the card stays');
+  assert.match(refresh.error.innerHTML, /hb-warn.*did not answer\. Reload the page/);
+  assert.equal(refresh.disabled, false);
+  const add = addButton('u9', { role: 'kid' });
+  await node.click({ target: add });
+  assert.equal(node.innerHTML, drawn, 'the card stays');
+  assert.match(add.error.innerHTML, /Added, but the list couldn&#39;t be read again: Home Base did not answer\. Reload the page/);
+  assert.equal(add.disabled, true, 'not offered again: the account is a member now');
 });
 
 test('anyone but an unlocked administrator gets no card: the directory tells them only its state', async () => {
