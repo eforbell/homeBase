@@ -57,7 +57,7 @@ function currentIngress(jobs = [], config = {}) {
   return latest?.kind === 'ingress-cutover' ? { instance: config.instance, domain: String(config.defaultDomain || '').toLowerCase() } : null;
 }
 
-// What the administrator sets up in the Tailscale console (runbook section 2), for the services this
+// What the administrator sets up in the Tailscale console (runbook B1), for the services this
 // household needs: home, homebase, and each installed sensitive app. Text to paste, never applied here.
 function setupSheet({ instance, services, installedAppIds = [], administratorLogin = '' }) {
   const needed = services.filter((service) => service.key === 'home' || service.key === 'homebase' || service.apps.some((id) => installedAppIds.includes(id)));
@@ -66,7 +66,7 @@ function setupSheet({ instance, services, installedAppIds = [], administratorLog
   const names = needed.map((service) => service.name);
   const pad = Math.max(...names.map((name) => name.length)) + 3;
   const policy = [
-    '// Home Base: paste into your tailnet policy (runbook section 2.2), in this order:',
+    '// Home Base: paste into your tailnet policy (runbook B1), in this order:',
     '// 1. the tag owner, then add the tag to this host on the Machines page;',
     '"tagOwners": {',
     `  "${hostTag}": ["${owner}"],`,

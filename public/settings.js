@@ -671,7 +671,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
   function renderIngressBody(data) {
     const esc = window.HB.escapeHtml;
     if (!data.configured) {
-      return `<p class="hb-muted" style="margin:0;">Not set up on this host: ${esc(data.problem || 'unknown')}. Set <code>HOME_BASE_INSTANCE</code> in <code>/etc/sovereign-home/homebase.env</code> (runbook section 2.4).</p>`;
+      return `<p class="hb-muted" style="margin:0;">Not set up on this host: ${esc(data.problem || 'unknown')}. Set <code>HOME_BASE_INSTANCE</code> in <code>/etc/sovereign-home/homebase.env</code> (runbook B2).</p>`;
     }
     const verificationLabel = data.apiCredential === 'configured'
       ? 'automatic (read-only Tailscale API credential)'
@@ -741,7 +741,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0;">${rows}</ul>
       ${data.cutOver && data.homeBase !== 'socket' ? (homeBaseEntry?.published ? `
         <form class="hb-form-grid" data-action="ingress-move-homebase" style="margin-top:1rem;">
-          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> <span>I opened <a href="https://${esc(homeBaseEntry.hostname)}/" target="_blank" rel="noopener" style="overflow-wrap:anywhere;">https://${esc(homeBaseEntry.hostname)}/</a> and it loads. Move Home Base onto its own socket: port 3080 then only redirects there (runbook section 5)</span></label>
+          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> <span>I opened <a href="https://${esc(homeBaseEntry.hostname)}/" target="_blank" rel="noopener" style="overflow-wrap:anywhere;">https://${esc(homeBaseEntry.hostname)}/</a> and it loads. Move Home Base onto its own socket: port 3080 then only redirects there (runbook B6)</span></label>
           <button class="hb-btn hb-btn-primary" type="submit">Move Home Base to its socket</button>
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>` : `
@@ -753,7 +753,7 @@ bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair</pre
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>` : `
         <form class="hb-form-grid" data-action="ingress-cutover" style="margin-top:1rem;">
-          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Move nginx to one private socket per service (runbook section 3). Apps stay reachable only at their new addresses once published. Home Base stays on port 3080 until you move it.</label>
+          <label class="hb-label hb-check-row"><input type="checkbox" name="sure"> Move nginx to one private socket per service (runbook B4). Apps stay reachable only at their new addresses once published. Home Base stays on port 3080 until you move it.</label>
           <button class="hb-btn hb-btn-primary" type="submit">Cut over to per-service sockets</button>
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>`}
