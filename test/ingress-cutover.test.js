@@ -248,7 +248,8 @@ test('a cutover refuses a nginx that would ignore the gateway, before writing an
   const { fsImpl, calls, handlers } = harness({}, { dump: CUSTOM_NGINX, loadsGateway: false });
   await assert.rejects(() => handlers['nginx.ensure-socket-gateway'](cutover({ homeBase: 'socket' })), (error) => {
     assert.match(error.message, /wouldn't load the socket gateway: nothing in its http block/);
-    assert.match(error.message, /include \/etc\/nginx\/sites-enabled\/sovereign-home;/);
+    // A pattern: nginx refuses an include of the gateway's own name until the cutover has written it.
+    assert.match(error.message, /include \/etc\/nginx\/sites-enabled\/sovereign-home\*;/);
     assert.match(error.message, /a stream block too/);
     return true;
   });
@@ -261,7 +262,7 @@ test('what counts as nginx including the gateway', () => {
   const { includesFile } = require('../src/operations/nginx-config');
   const LINK = '/etc/nginx/sites-enabled/sovereign-home';
   const http = (line) => `# configuration file /etc/nginx/nginx.conf:\nhttp {\n  ${line}\n}\n`;
-  for (const yes of ['include /etc/nginx/sites-enabled/*;', 'include /etc/nginx/sites-enabled/sovereign-home;', 'include sites-enabled/*;', 'include ./sites-enabled/*;', 'include "/etc/nginx/sites-enabled/*";', "include '/etc/nginx/sites-enabled/sovereign-home';", 'include /etc/nginx/sites-enabled/sovereign-*;', 'server { listen 80; } include /etc/nginx/sites-enabled/*;']) assert.ok(includesFile(http(yes), LINK), yes);
+  for (const yes of ['include /etc/nginx/sites-enabled/*;', 'include /etc/nginx/sites-enabled/sovereign-home;', 'include sites-enabled/*;', 'include ./sites-enabled/*;', 'include "/etc/nginx/sites-enabled/*";', "include '/etc/nginx/sites-enabled/sovereign-home';", 'include /etc/nginx/sites-enabled/sovereign-*;', 'include /etc/nginx/sites-enabled/sovereign-home*;', 'server { listen 80; } include /etc/nginx/sites-enabled/*;']) assert.ok(includesFile(http(yes), LINK), yes);
   for (const no of ['# include /etc/nginx/sites-enabled/*;', 'include /etc/nginx/sites-enabled/*.conf;', 'include /etc/nginx/conf.d/*;', 'include /etc/nginx/sites-enabled/;', 'xinclude /etc/nginx/sites-enabled/*;', '']) assert.ok(!includesFile(http(no), LINK), no);
   assert.ok(includesFile(`${http('')}# configuration file ${LINK}:\nserver {}\n`, LINK), 'already loaded');
   // Where it would make the gateway's server blocks invalid, and block a retry and a rollback too.
