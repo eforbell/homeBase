@@ -25,6 +25,9 @@ const catalog = [
       nodeEnv: 'production',
       // SID-002: listens on the unix socket SOVEREIGN_LISTEN names (lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // SID-007: reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members' roles and passkeys replace its
+      // passphrases. As a sensitive app, it switches only once it runs as its own user (app.set-identity-mode).
+      identity: 'tailnet',
     },
     network: {
       preferredMountPath: '/pulse/',
@@ -40,7 +43,7 @@ const catalog = [
         readinessPath: '/api/health',
       },
       notes: [
-        'Plaid production OAuth requires a public HTTPS callback path.',
+        'Plaid OAuth needs PLAID_OAUTH_REDIRECT_URI registered in the Plaid dashboard. A fresh install sets it to the app\'s own address plus oauth/callback; updates keep the value already there.',
         'Current repo uses a second MCP sidecar service on port 3004.',
         'First-run household setup is handled in the browser when family_members is empty.',
       ],
@@ -90,6 +93,9 @@ const catalog = [
       },
     ],
     config: {
+      // The administrator's Plaid choices: sandbox or production, and the redirect URI registered with Plaid. A
+      // fresh install starts with the defaults below; an update keeps what is there.
+      preserveExistingKeys: ['PLAID_ENV', 'PLAID_OAUTH_REDIRECT_URI'],
       env: {
         ...SOVEREIGN_FONT_ENV_TEMPLATE,
         DATABASE_URL: '{{databaseUrl}}',
@@ -98,6 +104,7 @@ const catalog = [
         PLAID_SECRET: '',
         PLAID_ENV: 'production',
         APP_URL: '{{externalUrl}}',
+        APP_PUBLIC_URL: '{{externalUrl}}',
         PLAID_OAUTH_REDIRECT_URI: '{{publicUrl}}oauth/callback',
         OPENAI_API_KEY: '',
         OPENAI_MODEL: 'gpt-4o-mini',

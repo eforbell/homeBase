@@ -23,17 +23,18 @@ const { createFakeFs } = require('./fixtures/fake-fs');
 const { users } = require('./fixtures/users');
 
 // Feature-10 SID-007 slice 1: Home Base switches an installed app between its own sign-in and members' tailnet
-// identity. Family Plan, the pilot, supports it; these tests also give Pulse, on its socket, the flag.
+// identity. Family Plan, the pilot, and Family Pulse support it; tests about an app that doesn't take the flag off
+// Pulse, so its fixtures serve both.
 
 const withIdentity = (appId, identity = 'tailnet') => {
   const app = getAppById(appId);
   return { ...app, runtime: { ...app.runtime, identity } };
 };
 // The catalog entry itself, for code that looks the app up by id; restored after the test.
-function supportTailnet(t, appId) {
+function catalogIdentity(t, appId, identity) {
   const runtime = getAppById(appId).runtime;
   const before = runtime.identity;
-  runtime.identity = 'tailnet';
+  runtime.identity = identity;
   t.after(() => { if (before === undefined) delete runtime.identity; else runtime.identity = before; });
 }
 
@@ -41,6 +42,9 @@ const PULSE_ENV = '/opt/sovereign-home/apps/familyPulse/.env';
 const PLAN_ENV = '/opt/sovereign-home/apps/familyPlan/.env';
 // What an install on the app's socket writes (applyListenEnv).
 const listenOn = (appId) => `SOVEREIGN_LISTEN=unix:/run/sovereign-apps/${appId}/app.sock\n`;
+// And the address an update writes once the host is cut over: the app's service hostname.
+const PULSE_ADDRESS = 'APP_PUBLIC_URL=https://smith-pulse.example-tailnet.ts.net/pulse/\n';
+const PLAN_ADDRESS = 'APP_PUBLIC_URL=https://smith-home.example-tailnet.ts.net/plan/\n';
 const CUT_OVER = JSON.stringify({ mode: 'sockets', instance: 'smith', domain: 'example-tailnet.ts.net' });
 const base = (fields = {}) => ({ id: 'op', type: 'app.set-identity-mode', title: 't', risk: 'write', timeoutMs: 1000, dependsOn: [], preconditions: [], secretRefs: [], ...fields });
 
@@ -48,7 +52,7 @@ const base = (fields = {}) => ({ id: 'op', type: 'app.set-identity-mode', title:
 function host(files = {}) {
   const fsImpl = createFakeFs(Object.fromEntries(Object.entries({
     '/opt/sovereign-home/apps/familyPulse': { kind: 'dir', uid: 1101 },
-    [PULSE_ENV]: { kind: 'file', content: `DATABASE_URL=postgresql://familypulse:pw@127.0.0.1:5432/familypulse\nPLAID_ENV=sandbox\n${listenOn('family-pulse')}SOVEREIGN_IDENTITY_MODE=local\n`, uid: 1101, mode: 0o600 },
+    [PULSE_ENV]: { kind: 'file', content: `DATABASE_URL=postgresql://familypulse:pw@127.0.0.1:5432/familypulse\nPLAID_ENV=sandbox\n${listenOn('family-pulse')}${PULSE_ADDRESS}SOVEREIGN_IDENTITY_MODE=local\n`, uid: 1101, mode: 0o600 },
     [INGRESS_STATE_PATH]: CUT_OVER,
     '/var/lib/sovereign-home/identity': { kind: 'dir', uid: 990, mode: 0o755 },
     [IDENTITY_SNAPSHOT]: { kind: 'file', content: '{}', uid: 990, mode: 0o644 },
@@ -56,23 +60,26 @@ function host(files = {}) {
   }).filter(([, entry]) => entry !== undefined)));
   const as = [];
   const handlers = createBaseHandlers({ fsImpl, run: async () => ({ stdout: '' }), lookupUser: users(), asUser: (user, fn) => { as.push(user.uid); return fn(); } });
-  return { fsImpl, as, handlers, set: (mode, layout = appLayout(withIdentity('family-pulse'))) => handlers['app.set-identity-mode'](base({ mode }), { layout }) };
+  return { fsImpl, as, handlers, set: (mode, layout = appLayout(getAppById('family-pulse'))) => handlers['app.set-identity-mode'](base({ mode }), { layout }) };
 }
 
 test('the catalog says which apps can trust tailnet identity, only on their socket', () => {
   assert.equal(IDENTITY_SNAPSHOT, DEFAULT_SNAPSHOT_PATH, 'the executor looks where sovereignAuth reads');
-  assert.deepEqual(appLayout(getAppById('family-pulse')).identityModes, ['local']);
-  assert.deepEqual(appLayout(withIdentity('family-pulse')).identityModes, ['local', 'tailnet']);
+  // Family Pulse, the canary: a sensitive app, so it runs as its own user (refused below until it has moved).
+  const pulse = appLayout(getAppById('family-pulse'));
+  assert.deepEqual([pulse.identityModes, pulse.listen.kind, pulse.identity.own, pulse.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-pulse']);
+  assert.deepEqual(appLayout(getAppById('home-source')).identityModes, ['local'], 'on its socket, but its code reads no mode');
+  assert.deepEqual(appLayout(withIdentity('family-pulse', 'local')).identityModes, ['local']);
   // Family Dinner still listens on loopback TCP, where any local process could forge identity headers.
   assert.throws(() => appLayout(withIdentity('family-dinner')), /needs runtime.listen 'unix'/);
   assert.match(validateManifestEntry(withIdentity('family-dinner')).join('; '), /runtime.identity 'tailnet' needs runtime.listen 'unix'/);
   assert.match(validateManifestEntry(withIdentity('family-pulse', 'headers')).join('; '), /runtime.identity must be 'local' or 'tailnet'/);
-  assert.deepEqual(validateManifestEntry(withIdentity('family-pulse')), []);
+  assert.deepEqual(validateManifestEntry(getAppById('family-pulse')), []);
 });
 
 test('the .env says which identity the app trusts, and an update or restore keeps it', () => {
-  const capable = appLayout(withIdentity('family-pulse'));
-  const plain = appLayout(getAppById('family-pulse'));
+  const capable = appLayout(getAppById('family-pulse'));
+  const plain = appLayout(withIdentity('family-pulse', 'local'));
   assert.deepEqual(setIdentityEnv({ A: '1', SOVEREIGN_IDENTITY_MODE: 'tailnet' }, { mode: 'tailnet', homeBaseUid: 990 }), { A: '1', SOVEREIGN_AUTH_MODE: 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' });
   assert.deepEqual(setIdentityEnv({ A: '1', SOVEREIGN_AUTH_MODE: 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' }, { mode: 'local' }), { A: '1', SOVEREIGN_AUTH_MODE: 'local' });
   assert.throws(() => setIdentityEnv({}, { mode: 'tailnet', homeBaseUid: 0 }), /uid/);
@@ -114,7 +121,7 @@ test('the .env says which identity the app trusts, and an update or restore keep
 });
 
 test('an update re-renders the .env and keeps the identity mode the app is in', () => {
-  const layout = appLayout(withIdentity('family-pulse'));
+  const layout = appLayout(getAppById('family-pulse'));
   const site = { hostname: 'host', domain: 'example-tailnet.ts.net', householdTimezone: 'America/New_York' };
   const render = (existingContent) => parseDotEnv(renderAppEnvFile({ layout, password: 'pw-123456789012', site, existingContent, fsImpl: createFakeFs() }));
   assert.equal(render('').SOVEREIGN_AUTH_MODE, 'local', 'a fresh install starts local');
@@ -122,13 +129,32 @@ test('an update re-renders the .env and keeps the identity mode the app is in', 
   assert.deepEqual([updated.SOVEREIGN_AUTH_MODE, updated.SOVEREIGN_HOMEBASE_UID], ['tailnet', '990']);
 });
 
+test('Family Pulse is told its own address, which its tailnet mode needs and its bank links return to', () => {
+  // Pulse refuses tailnet mode without an https APP_PUBLIC_URL with a plain path (lib/suite-identity.js), and
+  // Plaid's OAuth redirect lands on the same host. Once the host is cut over, that is Pulse's own service hostname.
+  const layout = appLayout(getAppById('family-pulse'));
+  const site = { hostname: 'host', domain: 'example-tailnet.ts.net', householdTimezone: 'America/New_York' };
+  const render = (ingress, existingContent = '') => parseDotEnv(renderAppEnvFile({ layout, password: 'pw-123456789012', site, ingress, existingContent, fsImpl: createFakeFs() }));
+  const before = render(null);
+  assert.deepEqual([before.APP_PUBLIC_URL, before.PLAID_OAUTH_REDIRECT_URI], ['https://host.example-tailnet.ts.net/pulse/', 'https://host.example-tailnet.ts.net/pulse/oauth/callback']);
+  const ingress = JSON.parse(CUT_OVER);
+  const after = render(ingress, 'APP_PUBLIC_URL=https://host.example-tailnet.ts.net/pulse/\nSOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n');
+  assert.deepEqual([after.APP_URL, after.APP_PUBLIC_URL, after.PLAID_OAUTH_REDIRECT_URI, after.PLAID_ENV, after.SOVEREIGN_AUTH_MODE], [
+    'https://smith-pulse.example-tailnet.ts.net/pulse/', 'https://smith-pulse.example-tailnet.ts.net/pulse/', 'https://smith-pulse.example-tailnet.ts.net/pulse/oauth/callback', 'production', 'tailnet',
+  ]);
+  // The administrator's Plaid choices survive an update: sandbox, and the redirect URI registered with Plaid.
+  const kept = render(ingress, 'PLAID_ENV=sandbox\nPLAID_OAUTH_REDIRECT_URI=https://callbacks.example.com/oauth/callback\n');
+  assert.deepEqual([kept.PLAID_ENV, kept.PLAID_OAUTH_REDIRECT_URI, kept.APP_PUBLIC_URL], ['sandbox', 'https://callbacks.example.com/oauth/callback', 'https://smith-pulse.example-tailnet.ts.net/pulse/']);
+});
+
 test('the plan: the switch, then a restart, only for an app that supports the mode', (t) => {
+  catalogIdentity(t, 'family-pulse', 'local');
   assert.throws(() => buildAppIdentityModePlan({ appId: 'family-pulse', mode: 'tailnet' }), /does not support tailnet identity/);
   // Forged: a plan naming tailnet mode for an app whose catalog entry doesn't support it.
   const local = buildAppIdentityModePlan({ appId: 'family-pulse', mode: 'local' });
   const forged = { ...local, operations: local.operations.map((operation) => (operation.type === 'app.set-identity-mode' ? { ...operation, mode: 'tailnet' } : operation)) };
   assert.throws(() => validateOperationPolicy(forged), /does not support tailnet identity/);
-  supportTailnet(t, 'family-pulse');
+  getAppById('family-pulse').runtime.identity = 'tailnet'; // its catalog entry again; catalogIdentity restores it after
   const { plan } = compileAction(normalizeAction({ action: 'identity-mode', appId: 'family-pulse', mode: 'tailnet' }));
   assert.equal(plan.kind, 'app-identity-mode');
   const layout = appLayout(getAppById('family-pulse'));
@@ -154,7 +180,7 @@ test('the executor switches to tailnet mode only on a cut-over host with the sna
   const back = parseDotEnv(fsImpl.readFileSync(PULSE_ENV));
   assert.deepEqual([back.SOVEREIGN_AUTH_MODE, back.SOVEREIGN_HOMEBASE_UID], ['local', undefined]);
   // An app that can't trust the directory: back to local leaves no mode in its .env (as an update would).
-  await set('local', appLayout(getAppById('family-pulse')));
+  await set('local', appLayout(withIdentity('family-pulse', 'local')));
   assert.doesNotMatch(fsImpl.readFileSync(PULSE_ENV), /SOVEREIGN_(?:AUTH|HOMEBASE|IDENTITY)/);
 });
 
@@ -164,7 +190,7 @@ test('the executor refuses tailnet mode wherever identity headers or the snapsho
     await assert.rejects(() => set('tailnet', layout), pattern);
     assert.doesNotMatch(fsImpl.readFileSync(PULSE_ENV), /SOVEREIGN_AUTH_MODE/, 'nothing written');
   };
-  await refused({}, /does not support tailnet identity/, appLayout(getAppById('family-pulse')));
+  await refused({}, /does not support tailnet identity/, appLayout(withIdentity('family-pulse', 'local')));
   await refused({ [INGRESS_STATE_PATH]: undefined }, /not cut over/);
   await refused({ '/var/lib/sovereign-home/identity': { kind: 'dir', uid: 0, mode: 0o755 }, [IDENTITY_SNAPSHOT]: { kind: 'file', content: '{}', uid: 0 } }, /owned by the Home Base user/);
   await refused({ '/var/lib/sovereign-home/identity': { kind: 'dir', uid: 990, mode: 0o777 } }, /writable by no one else/);
@@ -174,6 +200,15 @@ test('the executor refuses tailnet mode wherever identity headers or the snapsho
   await assert.rejects(() => set('local'), /has no \.env/);
   // Installed before SID-002 and not moved yet: it still runs as the shared user, whose other apps reach its socket.
   await refused({ '/opt/sovereign-home/apps/familyPulse': { kind: 'dir', uid: 1001 }, [PULSE_ENV]: { kind: 'file', content: 'PLAID_ENV=sandbox\n', uid: 1001, mode: 0o640 } }, /still runs as sovereign; move it to sovereign-pulse first/);
+  // Pulse checks every request's origin against its address, and won't start without one. Not updated since the
+  // catalog gave it the key, or since the cutover (the host's own name), or told some other address: update it first.
+  for (const address of ['', 'APP_PUBLIC_URL=https://host.example-tailnet.ts.net/pulse/\n', 'APP_PUBLIC_URL=https://smith-pulse.example-tailnet.ts.net/\n', 'APP_PUBLIC_URL=https://elsewhere.example/pulse/\n']) {
+    const content = `PLAID_ENV=sandbox\n${listenOn('family-pulse')}${address}`;
+    const { fsImpl, set } = host({ [PULSE_ENV]: { kind: 'file', content, uid: 1101, mode: 0o600 } });
+    await assert.rejects(() => set('tailnet'), /Family Pulse doesn't know its address here yet; update it first, so its APP_PUBLIC_URL is https:\/\/smith-pulse\.example-tailnet\.ts\.net\/pulse\/\./, JSON.stringify(address));
+    assert.equal(fsImpl.readFileSync(PULSE_ENV), content, 'nothing written');
+    assert.match(await set('local'), /uses its own sign-in/, 'its own sign-in needs no address');
+  }
 });
 
 test('a low-friction app shares the user by design, so it may trust tailnet identity on its socket', async () => {
@@ -187,7 +222,7 @@ test('a low-friction app shares the user by design, so it may trust tailnet iden
     await assert.rejects(() => old.set('tailnet', layout), /Family Plan still listens on its port here; update it first/);
     assert.equal(old.fsImpl.readFileSync(PLAN_ENV), content, 'nothing written');
   }
-  const { fsImpl, set } = plan(`PORT=3001\n${listenOn('family-plan')}`);
+  const { fsImpl, set } = plan(`PORT=3001\n${listenOn('family-plan')}${PLAN_ADDRESS}`);
   assert.match(await set('tailnet', layout), /trusts tailnet identity/);
   const switched = fsImpl.readFileSync(PLAN_ENV);
   assert.match(switched, /^SOVEREIGN_AUTH_MODE=tailnet$/m);
@@ -240,7 +275,6 @@ async function routes(t, { lifecycle = 'active', installations = { 'family-pulse
 }
 
 test('routes: tailnet mode is recorded before it starts, and only once the service may use it', async (t) => {
-  supportTailnet(t, 'family-pulse');
   const { post, get, jobs, recorded, audits } = await routes(t);
   assert.equal((await post('/api/ingress/apps/family-pulse/tailnet-mode', {})).status, 400);
   const started = await post('/api/ingress/apps/family-pulse/tailnet-mode', { confirm: 'TAILNET' });
@@ -265,8 +299,9 @@ test('routes: tailnet mode is refused until the app, the host, the service and H
     assert.deepEqual([jobs.length, recorded.length], [0, 0], `${expected}: nothing started or recorded`);
     return answer.body.error;
   };
+  catalogIdentity(t, 'family-pulse', 'local');
   await code({}, 'TAILNET_UNSUPPORTED');
-  supportTailnet(t, 'family-pulse');
+  getAppById('family-pulse').runtime.identity = 'tailnet'; // its catalog entry again; catalogIdentity restores it after
   await code({ cutOver: false }, 'NOT_CUT_OVER');
   await code({ published: false }, 'SERVICE_NOT_PUBLISHED');
   assert.match(await code({ hosts: [{ nodeId: 'nSelf', approvalLevel: 'approved:auto' }, { nodeId: 'nOther', approvalLevel: 'approved:manual' }] }, 'SERVICE_GATE'), /nOther/);

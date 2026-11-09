@@ -1150,10 +1150,14 @@ END $$;
     'app.set-identity-mode': async (operation, { layout } = {}) => {
       requireLayout(layout);
       let homeBaseUid = null;
+      let address = null;
       if (operation.mode === 'tailnet') {
         if (!layout.identityModes.includes('tailnet')) deny(`${layout.app.name} does not support tailnet identity.`);
         if (layout.listen.kind !== 'unix') deny(`${layout.app.name} does not listen on its socket, so identity headers can't be trusted.`);
-        if (!readIngressState()) deny('This host is not cut over to socket ingress, so nginx sets no identity headers; run the ingress cutover first.');
+        const ingress = readIngressState();
+        if (!ingress) deny('This host is not cut over to socket ingress, so nginx sets no identity headers; run the ingress cutover first.');
+        // Where members reach the app now that the host is cut over: its service hostname.
+        address = `${appPublicBase(layout.app, { ingress })}${layout.mountPath}`;
         homeBaseUid = snapshotOwner();
       } else if (operation.mode !== 'local') {
         deny('mode must be tailnet or local.');
@@ -1173,6 +1177,12 @@ END $$;
         // port, and an app told to trust identity headers there refuses to start.
         if (operation.mode === 'tailnet' && current.SOVEREIGN_LISTEN !== `unix:${layout.listen.socket}`) {
           deny(`${layout.app.name} still listens on its port here; update it first, so it moves to its socket.`);
+        }
+        // An app that is told its address (APP_PUBLIC_URL) checks every request's origin against it in tailnet mode,
+        // and refuses to start without one. The cutover doesn't rewrite .env files, so an install from before it (or
+        // from before the catalog gave the key) learns its address only from an update.
+        if (operation.mode === 'tailnet' && Object.hasOwn(layout.app.config?.env || {}, 'APP_PUBLIC_URL') && current.APP_PUBLIC_URL !== address) {
+          deny(`${layout.app.name} doesn't know its address here yet; update it first, so its APP_PUBLIC_URL is ${address}.`);
         }
         // Local follows the update rule: an app that can't trust the directory carries no mode at all.
         const next = operation.mode === 'tailnet' ? setIdentityEnv(current, { mode: 'tailnet', homeBaseUid }) : keepIdentityEnv(current, '', layout);
