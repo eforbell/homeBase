@@ -1,5 +1,6 @@
 // Feature-10: the Members card on the Admin page. It lists the household directory, who has a passkey, and gives
 // the administrator a single-use enrollment code for a member who has none (POST /api/directory/members/<id>/grant).
+// It also adds a member from the tailnet accounts that opened Home Base in the last day (POST /api/directory/members).
 // It shows only what GET /api/directory gives an unlocked administrator: never a key, and a code only once.
 (function homeBaseMembers() {
   const esc = (value) => window.HB.escapeHtml(value);
@@ -44,6 +45,46 @@
       </li>`;
   }
 
+  const seen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+
+  // Someone who opened Home Base from their own tailnet account and isn't a member. The role has no default: parent
+  // reaches the money apps, so the administrator picks it every time.
+  function candidateRow(candidate) {
+    const shown = candidate.name || candidate.login;
+    return `
+      <li class="hb-members-row" data-candidate="${esc(candidate.userId)}">
+        <div class="hb-members-who">
+          <strong>${esc(shown)}</strong>
+          <span class="hb-muted">${esc(candidate.login)}</span>
+        </div>
+        <p class="hb-muted hb-members-line">Opened Home Base ${esc(seen(candidate.seenAt))}</p>
+        <div class="hb-members-add">
+          <label class="hb-label">Name <input class="hb-input" data-candidate-name maxlength="80" autocomplete="off" value="${esc(shown)}"></label>
+          <label class="hb-label">Role
+            <select class="hb-select" data-candidate-role>
+              <option value="" selected disabled>Choose…</option>
+              <option value="parent">parent</option>
+              <option value="kid">kid</option>
+            </select>
+          </label>
+          <button class="hb-btn" type="button" data-member-add="${esc(candidate.userId)}">Add member</button>
+        </div>
+        <div data-member-error></div>
+      </li>`;
+  }
+
+  // Adding is open while Home Base is being set up or is active, as the directory allows (addMember).
+  function addSection(directory) {
+    if (!['setup', 'active'].includes(directory.state)) return '';
+    const candidates = directory.candidates || [];
+    const how = 'To add someone, have them open Home Base on their own device, signed in to the tailnet as themselves; they appear here for a day.';
+    return `
+      <h3 style="margin:1.2rem 0 0.3rem;">Add a member</h3>
+      <p class="hb-muted" style="margin:0 0 0.6rem;">${esc(how)}</p>
+      ${candidates.length ? `<ul class="hb-members">${candidates.map(candidateRow).join('')}</ul>` : '<p class="hb-muted" style="margin:0 0 0.6rem;">No one new has opened Home Base yet.</p>'}
+      <button class="hb-btn" type="button" data-members-refresh>Check again</button>`;
+  }
+
   function render(directory) {
     const members = directory.members || [];
     const note = directory.state === 'active'
@@ -52,7 +93,8 @@
     return `
       <h2 style="margin-top:0;">Members</h2>
       <p class="hb-muted" style="margin:0 0 0.8rem;">${esc(note)}</p>
-      <ul class="hb-members">${members.length ? members.map((member) => memberRow(directory, member)).join('') : '<li class="hb-muted">No members yet.</li>'}</ul>`;
+      <ul class="hb-members">${members.length ? members.map((member) => memberRow(directory, member)).join('') : '<li class="hb-muted">No members yet.</li>'}</ul>
+      ${addSection(directory)}`;
   }
 
   // The code, once: Home Base keeps only its hash, so it can't be shown again; a new one replaces it.
@@ -110,6 +152,35 @@
       if (copy) {
         const code = copy.parentElement.querySelector('[data-code]').textContent;
         try { await navigator.clipboard.writeText(code); copy.textContent = 'Copied'; } catch { copy.textContent = 'Select it to copy'; }
+        return;
+      }
+      const refresh = event.target.closest('[data-members-refresh]');
+      if (refresh) {
+        refresh.disabled = true;
+        await mount(node);
+        return;
+      }
+      const add = event.target.closest('[data-member-add]');
+      if (add) {
+        const row = add.closest('[data-candidate]');
+        const problem = row.querySelector('[data-member-error]');
+        const role = row.querySelector('[data-candidate-role]').value;
+        const name = row.querySelector('[data-candidate-name]').value.trim();
+        if (!role) {
+          problem.innerHTML = '<p class="hb-warn" style="margin:0.4rem 0 0;">Choose parent or kid first.</p>';
+          return;
+        }
+        add.disabled = true;
+        problem.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">Adding…</p>';
+        try {
+          await window.HB.postJson('/api/directory/members', { userId: add.dataset.memberAdd, role, ...(name ? { name } : {}) });
+        } catch (error) {
+          problem.innerHTML = `<p class="hb-warn" style="margin:0.4rem 0 0;">${esc(error.message)}</p>`;
+          add.disabled = false;
+          return;
+        }
+        // The new member is listed with the others, and in active Home Base offered an enrollment code.
+        await mount(node);
         return;
       }
       const button = event.target.closest('[data-member-grant]');

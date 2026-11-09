@@ -169,6 +169,72 @@ test('names and logins are escaped', async () => {
   assert.doesNotMatch(node.innerHTML, /<img|<script/);
 });
 
+const candidate = (overrides) => ({ userId: 'u9', login: 'newcomer@example.com', name: 'New Comer', seenAt: past(), ...overrides });
+
+// An Add member button inside its candidate row, with the role and name the administrator chose.
+function addButton(userId, { role = '', name = 'New Comer' } = {}) {
+  const error = fakeSlot();
+  const fields = { '[data-member-error]': error, '[data-candidate-role]': { value: role }, '[data-candidate-name]': { value: name } };
+  const row = { querySelector: (selector) => fields[selector] };
+  return { error, dataset: { memberAdd: userId }, disabled: false, closest(selector) { if (selector === '[data-member-add]') return this; if (selector === '[data-candidate]') return row; return null; } };
+}
+
+test('accounts that opened Home Base are offered to add, with a role to choose and no default', async () => {
+  const node = fakeNode();
+  await load({ state: 'active', members: [member()], candidates: [candidate({ name: '<i>x</i>' })] }).members.mount(node);
+  assert.match(node.innerHTML, /Add a member/);
+  assert.match(node.innerHTML, /data-member-add="u9"/);
+  assert.match(node.innerHTML, /<option value="" selected disabled>Choose…<\/option>/);
+  assert.doesNotMatch(node.innerHTML, /value="(parent|kid)" selected/, 'neither role is preselected');
+  assert.doesNotMatch(node.innerHTML, /<i>x<\/i>/, 'the name is escaped');
+  const none = fakeNode();
+  await load({ state: 'active', members: [member()], candidates: [] }).members.mount(none);
+  assert.match(none.innerHTML, /No one new has opened Home Base yet/);
+  assert.match(none.innerHTML, /data-members-refresh/);
+});
+
+test('adding is offered only while Home Base is in setup or active, as the directory allows', async () => {
+  for (const [state, offered] of [['setup', true], ['active', true], ['recovery', false], ['bootstrap', false]]) {
+    const node = fakeNode();
+    await load({ state, members: [member()], candidates: [candidate()] }).members.mount(node);
+    assert.equal(/Add a member/.test(node.innerHTML), offered, state);
+  }
+});
+
+test('adding a member posts the account, role and name, then shows the directory again', async () => {
+  let directory = { state: 'active', members: [member()], candidates: [candidate()] };
+  const { members, posted } = load(new Proxy({}, { get: (_, key) => directory[key] }), { post: async () => {
+    directory = { state: 'active', members: [member(), member({ memberId: 'm_0b', userId: 'u9', name: 'Kiddo', role: 'kid' })], candidates: [] };
+    return { ok: true, memberId: 'm_0b' };
+  } });
+  const node = fakeNode();
+  members.wire(node);
+  await members.mount(node);
+  const button = addButton('u9', { role: 'kid', name: '  Kiddo  ' });
+  await node.click({ target: button });
+  assert.equal(JSON.stringify(posted), JSON.stringify([['/api/directory/members', { userId: 'u9', role: 'kid', name: 'Kiddo' }]]));
+  assert.match(node.innerHTML, /<strong>Kiddo<\/strong>/, 'listed as a member');
+  assert.match(node.innerHTML, /data-member-grant="m_0b"/, 'and offered an enrollment code');
+  assert.doesNotMatch(node.innerHTML, /data-member-add=/, 'no longer a candidate');
+});
+
+test('adding without a role asks for one and posts nothing; a refusal says why and leaves the row', async () => {
+  const { members, posted } = load({ state: 'active', members: [member()], candidates: [candidate()] }, { post: async () => { throw new Error('That account is already a member.'); } });
+  const node = fakeNode();
+  members.wire(node);
+  await members.mount(node);
+  const unchosen = addButton('u9');
+  await node.click({ target: unchosen });
+  assert.equal(posted.length, 0);
+  assert.match(unchosen.error.innerHTML, /Choose parent or kid/);
+  const refused = addButton('u9', { role: 'parent', name: '' });
+  await node.click({ target: refused });
+  assert.equal(JSON.stringify(posted), JSON.stringify([['/api/directory/members', { userId: 'u9', role: 'parent' }]]), 'an empty name is left to Home Base');
+  assert.match(refused.error.innerHTML, /hb-warn.*already a member/);
+  assert.equal(refused.disabled, false);
+  assert.match(node.innerHTML, /data-member-add="u9"/, 'the row stays to try again');
+});
+
 test('anyone but an unlocked administrator gets no card: the directory tells them only its state', async () => {
   const node = fakeNode();
   assert.equal(await load({ state: 'active', caller: { login: 'x', member: true, admitted: true } }).members.mount(node), null);
