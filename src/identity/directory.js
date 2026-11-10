@@ -605,6 +605,8 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         grantExpiresAt: data.grants.find((grant) => grant.member_id === member.member_id)?.expires_at || null,
       })),
       candidates: recentCandidates(data),
+      // What a member's app list is chosen from. administratorDefault: only an administrator gets it by default.
+      catalogApps: catalog.map((app) => ({ id: app.id, name: app.name || app.id, administratorDefault: operatorApps.has(app.id) })),
     };
   }
 

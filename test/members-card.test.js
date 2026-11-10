@@ -26,7 +26,7 @@ function load(directory, { post = async () => ({ code: 'c0de-XYZ', expiresAt: so
   return { members: window.HBMembers, posted, document };
 }
 
-const fakeNode = () => ({ innerHTML: '', removed: false, remove() { this.removed = true; }, addEventListener(type, fn) { this.click = fn; } });
+const fakeNode = () => ({ innerHTML: '', removed: false, remove() { this.removed = true; }, addEventListener(type, fn) { this[type] = fn; } });
 // An element whose first child changes each time its HTML is set, as the browser's would.
 function fakeSlot() {
   let html = '';
@@ -404,4 +404,191 @@ test('anyone but an unlocked administrator gets no card: the directory tells the
   const node = fakeNode();
   assert.equal(await load({ state: 'active', caller: { login: 'x', member: true, admitted: true } }).members.mount(node), null);
   assert.equal(node.removed, true);
+});
+
+// The catalog as GET /api/directory gives it an unlocked administrator: Helm is the administrator's by default.
+const CATALOG_APPS = [
+  { id: 'family-pulse', name: 'Family Pulse', administratorDefault: false, installed: true },
+  { id: 'family-plan', name: 'Family Plan', administratorDefault: false, installed: true },
+  { id: 'family-dinner', name: 'Family Dinner', administratorDefault: false, installed: false },
+  { id: 'helm', name: 'Helm', administratorDefault: true, installed: true },
+];
+const DEFAULT_APPS = ['family-dinner', 'family-plan', 'family-pulse'];
+const editorOf = (html, memberId) => html.slice(html.indexOf(`data-member-apps="${memberId}"`), html.indexOf('</details>', html.indexOf(`data-member-apps="${memberId}"`)));
+
+test('apps are listed by name, installed ones only, and a member on the default is marked so', async () => {
+  const node = fakeNode();
+  await load({ state: 'active', catalogApps: CATALOG_APPS, members: [
+    member({ memberId: 'm_01', apps: DEFAULT_APPS, appsDefault: true }),
+    member({ memberId: 'm_02', apps: ['family-dinner'], appsDefault: false }),
+  ] }).members.mount(node);
+  assert.match(node.innerHTML, /Apps: Family Pulse, Family Plan \(the default\)/, 'catalog order, Family Dinner not installed');
+  assert.match(node.innerHTML, /Apps: no apps</, 'a list naming only an app not installed opens nothing here');
+});
+
+test('each member\'s apps can be changed while Home Base is in setup or active; the boxes follow the default or the list', async () => {
+  const offered = async (state, extra = {}) => {
+    const node = fakeNode();
+    await load({ state, catalogApps: CATALOG_APPS, members: [member({ apps: DEFAULT_APPS, appsDefault: true })], ...extra }).members.mount(node);
+    return /data-member-apps-save=/.test(node.innerHTML);
+  };
+  assert.equal(await offered('setup'), true);
+  assert.equal(await offered('active'), true);
+  assert.equal(await offered('recovery'), false);
+  assert.equal(await offered('active', { catalogApps: undefined }), false, 'a Home Base that doesn\'t say what is installed offers no editor');
+
+  const node = fakeNode();
+  await load({ state: 'active', catalogApps: CATALOG_APPS, members: [
+    member({ memberId: 'm_01', apps: DEFAULT_APPS, appsDefault: true }),
+    member({ memberId: 'm_02', apps: ['family-dinner', 'helm'], appsDefault: false }),
+    member({ memberId: 'm_03', administrator: true, apps: [...DEFAULT_APPS, 'helm'], appsDefault: true }),
+  ] }).members.mount(node);
+  const onDefault = editorOf(node.innerHTML, 'm_01');
+  assert.match(onDefault, /value="default" data-member-apps-mode checked/);
+  assert.match(onDefault, /The default: every app but Helm/);
+  const uninstalledHelm = fakeNode();
+  await load({ state: 'active', catalogApps: CATALOG_APPS.map((app) => (app.id === 'helm' ? { ...app, installed: false } : app)), members: [member({ apps: DEFAULT_APPS, appsDefault: true })] }).members.mount(uninstalledHelm);
+  assert.match(uninstalledHelm.innerHTML, /The default: every app but Helm/, 'the default leaves Helm out even before it is installed');
+  assert.match(onDefault, /value="family-pulse" data-member-app data-by-default="yes" data-installed="yes" checked disabled>/, 'on the default the boxes show it and are fixed');
+  assert.match(onDefault, /value="helm" data-member-app data-by-default="no" data-installed="yes" disabled> <span>Helm <span class="hb-muted">\(administrator&#39;s by default\)/);
+  assert.doesNotMatch(onDefault, /family-dinner/, 'an app not installed isn\'t offered');
+  const chosen = editorOf(node.innerHTML, 'm_02');
+  assert.match(chosen, /value="only" data-member-apps-mode checked/);
+  assert.match(chosen, /value="family-plan" data-member-app data-by-default="yes" data-installed="yes">/, 'a list: boxes open, unchosen ones clear');
+  assert.match(chosen, /value="helm" data-member-app data-by-default="no" data-installed="yes" checked>/);
+  assert.match(chosen, /value="family-dinner" data-member-app data-by-default="yes" data-installed="no" checked> <span>Family Dinner <span class="hb-muted">\(not installed\)/, 'kept in view so saving doesn\'t drop it');
+  const administrator = editorOf(node.innerHTML, 'm_03');
+  assert.match(administrator, /The default: every app</);
+  assert.match(administrator, /value="helm" data-member-app data-by-default="yes" data-installed="yes" checked disabled>/);
+});
+
+// A Save apps button in a row whose editor has the given mode and boxes ({ value, checked, byDefault }).
+function appsEditor(memberId, mode, boxes) {
+  const error = fakeSlot();
+  const fakes = boxes.map(({ value, checked = false, byDefault = true, installed = true }) => ({ value, checked, disabled: mode === 'default', dataset: { byDefault: byDefault ? 'yes' : 'no', installed: installed ? 'yes' : 'no' } }));
+  const radios = ['default', 'only'].map((value) => ({ value, checked: value === mode }));
+  const editor = {
+    querySelector: (selector) => (selector === '[data-member-apps-mode]:checked' ? radios.find((radio) => radio.checked) : null),
+    querySelectorAll: (selector) => (selector === '[data-member-app]:checked' ? fakes.filter((box) => box.checked) : fakes),
+  };
+  for (const radio of radios) radio.closest = (selector) => (selector === '[data-member-apps-mode]' ? radio : selector === '[data-member-apps]' ? editor : null);
+  const row = { querySelector: (selector) => (selector === '[data-member-error]' ? error : null) };
+  const save = { dataset: { memberAppsSave: memberId }, disabled: false, closest(selector) { if (selector === '[data-member-apps-save]') return this; if (selector === '[data-member-apps]') return editor; if (selector === '[data-member]') return row; return null; } };
+  const choose = (value) => { for (const radio of radios) radio.checked = radio.value === value; };
+  return { save, error, boxes: fakes, radios, choose };
+}
+
+test('saving posts the chosen list, or null for the default, then shows the directory again', async () => {
+  let reads = 0;
+  const { members, posted } = load(() => { reads += 1; return { state: 'active', catalogApps: CATALOG_APPS, members: [member()] }; }, { post: async () => ({ ok: true }) });
+  const node = fakeNode();
+  members.wire(node);
+  const list = appsEditor('m_0a', 'only', [{ value: 'family-pulse', checked: true }, { value: 'family-plan' }, { value: 'helm', checked: true, byDefault: false }]);
+  await node.click({ target: list.save });
+  const fallback = appsEditor('m_0a', 'default', [{ value: 'family-pulse', checked: true }]);
+  await node.click({ target: fallback.save });
+  assert.equal(JSON.stringify(posted), JSON.stringify([
+    ['/api/directory/members/m_0a', { apps: ['family-pulse', 'helm'] }],
+    ['/api/directory/members/m_0a', { apps: null }],
+  ]));
+  assert.equal(reads, 2, 'each save is followed by a read of the directory');
+  assert.match(node.innerHTML, /Members/);
+});
+
+test('a list with no installed app isn\'t posted; a refusal says why and leaves the editor to try again', async () => {
+  let refuse = true;
+  const { members, posted } = load({ state: 'active', catalogApps: CATALOG_APPS, members: [member()] }, { post: async () => { if (refuse) throw new Error('apps must be null (the default) or a list of catalog app IDs.'); return { ok: true }; } });
+  const node = fakeNode();
+  members.wire(node);
+  const empty = appsEditor('m_0a', 'only', [{ value: 'family-pulse' }]);
+  await node.click({ target: empty.save });
+  const nothingHere = appsEditor('m_0a', 'only', [{ value: 'family-pulse' }, { value: 'family-dinner', checked: true, installed: false }]);
+  await node.click({ target: nothingHere.save });
+  assert.equal(posted.length, 0, 'nor a list of apps not installed here');
+  assert.match(empty.error.innerHTML, /hb-warn.*Choose at least one installed app, or the default/);
+  assert.match(nothingHere.error.innerHTML, /Choose at least one installed app/);
+  const refused = appsEditor('m_0a', 'only', [{ value: 'family-pulse', checked: true }]);
+  await node.click({ target: refused.save });
+  assert.match(refused.error.innerHTML, /hb-warn.*apps must be null/);
+  assert.equal(refused.save.disabled, false);
+  assert.equal(node.innerHTML, '', 'a refused save doesn\'t redraw the card');
+});
+
+test('choosing the default fixes the boxes to what it gives; choosing a list frees them', async () => {
+  const { members } = load({ state: 'active', members: [] });
+  const node = fakeNode();
+  members.wire(node);
+  const editor = appsEditor('m_0a', 'only', [{ value: 'family-pulse' }, { value: 'helm', checked: true, byDefault: false }]);
+  editor.choose('default');
+  node.change({ target: editor.radios[0] });
+  assert.deepEqual(editor.boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, true], ['helm', false, true]]);
+  editor.choose('only');
+  node.change({ target: editor.radios[1] });
+  assert.deepEqual(editor.boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, false], ['helm', false, false]], 'the list starts from the default');
+});
+
+test('saving apps waits its turn: while another action runs, a Save does nothing', async () => {
+  let release;
+  const { members, posted } = load({ state: 'active', members: [member()] }, { post: (url) => (url.endsWith('/grant') ? new Promise((resolve) => { release = () => resolve({ code: 'c', expiresAt: soon() }); }) : Promise.resolve({ ok: true })) });
+  const node = fakeNode();
+  members.wire(node);
+  const issuing = node.click({ target: grantButton('m_0a', 'A Parent') });
+  await tick();
+  await node.click({ target: appsEditor('m_0a', 'only', [{ value: 'family-pulse', checked: true }]).save });
+  assert.deepEqual(posted.map(([url]) => url), ['/api/directory/members/m_0a/grant']);
+  release();
+  await issuing;
+});
+
+// A card whose app editors can be read before it is drawn again (open, as left) and found after (fresh, closed).
+function draftCard(before) {
+  const node = fakeNode();
+  const fresh = new Map();
+  const editor = ({ open, mode, boxes }) => {
+    const radios = ['default', 'only'].map((value) => ({ value, checked: value === mode }));
+    const fakes = boxes.map(([value, checked, byDefault = 'yes']) => ({ value, checked, disabled: mode === 'default', dataset: { byDefault } }));
+    return { open, radios, boxes: fakes, querySelector: () => radios.find((radio) => radio.checked), querySelectorAll: (selector) => (selector === '[data-member-apps-mode]' ? radios : selector === '[data-member-app]:checked' ? fakes.filter((box) => box.checked) : fakes) };
+  };
+  const old = Object.entries(before).map(([memberId, state]) => Object.assign(editor(state), { dataset: { memberApps: memberId } }));
+  node.querySelectorAll = () => old;
+  node.querySelector = (selector) => {
+    const memberId = selector.match(/data-member-apps="([^"]+)"/)[1];
+    if (!fresh.has(memberId)) fresh.set(memberId, editor({ open: false, mode: 'default', boxes: [['family-pulse', true], ['family-plan', true], ['family-dinner', true], ['helm', false, 'no']] }));
+    return fresh.get(memberId);
+  };
+  return { node, fresh };
+}
+
+test('an open app editor keeps what was chosen in it when the card is drawn again; a closed one, and the one just saved, don\'t', async () => {
+  const { members } = load({ state: 'active', catalogApps: CATALOG_APPS, members: [member({ memberId: 'm_01' }), member({ memberId: 'm_02' }), member({ memberId: 'm_03' })] }, { post: async () => ({ ok: true }) });
+  const { node, fresh } = draftCard({
+    m_01: { open: true, mode: 'only', boxes: [['family-pulse', true], ['family-plan', false], ['helm', true]] },
+    m_02: { open: false, mode: 'only', boxes: [['family-pulse', false], ['family-plan', true], ['helm', false]] },
+    m_03: { open: true, mode: 'only', boxes: [['family-pulse', true], ['family-plan', false], ['helm', false]] },
+  });
+  members.wire(node);
+  // m_03's Save: the card is drawn again from the directory.
+  await node.click({ target: appsEditor('m_03', 'only', [{ value: 'family-pulse', checked: true }]).save });
+  const m01 = fresh.get('m_01');
+  assert.equal(m01.open, true);
+  assert.deepEqual(m01.radios.map((radio) => radio.checked), [false, true]);
+  assert.deepEqual(m01.boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, false], ['family-plan', false, false], ['family-dinner', false, false], ['helm', true, false]], 'unsaved, and still unsaved');
+  assert.equal(fresh.has('m_02'), false, 'a closed editor is drawn as the directory has it');
+  assert.equal(fresh.has('m_03'), false, 'the editor just saved shows what was saved');
+});
+
+test('a kept draft is drawn with every app it chose, installed now or not; one on the default shows what the default gives now', async () => {
+  // Family Dinner isn't installed now. m_01 had chosen it in an open list; m_02 had the default open from when it was.
+  const { members } = load({ state: 'active', catalogApps: CATALOG_APPS, members: [member({ memberId: 'm_01', apps: DEFAULT_APPS, appsDefault: true }), member({ memberId: 'm_02', apps: DEFAULT_APPS, appsDefault: true })] }, { post: async () => ({ ok: true }) });
+  const { node, fresh } = draftCard({
+    m_01: { open: true, mode: 'only', boxes: [['family-pulse', true], ['family-dinner', true]] },
+    m_02: { open: true, mode: 'default', boxes: [['family-pulse', true], ['family-dinner', true]] },
+  });
+  let drawn = '';
+  Object.defineProperty(node, 'innerHTML', { get: () => drawn, set: (html) => { drawn = html; } });
+  members.wire(node);
+  await node.click({ target: appsEditor('m_09', 'only', [{ value: 'family-pulse', checked: true }]).save });
+  assert.match(editorOf(drawn, 'm_01'), /value="family-dinner"[^>]*> <span>Family Dinner <span class="hb-muted">\(not installed\)/, 'the draft\'s choice keeps its box');
+  assert.doesNotMatch(editorOf(drawn, 'm_02'), /family-dinner/, 'ticked there only as the default gave it then: not offered');
+  assert.deepEqual(fresh.get('m_02').boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, true], ['family-plan', true, true], ['family-dinner', true, true], ['helm', false, true]]);
 });

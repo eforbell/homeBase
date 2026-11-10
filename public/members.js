@@ -1,6 +1,7 @@
 // Feature-10: the Members card on the Admin page. It lists the household directory, who has a passkey, and gives
 // the administrator a single-use enrollment code for a member who has none (POST /api/directory/members/<id>/grant).
-// It also adds a member from the tailnet accounts that opened Home Base in the last day (POST /api/directory/members).
+// It also adds a member from the tailnet accounts that opened Home Base in the last day (POST /api/directory/members),
+// and changes which apps a member may open (POST /api/directory/members/<id> with apps).
 // It shows only what GET /api/directory gives an unlocked administrator: never a key, and a code only once.
 (function homeBaseMembers() {
   const esc = (value) => window.HB.escapeHtml(value);
@@ -35,9 +36,52 @@
       && Date.parse(entry.grant.expiresAt) > Date.now() ? entry : null;
   };
 
-  function memberRow(directory, member) {
+  // Members are added and edited while Home Base is being set up or is active, as the directory allows.
+  const mayEdit = (directory) => ['setup', 'active'].includes(directory.state);
+
+  // The apps this host runs that the member may open, by name. A member on the default is marked so: an app installed
+  // later reaches them, where a chosen list stays as chosen.
+  function appsLine(directory, member) {
+    const own = member.apps || [];
+    if (!Array.isArray(directory.catalogApps)) return own.length ? own.join(', ') : 'no apps';
+    const names = directory.catalogApps.filter((app) => app.installed && own.includes(app.id)).map((app) => app.name);
+    return `${names.length ? names.join(', ') : 'no apps'}${member.appsDefault ? ' (the default)' : ''}`;
+  }
+
+  // Choosing a member's apps: the default, or a list. The list offers the apps installed here, and any app not installed
+  // that the member's list already names, or that an open editor's unsaved list (draft) has chosen, so saving doesn't
+  // drop it unseen.
+  function appsEditor(directory, member, draft) {
+    if (!mayEdit(directory) || !Array.isArray(directory.catalogApps)) return '';
+    const id = esc(member.memberId);
+    const own = new Set(member.apps || []);
+    const onDefault = Boolean(member.appsDefault);
+    const byDefault = (app) => member.administrator || !app.administratorDefault;
+    const drafted = draft && draft.mode === 'only' ? draft.chosen : new Set();
+    const offered = directory.catalogApps.filter((app) => app.installed || (!onDefault && own.has(app.id)) || drafted.has(app.id));
+    // Every app the default leaves out, installed or not: one installed later stays out too.
+    const held = directory.catalogApps.filter((app) => !byDefault(app)).map((app) => app.name);
+    const defaultLabel = held.length ? `The default: every app but ${held.join(', ')}` : 'The default: every app';
+    const box = (app) => {
+      const notes = [app.installed ? '' : 'not installed', byDefault(app) ? '' : 'administrator\'s by default'].filter(Boolean);
+      return `<label class="hb-members-app"><input type="checkbox" value="${esc(app.id)}" data-member-app data-by-default="${byDefault(app) ? 'yes' : 'no'}" data-installed="${app.installed ? 'yes' : 'no'}"${own.has(app.id) ? ' checked' : ''}${onDefault ? ' disabled' : ''}> <span>${esc(app.name)}${notes.length ? ` <span class="hb-muted">(${esc(notes.join(', '))})</span>` : ''}</span></label>`;
+    };
+    return `
+        <details class="hb-members-apps" data-member-apps="${id}">
+          <summary>Change apps</summary>
+          <fieldset aria-label="${esc(`Apps for ${member.name || member.login}`)}">
+            <label class="hb-members-app"><input type="radio" name="apps-${id}" value="default" data-member-apps-mode${onDefault ? ' checked' : ''}> <span>${esc(defaultLabel)}</span></label>
+            <label class="hb-members-app"><input type="radio" name="apps-${id}" value="only" data-member-apps-mode${onDefault ? '' : ' checked'}> <span>Only these:</span></label>
+            <div class="hb-members-app-list">${offered.length ? offered.map(box).join('') : '<span class="hb-muted">No apps are installed yet.</span>'}</div>
+          </fieldset>
+          <p class="hb-muted hb-members-line">An app opens for them only if it is chosen here. A change ends the passkey confirmations they gave apps; an app asks again when it needs one.</p>
+          <button class="hb-btn" type="button" data-member-apps-save="${id}">Save apps</button>
+        </details>`;
+  }
+
+  function memberRow(directory, member, drafts) {
     const tags = [member.role, member.administrator ? 'administrator' : '', member.status !== 'active' ? member.status : ''].filter(Boolean);
-    const apps = member.apps && member.apps.length ? member.apps.join(', ') : 'no apps';
+    const apps = appsLine(directory, member);
     const shown = liveCode(directory, member);
     const issue = mayIssue(directory, member)
       ? `<button class="hb-btn" type="button" data-member-grant="${esc(member.memberId)}" data-member-name="${esc(member.name || member.login)}">${member.grantExpiresAt ? 'Issue a new code' : 'Issue enrollment code'}</button>`
@@ -51,6 +95,7 @@
         <div class="hb-members-tags">${tags.map((tag) => `<span class="hb-badge">${esc(tag)}</span>`).join('')}</div>
         <p class="hb-muted hb-members-line">Apps: ${esc(apps)}</p>
         <p class="hb-members-line">${passkeyLine(member)}</p>
+        ${appsEditor(directory, member, drafts && drafts.get(member.memberId))}
         ${issue}
         <div data-member-code>${shown ? codeBlock(shown.name, shown.grant) : ''}</div>
         <div data-member-error></div>
@@ -85,9 +130,8 @@
       </li>`;
   }
 
-  // Adding is open while Home Base is being set up or is active, as the directory allows (addMember).
   function addSection(directory) {
-    if (!['setup', 'active'].includes(directory.state)) return '';
+    if (!mayEdit(directory)) return '';
     const candidates = directory.candidates || [];
     const how = 'To add someone, have them open Home Base on their own device, signed in to the tailnet as themselves; they appear here for a day.';
     return `
@@ -97,7 +141,7 @@
       <div><button class="hb-btn" type="button" data-members-refresh>Check again</button><div data-members-refresh-error></div></div>`;
   }
 
-  function render(directory) {
+  function render(directory, drafts) {
     const members = directory.members || [];
     const note = directory.state === 'active'
       ? 'A member with no passkey registers one with an enrollment code: it works once, for 15 minutes, on Home Base\'s own address.'
@@ -105,7 +149,7 @@
     return `
       <h2 style="margin-top:0;">Members</h2>
       <p class="hb-muted" style="margin:0 0 0.8rem;">${esc(note)}</p>
-      <ul class="hb-members">${members.length ? members.map((member) => memberRow(directory, member)).join('') : '<li class="hb-muted">No members yet.</li>'}</ul>
+      <ul class="hb-members">${members.length ? members.map((member) => memberRow(directory, member, drafts)).join('') : '<li class="hb-muted">No members yet.</li>'}</ul>
       ${addSection(directory)}`;
   }
 
@@ -138,10 +182,38 @@
 
   // Only the latest read of the directory is drawn: an earlier one answering late would undo what came after it.
   const reads = new WeakMap();
+
+  // An app editor open when the card is drawn again stays open with what was chosen in it and not yet saved, except
+  // the one just saved (settled), which shows what was saved.
+  const cssEscape = (value) => (window.CSS && window.CSS.escape ? window.CSS.escape(value) : value);
+  function draftsOf(node) {
+    const drafts = new Map();
+    if (!node.querySelectorAll) return drafts;
+    for (const editor of node.querySelectorAll('[data-member-apps]')) {
+      if (!editor.open) continue;
+      const mode = editor.querySelector('[data-member-apps-mode]:checked');
+      drafts.set(editor.dataset.memberApps, { mode: mode ? mode.value : null, chosen: new Set([...editor.querySelectorAll('[data-member-app]:checked')].map((box) => box.value)) });
+    }
+    return drafts;
+  }
+  // The default chosen: its boxes show what the default gives now, which an app installed meanwhile may change.
+  function restoreDrafts(node, drafts) {
+    for (const [memberId, draft] of drafts) {
+      const editor = node.querySelector(`[data-member-apps="${cssEscape(memberId)}"]`);
+      if (!editor) continue;
+      editor.open = true;
+      if (!draft.mode) continue;
+      for (const radio of editor.querySelectorAll('[data-member-apps-mode]')) radio.checked = radio.value === draft.mode;
+      for (const box of editor.querySelectorAll('[data-member-app]')) {
+        box.checked = draft.mode === 'default' ? box.dataset.byDefault === 'yes' : draft.chosen.has(box.value);
+        box.disabled = draft.mode === 'default';
+      }
+    }
+  }
   const warn = (message) => `<p class="hb-warn" style="margin:0.4rem 0 0;">${esc(message)}</p>`;
 
   // failed(message): how a failed re-read is reported, keeping the card as it is; without it, the card says it.
-  async function mount(node, { sessionExpiresAt, failed } = {}) {
+  async function mount(node, { sessionExpiresAt, failed, settled } = {}) {
     if (sessionExpiresAt) clearAt(sessionExpiresAt, () => clearCard(node));
     const read = (reads.get(node) || 0) + 1;
     reads.set(node, read);
@@ -160,7 +232,10 @@
       node.remove();
       return null;
     }
-    node.innerHTML = render(directory);
+    const drafts = draftsOf(node);
+    drafts.delete(settled);
+    node.innerHTML = render(directory, drafts);
+    restoreDrafts(node, drafts);
     return directory;
   }
 
@@ -195,6 +270,43 @@
     await mount(node, { failed: (message) => { problem.innerHTML = warn(`Added, but the list couldn't be read again: ${message} Reload the page to see it.`); } });
   }
 
+  // Saves the member's apps: null for the default, or the chosen list. The card is then drawn again from the directory.
+  async function saveApps(node, save) {
+    const editor = save.closest('[data-member-apps]');
+    const problem = save.closest('[data-member]').querySelector('[data-member-error]');
+    const mode = editor.querySelector('[data-member-apps-mode]:checked');
+    const chosen = mode && mode.value === 'only' ? [...editor.querySelectorAll('[data-member-app]:checked')] : null;
+    const apps = chosen && chosen.map((box) => box.value);
+    // A list with no app installed here is a member who can open nothing: that's what disabling them is for.
+    if (chosen && !chosen.some((box) => box.dataset.installed === 'yes')) {
+      problem.innerHTML = warn('Choose at least one installed app, or the default.');
+      return;
+    }
+    save.disabled = true;
+    problem.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">Saving…</p>';
+    try {
+      await window.HB.postJson(`/api/directory/members/${encodeURIComponent(save.dataset.memberAppsSave)}`, { apps });
+    } catch (error) {
+      problem.innerHTML = warn(error.message);
+      save.disabled = false;
+      return;
+    }
+    await mount(node, { settled: save.dataset.memberAppsSave, failed: (message) => {
+      problem.innerHTML = warn(`Saved, but the list couldn't be read again: ${message} Reload the page to see it.`);
+      save.disabled = false;
+    } });
+  }
+
+  // The default chosen: the boxes show what the default gives and can't be changed. A list chosen: they can.
+  function chooseMode(radio) {
+    const editor = radio.closest('[data-member-apps]');
+    const onDefault = radio.value === 'default';
+    for (const box of editor.querySelectorAll('[data-member-app]')) {
+      box.disabled = onDefault;
+      if (onDefault) box.checked = box.dataset.byDefault === 'yes';
+    }
+  }
+
   async function issueCode(node, button) {
     const slot = button.parentElement.querySelector('[data-member-code]');
     const problem = button.parentElement.querySelector('[data-member-error]');
@@ -213,8 +325,7 @@
       clearAt(grant.expiresAt, () => {
         if (shownCodes.get(memberId) !== entry) return;
         shownCodes.delete(memberId);
-        const id = window.CSS && window.CSS.escape ? window.CSS.escape(memberId) : memberId;
-        const live = (node.querySelector && node.querySelector(`[data-member="${id}"] [data-member-code]`)) || slot;
+        const live = (node.querySelector && node.querySelector(`[data-member="${cssEscape(memberId)}"] [data-member-code]`)) || slot;
         // Drawn again after the code was used, the row shows no code: leave it so.
         if (live === slot || live.querySelector('[data-code]')) live.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">That code has expired.</p>';
       });
@@ -241,6 +352,10 @@
     document.addEventListener('submit', (event) => {
       if (event.target.closest && event.target.closest('form[data-action="admin-lock"]')) clearCard(node);
     }, true);
+    node.addEventListener('change', (event) => {
+      const radio = event.target.closest && event.target.closest('[data-member-apps-mode]');
+      if (radio && radio.checked) chooseMode(radio);
+    });
     node.addEventListener('click', async (event) => {
       const copy = event.target.closest('[data-member-copy]');
       if (copy) {
@@ -251,11 +366,13 @@
       const refresh = event.target.closest('[data-members-refresh]');
       const add = event.target.closest('[data-member-add]');
       const button = event.target.closest('[data-member-grant]');
-      if ((!refresh && !add && !button) || busy.has(node)) return;
+      const save = event.target.closest('[data-member-apps-save]');
+      if ((!refresh && !add && !button && !save) || busy.has(node)) return;
       setBusy(node, true);
       try {
         if (refresh) await checkAgain(node, refresh);
         else if (add) await addMember(node, add);
+        else if (save) await saveApps(node, save);
         else await issueCode(node, button);
       } finally {
         setBusy(node, false);
