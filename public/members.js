@@ -57,7 +57,8 @@
     const onDefault = Boolean(member.appsDefault);
     const byDefault = (app) => member.administrator || !app.administratorDefault;
     const offered = directory.catalogApps.filter((app) => app.installed || (!onDefault && own.has(app.id)));
-    const held = directory.catalogApps.filter((app) => app.installed && !byDefault(app)).map((app) => app.name);
+    // Every app the default leaves out, installed or not: one installed later stays out too.
+    const held = directory.catalogApps.filter((app) => !byDefault(app)).map((app) => app.name);
     const defaultLabel = held.length ? `The default: every app but ${held.join(', ')}` : 'The default: every app';
     const box = (app) => {
       const notes = [app.installed ? '' : 'not installed', byDefault(app) ? '' : 'administrator\'s by default'].filter(Boolean);
@@ -179,10 +180,37 @@
 
   // Only the latest read of the directory is drawn: an earlier one answering late would undo what came after it.
   const reads = new WeakMap();
+
+  // An app editor open when the card is drawn again stays open with what was chosen in it and not yet saved, except
+  // the one just saved (settled), which shows what was saved.
+  const cssEscape = (value) => (window.CSS && window.CSS.escape ? window.CSS.escape(value) : value);
+  function draftsOf(node) {
+    const drafts = new Map();
+    if (!node.querySelectorAll) return drafts;
+    for (const editor of node.querySelectorAll('[data-member-apps]')) {
+      if (!editor.open) continue;
+      const mode = editor.querySelector('[data-member-apps-mode]:checked');
+      drafts.set(editor.dataset.memberApps, { mode: mode ? mode.value : null, chosen: new Set([...editor.querySelectorAll('[data-member-app]:checked')].map((box) => box.value)) });
+    }
+    return drafts;
+  }
+  function restoreDrafts(node, drafts, settled) {
+    for (const [memberId, draft] of drafts) {
+      const editor = memberId !== settled && node.querySelector(`[data-member-apps="${cssEscape(memberId)}"]`);
+      if (!editor) continue;
+      editor.open = true;
+      if (!draft.mode) continue;
+      for (const radio of editor.querySelectorAll('[data-member-apps-mode]')) radio.checked = radio.value === draft.mode;
+      for (const box of editor.querySelectorAll('[data-member-app]')) {
+        box.checked = draft.chosen.has(box.value);
+        box.disabled = draft.mode === 'default';
+      }
+    }
+  }
   const warn = (message) => `<p class="hb-warn" style="margin:0.4rem 0 0;">${esc(message)}</p>`;
 
   // failed(message): how a failed re-read is reported, keeping the card as it is; without it, the card says it.
-  async function mount(node, { sessionExpiresAt, failed } = {}) {
+  async function mount(node, { sessionExpiresAt, failed, settled } = {}) {
     if (sessionExpiresAt) clearAt(sessionExpiresAt, () => clearCard(node));
     const read = (reads.get(node) || 0) + 1;
     reads.set(node, read);
@@ -201,7 +229,9 @@
       node.remove();
       return null;
     }
+    const drafts = draftsOf(node);
     node.innerHTML = render(directory);
+    restoreDrafts(node, drafts, settled);
     return directory;
   }
 
@@ -257,7 +287,7 @@
       save.disabled = false;
       return;
     }
-    await mount(node, { failed: (message) => {
+    await mount(node, { settled: save.dataset.memberAppsSave, failed: (message) => {
       problem.innerHTML = warn(`Saved, but the list couldn't be read again: ${message} Reload the page to see it.`);
       save.disabled = false;
     } });
@@ -291,8 +321,7 @@
       clearAt(grant.expiresAt, () => {
         if (shownCodes.get(memberId) !== entry) return;
         shownCodes.delete(memberId);
-        const id = window.CSS && window.CSS.escape ? window.CSS.escape(memberId) : memberId;
-        const live = (node.querySelector && node.querySelector(`[data-member="${id}"] [data-member-code]`)) || slot;
+        const live = (node.querySelector && node.querySelector(`[data-member="${cssEscape(memberId)}"] [data-member-code]`)) || slot;
         // Drawn again after the code was used, the row shows no code: leave it so.
         if (live === slot || live.querySelector('[data-code]')) live.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">That code has expired.</p>';
       });

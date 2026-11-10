@@ -446,6 +446,9 @@ test('each member\'s apps can be changed while Home Base is in setup or active; 
   const onDefault = editorOf(node.innerHTML, 'm_01');
   assert.match(onDefault, /value="default" data-member-apps-mode checked/);
   assert.match(onDefault, /The default: every app but Helm/);
+  const uninstalledHelm = fakeNode();
+  await load({ state: 'active', catalogApps: CATALOG_APPS.map((app) => (app.id === 'helm' ? { ...app, installed: false } : app)), members: [member({ apps: DEFAULT_APPS, appsDefault: true })] }).members.mount(uninstalledHelm);
+  assert.match(uninstalledHelm.innerHTML, /The default: every app but Helm/, 'the default leaves Helm out even before it is installed');
   assert.match(onDefault, /value="family-pulse" data-member-app data-by-default="yes" data-installed="yes" checked disabled>/, 'on the default the boxes show it and are fixed');
   assert.match(onDefault, /value="helm" data-member-app data-by-default="no" data-installed="yes" disabled> <span>Helm <span class="hb-muted">\(administrator&#39;s by default\)/);
   assert.doesNotMatch(onDefault, /family-dinner/, 'an app not installed isn\'t offered');
@@ -535,4 +538,41 @@ test('saving apps waits its turn: while another action runs, a Save does nothing
   assert.deepEqual(posted.map(([url]) => url), ['/api/directory/members/m_0a/grant']);
   release();
   await issuing;
+});
+
+// A card whose app editors can be read before it is drawn again (open, as left) and found after (fresh, closed).
+function draftCard(before) {
+  const node = fakeNode();
+  const fresh = new Map();
+  const editor = ({ open, mode, boxes }) => {
+    const radios = ['default', 'only'].map((value) => ({ value, checked: value === mode }));
+    const fakes = boxes.map(([value, checked]) => ({ value, checked, disabled: mode === 'default' }));
+    return { open, radios, boxes: fakes, querySelector: () => radios.find((radio) => radio.checked), querySelectorAll: (selector) => (selector === '[data-member-apps-mode]' ? radios : selector === '[data-member-app]:checked' ? fakes.filter((box) => box.checked) : fakes) };
+  };
+  const old = Object.entries(before).map(([memberId, state]) => Object.assign(editor(state), { dataset: { memberApps: memberId } }));
+  node.querySelectorAll = () => old;
+  node.querySelector = (selector) => {
+    const memberId = selector.match(/data-member-apps="([^"]+)"/)[1];
+    if (!fresh.has(memberId)) fresh.set(memberId, editor({ open: false, mode: 'default', boxes: [['family-pulse', true], ['family-plan', true], ['helm', false]] }));
+    return fresh.get(memberId);
+  };
+  return { node, fresh };
+}
+
+test('an open app editor keeps what was chosen in it when the card is drawn again; a closed one, and the one just saved, don\'t', async () => {
+  const { members } = load({ state: 'active', catalogApps: CATALOG_APPS, members: [member({ memberId: 'm_01' }), member({ memberId: 'm_02' }), member({ memberId: 'm_03' })] }, { post: async () => ({ ok: true }) });
+  const { node, fresh } = draftCard({
+    m_01: { open: true, mode: 'only', boxes: [['family-pulse', true], ['family-plan', false], ['helm', true]] },
+    m_02: { open: false, mode: 'only', boxes: [['family-pulse', false], ['family-plan', true], ['helm', false]] },
+    m_03: { open: true, mode: 'only', boxes: [['family-pulse', true], ['family-plan', false], ['helm', false]] },
+  });
+  members.wire(node);
+  // m_03's Save: the card is drawn again from the directory.
+  await node.click({ target: appsEditor('m_03', 'only', [{ value: 'family-pulse', checked: true }]).save });
+  const m01 = fresh.get('m_01');
+  assert.equal(m01.open, true);
+  assert.deepEqual(m01.radios.map((radio) => radio.checked), [false, true]);
+  assert.deepEqual(m01.boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, false], ['family-plan', false, false], ['helm', true, false]], 'unsaved, and still unsaved');
+  assert.equal(fresh.has('m_02'), false, 'a closed editor is drawn as the directory has it');
+  assert.equal(fresh.has('m_03'), false, 'the editor just saved shows what was saved');
 });
