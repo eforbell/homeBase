@@ -45,7 +45,7 @@ function createIngressRoutes({
 
   // executes: false for a record that runs nothing on the host (a confirmation): an unlocked admin session is
   // enough, even on a plan-only host. duringBootstrap: allowed while the household directory is in setup,
-  // which needs the cutover and Home Base's own service (runbook 2.5); everything else waits for active.
+  // which needs the cutover and Home Base's own service (runbook, "Publishing rules Home Base enforces"); everything else waits for active.
   async function authorize(req, res, config, { action, target, executes = true, duringBootstrap = false }) {
     // What was authorized depends on the state (setup takes the passphrase, active the hardware key), so a request
     // starts only if the state is the same when it starts (startAction).

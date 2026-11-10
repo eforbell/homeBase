@@ -2,7 +2,7 @@ const { operation, planEnvelope } = require('./common');
 const { validateInstance } = require('../ingress-layout');
 
 // Feature-10 SID-001. Cutover moves nginx from the TCP gateway to one root-only socket per service;
-// rollback restores the TCP gateway. Order matters both ways (runbook section 0): rollback refuses while
+// rollback restores the TCP gateway. Order matters both ways (runbook, "Rules"): rollback refuses while
 // any app still trusts identity headers, because a TCP path lets any local process forge them.
 
 // A plain coded error, like the other compilers: the web process loads this without the schema validator.
