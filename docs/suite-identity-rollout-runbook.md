@@ -309,7 +309,7 @@ Home Base signs its sessions with its own key, beside its database. Rotate it un
 2. Admin → **Members** → **Add a member** → **Check again**. Pick their role (**parent** or **kid**: there is no default) and **Add member**.
 3. Members who will use a sensitive app need a passkey: **Issue enrollment code** on their row. The code works once, for 15 minutes, only on Home Base's own address. Give it to them in person; they open Admin there, enter it under **Passkeys**, and register one.
 
-By default a member reaches every installed app except trading and Bitcoin accounting, which only the administrator reaches. Changing an individual member's app list has no button yet; it is `POST /api/directory/members/<member id>` with `{"apps": [...]}`.
+By default a member reaches every installed app except trading and Bitcoin accounting, which only the administrator reaches. To change one member's apps, open **Change apps** in their row on the Members card and choose the default or a list of the apps installed here. A change ends the passkey confirmations they gave apps; an app asks again when it needs one.
 
 ### C6. Switch each app
 
