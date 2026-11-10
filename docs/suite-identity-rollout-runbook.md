@@ -1,61 +1,145 @@
-# Suite Identity Rollout Runbook (draft)
+# Suite identity rollout runbook
 
-Feature-10. This runbook moves one Home Base host from today's ingress to identity-safe ingress, then turns on tailnet identity app by app.
+For the operator of a Home Base host. It takes a host from today's ingress (one TCP gateway, every app behind its own sign-in) to:
+1. **the socket switchover**: every service hostname reaches nginx through its own Unix socket, every app listens on loopback or its own socket, sensitive apps run as their own users, and Home Base itself is reached at its own service hostname;
+2. **the tailnet sign-in**: Home Base keeps a household directory with passkeys, and apps switch, one at a time, from their own sign-in to the member's tailnet identity.
 
-**Status: draft.** It will be filled in as SID-001…SID-007 land, and walked on a test VM (SID-008) before any production host.
+Each part ends at a **stop point**: a state the host can stay in for as long as you like. Nothing here is required. A host that never starts keeps today's ingress, and its apps keep their own sign-in.
 
-Placeholders: `<host>` is the host's MagicDNS name, `<tailnet>` the tailnet domain (`<name>.ts.net`), `<instance>` this household's instance name, `<app>` a catalog app id.
+**Status.** Every step has run on a test VM. Part B has run on one production host; the four defects found there are fixed and folded into the steps and the recovery section below. Part C has run on the test VM only.
 
-## 0. Rules
+**Placeholders.** `<host>` is the host's MagicDNS name, `<tailnet>` the tailnet domain (`<name>.ts.net`), `<instance>` this household's instance name, `<app>` a catalog app ID, `<key>` a sensitive app's service key (`pulse`, `source`, `helm`, `bitcoin-accounting`).
 
-- Rehearse every step on a test VM first. A production host changes only after the VM checklist passes, including an interrupted cutover and a rollback.
-- One host at a time. One wave of apps at a time.
-- Every change has a rollback listed next to it. Snapshot configs before each step.
-- **Order matters both ways.** Cutover: ingress, then ownership, then Home Base, then apps. Rollback: apps back to local mode first, then Home Base, then ingress. Never restore a TCP path while any app trusts identity headers.
-- Keep the admin passphrase (password manager) and every app's local credentials until the feature's rollback window has passed.
-- **Nothing here is required.** A host that never cuts over keeps today's ingress, and every app keeps its own login. App installs and updates on such a host still write the TCP-gateway form of each app's nginx snippet.
+## Rules
 
-## 1. Read-only pre-checks (per host)
+- **Rehearse on a test VM first.** A production host changes only after the same steps have passed there, including a rollback.
+- **One host at a time, one step at a time.** Do each step's checks before the next step. When a check fails, stop and go to [Recovery](#recovery); don't improvise forward.
+- **Have a way back in that doesn't depend on Serve:** an SSH session to the host, open before you start, over its tailnet IP or your LAN. Serve changes don't touch SSH.
+- **Order matters both ways.** Forward: ingress, then Home Base, then apps. Back: apps to their own sign-in first, then Home Base, then ingress. Never give apps a TCP path while any of them trusts identity headers; Home Base refuses this too.
+- **Keep the old credentials:** the Home Base admin passphrase (in a password manager) and every app's own passphrases and PINs, until each app has run on tailnet identity for your whole rollback window.
+- **Never, from a root shell:**
+  - write the whole Serve configuration back (`tailscale serve set-config --all`, `set-raw`) or reset it: it silently changes other services (see [Tailscale behaviors](#tailscale-behaviors-this-depends-on));
+  - remove a Serve service Home Base manages by hand: the rollback can't put back what it didn't retire itself;
+  - reopen `:3080` or a TCP listener to get back in;
+  - edit `SOVEREIGN_AUTH_MODE` or `SOVEREIGN_HOMEBASE_UID` in an app's `.env`: use the Network page.
+
+## Part A. Prepare
+
+Nothing in Part A changes how anyone reaches the host.
+
+### A1. Check the starting point
 
 ```sh
-tailscale version                            # 1.102.4 or later (the version SID-001 was rehearsed on)
-tailscale status --self --peers=false        # tagged? which tags? (must be tagged to serve the suite)
-sudo tailscale serve get-config --all        # services this host serves today, and their targets
-sudo tailscale serve status --json           # node-level entries too (get-config shows services only)
-sudo ss -ltnp                                # nginx and app listeners (0.0.0.0 vs 127.0.0.1 vs sockets)
-systemctl show <app-unit> -p User --value    # shared service user vs per-app users
-sudo nginx -T | grep -nE 'listen|include|absolute_redirect|proxy_pass|proxy_set_header'
+sudo grep -E '^HOME_BASE_(EXECUTION_MODE|STATE_DB|DATA_DIR|INSTANCE)=' /etc/sovereign-home/homebase.env
+systemctl is-active homebase homebase-executor.socket
+tailscale version
 ```
 
-Record:
-- Host tags, and how the old managed service (`svc:home`) is defined.
-- Whether anything besides Serve can reach nginx or an app (LAN, loopback TCP).
-- **Whether nginx loads `/etc/nginx/sites-enabled/`** (`sudo nginx -T | grep -n 'include.*sites-enabled'`). A custom `nginx.conf` may not, and then the gateway would be ignored while `nginx -t` and a reload still succeed. The cutover refuses this before changing anything. Add `include /etc/nginx/sites-enabled/sovereign-home;` inside its `http` block and keep everything else in the file, including any `stream` block.
-- **Operator-managed nginx sites that include `/etc/nginx/sovereign-home.d/*.conf`** (adopted hosts). The cutover refuses while one exists, because it would keep serving apps over TCP. Remove that include from your own site first (keep the site's other content), and keep a copy for rollback.
-- Which apps already support the socket listen contract (SID-002): Family Pulse, Home Source, Helm and Bitcoin Accounting, from their 2026-10-28 `main`. Which units run as `sovereign` and which as `sovereign-<key>` (`systemctl show <unit> -p User`).
+- `HOME_BASE_EXECUTION_MODE=executor`, and both units `active`. A host still on the legacy sudo installer moves to the executor first: [executor-app-runbook.md](executor-app-runbook.md), "Moving a legacy host".
+- `HOME_BASE_STATE_DB` points under `/var/lib/sovereign-home/homebase`. Home Base keeps its other files beside it. (Before a fix from this rollout, a host with only `HOME_BASE_STATE_DB` kept them in its checkout, where they couldn't be written. Updating Home Base fixes that.)
+- Tailscale 1.104.4 or later, the version these steps were checked on.
 
-## 2. Tailnet policy, services, and Home Base settings
+### A2. Back up, and write down where things are
 
-Choose the instance name: lowercase letters, digits and single dashes, at most 24 characters, starting with a letter (for example `smith`). It prefixes every service. Changing it later is a tailnet rename (section 7).
+```sh
+D=/root/rollout-$(date +%F); sudo mkdir -p "$D"
+sudo tailscale serve status --json | sudo tee "$D/serve-status.json" >/dev/null
+sudo tailscale serve get-config --all | sudo tee "$D/serve-config.json" >/dev/null
+sudo tar czf "$D/etc-nginx.tgz" /etc/nginx
+sudo tar czf "$D/etc-sovereign-home.tgz" /etc/sovereign-home
+DB=$(sudo grep -oP '^HOME_BASE_STATE_DB=\K.*' /etc/sovereign-home/homebase.env)
+sudo python3 -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1]).backup(sqlite3.connect(sys.argv[2]))' "$DB" "$D/home-base.sqlite3"
+```
 
-### 2.1 Services
+Then back up every installed app from its page in Home Base (**Backup**).
 
-Define, on the console's Services page, one service per address in use, each with port `tcp:443`:
-- `svc:<instance>-home`: every low-friction app, by path (`/dinner/`, `/plan/`, …);
-- `svc:<instance>-homebase`: Home Base admin and all passkey management;
-- `svc:<instance>-<key>` for each **installed** sensitive app: `pulse`, `source`, `helm`, `bitcoin-accounting`.
+### A3. Read-only checks
 
-Members open `https://<instance>-home.<tailnet>/<app>/`, `https://<instance>-<key>.<tailnet>/<app>/`, and `https://<instance>-homebase.<tailnet>/`.
+```sh
+tailscale status --self --peers=false                  # tagged? which tags?
+sudo tailscale serve status --json                     # every service and node-level entry, with its frontend
+sudo ss -ltnp                                          # who listens where: 0.0.0.0, 127.0.0.1, sockets
+sudo nginx -T | grep -nE 'include|listen|stream'       # what nginx actually loads
+systemctl list-units --type=service --no-legend --plain | awk '{print $1}' \
+  | while read -r u; do echo "$u $(systemctl show "$u" -p User --value)"; done | grep ' sovereign'   # which user each app runs as
+```
 
-### 2.2 Policy, in this order
+Must pass before Part B:
+- [ ] `sudo tailscale serve get-config --all > /dev/null; echo $?` prints `0`. It fails with `root handler not set` when any service, even one that isn't Home Base's, has only a path handler. Home Base reads this command to see what it has published, so while it fails, every service looks unpublished and the Network page can't go past B5. Give that service a root handler, or wait for Home Base to stop depending on this command; don't start Part B.
 
-Done in the wrong order, this host loses its approvals while a stale host keeps its own.
-1. Give this host its own tag, owned by the administrator alone, held by no other machine:
+Write down:
+- [ ] **How you reach Home Base today.** Home Base listens on loopback `:3080` only; you reach it through Serve, either a node-level entry or the old managed service. If it is the old managed service, the cutover (B4) takes that way away before Home Base's new address exists (B5). Either way, set up the fallback below before Part B.
+- [ ] **Serve services that aren't Home Base's** (a Lightning node, another app). Home Base never changes them; check they are unchanged at the end of Part B.
+- [ ] **The old managed service** (usually `svc:home`, or one named after the host). The cutover retires it from this host, and a rollback puts it back. If it has already been removed by hand, a rollback can't restore it.
+- [ ] **nginx's shape.** Does `/etc/nginx/nginx.conf` include `sites-enabled` inside its `http` block? Does any server block of yours include `/etc/nginx/sovereign-home.d/*.conf` (an adopted host)? Is there a `stream` block (an Electrum server, for example)? Step B3 depends on all three.
+- [ ] Which units run as `sovereign`, and which as `sovereign-<key>`.
+- [ ] Any node-level Serve entry on `:443`. A rollback needs nginx to bind 443, and that entry would block it.
+
+### A4. Update Home Base, then every app
+
+1. Update Home Base to the current release, from a root-owned clone of the repository:
+   ```sh
+   sudo git -C /root/homebase-src pull --ff-only
+   sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair
+   systemctl is-active homebase homebase-executor.socket
+   ```
+2. Update each app from its page, one at a time. After the update, every app listens on loopback only (`HOST=127.0.0.1`) or, for socket apps, on its own socket. Anything that used an app's port directly (`http://<host>:3000/…`, a bookmark, a script) must now use its Home Base address.
+3. Check each app is healthy on its page before the next. A red badge between steps 1 and 2 is real: health checks still reach an app on its old port until it is updated.
+
+### A5. Move each sensitive app to its own user
+
+A sensitive app installed before its own user existed still runs as the shared `sovereign` user. Its page's **Runs as** card says so. One app at a time, while it is still on its own sign-in:
+
+1. Its page → **Runs as** → preview, then **Move to its own user** (type `MOVE`). It takes a safety backup, stops the app, creates `sovereign-<key>`, hands over its checkout, storage, backups and `.env`, rewrites its units, starts it and waits for it. Expect a minute or two of downtime. Don't create mounts inside the app's folders while it runs.
+2. Check on the host:
+   ```sh
+   systemctl show <unit> -p User --value                       # sovereign-<key>, for every unit of the app
+   sudo ls -la /run/sovereign-apps/<app>                        # drwxr-s--- sovereign-<key> www-data, and srw-rw---- app.sock
+   sudo -u sovereign curl -s --unix-socket /run/sovereign-apps/<app>/app.sock http://localhost/<health>   # must fail
+   sudo -u www-data  curl -s --unix-socket /run/sovereign-apps/<app>/app.sock http://localhost/<health>   # answers
+   ```
+   - [ ] `sudo -u sovereign` can't read its `.env` or list its checkout, storage or backups;
+   - [ ] nothing listens on its old port (`sudo ss -ltnp`);
+   - [ ] a page that reads data works, and its log has no `password authentication failed`;
+   - [ ] update, backup and restart still work.
+3. Then the next app.
+
+If the move stops part way (a failure, a reboot), every other plan for that app refuses until **Move to its own user** runs again: it carries on from where it stopped, as the app's own user. Two known causes:
+- *"… must be owned by root before … can be handed over"*: a host set up by the legacy installer, with a Home Base from before the fix, left `/var/lib/sovereign-home/<app>` owned by the shared user. `sudo chown root:root` and `sudo chmod 755` that one directory, then move again.
+- A mount inside the app's folders: the move refuses any mount it finds there. Unmount it, then move again.
+
+The move is one way: there is no move-back action. If the app misbehaves afterwards, **Restore** the safety backup the move took; the files stay with the new user, and the app stays on its socket. A problem with the socket itself is undone only by a Home Base release whose catalog sets the app back to `runtime.listen: 'tcp'`, followed by an update of the app. Neither path has been rehearsed.
+
+### A6. Start Home Base's request guards in report mode (optional, start early)
+
+The guards need a few days of reports before you enforce them in step C1, so start them now if you plan Part C:
+
+```sh
+echo 'HOME_BASE_REQUEST_GUARDS=report' | sudo tee -a /etc/sovereign-home/homebase.env
+sudo systemctl restart homebase
+journalctl -u homebase -n 50 | grep 'request guards: report'
+```
+
+Use Home Base as usual, from every browser and device that opens it.
+
+**Stop point A.** Same addresses, same sign-ins. Apps on loopback or sockets, sensitive apps on their own users.
+
+## Part B. The socket switchover
+
+Plan a quiet hour. **Apps are unreachable from the cutover (B4) until their service is published (B5, B7):** usually a few minutes each, plus 35–40 seconds for each new hostname's first certificate. Home Base stays reachable the whole time.
+
+### B1. Tailnet console
+
+1. **Choose the instance name**: lowercase letters, digits and single dashes, at most 24 characters, starting with a letter (`smith`). It prefixes every service. **Changing it after the cutover isn't supported** (see [Tailnet rename](#tailnet-rename)), so choose carefully.
+2. **Define the services** on the console's Services page, each with port `tcp:443`:
+   - `svc:<instance>-home`: every low-friction app, by path (`/dinner/`, `/plan/`, …);
+   - `svc:<instance>-homebase`: Home Base itself, and later all passkey management;
+   - `svc:<instance>-<key>` for each **installed** sensitive app.
+3. **Give this host its own tag**, owned by the administrator alone and held by no other machine, then add it to the host on the Machines page:
    ```jsonc
    "tagOwners": { "tag:<instance>-host": ["<administrator login>"] }
    ```
-   Then add the tag to the host on the Machines page.
-2. Approve only that tag for each service:
+4. **Approve only that tag** for each service:
    ```jsonc
    "autoApprovers": { "services": {
      "svc:<instance>-home":     ["tag:<instance>-host"],
@@ -63,207 +147,302 @@ Done in the wrong order, this host loses its approvals while a stale host keeps 
      "svc:<instance>-pulse":    ["tag:<instance>-host"]
    } }
    ```
-   Never use a tag that several hosts share as an approver. Any host with that tag can become an approved standby: it gets a valid certificate for the service hostname and takes all of the service's traffic when this host stops serving (spike 3b). Home Base refuses to publish a service another host already serves, but that is a second check. The policy is the boundary.
-3. **Review existing approvals** on each service's page and remove any host other than this one. Tightening approvers does not revoke approvals that already exist.
+   Never approve a tag that several hosts share. Any host holding it can become an approved standby, with a valid certificate for the hostname, and take the service's traffic when this host stops serving. Home Base refuses to publish while another host is approved, but the policy is the boundary.
+5. **Review each service's existing approvals** and remove any host but this one. Tightening approvers doesn't revoke approvals that already exist.
+6. **Grant members the addresses they use.** A member not granted an address gets a DNS error for it, not a refusal. Members who will use a passkey app also need `svc:<instance>-homebase`, where passkeys are managed.
+   ```jsonc
+   { "src": ["group:family"], "dst": ["svc:<instance>-home", "svc:<instance>-homebase", "svc:<instance>-pulse"], "ip": ["tcp:443"] }
+   ```
+7. **Turn on Tailnet Lock** if it isn't on, so a leaked tagged auth key can't add a host without a trusted signature.
 
-**Adding a service later** (a sensitive app installed after cutover): define it, add its approver, **and** add it to the members' grant, all before publishing it (2026-10-28 rehearsal):
-- with no approver when the host first advertises it, the host waits for manual approval (adding the approver afterwards doesn't approve it);
-- with no grant, members get a DNS error, not a refusal: an address nobody is granted isn't sent to their devices at all.
+Done in another order, this host can lose its approvals while a stale host keeps its own.
 
-Grant members the addresses they use. Grants are an independent layer: a member who isn't granted an address can't reach it at all. Members who use a passkey app also need `svc:<instance>-homebase`, where all credential management happens (D21); Home Base limits non-administrators to their own credentials there.
-```jsonc
-{ "src": ["group:family"], "dst": ["svc:<instance>-home", "svc:<instance>-homebase", "svc:<instance>-pulse"], "ip": ["tcp:443"] }
+### B2. Home Base settings
+
+```sh
+echo 'HOME_BASE_INSTANCE=<instance>' | sudo tee -a /etc/sovereign-home/homebase.env
+sudo systemctl restart homebase
 ```
-Tagged service hosts don't need app access. If one has it, it still gets no identity.
 
-Turn on Tailnet Lock if it isn't already. A leaked tagged auth key then can't add a host without a trusted signature.
+Home Base's configured domain must be the tailnet domain.
 
-### 2.3 How Home Base verifies the service hosts (D23)
-
-- **Automatic (recommended):** create a trust credential (OAuth client, Settings → Trust credentials) with **Services: Read**, **Devices → Core: Read** and **Policy File: Read** only. These were confirmed sufficient on 2026-10-27; a write attempt with them is refused. Store it on the host, readable by Home Base alone:
+**How Home Base verifies the service hosts.** Choose one:
+- **Automatic (recommended).** Create a trust credential (OAuth client, Settings → Trust credentials) with **Services: Read**, **Devices → Core: Read** and **Policy File: Read** only, and store it readable by Home Base alone:
   ```sh
   read -rs -p 'client id: ' ID; echo; read -rs -p 'client secret: ' SECRET; echo
   printf 'TS_OAUTH_CLIENT_ID=%s\nTS_OAUTH_CLIENT_SECRET=%s\n' "$ID" "$SECRET" \
     | sudo install -m 400 -o homebase -g homebase /dev/stdin /etc/sovereign-home/tailscale-api.env
   unset ID SECRET
   ```
-  Home Base lists every host of each service, standbys included, and requires exactly one approved host: this one. It also warns about shared approver tags, extra tag holders, and tag owners. Never give it write scopes: a credential that can approve hosts could approve an attacker's machine as a standby.
-- **Confirmation:** without a credential, check each service's page in the console and confirm in Home Base that no other host is approved. Confirmations last 30 days; once Home Base is active (SID-004/005) they need the hardware key.
+  Home Base then lists every host of each service, standbys included, requires exactly one approved host (this one), and warns about shared approver tags and extra tag holders. **Never give it write scopes:** a credential that can approve hosts could approve an attacker's machine.
+- **By hand.** Without a credential, you check each service's page in the console yourself and press **I checked the console: no other host is approved** on the Network page. A confirmation lasts 30 days; once Home Base is active (Part C) it needs the hardware key.
 
-### 2.4 Home Base setting
+### B3. nginx (adopted or custom hosts only)
 
-Add `HOME_BASE_INSTANCE=<instance>` to `/etc/sovereign-home/homebase.env` and restart `homebase`. The domain is Home Base's configured domain and must be the tailnet domain.
+Skip this if `/etc/nginx/nginx.conf` already includes `sites-enabled` in its `http` block and none of your own server blocks include `/etc/nginx/sovereign-home.d/*.conf`. The cutover checks both and refuses, before changing anything, if either is wrong.
 
-### 2.5 Publishing rules (enforced by Home Base)
-
-- **Before the household directory exists (pre-SID-004):** a service may be published once no other host is approved for it. No app can enter tailnet mode.
-- **Setup and recovery (SID-004):** only `svc:<instance>-homebase` may be published, so the enrollment surface exists.
-- **Active:** publishing needs "no other host approved"; tailnet mode needs the service verified (or confirmed with a hardware key).
-
-## 3. Cutover: ingress (SID-001)
-
-Run from Home Base admin (`POST /api/ingress/...`; admin unlock, privileged jobs, executor mode). Each step is a typed executor action.
-
-| Step | Action | Verify | Rollback |
-|---|---|---|---|
-| 3.1 | Snapshot `serve get-config --all`, `serve status --json`, `/etc/nginx` | Files saved | — |
-| 3.2 | **Cut over** (`/api/ingress/cutover`, `confirm: CUTOVER`): tmpfiles for `/run/sovereign-serve` (0700 root) and `/run/homebase-identity` (0750 homebase:www-data); the identity snippet; the socket gateway (one server block per service, no TCP listener); every installed app's snippet re-rendered as `<service>--<app>.conf`; the old managed service retired from this host. **Home Base stays on `:3080`**, so you can still reach the page that publishes its service | The job checks that nginx loaded the gateway and that every service socket accepts connections, and fails if not; `nginx -t`; no 80/443 listener except tailscaled's on the host's tailnet addresses; Home Base logs `identity lookups on /run/homebase-identity/identity.sock` within 15 s | **Roll back** (`/api/ingress/rollback`, `confirm: ROLLBACK`) |
-| 3.3 | **Publish** each service, one at a time (`/api/ingress/services/<key>/publish`, `confirm: PUBLISH`): `homebase` first, then `home`, then each sensitive app. Home Base refuses while another host is approved. It warms the new certificate automatically (first issue takes 35–40 s; publishing straight through the executor skips this, and the first visitor waits instead) | The service shows `verified` (API) once approved. After publishing `homebase`, open its address and check it loads. Then you can move Home Base to its socket (section 5) | Roll back |
-| 3.4 | **Update each installed app** from Home Base (an ordinary update) | Each app's `.env` URLs (`APP_URL`, `HELM_PUBLIC_URL`, OAuth redirects, local font URLs) use its service hostname | Roll back, then update again |
-| 3.5 | Add the new OAuth callback URLs at the providers: Plaid for Pulse (`https://<instance>-pulse.<tailnet>/pulse/oauth/callback`), Google for Plan (`https://<instance>-home.<tailnet>/plan/api/google-calendar/oauth/callback`) | Linking still works | Keep the old URLs listed until the rollback window has passed |
-| 3.6 | Tell members the new addresses; update bookmarks and the iOS wrapper's start URL | — | — |
-
-The rollback re-renders every app snippet for TCP, restores the TCP gateway, then takes the socket services down and puts back the service the cutover retired, with the same endpoints and frontends. Services Home Base didn't retire are not touched. It refuses while any app has `SOVEREIGN_AUTH_MODE=tailnet` in its `.env` (or the older name `SOVEREIGN_IDENTITY_MODE`), and wherever either name appears other than as a line `SOVEREIGN_AUTH_MODE=local` (a hand edit); **Return to its own sign-in** on the Network page rewrites it. If the host still has a node-level Serve entry on `:443`, nginx can't bind 443; remove that entry and restart nginx.
-
-Verify after 3.x, from a member device and from the host:
-- [ ] `https://<service>.<tailnet>/<app>/` loads for each installed app.
-- [ ] `https://<service>.<tailnet>/<app>` redirects to `.../<app>/` on the same hostname (never `localhost` or `127.0.0.1`).
-- [ ] Every mount requested on every other service's hostname is refused (404), and a hostname sent to another service's address gets 421.
-- [ ] Forged `X-Sovereign-*`, `Tailscale-User-*`, `X-Forwarded-For` and `X-Forwarded-Host` headers never reach an app, on every location, including sidecar routes.
-- [ ] With Home Base stopped, requests are refused (500), and work again once it is back.
-- [ ] `curl -k https://127.0.0.1/` on the host fails (no TCP listener).
-- [ ] A non-root local user can't connect to any nginx socket or to the identity socket.
-- [ ] A local process requesting the host's own public service URL gets no member identity (`curl --resolve <service>.<tailnet>:443:<service IP>`).
-- [ ] A tagged host and an unknown login get no identity.
-- [ ] From a page on `svc:<instance>-home`, requests to a sensitive hostname are refused **on the server** (check its log, not just the browser): fetch, form post, image, script and iframe. *(Needs SID-003's guard.)*
-- [ ] A top-level link from the home hostname to a sensitive page opens it and changes nothing.
-- [ ] Sensitive and Home Base responses carry `Content-Security-Policy: frame-ancestors 'none'`, including 404s and `/_sovereign/auth/`.
-- [ ] A request with no `Sec-Fetch-Site` header is refused on sensitive and Home Base hostnames. *(SID-003.)*
-- [ ] A cookie set on the home hostname with `Domain=<tailnet>` is ignored by every sensitive app and by Home Base. *(SID-003.)*
-- [ ] `/_sovereign/auth/` returns 404 on `svc:<instance>-home`.
-- [ ] A second tagged host can't become a host of a service this host serves (rehearsal VM only; spike 3b procedure).
-
-### Tailscale behaviors this depends on (1.102.4, checked 2026-10-27)
-
-- Change one service at a time: `tailscale serve --bg --yes --service=<svc> --https=443 <target>` and `tailscale serve clear <svc>`. Each leaves every other service and node-level entry unchanged, and is safe to repeat. Publishing also advertises a drained service. (Checked on 1.104.4, 2026-11-06.)
-- **Never write the whole config back, with `set-config --all` or `set-raw`.** The export names only the upstream, so an HTTPS frontend with an HTTP upstream exports as `http://…`, which `set-config` reads as plain HTTP. It refuses that over a live HTTPS port (`want to serve "http", but port 443 is already serving "https"`) and, if the service has since been removed, silently brings it back on plain HTTP. `set-raw` also drops node entries and leaves services with null endpoints.
-- `tailscale serve get-config --all` exits 1 if any service has only a path handler (`root handler not set`). `tailscale serve status --json` still answers, and it is the only one that shows a port's frontend.
-- A socket target is stored as `"tcp:443": "https://unix:<path>"`.
-- A service host can't resolve its own service names unless the policy grants it access; use the service address from the API (`getService` `addrs`).
-- `listServiceHosts` names each host's ID `nodeId` (the published schema says `stableNodeID`); it equals the device list's `nodeId` and `tailscale status` `Self.ID`. A service with no hosts answers `{}`.
-- tailscaled itself listens on the host's tailnet addresses on 443; any other 80/443 listener is a TCP path into nginx.
-
-## 4. Cutover: app ownership (SID-002)
-
-Independent of section 3: it works on a host with either ingress, and can run before or after the cutover. Rehearsed on the test VM on 2026-10-28 for all four sensitive apps (one moved in place, three fresh installs). Run the same day on both production hosts, before any cutover, behind the old TCP gateway.
-
-Order per host: update Home Base, then each app, then move the sensitive apps one at a time. Between the first two steps, health checks still reach an app on its old port, so a red badge then is real.
-
-What an update does by itself:
-- **Every app** listens on loopback only (`HOST=127.0.0.1`). Anything that opened an app's port directly (`http://<host>:3000/tonight`, a bookmark, a script) must use its Home Base address.
-- **A sensitive app's fresh install** runs as its own user, `sovereign-<key>`, on its socket.
-- **A sensitive app installed before SID-002** moves to its socket but keeps running as `sovereign`. Its page's **Runs as** card says so and offers the move.
-
-Per sensitive app installed before SID-002, while it is still in local mode:
-1. **Update it** from Home Base. Confirm it is healthy on its socket before going on.
-2. **Move it to its own user** (app page → Runs as → **Move to its own user**, `confirm: MOVE`; preview the plan first). The plan:
-   - takes a safety backup and stops the app;
-   - creates `sovereign-<key>` with its home under `/var/lib/sovereign-home/<app id>/home`;
-   - hands over its home, storage, backups and, last, its checkout: every directory is locked to root first, hard-linked files are copied, and setuid bits are dropped;
-   - rewrites `.env` (0600) and every unit, then starts the app and waits for readiness.
-
-   Expect a minute or two of downtime.
-
-   On a host set up by the legacy installer, the move first takes `/var/lib/sovereign-home/<app id>` back for root (0755): the installer made it the shared user's. Before Home Base included that fix, the move refused there with "… must be owned by root before … can be handed over"; `chown root:root` and `chmod 755` on that one directory, then moving again, finishes it.
-
-   Known limitation: don't create mounts inside the app's folders while a move runs. The move refuses any mount it finds there, before and during the hand-over, but a root process mounting something in the instant between a folder's check and its use can still fail the move or hand the mounted folder over. Only root can mount, and the shared user can't, so this is outside what the move defends against. Recovery: unmount, then run the move again.
-3. Verify on the host:
-   - [ ] every unit of the app (service, sidecars, timers) runs as `sovereign-<key>`: `systemctl show <unit> -p User --value`;
-   - [ ] `sudo ls -la /run/sovereign-apps/<app id>` shows `drwxr-s--- sovereign-<key> www-data` and `srw-rw---- … app.sock`;
-   - [ ] `sudo -u sovereign curl --unix-socket /run/sovereign-apps/<app id>/app.sock http://localhost/<health>` fails, and the same as `www-data` answers;
-   - [ ] `sudo -u sovereign` can't read the app's `.env`, list its checkout, storage or backups, or write into them;
-   - [ ] nothing listens on the app's old port (`sudo ss -ltnp`), and Home Base's ingress verification shows **Apps listen only on loopback or their sockets** passing;
-   - [ ] update, backup and restart still work, and dependency caches land in the app's own home;
-   - [ ] the app still reaches its database: open a page that reads data and check its log for `password authentication failed` (a move before PR #18 could write a fresh password; an Update repairs it).
-4. Verify from a member device, on the app's service hostname: pages, the mount redirect, static assets, nested APIs, and the OAuth callback route. Checked on the VM for a prefix-stripping app (Pulse, Home Source) and a mount-preserving one (Helm, Bitcoin Accounting). The D22 callback contract itself (landing page, single-use same-origin POST) is app behavior, checked when each app enters tailnet mode (section 6).
-5. **Rollback.** The move is one way; there is no move-back action. Neither path below has been rehearsed yet (SID-008); the switch back to TCP is covered by tests only.
-   - If the app misbehaves after the move, **Restore** the safety backup the move took. The files stay with the app's user.
-   - A socket problem rolls back with a Home Base release whose catalog sets the app to `runtime.listen: 'tcp'`. The update rewrites `.env` (dropping `SOVEREIGN_LISTEN`) and nginx.
-
-## 4a. Home Base request guards (SID-003)
-
-Independent of every other section: the guards work on a host with either ingress, before or after any cutover. They refuse a request a sibling hostname's page could make on a member's behalf (D20): on Home Base's hostnames, only its own pages and top-level navigations get through, and a change must come from the exact hostname it arrives on.
-
-1. Add `HOME_BASE_REQUEST_GUARDS=report` to `/etc/sovereign-home/homebase.env` and restart `homebase`. Its log says `Home Base request guards: report`.
-2. Use Home Base as usual for a few days, from every browser and device that opens it. Then check what enforce would have refused: `journalctl -u homebase | grep 'would refuse'`. Each line names the method, the path, the reason, and the request's `Origin` and `Sec-Fetch-Site`. Home Base's own pages should cause none; an unexpected line names the page or client to fix first.
-3. Set `HOME_BASE_REQUEST_GUARDS=enforce` and restart.
-
-Requests that reach the loopback port directly, without Tailscale Serve (the installer's health probe, an SSH tunnel), are not checked by these guards; the older JSON and fetch-site check still covers their changes. An unknown value stops Home Base from starting.
-
-Verify after step 3, from a member device:
-- [ ] Home Base's pages, jobs and settings work as before.
-- [ ] A link to Home Base from another app opens it.
-- [ ] From a sibling hostname's page, a fetch, an image, a script, an iframe and a form post to Home Base are refused (`request_refused` in the response, `refused` in the log).
-
-Rollback: set `off` (or remove the line) and restart.
-
-## 5. Cutover: Home Base identity (SID-004/005/006)
-
-The household directory is on with `HOME_BASE_DIRECTORY=on` in `/etc/sovereign-home/homebase.env` (it needs `HOME_BASE_INSTANCE`); its log says `Home Base household directory: publishing …`. It replaces the SID-003 preview: remove `HOME_BASE_IDENTITY_PREVIEW`. Setup runs no privileged plan or setting change, and every page says so until it is finished. Passkeys (SID-005) run only on Home Base's own hostname with Home Base on its socket, so the host must be cut over to per-service sockets (section 3) and Home Base moved (step 2 below) first. Until then `:3080` is still Home Base, where a local process could pass as a member, so no passkey is enrolled, checked or activated. Keep the directory off on production hosts until SID-005 and SID-006 are complete.
-
-Home Base signs assurance cookies with an Ed25519 key it creates beside its database (`identity-signing-key.pem`, mode 600, the Home Base user's). Losing it only ends sessions: a new one is made and everyone checks again. It is Home Base's own key, separate from every passkey: rotating it changes no passkey. The administrator rotates it under **Signing key** on Admin's Passkeys card, with the hardware key every time. The previous public key stays in the snapshot for 30 days (in `identity-signing-key-retired.json` beside it), so no session ends. Ticking **It may have been exposed** drops every earlier key at once, and every session ends.
-
-Set up health alerts (Config, a webhook URL) before setup: opening recovery always sends a notice naming the tailnet account that did it. So does a Home Base start that finds an administrator without an attested hardware key, after a sovereignAuth release removed the root their key verified against. Those keys are demoted at that start, and the administrator enters recovery to register a new one. Each check and one-time confirmation is in the admin audit with its session ID or token ID, signing key and passkey, so any cookie or token can be traced to the check that issued it.
-
-1. Upgrade Home Base to the identity-capable version, **before** moving it to its socket. The directory and passkey service come up in `setup`.
-2. Move Home Base admin to its socket, once `svc:<instance>-homebase` is published and answers (section 3): on the Network page, **Move Home Base to its socket** runs the cutover again. It refuses until the service is published on this host and nginx reaches Home Base through it. With an API credential Home Base also asks the new address itself, and refuses if it doesn't answer (usually this host isn't approved yet in the console). Without one, you confirm you opened the address and it loaded. nginx then reaches Home Base, and the passkey mount on every sensitive hostname, on `/run/homebase-identity/homebase.sock`, which only nginx can connect to. Once nginx has validated and reloaded that gateway (the executor records it in `/etc/nginx/sovereign-ingress-applied.json`), `:3080` stops being Home Base: pages and reads redirect to `https://<instance>-homebase.<tailnet>/` (same path), other requests get `421 HOME_BASE_MOVED`, and only `GET /api/homebase/health` is still answered there, for the installer and updates. That closes the loopback port to any local process that sets `X-Forwarded-For` to pass as a member. A host cut over before this release keeps Home Base on `:3080` until you move it, and so does a host whose Home Base isn't listening on its socket yet (update Home Base first; the job says so). A host already on its socket stays there. Rolling back the ingress puts Home Base back on `:3080`. Keep `:3080` as a redirect for the transition period.
-
-   **If you are locked out anyway** (`:3080` redirects and the new address doesn't load), a host that went through an older version can recover from a root shell. This doesn't open any TCP path:
+Otherwise, **right before B4**, because your apps stop answering through your own site from the moment you save this:
+1. Remove `include /etc/nginx/sovereign-home.d/*.conf;` from your own server block. Keep the rest of the site. Kept, it would go on serving apps over TCP, where any local process can pretend to be a member.
+2. Inside the `http` block of `/etc/nginx/nginx.conf` add:
+   ```nginx
+   include /etc/nginx/sites-enabled/sovereign-home*;
    ```
+   **Use the pattern, with the `*`.** The gateway file doesn't exist until the cutover writes it, and nginx refuses an include of a missing file but accepts a pattern that matches nothing yet. Keep everything else in the file, including any `stream` block.
+3. `sudo nginx -t && sudo systemctl reload nginx`.
+
+### B4. Cut over
+
+**First, a way into Home Base that doesn't depend on Serve.** From your computer, leave this running:
+```sh
+ssh -N -L 3080:127.0.0.1:3080 <you>@<host>
+```
+Open `http://localhost:3080/` and check that you can unlock admin there. An open SSH shell alone isn't enough: you need the Network page to publish Home Base's new service.
+
+Then: Network page → **Cut over to per-service sockets**. In one job it:
+- creates the socket directories (`/run/sovereign-serve`, root only; `/run/homebase-identity`, Home Base and nginx);
+- writes the socket gateway (one server block per service, no TCP listener) and the identity check;
+- re-renders every installed app's nginx snippet for its service;
+- reloads nginx, and checks that nginx really loaded the gateway and every service socket answers;
+- retires the old managed service from this host. Serve services Home Base didn't create are not touched.
+
+**Home Base stays on loopback `:3080`.** It moves in B6, once its new address works. If you reached it through the old managed service, use the SSH tunnel above until B5.
+
+Check:
+- [ ] The job succeeded. Its last line names the instance, `Home Base on port 3080`, and the app snippets it wrote.
+- [ ] `sudo nginx -T | grep -c 'sovereign-ingress: sockets'` prints `1`.
+- [ ] `sudo ss -ltnp | grep -E ':(80|443) '` shows only tailscaled's listeners on the host's tailnet addresses.
+- [ ] `journalctl -u homebase -n 50 | grep 'identity lookups on /run/homebase-identity/identity.sock'`.
+
+If it fails, see [Recovery](#recovery). **Roll back ingress** on the same page undoes it.
+
+### B5. Publish Home Base's service, and open it
+
+Network page → `homebase` row → **Publish**. Home Base refuses while another host is approved for it. Then:
+- [ ] The row shows `verified` (automatic) or, after you confirm it by hand, `confirmed`.
+- [ ] `https://<instance>-homebase.<tailnet>/` opens Home Base from your own device. The first certificate takes 35–40 seconds. With an API credential Home Base fetches it while publishing; without one, your first visit waits for it (up to a minute).
+
+**Don't go on until that address loads.** If it doesn't: is this host approved for the service in the console, and does your device's grant include it?
+
+### B6. Move Home Base to its socket
+
+Network page → **Move Home Base to its socket**. It refuses until its service is published on this host and nginx reaches Home Base through it. With an API credential it also opens the new address itself; without one, you confirm that you opened it.
+
+From then on `:3080` is no longer Home Base. Pages redirect to `https://<instance>-homebase.<tailnet>/` (same path), other requests get `421 HOME_BASE_MOVED`, and only `GET /api/homebase/health` still answers there, for the installer. That closes the loopback port to a local process that could pass as a member.
+
+- [ ] `https://<instance>-homebase.<tailnet>/` works, signed in as before.
+- [ ] The old `:3080` address redirects to it.
+
+### B7. Publish the other services
+
+`home`, then each sensitive app, one at a time, from the Network page. After each:
+- [ ] `verified` (or `confirmed`);
+- [ ] `https://<service>.<tailnet>/<app>/` loads each app on it.
+
+### B8. Update every app, so each learns its new address
+
+The cutover rewrote nginx, not the apps' `.env` files. Update each app from its page. Then each app's addresses (`APP_URL`, `APP_PUBLIC_URL`, `HELM_PUBLIC_URL`, local font URLs) use its service hostname.
+
+**External callbacks.** An update re-renders callback addresses, unless the app keeps them:
+- **Family Plan:** `GOOGLE_REDIRECT_URI` moves to `https://<instance>-home.<tailnet>/plan/api/google-calendar/oauth/callback`. Add it in the Google Cloud console before anyone reconnects a calendar. Keep the old one listed through the rollback window.
+- **Family Pulse:** `PLAID_OAUTH_REDIRECT_URI` and `PLAID_ENV` are kept as you set them. Plaid uses the redirect URI only inside webviews (an iOS wrapper); desktop and mobile browsers use a popup. Whether to register a tailnet address with Plaid, or keep a public callback, is your call: Plaid doesn't separate sandbox from production redirect URIs.
+- **Helm:** `SCHWAB_CALLBACK_URL` is yours to set and updates keep it. If it points at the host's old address, change it at Schwab and in Helm together.
+
+### B9. Verify
+
+From a member's device, and from the host. The full list, including forged-header and cross-site checks, is in [Verification checklists](#verification-checklists); these are the ones to do now:
+- [ ] Every installed app loads at `https://<service>.<tailnet>/<app>/`, and `…/<app>` (no slash) redirects to `…/<app>/` on the same hostname, never `localhost`.
+- [ ] An app's mount on another service's hostname is refused (404).
+- [ ] `curl -k https://127.0.0.1/` on the host fails: no TCP listener.
+- [ ] Each Serve service you recorded in A3 that isn't Home Base's is unchanged (`sudo tailscale serve status --json`).
+- [ ] Update, backup and restart work for one app of each kind.
+
+### B10. Tell members
+
+New addresses; update bookmarks and the iOS wrapper's start URL.
+
+**Stop point B.** Every service on its own hostname over sockets; Home Base on its socket; every app still on its own sign-in. A host can run like this indefinitely. Retire the `:3080` redirect later (Part D).
+
+## Part C. The tailnet sign-in
+
+### C1. Enforce Home Base's request guards
+
+After A6's few days:
+```sh
+journalctl -u homebase | grep 'would refuse'
+```
+Each line names the method, path, reason, `Origin` and `Sec-Fetch-Site`. Home Base's own pages should cause none; a line you don't expect names the page or client to fix first. Then set `HOME_BASE_REQUEST_GUARDS=enforce` and restart Home Base.
+
+- [ ] Home Base's pages, jobs and settings work as before, and a link to Home Base from another app opens it.
+
+### C2. Health alerts
+
+Config → **Health alerts**: tick **Enable critical health alerts**, set the **Health alert webhook URL**, press **Save config**, then **Send test alert** (it uses the saved settings), and check that it arrives. With alerts on, opening recovery sends a notice naming the tailnet account that did it, which is how you learn if it wasn't you. A notice that fails to send is logged, and doesn't stop recovery.
+
+### C3. Turn on the household directory
+
+```sh
+sudo sed -i '/^HOME_BASE_IDENTITY_PREVIEW=/d' /etc/sovereign-home/homebase.env
+echo 'HOME_BASE_DIRECTORY=on' | sudo tee -a /etc/sovereign-home/homebase.env
+sudo systemctl restart homebase
+journalctl -u homebase -n 50 | grep 'household directory: publishing'
+```
+
+Home Base comes up in **setup**. Until setup is finished, it runs no privileged plan or setting change, and every page says so.
+
+### C4. Set up the administrator
+
+On `https://<instance>-homebase.<tailnet>/admin`:
+1. Unlock with the passphrase. Your tailnet identity is recorded as the administrator.
+2. Under **Passkeys**, register:
+   - a synced passkey, for daily use;
+   - a hardware security key, with **It's a hardware security key** ticked (it must prove its maker; only keys from a vendor sovereignAuth pins count);
+   - a second hardware key, kept offline as a spare.
+3. **Finish setup with my hardware key.** Home Base becomes **active**. That tap also opens admin for 8 hours.
+4. **Without an API credential, confirm each service again.** Confirmations from Part B were made with the passphrase; once Home Base is active, an app can switch only on a service confirmed with the hardware key. On the Network page press **I checked the console: no other host is approved** for each service, after checking the console again. Until you do, **Use tailnet identity** doesn't appear.
+5. Check that the passphrase now opens only recovery (**Enter recovery**). From now on **Unlock admin with a passkey** opens admin, and **Lock admin** closes it in that browser. Adding or removing an administrator passkey, and every privileged plan, asks for the hardware key each time.
+
+Home Base signs its sessions with its own key, beside its database. Rotate it under **Signing key** on the Passkeys card (hardware key each time); tick **It may have been exposed** only if it may have been, because that ends every session at once.
+
+### C5. Add members, and give each a passkey
+
+1. Ask the person to open `https://<instance>-homebase.<tailnet>/` once from their own device, signed in to the tailnet as themselves. They'll be turned away; Home Base now knows the account for a day.
+2. Admin → **Members** → **Add a member** → **Check again**. Pick their role (**parent** or **kid**: there is no default) and **Add member**.
+3. Members who will use a sensitive app need a passkey: **Issue enrollment code** on their row. The code works once, for 15 minutes, only on Home Base's own address. Give it to them in person; they open Admin there, enter it under **Passkeys**, and register one.
+
+By default a member reaches every installed app except trading and Bitcoin accounting, which only the administrator reaches. Changing an individual member's app list has no button yet; it is `POST /api/directory/members/<member id>` with `{"apps": [...]}`.
+
+### C6. Switch each app
+
+Per app, starting with a low-friction one:
+1. **Update it** to a version that supports tailnet identity (its Network row stops saying "this version can't use tailnet identity yet").
+2. Network page → its row → **Use tailnet identity**, with the hardware key. Home Base offers it only when the host is cut over, the app's service is published and verified (or confirmed), and the app supports it. The executor checks again, then writes the mode into the app's `.env` and restarts it. It refuses, saying why, when:
+   - the app isn't on its socket (update it);
+   - its address isn't its service hostname yet (update it: step B8);
+   - a sensitive app still runs as `sovereign` (step A5).
+3. **Link members**, once: each parent opens `https://<service>.<tailnet>/<app>/`, lands on its **link** page, and matches each household member to the app's own person. A sensitive app asks for a passkey first.
+4. Check:
+   - [ ] each member lands as themselves;
+   - [ ] a kid sees only what kids see, and parent-only actions refuse them;
+   - [ ] someone without access sees "ask whoever runs Home Base";
+   - [ ] a sensitive app asks parents for a passkey, about once a month per device.
+5. Back out: **Return to its own sign-in** on the same row. Its own passphrases and PINs still work.
+
+**Stop point C.** Members sign in with their tailnet identity in each switched app.
+
+## Part D. Clean-up
+
+After the rollback window:
+- Retire the `:3080` redirect: `HOME_BASE_LOOPBACK=off` in `homebase.env`, then restart Home Base. Nothing listens on `:3080` afterwards, and the installer checks health on the socket. A rollback of the ingress opens it again.
+- Remove the old provider callback URLs you kept listed in B8.
+- Retire an app's own passphrases and PINs only after it has run on tailnet identity for the whole window. That ends its way back to its own sign-in.
+- Remove rehearsal-only grants, services, tags and credentials.
+- Keep the Home Base passphrase: it opens setup and recovery.
+
+## Recovery
+
+By symptom. Each of the first four happened on the first production host, and the fix is now in Home Base; if you meet one, the host's Home Base is older than this runbook, so update it first.
+
+**The cutover refuses: "nginx wouldn't load the socket gateway".** nginx.conf doesn't include `sites-enabled` in its `http` block. Do step B3, then run the cutover again. (Before the fix, the cutover went ahead, nginx ignored the gateway and still reloaded, and Home Base recorded success.)
+
+**The cutover refuses: a server block "includes /etc/nginx/sovereign-home.d".** Your own site still serves the apps over TCP. Step B3.1.
+
+**A publish or the cutover fails with "want to serve "http", but port 443 is already serving "https" for svc:…"** naming a service that isn't Home Base's. An older Home Base wrote the whole Serve configuration back, which Tailscale reads differently from what it exported. Update Home Base: it now changes one service at a time. If you must publish by hand, do only that service:
+```sh
+sudo tailscale serve --bg --yes --service=svc:<instance>-<key> --https=443 unix:/run/sovereign-serve/<key>.sock
+```
+Never clear or rewrite the other service.
+
+**"I checked the console…" fails with `ENOENT` on `ingress-confirmations.json`.** An older Home Base looked for its files in its checkout. Update Home Base. If it persists, set `HOME_BASE_DATA_DIR=/var/lib/sovereign-home/homebase` (the directory holding `HOME_BASE_STATE_DB`) and restart Home Base while no job runs. Never make the checkout writable.
+
+**Home Base can't be reached: `:3080` redirects and the new address doesn't load.** (Before the fix, the first cutover could move Home Base before its new service existed.) From the root shell; this opens no TCP path:
+1. Publish its service by hand:
+   ```sh
    sudo tailscale serve --bg --yes --service=svc:<instance>-homebase --https=443 unix:/run/sovereign-serve/homebase.sock
    ```
-   Check the console approves this host for that service. If it still doesn't load, check that `sudo nginx -T | grep -c 'sovereign-ingress: sockets'` shows `1`. If it shows `0`, nginx isn't loading the gateway (section 1): add the include. Either way, then run `sudo nginx -t && sudo systemctl reload nginx`, because `nginx -T` shows the files, not what the workers run. Confirm with `sudo journalctl -u nginx -n 5` that the reload wasn't rejected. The first certificate takes 35–40 s. Never reset the whole Serve config or reopen `:3080` by hand.
+2. In the console, check this host is approved for that service, and your device's grant includes it.
+3. `sudo nginx -T | grep -c 'sovereign-ingress: sockets'` must print `1`. If `0`, nginx isn't loading the gateway: step B3.2.
+4. `sudo nginx -t && sudo systemctl reload nginx`, then `sudo journalctl -u nginx -n 5` to check the reload wasn't rejected. (`nginx -T` shows the files on disk, not what the running workers loaded.)
+5. Wait 35–40 seconds for the first certificate, then open the address.
 
-   While Home Base is on its socket:
-   - **Check nginx first:** `sudo nginx -t` must pass before a rollback, the move, or re-running the cutover. Home Base's own parts of the config are fixed, so a reload fails on what is already there (an operator's site, a snippet, a certificate). A rollback whose reload failed anyway has already written the TCP gateway, so Home Base serves `:3080` again while nginx still runs the socket gateway: that is where the rollback is going, so fix nginx and run it again.
-   - **Never downgrade the executor:** an older executor's refresh puts nginx back on `:3080` without updating the applied record. Roll back the ingress first. If it happened, upgrade the executor again, check `sudo nginx -t`, then re-run the cutover.
-3. The founder unlocks with the passphrase on Admin. Their tailnet identity is recorded as the administrator. Then, under **Passkeys**, they register:
-   - a synced passkey (daily);
-   - an attested hardware key (keyring), with **It's a hardware security key** ticked: the key is asked to prove its maker, and only a chain to a vendor root pinned in sovereignAuth counts as hardware;
-   - a second attested hardware key (offline spare).
-4. **Finish setup with my hardware key** runs a fresh ceremony with a hardware key and moves Home Base to `active`. That ceremony is also the first passkey check: admin stays open for 8 hours from it. Confirm the passphrase now opens only recovery (**Enter recovery** on Admin). Afterwards, **Unlock admin with a passkey** (beside the check status on the Passkeys card) opens admin, and **Lock admin** ends it in that browser. While active, adding or removing an administrator passkey on the Passkeys card asks for the hardware key every time: a confirmation dialog, one tap, and the identical request runs once. Removing one ends the administrator's checks everywhere, so check again afterwards. Home Base refuses to remove a key that would leave fewer than two, or no hardware key.
-5. Add members (stable user IDs, parent/kid) and set app access. A member is added from an account that opened any suite hostname in the last day, so nobody types a user ID: ask them to open Home Base first. Trading and Bitcoin accounting go to the administrator unless granted.
-6. Members with sensitive apps enroll through a 15-minute enrollment grant (`POST /api/directory/members/<member id>/grant` gives the code), on the Home Base hostname: they open Admin there, enter the code and register a passkey. More passkeys, and removing one, need a check with a passkey in the last 5 minutes. Credentials can't be enrolled or revoked anywhere else. On a sensitive app's hostname, `/_sovereign/auth/` serves only checks (and `stepup.js`, sign-out), which set that hostname's own cookie in active Home Base; on the shared hostname it is a 404.
+**A new address gives a DNS error.** The member's grant doesn't include that service: addresses nobody is granted aren't sent to their devices at all (B1.6).
 
-Verify:
+**A new address times out on first use.** The first certificate takes 35–40 seconds. Otherwise the host isn't approved for the service yet, or another host is (B1.5).
+
+**A service you published by hand waits for approval.** It had no approver when the host first advertised it. Adding the approver afterwards doesn't approve it; approve it on the service's console page. To avoid this, for a service added later (a sensitive app installed after Part B), define it, add its approver and add it to the members' grant, all before publishing.
+
+**nginx won't reload, or `nginx -t` fails.** Fix it before any rollback, move or re-run: Home Base's parts of the configuration are fixed, so the problem is in something already there (your site, a snippet, a certificate). A rollback whose reload failed has already written the TCP gateway; fix nginx and run the rollback again.
+
+**Home Base refuses something its own pages or a tool you use need (`request_refused`) after C1.** Set `HOME_BASE_REQUEST_GUARDS=report` and restart Home Base: requests go through again, and the log says what enforce refuses. Fix that page or client, then enforce again. `off` removes the guards entirely; once members use passkeys, the guards are what stops a page on another hostname from acting on Home Base as them, so prefer `report`.
+
+**An app won't start after Use tailnet identity.** It refuses to start on a bad configuration rather than starting open. `journalctl -u <unit> -n 30` names the setting. **Return to its own sign-in** brings it back at once; then update the app and switch again.
+
+**An app shows "can't check who you are right now".** It can't read the household directory. Check `systemctl is-active homebase` and `journalctl -u homebase | grep 'household directory'`. The app picks the directory up again by itself.
+
+**A member sees "doesn't know you yet".** They aren't a member, are disabled, or the app isn't in their app list (C5). **"Almost there"**: a parent hasn't linked them in that app yet (C6.3).
+
+**The administrator has lost their passkeys.** **Enter recovery** with the passphrase on Admin, then register new administrator keys and finish with a hardware key. If the passphrase is lost too, see [Reset](#reset-root-shell).
+
+**Never downgrade the executor** while Home Base is on its socket: an older executor puts nginx back on `:3080` without updating its record. If it happened, upgrade the executor again, check `sudo nginx -t`, and run the cutover again.
+
+## Rollback
+
+Undo in reverse order, as far as you need:
+1. **Apps:** **Return to its own sign-in** for every app on tailnet identity. Home Base counts an app as trusting identity headers from the moment its switch starts, so the ingress rollback refuses until every app is back, even after a failed switch.
+2. **Home Base identity. Read this before rolling back the ingress on a host whose directory is active (Part C).** Active Home Base opens admin only with a passkey check, and passkeys work only on Home Base's socket. After an ingress rollback Home Base is back on `:3080`, so nobody can open admin there, and the passphrase opens only recovery. There is no supported way back from that yet. Until there is, treat an ingress rollback after Part C as unsupported: back out apps (step 1) and stop there. Turning the directory off after it was active hasn't been rehearsed either.
+3. **Ingress** (hosts that never reached Part C): Network page → **Roll back ingress** (`ROLLBACK`). It re-renders every app's snippet for TCP, restores the TCP gateway, puts Home Base back on `:3080`, takes the socket services down and puts back the old managed service as the cutover retired it. It refuses while any app's `.env` has `SOVEREIGN_AUTH_MODE` other than `local`, including a hand edit. A node-level Serve entry on `:443` blocks nginx from binding; remove it and restart nginx. Then **update every app again**, so its addresses (and callbacks, B8) point back at the old ones, and check its external callbacks still work.
+4. **Sensitive apps' own users** stay: the move is one way. That is safe under either ingress.
+
+## Reference
+
+### Verification checklists
+
+After Part B, from a member device and the host:
+- [ ] `https://<service>.<tailnet>/<app>/` loads for each installed app; `…/<app>` redirects to `…/<app>/` on the same hostname.
+- [ ] Every mount requested on every other service's hostname is refused (404), and a hostname sent to another service's address gets 421.
+- [ ] Forged `X-Sovereign-*`, `Tailscale-User-*`, `X-Forwarded-For` and `X-Forwarded-Host` headers never reach an app, on every location, including sidecar routes.
+- [ ] With Home Base stopped, requests are refused (500), and work again once it's back.
+- [ ] `curl -k https://127.0.0.1/` on the host fails.
+- [ ] A non-root local user can't connect to any nginx socket or to the identity socket.
+- [ ] A local process requesting the host's own service URL gets no member identity (`curl --resolve <service>.<tailnet>:443:<service IP>`).
+- [ ] A tagged host and an unknown login get no identity.
+- [ ] `/_sovereign/auth/` is 404 on `svc:<instance>-home`.
+- [ ] Sensitive and Home Base responses carry `Content-Security-Policy: frame-ancestors 'none'`, including 404s.
+
+After C1 (request guards) and C6 (an app switched):
+- [ ] From a page on `svc:<instance>-home`, a fetch, form post, image, script and iframe to a sensitive hostname or Home Base are refused **on the server** (its log, not just the browser).
+- [ ] A top-level link from the home hostname to a sensitive page opens it and changes nothing.
+- [ ] A request with no `Sec-Fetch-Site` header is refused on sensitive and Home Base hostnames.
+- [ ] A cookie set on the home hostname with `Domain=<tailnet>` is ignored by every sensitive app and by Home Base.
 - [ ] A privileged plan asks for the hardware key every time, and a token for one plan can't run another.
-- [ ] Adding or removing an administrator credential asks for the hardware key.
-- [ ] A cross-site form post and a request from `svc:<instance>-home` to Home Base are refused.
-- [ ] Revoking a credential refuses its cookie within one snapshot interval.
-- [ ] Recovery: the passphrase while active revokes sessions and allows only re-enrollment.
-- [ ] `homebase admin reset` returns to `setup` (rehearsal host only).
+- [ ] Revoking a passkey refuses its session within one snapshot interval.
+- [ ] Recovery: the passphrase, while active, ends sessions and allows only re-enrollment.
 
-**Reset (root shell).** When the administrator has lost their credentials and the passphrase, or recovery itself is stuck: `sudo homebase admin reset`. It asks for a new passphrase and a typed `RESET`, then revokes every administrator credential and session, moves the global epoch (every assurance cookie stops working) and returns Home Base to `setup`, audited. The administrator stays the same tailnet account; when that account is gone, `sudo homebase admin reset --administrator <login>` lets that login become the founder instead (the old administrator is demoted when it does).
+Probing an app through nginx with curl needs the fetch metadata a browser sends, once each:
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document' https://<service>.<tailnet>/<app>/
+```
+Without it a sensitive hostname answers `403 fetch_metadata_missing`, which is correct.
 
-Rollback: return every app to local mode (section 6) first. Then restore the previous Home Base version and its Serve target.
+### Publishing rules Home Base enforces
 
-## 6. Cutover: apps (SID-007, then per-app waves)
+- **Directory off:** a service may be published once no other host is approved for it. No app can switch to tailnet identity.
+- **Setup and recovery:** only `svc:<instance>-homebase` may be published, so the enrollment surface exists.
+- **Active:** publishing needs "no other host approved"; tailnet identity needs the service verified, or confirmed with the hardware key.
 
-Per app:
-1. Install the app version that supports the socket listen contract and sovereignAuth (its catalog entry says `runtime.identity: 'tailnet'`). Until the switch it runs in `local` mode: `SOVEREIGN_AUTH_MODE=local`, its own sign-in.
-2. On the Network page, the app's row under its service: **Use tailnet identity**, confirmed with the hardware key. Home Base offers it only when Home Base is active, the host is cut over and tagged, and the app's service is published and verified (or confirmed with the hardware key). The executor checks again that the app supports it and is on its socket, that the host is cut over, and that the directory snapshot is in place, then writes `SOVEREIGN_AUTH_MODE=tailnet` and `SOVEREIGN_HOMEBASE_UID` into the app's `.env` and restarts it. Updates and restores keep whichever mode the app is in.
-3. Link local members to directory members (one-time): a parent does it in the app, and in a sensitive app with a passkey check too.
-4. Verify:
-   - [ ] the member lands as themselves;
-   - [ ] a kid sees only kid scope, and parent-only actions refuse kids;
-   - [ ] unknown logins see "ask the administrator";
-   - [ ] sensitive apps ask for a passkey tap.
-5. Rollback: **Return to its own sign-in** on the same row. Its local credentials still work. Home Base counts the app as trusting tailnet identity from the moment the switch starts, so an ingress rollback is refused until it is back on its own sign-in, even if the switch failed part way.
+### Tailscale behaviors this depends on
 
-## 7. Tailnet rename
+Checked on 1.102.4 (2026-10-27) and 1.104.4 (2026-11-06).
+- Change one service at a time: `tailscale serve --bg --yes --service=<svc> --https=443 <target>` and `tailscale serve clear <svc>`. Each leaves every other service and node-level entry unchanged and is safe to repeat. Publishing also advertises a drained service.
+- **Never write the whole configuration back** with `set-config --all` or `set-raw`. The export names only the upstream, so an HTTPS frontend with an HTTP upstream exports as `http://…`, which `set-config` reads as plain HTTP: it refuses that over a live HTTPS port, and, if the service has since been removed, silently brings it back on plain HTTP. `set-raw` also drops node entries and leaves services with null endpoints.
+- `tailscale serve get-config --all` exits 1 if any service has only a path handler (`root handler not set`). `tailscale serve status --json` still answers, and only it shows a port's frontend.
+- A socket target is stored as `"tcp:443": "https://unix:<path>"`.
+- A service host can't resolve its own service names unless the policy grants it access; use the service address from the API.
+- tailscaled itself listens on the host's tailnet addresses on 443; any other 80/443 listener is a TCP path into nginx.
 
-A renamed tailnet changes the RP ID, so every passkey stops working.
-1. Re-publish services under the new name. Home Base then:
-   - rebinds the RP ID to the new tailnet domain (the only time it changes);
-   - marks every credential as orphaned;
-   - bumps the global epoch, so every assurance cookie stops working.
-2. The founder uses the passphrase, which opens recovery, and enrolls new administrator credentials, including an attested hardware key. A fresh hardware ceremony then returns Home Base to `active`.
-3. The administrator issues enrollment grants so members re-enroll. Members whose only credentials are orphaned count as having none.
-4. Revoke the orphaned credential records once everyone has re-enrolled.
+### Reset (root shell)
 
-## 8. Clean-up
+When the administrator has lost both their passkeys and the passphrase, or recovery itself is stuck: `sudo homebase admin reset`. It asks for a new passphrase and a typed `RESET`, revokes every administrator credential and session, ends every session (global epoch), and returns Home Base to setup, audited. The administrator stays the same tailnet account; if that account is gone, `sudo homebase admin reset --administrator <login>` lets that login become the founder instead.
 
-- Remove spike-only and rehearsal-only tailnet grants, services, tags and credentials.
-- Retire the `:3080` redirect: `HOME_BASE_LOOPBACK=off` in `/etc/sovereign-home/homebase.env`, then restart Home Base. Once Home Base is on its socket nothing listens on `:3080`, and the installer checks health on the socket instead. A rollback of the ingress opens the port again.
-- Retire per-app passphrases and PINs only after each app has run in `tailnet` mode for the full rollback window. Retiring them ends that app's local-mode rollback.
-- Keep the Home Base passphrase for setup and recovery.
+### Tailnet rename
+
+**Not supported yet.** On a cut-over host, the executor refuses a cutover under a different instance name or tailnet domain, and Home Base's domain setting is locked. Nothing rebinds passkeys either: they belong to the tailnet domain, so a renamed tailnet would leave every passkey unusable. Don't rename the tailnet, or change the instance, on a host that has been cut over. Changing the instance alone wouldn't affect passkeys, but it renames every service and isn't supported either.

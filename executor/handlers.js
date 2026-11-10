@@ -468,7 +468,9 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
     if (defaultSite) fsImpl.unlinkSync(NGINX_DEFAULT_LINK);
   }
 
-  const GATEWAY_INCLUDE_HELP = `Add "include ${NGINX_GATEWAY_LINK};" inside the http block of /etc/nginx/nginx.conf, keeping everything else there (a stream block too), and check it with nginx -t`;
+  // A pattern, not the file's name: before the cutover writes the gateway it doesn't exist, and nginx refuses an
+  // include of a missing file but takes a pattern that matches nothing yet.
+  const GATEWAY_INCLUDE_HELP = `Add "include ${NGINX_GATEWAY_LINK}*;" inside the http block of /etc/nginx/nginx.conf, keeping everything else there (a stream block too), and check it with nginx -t`;
 
   // A reload reports success whether or not the gateway is part of the configuration, and whether or not nginx
   // accepted it. So this is the proof: the configuration includes the file on disk, and each service's socket answers
@@ -919,7 +921,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       if (validateInstance(ingress.instance) || !/^[a-z0-9.-]+\.ts\.net$/.test(String(ingress.domain || ''))) deny('The ingress instance or tailnet domain is malformed.');
       const existing = readIngressState();
       if (existing && (existing.instance !== ingress.instance || existing.domain !== ingress.domain)) {
-        deny(`This host is already cut over as ${existing.instance} on ${existing.domain}; changing the instance or tailnet renames every service (runbook section 7).`);
+        deny(`This host is already cut over as ${existing.instance} on ${existing.domain}; changing the instance or tailnet renames every service (runbook, "Tailnet rename").`);
       }
       // An operator's own server block that includes the app snippets would keep serving them over TCP,
       // where any local process can forge identity headers. It has to go first.
@@ -932,7 +934,7 @@ function createBaseHandlers({ platform = process.platform, fsImpl = fs, run = ru
       } catch (error) {
         deny(`Could not read the active nginx configuration (nginx -T): ${error.message}. Fix nginx, then retry.`);
       }
-      if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook 3.3), then run the cutover again.');
+      if (operatorGateway) deny('An nginx server block outside the managed gateway includes /etc/nginx/sovereign-home.d, so apps would stay reachable over TCP. Remove that include from your own site (runbook B3), then run the cutover again.');
       // Refused here, before anything is written: this host's nginx would ignore the gateway and still reload.
       if (!includesGateway) deny(`nginx wouldn't load the socket gateway: nothing in its http block includes ${NGINX_GATEWAY_LINK}. ${GATEWAY_INCLUDE_HELP}, then run the cutover again.`);
       const moved = await hasMovedToSocket(existing, operation.timeoutMs);
