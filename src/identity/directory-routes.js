@@ -27,7 +27,11 @@ function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parse
     if (method === 'GET' && pathname === '/api/directory') {
       const status = await getAdminStatus(req, stateStore, { directory: binding });
       if (status.unlocked) {
-        sendJson(res, 200, directory.describe());
+        // Which catalog apps this host runs, so the Members card offers those to choose from.
+        const view = directory.describe();
+        const installations = stateStore.loadState().installations || {};
+        view.catalogApps = view.catalogApps.map((app) => ({ ...app, installed: installations[app.id]?.status === 'installed' }));
+        sendJson(res, 200, view);
         return true;
       }
       // Anyone else learns the state and whether they are a member, nothing about the household.

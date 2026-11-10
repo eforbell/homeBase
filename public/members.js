@@ -1,6 +1,7 @@
 // Feature-10: the Members card on the Admin page. It lists the household directory, who has a passkey, and gives
 // the administrator a single-use enrollment code for a member who has none (POST /api/directory/members/<id>/grant).
-// It also adds a member from the tailnet accounts that opened Home Base in the last day (POST /api/directory/members).
+// It also adds a member from the tailnet accounts that opened Home Base in the last day (POST /api/directory/members),
+// and changes which apps a member may open (POST /api/directory/members/<id> with apps).
 // It shows only what GET /api/directory gives an unlocked administrator: never a key, and a code only once.
 (function homeBaseMembers() {
   const esc = (value) => window.HB.escapeHtml(value);
@@ -35,9 +36,49 @@
       && Date.parse(entry.grant.expiresAt) > Date.now() ? entry : null;
   };
 
+  // Members are added and edited while Home Base is being set up or is active, as the directory allows.
+  const mayEdit = (directory) => ['setup', 'active'].includes(directory.state);
+
+  // The apps this host runs that the member may open, by name. A member on the default is marked so: an app installed
+  // later reaches them, where a chosen list stays as chosen.
+  function appsLine(directory, member) {
+    const own = member.apps || [];
+    if (!Array.isArray(directory.catalogApps)) return own.length ? own.join(', ') : 'no apps';
+    const names = directory.catalogApps.filter((app) => app.installed && own.includes(app.id)).map((app) => app.name);
+    return `${names.length ? names.join(', ') : 'no apps'}${member.appsDefault ? ' (the default)' : ''}`;
+  }
+
+  // Choosing a member's apps: the default, or a list. The list offers the apps installed here, and any app not installed
+  // that the member's list already names, so saving doesn't drop it unseen.
+  function appsEditor(directory, member) {
+    if (!mayEdit(directory) || !Array.isArray(directory.catalogApps)) return '';
+    const id = esc(member.memberId);
+    const own = new Set(member.apps || []);
+    const onDefault = Boolean(member.appsDefault);
+    const byDefault = (app) => member.administrator || !app.administratorDefault;
+    const offered = directory.catalogApps.filter((app) => app.installed || (!onDefault && own.has(app.id)));
+    const held = directory.catalogApps.filter((app) => app.installed && !byDefault(app)).map((app) => app.name);
+    const defaultLabel = held.length ? `The default: every app but ${held.join(', ')}` : 'The default: every app';
+    const box = (app) => {
+      const notes = [app.installed ? '' : 'not installed', byDefault(app) ? '' : 'administrator\'s by default'].filter(Boolean);
+      return `<label class="hb-members-app"><input type="checkbox" value="${esc(app.id)}" data-member-app data-by-default="${byDefault(app) ? 'yes' : 'no'}" data-installed="${app.installed ? 'yes' : 'no'}"${own.has(app.id) ? ' checked' : ''}${onDefault ? ' disabled' : ''}> <span>${esc(app.name)}${notes.length ? ` <span class="hb-muted">(${esc(notes.join(', '))})</span>` : ''}</span></label>`;
+    };
+    return `
+        <details class="hb-members-apps" data-member-apps="${id}">
+          <summary>Change apps</summary>
+          <fieldset aria-label="${esc(`Apps for ${member.name || member.login}`)}">
+            <label class="hb-members-app"><input type="radio" name="apps-${id}" value="default" data-member-apps-mode${onDefault ? ' checked' : ''}> <span>${esc(defaultLabel)}</span></label>
+            <label class="hb-members-app"><input type="radio" name="apps-${id}" value="only" data-member-apps-mode${onDefault ? '' : ' checked'}> <span>Only these:</span></label>
+            <div class="hb-members-app-list">${offered.length ? offered.map(box).join('') : '<span class="hb-muted">No apps are installed yet.</span>'}</div>
+          </fieldset>
+          <p class="hb-muted hb-members-line">An app opens for them only if it is chosen here. A change ends the passkey confirmations they gave apps; an app asks again when it needs one.</p>
+          <button class="hb-btn" type="button" data-member-apps-save="${id}">Save apps</button>
+        </details>`;
+  }
+
   function memberRow(directory, member) {
     const tags = [member.role, member.administrator ? 'administrator' : '', member.status !== 'active' ? member.status : ''].filter(Boolean);
-    const apps = member.apps && member.apps.length ? member.apps.join(', ') : 'no apps';
+    const apps = appsLine(directory, member);
     const shown = liveCode(directory, member);
     const issue = mayIssue(directory, member)
       ? `<button class="hb-btn" type="button" data-member-grant="${esc(member.memberId)}" data-member-name="${esc(member.name || member.login)}">${member.grantExpiresAt ? 'Issue a new code' : 'Issue enrollment code'}</button>`
@@ -51,6 +92,7 @@
         <div class="hb-members-tags">${tags.map((tag) => `<span class="hb-badge">${esc(tag)}</span>`).join('')}</div>
         <p class="hb-muted hb-members-line">Apps: ${esc(apps)}</p>
         <p class="hb-members-line">${passkeyLine(member)}</p>
+        ${appsEditor(directory, member)}
         ${issue}
         <div data-member-code>${shown ? codeBlock(shown.name, shown.grant) : ''}</div>
         <div data-member-error></div>
@@ -85,9 +127,8 @@
       </li>`;
   }
 
-  // Adding is open while Home Base is being set up or is active, as the directory allows (addMember).
   function addSection(directory) {
-    if (!['setup', 'active'].includes(directory.state)) return '';
+    if (!mayEdit(directory)) return '';
     const candidates = directory.candidates || [];
     const how = 'To add someone, have them open Home Base on their own device, signed in to the tailnet as themselves; they appear here for a day.';
     return `
@@ -195,6 +236,43 @@
     await mount(node, { failed: (message) => { problem.innerHTML = warn(`Added, but the list couldn't be read again: ${message} Reload the page to see it.`); } });
   }
 
+  // Saves the member's apps: null for the default, or the chosen list. The card is then drawn again from the directory.
+  async function saveApps(node, save) {
+    const editor = save.closest('[data-member-apps]');
+    const problem = save.closest('[data-member]').querySelector('[data-member-error]');
+    const mode = editor.querySelector('[data-member-apps-mode]:checked');
+    const chosen = mode && mode.value === 'only' ? [...editor.querySelectorAll('[data-member-app]:checked')] : null;
+    const apps = chosen && chosen.map((box) => box.value);
+    // A list with no app installed here is a member who can open nothing: that's what disabling them is for.
+    if (chosen && !chosen.some((box) => box.dataset.installed === 'yes')) {
+      problem.innerHTML = warn('Choose at least one installed app, or the default.');
+      return;
+    }
+    save.disabled = true;
+    problem.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">Saving…</p>';
+    try {
+      await window.HB.postJson(`/api/directory/members/${encodeURIComponent(save.dataset.memberAppsSave)}`, { apps });
+    } catch (error) {
+      problem.innerHTML = warn(error.message);
+      save.disabled = false;
+      return;
+    }
+    await mount(node, { failed: (message) => {
+      problem.innerHTML = warn(`Saved, but the list couldn't be read again: ${message} Reload the page to see it.`);
+      save.disabled = false;
+    } });
+  }
+
+  // The default chosen: the boxes show what the default gives and can't be changed. A list chosen: they can.
+  function chooseMode(radio) {
+    const editor = radio.closest('[data-member-apps]');
+    const onDefault = radio.value === 'default';
+    for (const box of editor.querySelectorAll('[data-member-app]')) {
+      box.disabled = onDefault;
+      if (onDefault) box.checked = box.dataset.byDefault === 'yes';
+    }
+  }
+
   async function issueCode(node, button) {
     const slot = button.parentElement.querySelector('[data-member-code]');
     const problem = button.parentElement.querySelector('[data-member-error]');
@@ -241,6 +319,10 @@
     document.addEventListener('submit', (event) => {
       if (event.target.closest && event.target.closest('form[data-action="admin-lock"]')) clearCard(node);
     }, true);
+    node.addEventListener('change', (event) => {
+      const radio = event.target.closest && event.target.closest('[data-member-apps-mode]');
+      if (radio && radio.checked) chooseMode(radio);
+    });
     node.addEventListener('click', async (event) => {
       const copy = event.target.closest('[data-member-copy]');
       if (copy) {
@@ -251,11 +333,13 @@
       const refresh = event.target.closest('[data-members-refresh]');
       const add = event.target.closest('[data-member-add]');
       const button = event.target.closest('[data-member-grant]');
-      if ((!refresh && !add && !button) || busy.has(node)) return;
+      const save = event.target.closest('[data-member-apps-save]');
+      if ((!refresh && !add && !button && !save) || busy.has(node)) return;
       setBusy(node, true);
       try {
         if (refresh) await checkAgain(node, refresh);
         else if (add) await addMember(node, add);
+        else if (save) await saveApps(node, save);
         else await issueCode(node, button);
       } finally {
         setBusy(node, false);

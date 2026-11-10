@@ -106,7 +106,7 @@ test('setup: the founder unlocks with the passphrase and their tailnet identity;
 });
 
 test('setup allows editing the directory but no privileged plan, setting change, or other service', async (t) => {
-  const { app, base, lookup, snapshot } = await startServer(t);
+  const { app, base, lookup, snapshot, dbPath } = await startServer(t);
   const parent = client(base, PARENT);
   await parent.post('/api/admin/setup', { passphrase: PASSPHRASE });
 
@@ -130,6 +130,15 @@ test('setup allows editing the directory but no privileged plan, setting change,
   const { memberId } = added.body;
   assert.equal((await parent.post(`/api/directory/members/${memberId}`, { apps: ['family-dinner'] })).status, 200);
   assert.deepEqual(snapshot().members.find((member) => member.user_id === '1002').apps, ['family-dinner']);
+  // The Members card chooses from the catalog by name, told which apps this host runs.
+  new SqliteStateStore(dbPath).upsertInstallation({ appId: 'family-dinner', name: 'Family Dinner', purpose: 'x', port: 3001, mountPath: '/dinner/', externalUrl: 'https://homebase.example/dinner/', installRoot: '/opt/x', serviceName: 'x', ref: 'main', status: 'installed', plannedAt: 'x', updatedAt: 'x' });
+  const view = (await parent.get('/api/directory')).body;
+  const offered = Object.fromEntries(view.catalogApps.map((app) => [app.id, app]));
+  assert.deepEqual(offered['family-dinner'], { id: 'family-dinner', name: 'Family Dinner', administratorDefault: false, installed: true });
+  assert.deepEqual(offered.helm, { id: 'helm', name: 'Helm', administratorDefault: true, installed: false });
+  assert.deepEqual(view.members.find((member) => member.memberId === memberId).apps, ['family-dinner']);
+  assert.equal((await parent.post(`/api/directory/members/${memberId}`, { apps: null })).status, 200, 'back to the default');
+  assert.equal((await parent.get('/api/directory')).body.members.find((member) => member.memberId === memberId).appsDefault, true);
   assert.equal((await parent.post(`/api/directory/members/${memberId}`, { administrator: true })).body.code, 'NOT_AVAILABLE');
   assert.equal((await parent.post(`/api/directory/members/${memberId}/grant`)).body.code, 'BOOTSTRAP_STATE', 'grants wait for active');
   assert.equal((await parent.post(`/api/directory/members/${memberId}`, { status: 'disabled' })).status, 200);
