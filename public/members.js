@@ -49,14 +49,16 @@
   }
 
   // Choosing a member's apps: the default, or a list. The list offers the apps installed here, and any app not installed
-  // that the member's list already names, so saving doesn't drop it unseen.
-  function appsEditor(directory, member) {
+  // that the member's list already names, or that an open editor's unsaved list (draft) has chosen, so saving doesn't
+  // drop it unseen.
+  function appsEditor(directory, member, draft) {
     if (!mayEdit(directory) || !Array.isArray(directory.catalogApps)) return '';
     const id = esc(member.memberId);
     const own = new Set(member.apps || []);
     const onDefault = Boolean(member.appsDefault);
     const byDefault = (app) => member.administrator || !app.administratorDefault;
-    const offered = directory.catalogApps.filter((app) => app.installed || (!onDefault && own.has(app.id)));
+    const drafted = draft && draft.mode === 'only' ? draft.chosen : new Set();
+    const offered = directory.catalogApps.filter((app) => app.installed || (!onDefault && own.has(app.id)) || drafted.has(app.id));
     // Every app the default leaves out, installed or not: one installed later stays out too.
     const held = directory.catalogApps.filter((app) => !byDefault(app)).map((app) => app.name);
     const defaultLabel = held.length ? `The default: every app but ${held.join(', ')}` : 'The default: every app';
@@ -77,7 +79,7 @@
         </details>`;
   }
 
-  function memberRow(directory, member) {
+  function memberRow(directory, member, drafts) {
     const tags = [member.role, member.administrator ? 'administrator' : '', member.status !== 'active' ? member.status : ''].filter(Boolean);
     const apps = appsLine(directory, member);
     const shown = liveCode(directory, member);
@@ -93,7 +95,7 @@
         <div class="hb-members-tags">${tags.map((tag) => `<span class="hb-badge">${esc(tag)}</span>`).join('')}</div>
         <p class="hb-muted hb-members-line">Apps: ${esc(apps)}</p>
         <p class="hb-members-line">${passkeyLine(member)}</p>
-        ${appsEditor(directory, member)}
+        ${appsEditor(directory, member, drafts && drafts.get(member.memberId))}
         ${issue}
         <div data-member-code>${shown ? codeBlock(shown.name, shown.grant) : ''}</div>
         <div data-member-error></div>
@@ -139,7 +141,7 @@
       <div><button class="hb-btn" type="button" data-members-refresh>Check again</button><div data-members-refresh-error></div></div>`;
   }
 
-  function render(directory) {
+  function render(directory, drafts) {
     const members = directory.members || [];
     const note = directory.state === 'active'
       ? 'A member with no passkey registers one with an enrollment code: it works once, for 15 minutes, on Home Base\'s own address.'
@@ -147,7 +149,7 @@
     return `
       <h2 style="margin-top:0;">Members</h2>
       <p class="hb-muted" style="margin:0 0 0.8rem;">${esc(note)}</p>
-      <ul class="hb-members">${members.length ? members.map((member) => memberRow(directory, member)).join('') : '<li class="hb-muted">No members yet.</li>'}</ul>
+      <ul class="hb-members">${members.length ? members.map((member) => memberRow(directory, member, drafts)).join('') : '<li class="hb-muted">No members yet.</li>'}</ul>
       ${addSection(directory)}`;
   }
 
@@ -194,15 +196,16 @@
     }
     return drafts;
   }
-  function restoreDrafts(node, drafts, settled) {
+  // The default chosen: its boxes show what the default gives now, which an app installed meanwhile may change.
+  function restoreDrafts(node, drafts) {
     for (const [memberId, draft] of drafts) {
-      const editor = memberId !== settled && node.querySelector(`[data-member-apps="${cssEscape(memberId)}"]`);
+      const editor = node.querySelector(`[data-member-apps="${cssEscape(memberId)}"]`);
       if (!editor) continue;
       editor.open = true;
       if (!draft.mode) continue;
       for (const radio of editor.querySelectorAll('[data-member-apps-mode]')) radio.checked = radio.value === draft.mode;
       for (const box of editor.querySelectorAll('[data-member-app]')) {
-        box.checked = draft.chosen.has(box.value);
+        box.checked = draft.mode === 'default' ? box.dataset.byDefault === 'yes' : draft.chosen.has(box.value);
         box.disabled = draft.mode === 'default';
       }
     }
@@ -230,8 +233,9 @@
       return null;
     }
     const drafts = draftsOf(node);
-    node.innerHTML = render(directory);
-    restoreDrafts(node, drafts, settled);
+    drafts.delete(settled);
+    node.innerHTML = render(directory, drafts);
+    restoreDrafts(node, drafts);
     return directory;
   }
 

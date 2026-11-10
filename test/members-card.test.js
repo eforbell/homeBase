@@ -546,14 +546,14 @@ function draftCard(before) {
   const fresh = new Map();
   const editor = ({ open, mode, boxes }) => {
     const radios = ['default', 'only'].map((value) => ({ value, checked: value === mode }));
-    const fakes = boxes.map(([value, checked]) => ({ value, checked, disabled: mode === 'default' }));
+    const fakes = boxes.map(([value, checked, byDefault = 'yes']) => ({ value, checked, disabled: mode === 'default', dataset: { byDefault } }));
     return { open, radios, boxes: fakes, querySelector: () => radios.find((radio) => radio.checked), querySelectorAll: (selector) => (selector === '[data-member-apps-mode]' ? radios : selector === '[data-member-app]:checked' ? fakes.filter((box) => box.checked) : fakes) };
   };
   const old = Object.entries(before).map(([memberId, state]) => Object.assign(editor(state), { dataset: { memberApps: memberId } }));
   node.querySelectorAll = () => old;
   node.querySelector = (selector) => {
     const memberId = selector.match(/data-member-apps="([^"]+)"/)[1];
-    if (!fresh.has(memberId)) fresh.set(memberId, editor({ open: false, mode: 'default', boxes: [['family-pulse', true], ['family-plan', true], ['helm', false]] }));
+    if (!fresh.has(memberId)) fresh.set(memberId, editor({ open: false, mode: 'default', boxes: [['family-pulse', true], ['family-plan', true], ['family-dinner', true], ['helm', false, 'no']] }));
     return fresh.get(memberId);
   };
   return { node, fresh };
@@ -572,7 +572,23 @@ test('an open app editor keeps what was chosen in it when the card is drawn agai
   const m01 = fresh.get('m_01');
   assert.equal(m01.open, true);
   assert.deepEqual(m01.radios.map((radio) => radio.checked), [false, true]);
-  assert.deepEqual(m01.boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, false], ['family-plan', false, false], ['helm', true, false]], 'unsaved, and still unsaved');
+  assert.deepEqual(m01.boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, false], ['family-plan', false, false], ['family-dinner', false, false], ['helm', true, false]], 'unsaved, and still unsaved');
   assert.equal(fresh.has('m_02'), false, 'a closed editor is drawn as the directory has it');
   assert.equal(fresh.has('m_03'), false, 'the editor just saved shows what was saved');
+});
+
+test('a kept draft is drawn with every app it chose, installed now or not; one on the default shows what the default gives now', async () => {
+  // Family Dinner isn't installed now. m_01 had chosen it in an open list; m_02 had the default open from when it was.
+  const { members } = load({ state: 'active', catalogApps: CATALOG_APPS, members: [member({ memberId: 'm_01', apps: DEFAULT_APPS, appsDefault: true }), member({ memberId: 'm_02', apps: DEFAULT_APPS, appsDefault: true })] }, { post: async () => ({ ok: true }) });
+  const { node, fresh } = draftCard({
+    m_01: { open: true, mode: 'only', boxes: [['family-pulse', true], ['family-dinner', true]] },
+    m_02: { open: true, mode: 'default', boxes: [['family-pulse', true], ['family-dinner', true]] },
+  });
+  let drawn = '';
+  Object.defineProperty(node, 'innerHTML', { get: () => drawn, set: (html) => { drawn = html; } });
+  members.wire(node);
+  await node.click({ target: appsEditor('m_09', 'only', [{ value: 'family-pulse', checked: true }]).save });
+  assert.match(editorOf(drawn, 'm_01'), /value="family-dinner"[^>]*> <span>Family Dinner <span class="hb-muted">\(not installed\)/, 'the draft\'s choice keeps its box');
+  assert.doesNotMatch(editorOf(drawn, 'm_02'), /family-dinner/, 'ticked there only as the default gave it then: not offered');
+  assert.deepEqual(fresh.get('m_02').boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, true], ['family-plan', true, true], ['family-dinner', true, true], ['helm', false, true]]);
 });
