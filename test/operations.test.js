@@ -25,7 +25,7 @@ test('bootstrap and Dinner install plans validate against the checked-in schema 
   assert.equal(validateOperationPolicy(dinner), dinner);
   assert.deepEqual(dinner.operations.map((operation) => operation.id), [
     'ensure-sovereign-root', 'ensure-app-root', 'ensure-sovereign-home', 'ensure-install-root', 'sync-repository', 'ensure-db-role', 'ensure-database', 'write-environment',
-    'write-service', 'ensure-nginx-apps', 'write-nginx', 'install-runtime', 'run-migrations', 'reload-systemd',
+    'write-service', 'write-socket-tmpfiles', 'ensure-socket-directory', 'ensure-nginx-apps', 'write-nginx', 'install-runtime', 'run-migrations', 'reload-systemd',
     'start-service', 'ensure-gateway', 'reload-nginx', 'wait-ready',
   ]);
   const bootstrapIds = bootstrap.operations.map((operation) => operation.id);

@@ -70,9 +70,9 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   assert.deepEqual([pulse.identityModes, pulse.listen.kind, pulse.identity.own, pulse.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-pulse']);
   assert.deepEqual(appLayout(getAppById('home-source')).identityModes, ['local'], 'on its socket, but its code reads no mode');
   assert.deepEqual(appLayout(withIdentity('family-pulse', 'local')).identityModes, ['local']);
-  // Family Dinner still listens on loopback TCP, where any local process could forge identity headers.
-  assert.throws(() => appLayout(withIdentity('family-dinner')), /needs runtime.listen 'unix'/);
-  assert.match(validateManifestEntry(withIdentity('family-dinner')).join('; '), /runtime.identity 'tailnet' needs runtime.listen 'unix'/);
+  // Fast to Eat still listens on loopback TCP, where any local process could forge identity headers.
+  assert.throws(() => appLayout(withIdentity('fast-to-eat')), /needs runtime.listen 'unix'/);
+  assert.match(validateManifestEntry(withIdentity('fast-to-eat')).join('; '), /runtime.identity 'tailnet' needs runtime.listen 'unix'/);
   assert.match(validateManifestEntry(withIdentity('family-pulse', 'headers')).join('; '), /runtime.identity must be 'local' or 'tailnet'/);
   assert.deepEqual(validateManifestEntry(getAppById('family-pulse')), []);
 });
@@ -362,21 +362,21 @@ test('the job runner records local mode when the switch completes, and the recor
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-mode-'));
   const store = new SqliteStateStore(path.join(dir, 'state.sqlite3'));
   store.init();
-  const record = { appId: 'family-dinner', name: 'Family Dinner', port: 3000, mountPath: '/dinner/', externalUrl: 'https://host/dinner/', installRoot: '/opt/sovereign-home/apps/familyDinner', serviceName: 'family-dinner', ref: 'main', status: 'installed', plannedAt: 'x', updatedAt: 'x', managedBy: 'executor' };
+  const record = { appId: 'fast-to-eat', name: 'Fast to Eat', port: 3007, mountPath: '/fte/', externalUrl: 'https://host/fte/', installRoot: '/opt/sovereign-home/apps/fastToEat', serviceName: 'fast-to-eat', ref: 'main', status: 'installed', plannedAt: 'x', updatedAt: 'x', managedBy: 'executor' };
   store.upsertInstallation(record);
-  assert.equal(store.loadState().installations['family-dinner'].identityMode, 'local');
-  store.setIdentityMode('family-dinner', 'tailnet');
+  assert.equal(store.loadState().installations['fast-to-eat'].identityMode, 'local');
+  store.setIdentityMode('fast-to-eat', 'tailnet');
   store.upsertInstallation({ ...record, ref: 'abc', updatedAt: 'y' });
-  assert.equal(store.loadState().installations['family-dinner'].identityMode, 'tailnet', 'an update keeps it');
-  assert.throws(() => store.setIdentityMode('family-dinner', 'headers'));
+  assert.equal(store.loadState().installations['fast-to-eat'].identityMode, 'tailnet', 'an update keeps it');
+  assert.throws(() => store.setIdentityMode('fast-to-eat', 'headers'));
 
   const runner = new JobRunner(store, {
     runExecutorAction: async (_socket, _fields, { onEvent }) => { onEvent({ eventType: 'plan.accepted', planDigest: 'x', plan: { operations: [] } }); return {}; },
     readinessOptions: { attempts: 1, fetchImpl: async () => ({ ok: true, status: 200 }) },
   });
-  const id = runner.startTypedActionJob({ kind: 'identity-mode', target: 'family-dinner', action: { action: 'identity-mode', appId: 'family-dinner', mode: 'local' } });
+  const id = runner.startTypedActionJob({ kind: 'identity-mode', target: 'fast-to-eat', action: { action: 'identity-mode', appId: 'fast-to-eat', mode: 'local' } });
   for (let i = 0; i < 50 && store.getJob(id).status !== 'completed'; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.getJob(id).status, 'completed');
-  assert.equal(store.loadState().installations['family-dinner'].identityMode, 'local');
+  assert.equal(store.loadState().installations['fast-to-eat'].identityMode, 'local');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 });

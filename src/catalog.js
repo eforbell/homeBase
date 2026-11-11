@@ -230,6 +230,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // SID-007: listens on the unix socket SOVEREIGN_LISTEN names (familyDinner lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/dinner/',
@@ -282,6 +284,7 @@ const catalog = [
         OPENAI_RECIPE_MODEL: 'gpt-5.4-nano',
         OPENAI_REASONING_EFFORT: 'none',
         RECIPE_IMPORT_USER_AGENT: 'Home Base importer/0.1',
+        APP_PUBLIC_URL: '{{externalUrl}}',
       },
     },
     storage: {

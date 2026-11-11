@@ -39,7 +39,7 @@ test('placeholder substitution is single-pass, so values cannot inject further p
   assert.equal(resolved.DATABASE_URL, 'postgresql://u:{{port}}@h/db');
 });
 
-test('the executor renders Family Dinner exactly like the legacy planner, plus the runtime NODE_ENV and loopback HOST', () => {
+test('the executor renders Family Dinner exactly like the legacy planner, plus the runtime NODE_ENV and its socket', () => {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -57,16 +57,20 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   const legacyFresh = env.parseDotEnv(withDeterministicRandom(() => buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: {}, config })).files['.env']);
   const password = env.parseDatabaseUrl(legacyFresh.DATABASE_URL).dbPassword;
   const executorFresh = env.parseDotEnv(renderAppEnvFile({ layout, password, site, fsImpl: noFonts }));
-  // HOST (SID-002): apps listen on loopback only; legacy left it to each app, and most bound every interface.
-  assert.deepEqual(executorFresh, { ...legacyFresh, HOST: '127.0.0.1', NODE_ENV: 'production' });
+  // SOVEREIGN_LISTEN (SID-007): Dinner listens on its own socket, so the executor writes it instead of loopback HOST.
+  const socket = 'unix:/run/sovereign-apps/family-dinner/app.sock';
+  assert.deepEqual(executorFresh, { ...legacyFresh, SOVEREIGN_LISTEN: socket, NODE_ENV: 'production' });
+  assert.equal(executorFresh.APP_PUBLIC_URL, 'https://newhost.tailnet/dinner/');
 
   // Reinstall: operator edits, an operator-added key, stale derived values, same-role DB wiring.
-  const existing = { ...legacyFresh, OPENAI_API_KEY: 'sk-operator', OPENAI_MODEL: 'operator-model', RECIPE_IMPORT_USER_AGENT: 'stale agent', PORT: '9999', CUSTOM_FLAG: 'on', SOVEREIGN_FONT_SANS_CSS_URL_LOCAL: 'https://oldhost.tailnet/_sovereign/fonts/source-sans-3.css' };
+  const existing = { ...legacyFresh, HOST: '0.0.0.0', OPENAI_API_KEY: 'sk-operator', OPENAI_MODEL: 'operator-model', RECIPE_IMPORT_USER_AGENT: 'stale agent', PORT: '9999', CUSTOM_FLAG: 'on', SOVEREIGN_FONT_SANS_CSS_URL_LOCAL: 'https://oldhost.tailnet/_sovereign/fonts/source-sans-3.css' };
   fs.mkdirSync(path.join(base, 'familyDinner'), { recursive: true });
   fs.writeFileSync(path.join(base, 'familyDinner', '.env'), env.renderEnv(existing));
   const legacyReinstall = env.parseDotEnv(withDeterministicRandom(() => buildInstallPlan({ appId: 'family-dinner', state: { installations: {} }, options: {}, config })).files['.env']);
   const executorReinstall = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv(existing), fsImpl: noFonts }));
-  assert.deepEqual(executorReinstall, { ...legacyReinstall, HOST: '127.0.0.1', NODE_ENV: 'production' });
+  // An install from before the socket kept HOST; the executor drops it, since the app now listens on the socket.
+  const { HOST: _legacyHost, ...legacyReinstallWithoutHost } = legacyReinstall;
+  assert.deepEqual(executorReinstall, { ...legacyReinstallWithoutHost, SOVEREIGN_LISTEN: socket, NODE_ENV: 'production' });
   assert.equal(executorReinstall.OPENAI_API_KEY, 'sk-operator');
   assert.equal(executorReinstall.RECIPE_IMPORT_USER_AGENT, 'Home Base importer/0.1', 'non-listed defaults are re-derived');
   assert.equal(executorReinstall.PORT, '3000');
