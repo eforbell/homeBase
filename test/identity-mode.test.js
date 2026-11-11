@@ -69,6 +69,9 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   const pulse = appLayout(getAppById('family-pulse'));
   assert.deepEqual([pulse.identityModes, pulse.listen.kind, pulse.identity.own, pulse.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-pulse']);
   assert.deepEqual(appLayout(getAppById('home-source')).identityModes, ['local'], 'on its socket, but its code reads no mode');
+  // Family Dinner: low-friction, on its socket as the shared user, and its code reads the mode.
+  const dinner = appLayout(getAppById('family-dinner'));
+  assert.deepEqual([dinner.identityModes, dinner.listen.kind, dinner.identity.own], [['local', 'tailnet'], 'unix', false]);
   assert.deepEqual(appLayout(withIdentity('family-pulse', 'local')).identityModes, ['local']);
   // Fast to Eat still listens on loopback TCP, where any local process could forge identity headers.
   assert.throws(() => appLayout(withIdentity('fast-to-eat')), /needs runtime.listen 'unix'/);

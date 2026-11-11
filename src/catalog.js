@@ -232,6 +232,8 @@ const catalog = [
       nodeEnv: 'production',
       // SID-007: listens on the unix socket SOVEREIGN_LISTEN names (familyDinner lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // and reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members' roles replace its picker.
+      identity: 'tailnet',
     },
     network: {
       preferredMountPath: '/dinner/',

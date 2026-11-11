@@ -39,7 +39,7 @@ test('placeholder substitution is single-pass, so values cannot inject further p
   assert.equal(resolved.DATABASE_URL, 'postgresql://u:{{port}}@h/db');
 });
 
-test('the executor renders Family Dinner exactly like the legacy planner, plus the runtime NODE_ENV and its socket', () => {
+test('the executor renders Family Dinner exactly like the legacy planner, plus the runtime NODE_ENV, its socket and its sign-in mode', () => {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -59,7 +59,8 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   const executorFresh = env.parseDotEnv(renderAppEnvFile({ layout, password, site, fsImpl: noFonts }));
   // SOVEREIGN_LISTEN (SID-007): Dinner listens on its own socket, so the executor writes it instead of loopback HOST.
   const socket = 'unix:/run/sovereign-apps/family-dinner/app.sock';
-  assert.deepEqual(executorFresh, { ...legacyFresh, SOVEREIGN_LISTEN: socket, NODE_ENV: 'production' });
+  // Dinner can trust tailnet identity, so its .env always carries a mode; a fresh install starts local.
+  assert.deepEqual(executorFresh, { ...legacyFresh, SOVEREIGN_LISTEN: socket, SOVEREIGN_AUTH_MODE: 'local', NODE_ENV: 'production' });
   assert.equal(executorFresh.APP_PUBLIC_URL, 'https://newhost.tailnet/dinner/');
 
   // Reinstall: operator edits, an operator-added key, stale derived values, same-role DB wiring.
@@ -70,7 +71,11 @@ test('the executor renders Family Dinner exactly like the legacy planner, plus t
   const executorReinstall = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv(existing), fsImpl: noFonts }));
   // An install from before the socket kept HOST; the executor drops it, since the app now listens on the socket.
   const { HOST: _legacyHost, ...legacyReinstallWithoutHost } = legacyReinstall;
-  assert.deepEqual(executorReinstall, { ...legacyReinstallWithoutHost, SOVEREIGN_LISTEN: socket, NODE_ENV: 'production' });
+  assert.deepEqual(executorReinstall, { ...legacyReinstallWithoutHost, SOVEREIGN_LISTEN: socket, SOVEREIGN_AUTH_MODE: 'local', NODE_ENV: 'production' });
+  // Once the operator has switched it, an update keeps tailnet mode.
+  const switched = env.parseDotEnv(renderAppEnvFile({ layout, password, site, existingContent: env.renderEnv({ ...existing, SOVEREIGN_AUTH_MODE: 'tailnet', SOVEREIGN_HOMEBASE_UID: '990' }), fsImpl: noFonts }));
+  assert.equal(switched.SOVEREIGN_AUTH_MODE, 'tailnet');
+  assert.equal(switched.SOVEREIGN_HOMEBASE_UID, '990');
   assert.equal(executorReinstall.OPENAI_API_KEY, 'sk-operator');
   assert.equal(executorReinstall.RECIPE_IMPORT_USER_AGENT, 'Home Base importer/0.1', 'non-listed defaults are re-derived');
   assert.equal(executorReinstall.PORT, '3000');
