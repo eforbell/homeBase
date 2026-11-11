@@ -38,23 +38,23 @@ test('nginx keeps each app\'s URI behavior over the socket: prefix-stripping and
     assert.match(renderAppLocations(helm), /proxy_pass http:\/\/unix:\/run\/sovereign-apps\/helm\/app\.sock;/);
     assert.doesNotMatch(renderAppLocations(helm), /app\.sock:\//, 'mount-preserving: no URI, so /helm/... passes through');
   });
-  const tcp = appLayout(getAppById('family-dinner'));
+  const tcp = appLayout(getAppById('fast-to-eat'));
   assert.deepEqual(tcp.listen, { kind: 'tcp' });
-  assert.match(renderAppLocations(tcp), /proxy_pass http:\/\/127\.0\.0\.1:3000\/;/);
+  assert.match(renderAppLocations(tcp), /proxy_pass http:\/\/127\.0\.0\.1:3007\/;/);
 });
 
 test('the .env says where to listen: the socket, or loopback for apps that do not support one yet', () => {
   const password = 'Pass-word-1234';
   const env = (layout) => renderAppEnvFile({ layout, password, site: SITE });
-  assert.match(env(appLayout(getAppById('family-dinner'))), /^HOST=127\.0\.0\.1$/m);
-  assert.doesNotMatch(env(appLayout(getAppById('family-dinner'))), /SOVEREIGN_LISTEN/);
+  assert.match(env(appLayout(getAppById('fast-to-eat'))), /^HOST=127\.0\.0\.1$/m);
+  assert.doesNotMatch(env(appLayout(getAppById('fast-to-eat'))), /SOVEREIGN_LISTEN/);
   withSocket('family-pulse', (pulse) => {
     const text = env(pulse);
     assert.match(text, /^SOVEREIGN_LISTEN=unix:\/run\/sovereign-apps\/family-pulse\/app\.sock$/m);
     assert.doesNotMatch(text, /^HOST=/m);
   });
   // An operator's HOST=0.0.0.0 never survives a reinstall.
-  assert.match(renderAppEnvFile({ layout: appLayout(getAppById('family-dinner')), password, site: SITE, existingContent: 'HOST=0.0.0.0\n' }), /^HOST=127\.0\.0\.1$/m);
+  assert.match(renderAppEnvFile({ layout: appLayout(getAppById('fast-to-eat')), password, site: SITE, existingContent: 'HOST=0.0.0.0\n' }), /^HOST=127\.0\.0\.1$/m);
   // Switching modes drops the other mode's key: a TCP app keeping SOVEREIGN_LISTEN would stay on the
   // socket while nginx points at its port.
   withSocket('family-pulse', (pulse) => {
@@ -82,8 +82,8 @@ test('the socket directory: owned by the app user, nginx\'s group, 2750, recreat
       await assert.rejects(() => bad['systemd.apply-tmpfiles'](op('systemd.apply-tmpfiles'), { layout: pulse }), /is not sovereign-pulse:www-data 2750/);
     }
   });
-  assert.throws(() => renderManagedFile(op('filesystem.write-managed-file', { purpose: 'app-tmpfiles', template: 'app-tmpfiles-v1' }), { layout: appLayout(getAppById('family-dinner')), identity: SHARED_IDENTITY }), (error) => error.code === 'POLICY_DENIED');
-  await assert.rejects(() => createBaseHandlers({ lookupUser: users() })['systemd.apply-tmpfiles'](op('systemd.apply-tmpfiles'), { layout: appLayout(getAppById('family-dinner')) }), /does not listen on a socket/);
+  assert.throws(() => renderManagedFile(op('filesystem.write-managed-file', { purpose: 'app-tmpfiles', template: 'app-tmpfiles-v1' }), { layout: appLayout(getAppById('fast-to-eat')), identity: SHARED_IDENTITY }), (error) => error.code === 'POLICY_DENIED');
+  await assert.rejects(() => createBaseHandlers({ lookupUser: users() })['systemd.apply-tmpfiles'](op('systemd.apply-tmpfiles'), { layout: appLayout(getAppById('fast-to-eat')) }), /does not listen on a socket/);
 });
 
 test('install and move plans create the socket directory before the app starts; tcp apps may not', () => {
@@ -96,10 +96,10 @@ test('install and move plans create the socket directory before the app starts; 
     assert.ok(moveIds.indexOf('reown-app') < moveIds.indexOf('ensure-socket-directory') && moveIds.indexOf('ensure-socket-directory') < moveIds.indexOf('start-service'));
     validateOperationPolicy(move);
   });
-  const dinner = JSON.parse(JSON.stringify(buildAppInstallPlan({ appId: 'family-dinner' })));
-  assert.equal(dinner.operations.some((operation) => operation.type === 'systemd.apply-tmpfiles'), false);
+  const tcpPlan = JSON.parse(JSON.stringify(buildAppInstallPlan({ appId: 'fast-to-eat' })));
+  assert.equal(tcpPlan.operations.some((operation) => operation.type === 'systemd.apply-tmpfiles'), false);
   // A well-formed step a tcp app's plan was never compiled with: policy refuses it.
-  const sneak = JSON.parse(JSON.stringify(dinner));
+  const sneak = JSON.parse(JSON.stringify(tcpPlan));
   const reload = sneak.operations.find((operation) => operation.type === 'systemd.daemon-reload');
   sneak.operations.splice(sneak.operations.indexOf(reload) + 1, 0, { ...reload, id: 'sneak', type: 'systemd.apply-tmpfiles', dependsOn: [reload.id] });
   assert.throws(() => validateOperationPolicy(sneak), /does not listen on a socket/);
