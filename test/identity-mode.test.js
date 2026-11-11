@@ -236,6 +236,23 @@ test('a low-friction app shares the user by design, so it may trust tailnet iden
   assert.match(updated.SOVEREIGN_HOMEBASE_UID, /^[1-9][0-9]*$/);
 });
 
+test('Family Dinner switches on the home hostname, as the shared user, only at that address', async () => {
+  const DINNER_ENV = '/opt/sovereign-home/apps/familyDinner/.env';
+  const layout = appLayout(getAppById('family-dinner'));
+  const dinner = (content) => host({ '/opt/sovereign-home/apps/familyDinner': { kind: 'dir', uid: 1001 }, [DINNER_ENV]: { kind: 'file', content, uid: 1001, mode: 0o640 } });
+  const onSocket = `PORT=3000\n${listenOn('family-dinner')}`;
+  // Not updated since the cutover (old address), or pointing at another service's hostname: refused, nothing written.
+  for (const address of ['APP_PUBLIC_URL=https://host.example-tailnet.ts.net/dinner/\n', 'APP_PUBLIC_URL=https://smith-pulse.example-tailnet.ts.net/dinner/\n', '']) {
+    const stale = dinner(`${onSocket}${address}`);
+    await assert.rejects(() => stale.set('tailnet', layout));
+    assert.equal(stale.fsImpl.readFileSync(DINNER_ENV), `${onSocket}${address}`, address || 'no address');
+  }
+  const { fsImpl, as, set } = dinner(`${onSocket}APP_PUBLIC_URL=https://smith-home.example-tailnet.ts.net/dinner/\n`);
+  assert.match(await set('tailnet', layout), /trusts tailnet identity/);
+  assert.match(fsImpl.readFileSync(DINNER_ENV), /^SOVEREIGN_AUTH_MODE=tailnet$/m);
+  assert.ok(as.length > 0 && as.every((uid) => uid === 1001), `written as the shared sovereign user: ${as}`);
+});
+
 // The route module, with the admin check, Tailscale and the executor faked; Home Base active by default.
 async function routes(t, { lifecycle = 'active', installations = { 'family-pulse': { appId: 'family-pulse' } }, cutOver = true, published = true, hosts = null, appBlock = () => null, actions = ['install', 'identity-mode'] } = {}) {
   const jobs = [];
