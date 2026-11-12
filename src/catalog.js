@@ -724,6 +724,9 @@ const catalog = [
       nodeEnv: 'production',
       // SID-002: listens on the unix socket SOVEREIGN_LISTEN names (lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // SID-007: reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members and passkeys replace its own
+      // passphrases. As a sensitive app, it switches only once it runs as its own user (app.set-identity-mode).
+      identity: 'tailnet',
     },
     systemPackages: ['poppler-utils', 'tesseract-ocr'],
     network: {
@@ -815,6 +818,7 @@ const catalog = [
         STORAGE_PATH: '/var/lib/sovereign-home/home-source/data',
         HOUSEHOLD_TIMEZONE: '{{householdTimezone}}',
         APP_URL: '{{externalUrl}}',
+        APP_PUBLIC_URL: '{{externalUrl}}',
         MAIL_TRANSPORT: 'smtp',
         SMTP_HOST: '',
         SMTP_PORT: '587',
