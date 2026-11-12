@@ -144,6 +144,8 @@ const catalog = [
       nodeEnv: 'production',
       // Listens on the unix socket SOVEREIGN_LISTEN names (familyHelp lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // Reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members' roles replace its picker and settings PIN.
+      identity: 'tailnet',
     },
     network: {
       preferredMountPath: '/help/',
@@ -407,6 +409,8 @@ const catalog = [
       nodeEnv: 'production',
       // Listens on the unix socket SOVEREIGN_LISTEN names (fastToEat lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // Reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members' roles replace its picker.
+      identity: 'tailnet',
     },
     network: {
       preferredMountPath: '/fte/',
@@ -935,6 +939,8 @@ const catalog = [
       nodeEnv: 'production',
       // Listens on the unix socket SOVEREIGN_LISTEN names (homeOps lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // Reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members' roles replace its passphrases and settings PIN.
+      identity: 'tailnet',
     },
     network: {
       preferredMountPath: '/ops/',
@@ -1099,6 +1105,8 @@ const catalog = [
       nodeEnv: 'production',
       // Listens on the unix socket SOVEREIGN_LISTEN names (remindMe lib/listen.js), reachable only through nginx.
       listen: 'unix',
+      // Reads SOVEREIGN_AUTH_MODE (lib/suite-identity.js): household members' roles replace its "who is using this phone" choice.
+      identity: 'tailnet',
     },
     network: {
       preferredMountPath: '/remind/',
