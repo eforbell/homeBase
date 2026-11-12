@@ -49,6 +49,7 @@ async function startServer(t, { cutOver = true, whois = PEER_WHOIS, again = null
     serviceUser: 'sovereign',
     identitySocket: '',
     identitySnapshotFile: path.join(identityDir, 'snapshot.json'),
+    identitySnapshotTrustedRoot: root,
     ingressCheckDelayMs: 3_600_000,
     healthAlertCheckDelayMs: 3_600_000,
     instance: 'smith',

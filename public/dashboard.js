@@ -1,5 +1,98 @@
 (function dashboardPage() {
   const root = document.getElementById('app');
+  let refreshTimer = null;
+  let waiting = false;
+  let loading = false;
+  let suspended = false;
+
+  function stopRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+
+  function scheduleRefresh() {
+    stopRefresh();
+    if (waiting && !suspended && document.visibilityState === 'visible') {
+      refreshTimer = setTimeout(() => load({ refresh: true }), 10000);
+    }
+  }
+
+  function renderHome(home) {
+    const escape = window.HB.escapeHtml;
+    const identity = home.caller
+      ? `<p class="hb-muted hb-home-identity">Connected as <strong>${escape(home.caller.name || home.caller.login)}</strong>${home.caller.name ? ` · ${escape(home.caller.login)}` : ''}</p>` : '';
+    const refresh = '<button class="hb-btn" type="button" data-home-refresh>Check again</button>';
+    const unlock = home.canUnlockAdmin ? '<a class="hb-btn" href="/admin">Unlock administration</a>' : '';
+    if (home.state === 'member') {
+      document.title = 'Home Base - Your apps';
+      root.innerHTML = `<div class="hb-stack">
+        <section class="hb-card">
+          <h1 style="margin:0;">Your apps</h1>${identity}
+          <p class="hb-muted">Choose an app to get started. Each app checks its own access when you open it.</p>
+          <div class="hb-actions">${unlock}${refresh}</div>
+        </section>
+        ${home.apps.length ? `<section class="hb-grid hb-grid-2" aria-label="Your apps">${home.apps.map((app) => `
+          <article class="hb-card hb-home-app">
+            <h2 class="hb-row" style="margin:0;">${app.icon ? `<span class="hb-app-icon" aria-hidden="true">${escape(app.icon)}</span>` : ''}${escape(app.name)}</h2>
+            <a class="hb-btn hb-btn-primary" href="${escape(app.url)}" aria-label="Open ${escape(app.name)}">Open ↗</a>
+          </article>`).join('')}</section>` : '<section class="hb-card" role="status"><h2 style="margin-top:0;">No apps available yet</h2><p class="hb-muted" style="margin-bottom:0;">You’re a member, but no apps are available to you yet. Ask your household administrator to check your app access.</p></section>'}
+        <section class="hb-card">
+          <details><summary>Have a passkey enrollment code?</summary>
+            <p class="hb-muted">You don’t need a passkey to see your apps. If an app needs one, your administrator can give you an enrollment code.</p>
+            <a class="hb-btn" href="/admin">Set up or manage your passkeys</a>
+          </details>
+        </section>
+      </div>`;
+      return;
+    }
+    const messages = {
+      waiting: ['Welcome to Home Base', 'Your household administrator needs to add you before your apps appear.', home.candidateObserved
+        ? 'Your visit is visible in Admin → Members. Ask your administrator to find your account there and add you. This page checks for access automatically.'
+        : 'Ask your administrator to look for your account in Members. If it isn’t listed, check that you opened Home Base from your own tailnet device, then try again.'],
+      disabled: ['Access unavailable', 'Your household account is disabled.', 'Contact your household administrator if you think this is a mistake.'],
+      unidentified: ['Connect to your household', 'Home Base couldn’t verify your tailnet account.', 'Connect to your household tailnet on your own device, then check again. A passkey is not needed for this step.'],
+      unavailable: ['We couldn’t check your access', 'Home Base can’t check your household membership right now.', 'Try again in a moment. If this continues, ask your household administrator to check the connection.'],
+      setup: ['Your household is being set up', 'Your household administrator needs to finish setup before apps are available.', 'The administrator registers two passkeys, including a hardware security key, and finishes setup on Admin.'],
+      recovery: ['Your household is in recovery', 'Apps will appear here after your administrator finishes recovery.', 'Every session has ended. Only replacing and removing administrator passkeys works until recovery is finished with a hardware key.'],
+    };
+    const [title, message, detail] = messages[home.state] || messages.unavailable;
+    document.title = `Home Base - ${title}`;
+    root.innerHTML = `<div class="hb-stack">
+      <section class="hb-card"><h1 style="margin:0;">${title}</h1>${identity}
+        <p>${message}</p><p class="hb-muted">${detail}</p>
+        <div class="hb-actions">${refresh}${['setup', 'recovery'].includes(home.state) ? '<a class="hb-btn" href="/admin">Administrator: finish on Admin</a>' : ''}</div>
+        ${home.state === 'waiting' ? '<p class="hb-muted" role="status" style="margin-bottom:0;">Waiting for your administrator. No passkey is required to see your apps.</p>' : ''}
+      </section>
+    </div>`;
+  }
+
+  async function load({ refresh = false } = {}) {
+    if (loading || suspended) return;
+    loading = true;
+    stopRefresh();
+    const button = root.querySelector('[data-home-refresh]');
+    if (button) button.disabled = true;
+    try {
+      const home = await window.HB.getHome({ refresh });
+      if (suspended) return;
+      waiting = home.state === 'waiting';
+      window.HB.updateHomeNavigation(home);
+      if (home.state === 'legacy' || home.state === 'administrator') {
+        document.title = 'Home Base - Dashboard';
+        await loadAdministrator();
+      } else {
+        renderHome(home);
+      }
+    } catch (_error) {
+      if (!suspended) {
+        window.HB.updateHomeNavigation({ state: 'unavailable' });
+        renderHome({ state: 'unavailable' });
+      }
+    } finally {
+      loading = false;
+      scheduleRefresh();
+    }
+  }
 
   function renderInstallCards(installations, healthByAppId, catalogById) {
     if (!installations.length) {
@@ -159,7 +252,7 @@
     });
   }
 
-  async function load() {
+  async function loadAdministrator() {
     try {
       const [state, status, config, bootstrapStatus, healthPayload, catalogPayload] = await Promise.all([
         window.HB.getJson('/api/state'),
@@ -258,5 +351,16 @@
   // Once: the listeners sit on the page root, which every load() re-renders into. Wiring inside load()
   // added another set each time, so one click after a refresh submitted the action twice.
   wireEvents();
+  root.addEventListener('click', (event) => {
+    if (event.target.closest('[data-home-refresh]')) load({ refresh: true });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') load({ refresh: true });
+    else stopRefresh();
+  });
+  window.addEventListener('pagehide', () => { suspended = true; stopRefresh(); });
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) { suspended = false; load({ refresh: true }); }
+  });
   load();
 }());

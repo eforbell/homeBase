@@ -198,6 +198,7 @@ Until the household directory exists, services may be published but no app can u
 **SID-006 slice 1, the route matrix (2026-11-04).**
 - **Every route has an entry:** its class (public, member self-service, administrator), its assurance policy and who authorizes it. No entry is a 404, and a source scan fails if a handler and the matrix disagree.
 - **Decided with the administrator:** with the directory on, every administrator route, reads included, needs the unlocked administrator. Members use Home Base for their own passkeys only. Hosts with the directory off are unchanged.
+- **Member-home extension (2026-11-12):** the statement above records the original scope. `/` now also offers an onboarding welcome and an admitted member's granted, installed apps through a separate, minimal `/api/home` view. No passkey is needed for discovery; all existing operational APIs remain administrator-only. See [implementation plan](../../docs/member-home-implementation-plan.md).
 - **Codex:** three rounds, the last clean. A locked Admin page that lost its unlock card was found in the browser and fixed (#32). Merged: #31, #32.
 
 **SID-006 slice 2, the hardware key for every privileged plan (2026-11-04).**

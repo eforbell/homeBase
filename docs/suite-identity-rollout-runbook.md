@@ -149,7 +149,7 @@ Plan a quiet hour. **Apps are unreachable from the cutover (B4) until their serv
    ```
    Never approve a tag that several hosts share. Any host holding it can become an approved standby, with a valid certificate for the hostname, and take the service's traffic when this host stops serving. Home Base refuses to publish while another host is approved, but the policy is the boundary.
 5. **Review each service's existing approvals** and remove any host but this one. Tightening approvers doesn't revoke approvals that already exist.
-6. **Grant members the addresses they use.** A member not granted an address gets a DNS error for it, not a refusal. Members who will use a passkey app also need `svc:<instance>-homebase`, where passkeys are managed.
+6. **Grant members the addresses they use.** A member not granted an address gets a DNS error for it, not a refusal. All members using the Home Base launcher, including kids without passkeys, need `svc:<instance>-homebase`. It hosts their app list and onboarding welcome as well as passkey management; reaching it does not grant administrator access. App services still need their own network grants.
    ```jsonc
    { "src": ["group:family"], "dst": ["svc:<instance>-home", "svc:<instance>-homebase", "svc:<instance>-pulse"], "ip": ["tcp:443"] }
    ```
@@ -303,11 +303,11 @@ On `https://<instance>-homebase.<tailnet>/admin`:
 
 Home Base signs its sessions with its own key, beside its database. Rotate it under **Signing key** on the Passkeys card (hardware key each time); tick **It may have been exposed** only if it may have been, because that ends every session at once.
 
-### C5. Add members, and give each a passkey
+### C5. Add members, and enroll passkeys only when needed
 
-1. Ask the person to open `https://<instance>-homebase.<tailnet>/` once from their own device, signed in to the tailnet as themselves. They'll be turned away; Home Base now knows the account for a day.
-2. Admin → **Members** → **Add a member** → **Check again**. Pick their role (**parent** or **kid**: there is no default) and **Add member**.
-3. Members who will use a sensitive app need a passkey: **Issue enrollment code** on their row. The code works once, for 15 minutes, only on Home Base's own address. Give it to them in person; they open Admin there, enter it under **Passkeys**, and register one.
+1. Ask the person to open `https://<instance>-homebase.<tailnet>/` from their own device, signed in to the tailnet as themselves. The welcome page names their account and explains that the administrator must add them. Once ingress has observed the visit, the page confirms that the account is visible in Members for a day. If it does not, check their tailnet connection and Home Base service grant before continuing.
+2. Admin → **Members** → **Add a member** → **Check again**. Pick their role (**parent** or **kid**: there is no default) and **Add member**. Their visible welcome page checks every 10 seconds while awaiting admission, then switches to **Your apps**. They can also select **Check again**. Only the administrator grants membership and app access.
+3. Passkeys are not required to discover apps or use low-friction apps. Kids' supported, scoped views in sensitive apps also stay at tailnet level (D7). For a member who needs passkey-protected access, use **Issue enrollment code** on their row. The code works once, for 15 minutes, only on Home Base's own address. Give it to them in person; they use **Have a passkey enrollment code?** on Home or open Admin, enter it under **Passkeys**, and register one. Enrollment does not grant membership or app access.
 
 By default a member reaches every installed app except trading and Bitcoin accounting, which only the administrator reaches. To change one member's apps, open **Change apps** in their row on the Members card and choose the default or a list of the apps installed here. A change ends the passkey confirmations they gave apps; an app asks again when it needs one.
 

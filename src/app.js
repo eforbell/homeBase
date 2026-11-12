@@ -967,7 +967,51 @@ function createApp(config) {
     homeBaseUid: process.getuid(),
     file: directory.snapshotFile,
     trustedRoot: config.identitySnapshotTrustedRoot || null,
+    // Home Base owns the source: reflect admission, revocation and trust failures on the next refresh.
+    recheckMs: 0,
   }) : null;
+
+  // A caller's landing view, never an administrator payload with fields hidden by the browser. Unknown
+  // callers learn only their own onboarding state; ingress (not this GET) records candidate visits.
+  async function describeHome(req, effectiveConfig) {
+    const view = (state, caller = null, extra = {}) => ({ state, caller, canUnlockAdmin: false, apps: [], ...extra });
+    if (!directory) return view('legacy');
+    try {
+      const identity = await callerOf(req);
+      const caller = identity ? { name: identity.name, login: identity.login } : null;
+      const administrator = Boolean(identity && directory.isAdministrator(identity.userId));
+      const admin = administrator ? await getAdminStatus(req, stateStore, adminOptions) : null;
+      // All authorization data is read after the identity/session waits, including the lifecycle state.
+      const lifecycle = directory.state();
+      if (lifecycle !== 'active') return view(lifecycle, caller, { canUnlockAdmin: administrator });
+      if (!identity) return view('unidentified');
+      if (admin?.unlocked) return view('administrator', caller, { canUnlockAdmin: true });
+      const current = snapshotReader.current();
+      if (!current.ok) return view('unavailable', caller);
+      const member = current.snapshot.byUserId.get(identity.userId);
+      if (!member) return view('waiting', caller, { candidateObserved: directory.candidateObserved(identity.userId, identity.login) });
+      if (member.login !== identity.login) return view('unavailable', caller);
+      if (member.status !== 'active') return view('disabled', caller);
+      // A failed publication clears ingress admission even while the last file is still within its age
+      // window. Do not bypass that fail-closed state just because whois still identifies the device.
+      if (directory.memberStatus(identity.userId) !== 'active') return view('unavailable', caller);
+      const headers = { 'x-sovereign-user-id': identity.userId, 'x-sovereign-login': identity.login };
+      const state = stateStore.loadState();
+      const allowed = Object.fromEntries(catalog
+        .filter((app) => state.installations?.[app.id]?.status === 'installed'
+          && resolveMember(current.snapshot, headers, { appId: app.id }).member)
+        .map((app) => [app.id, state.installations[app.id]]));
+      const installations = projectInstallationsWithCurrentUrls(allowed, effectiveConfig, currentIngress(state.ingressJobs, effectiveConfig));
+      const apps = catalog.filter((app) => installations[app.id]).map((app) => ({
+        id: app.id, name: app.name, icon: app.icon || '', url: installations[app.id].externalUrl,
+      }));
+      return view('member', { name: member.name, login: member.login }, { canUnlockAdmin: administrator, apps });
+    } catch (error) {
+      warn(`member home unavailable (${error.message})`);
+      // Reader/database errors can contain host paths or other members' IDs. Never send them here.
+      return view('unavailable');
+    }
+  }
 
   // Who is asking (callerOf above), and what sovereignAuth makes of it. X-Sovereign-* headers are only
   // compared with the caller, so a forged one reveals nothing about another member. Read-only.
@@ -1101,6 +1145,9 @@ function createApp(config) {
         }
       }
 
+      if (method === 'GET' && pathname === '/api/home') {
+        return sendJson(res, 200, await describeHome(req, effectiveConfig));
+      }
       if (method === 'GET' && pathname === '/api/identity/whoami') {
         if (!directory) return sendJson(res, 404, { error: 'The household directory is off (HOME_BASE_DIRECTORY).' });
         return sendJson(res, 200, await describeIdentity(req));

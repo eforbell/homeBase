@@ -5,7 +5,7 @@
 // class:
 //   public         nothing to protect: page shells (their data comes from the API), static assets, the
 //                  lock state, and the health probe the installer runs on the host
-//   self           member self-service: acts only on the caller's own credentials, checked by their stable
+//   self           member self-service: the caller's own home view or credentials, checked by their stable
 //                  user ID in the route's own module (the passkey service)
 //   administrator  the administrator's
 // authority (who decides, for administrator routes):
@@ -18,7 +18,8 @@
 // routes run with the session today; the every-time hardware token is SID-006 slice 2.
 //
 // With the directory on, every administrator route with session authority, reads included, needs the
-// unlocked administrator (members use Home Base for their own passkeys only). With it off (hosts not yet on
+// unlocked administrator. Members also get their own filtered home view, not the operational dashboard.
+// With it off (hosts not yet on
 // Feature-10), only the unknown-route refusal applies here, and each handler keeps the gate it always had.
 
 const ID = '[^/]+';
@@ -49,6 +50,7 @@ const ROUTES = [
   ['POST', '/api/admin/rotate', 'administrator', 'privileged-plan'],
 
   // Member self-service.
+  ['GET', '/api/home', 'self', 'use-app', 'route'],
   ['GET', '/api/identity/whoami', 'self', 'use-app', 'route'],
   // The administrator's view of the directory, or a member's own: who they are and the household's state.
   ['GET', '/api/directory', 'self', 'use-app', 'route'],

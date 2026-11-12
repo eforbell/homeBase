@@ -8,11 +8,8 @@
     { id: 'admin', label: 'Admin', href: '/admin', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9.5 12.5 11 14l3.5-4"/></svg>' },
     { id: 'config', label: 'Config', href: '/config', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>' },
   ];
-  const mobileItems = navItems.slice(0, 4);
-  const moreItems = navItems.slice(4);
 
-  function renderLinks(activePage, { mobile = false } = {}) {
-    const items = mobile ? mobileItems : navItems;
+  function renderLinks(activePage, items, { mobile = false } = {}) {
     return items.map((item) => {
       const activeClass = item.id === activePage ? ' is-active' : '';
       const label = (mobile && item.mobileLabel) ? item.mobileLabel : item.label;
@@ -20,7 +17,9 @@
     }).join('');
   }
 
+  let preflightStatus = 'yellow';
   function setStatusDot(status) {
+    preflightStatus = status;
     document.querySelectorAll('.hb-status-dot').forEach((dot) => {
       dot.className = `hb-status-dot hb-status-dot--${status}`;
     });
@@ -84,93 +83,107 @@
 
   const sidebar = document.createElement('aside');
   sidebar.className = 'hb-app-sidebar';
-  sidebar.innerHTML = `
-    <div class="hb-nav-wordmark">
-      <svg class="hb-nav-logo" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2L1 9.5H4V18H9V14H11V18H16V9.5H19L10 2Z"/></svg>
-      <span>Home <strong>Base</strong></span>
-      <span class="hb-status-dot hb-status-dot--yellow"></span>
-    </div>
-    ${renderLinks(activePage)}
-  `;
-
   const bottom = document.createElement('nav');
   bottom.className = 'hb-app-bottom-bar';
-  const moreActive = moreItems.some((item) => item.id === activePage) ? ' is-active' : '';
-  const moreButton = moreItems.length ? `
-    <button class="hb-nav-link hb-nav-link--more${moreActive}" id="hb-more-nav-btn" type="button" aria-label="Home Base menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>
-      <span>Base</span>
-    </button>
-  ` : '';
-  bottom.innerHTML = renderLinks(activePage, { mobile: true }) + moreButton;
-
   const moreSheet = document.createElement('div');
   moreSheet.className = 'hb-more-sheet hidden';
-  if (moreItems.length) {
-    moreSheet.innerHTML = `
-      <div class="hb-more-sheet-backdrop"></div>
-      <div class="hb-more-sheet-panel">
-        <div class="hb-more-sheet-brand">
-          <svg class="hb-nav-logo" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2L1 9.5H4V18H9V14H11V18H16V9.5H19L10 2Z"/></svg>
-          <div>
-            <div class="hb-more-sheet-title">Home Base</div>
-            <div class="hb-more-sheet-copy">Network, admin, and config</div>
-          </div>
-        </div>
-        ${moreItems.map((item) => {
-          const activeClass = item.id === activePage ? ' is-active' : '';
-          return `<a class="hb-more-sheet-item${activeClass}" href="${item.href}">${item.icon}<span>${item.label}</span></a>`;
-        }).join('')}
+  let hadAdminNavigation = false;
+
+  function updateHomeNavigation(home) {
+    const full = home.state === 'legacy' || home.state === 'administrator';
+    const homeLink = { ...navItems[0], label: 'Home' };
+    const selfService = home.state === 'member';
+    const lifecycle = home.state === 'setup' || home.state === 'recovery';
+    const items = full ? navItems : [homeLink, ...(selfService || lifecycle ? [{ ...navItems[5],
+      label: home.canUnlockAdmin || lifecycle ? 'Admin' : 'Passkeys',
+    }] : [])];
+    const mobileItems = full ? items.slice(0, 4) : items;
+    const moreItems = full ? items.slice(4) : [];
+    sidebar.innerHTML = `
+      <div class="hb-nav-wordmark">
+        <svg class="hb-nav-logo" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2L1 9.5H4V18H9V14H11V18H16V9.5H19L10 2Z"/></svg>
+        <span>Home <strong>Base</strong></span>
+        ${full ? `<span class="hb-status-dot hb-status-dot--${preflightStatus}" aria-label="System status"></span>` : ''}
       </div>
+      ${renderLinks(activePage, items)}
     `;
+
+    const moreActive = moreItems.some((item) => item.id === activePage) ? ' is-active' : '';
+    const moreButton = moreItems.length ? `
+      <button class="hb-nav-link hb-nav-link--more${moreActive}" id="hb-more-nav-btn" type="button" aria-label="Home Base menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>
+        <span>Base</span>
+      </button>
+    ` : '';
+    bottom.innerHTML = renderLinks(activePage, mobileItems, { mobile: true }) + moreButton;
+
+    moreSheet.classList.add('hidden');
+    moreSheet.innerHTML = '';
+    if (moreItems.length) {
+      moreSheet.innerHTML = `
+        <div class="hb-more-sheet-backdrop"></div>
+        <div class="hb-more-sheet-panel">
+          <div class="hb-more-sheet-brand">
+            <svg class="hb-nav-logo" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2L1 9.5H4V18H9V14H11V18H16V9.5H19L10 2Z"/></svg>
+            <div>
+              <div class="hb-more-sheet-title">Home Base</div>
+              <div class="hb-more-sheet-copy">Network, admin, and config</div>
+            </div>
+          </div>
+          ${moreItems.map((item) => {
+            const activeClass = item.id === activePage ? ' is-active' : '';
+            return `<a class="hb-more-sheet-item${activeClass}" href="${item.href}">${item.icon}<span>${item.label}</span></a>`;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    showBootstrapBanner(home, full);
+    if (full && !hadAdminNavigation) refreshPreflightStatus();
+    hadAdminNavigation = full;
   }
 
-  // Feature-10 (D16): while Home Base is in setup or recovery, most of it refuses to act, so every page says
-  // so and where to finish. With the household directory off, /api/directory is a 404 and nothing shows.
-  async function showBootstrapBanner() {
-    let directory;
-    try {
-      directory = await window.HB.getJson('/api/directory');
-    } catch (_error) {
+  // Only non-home pages need a contextual banner. The landing controller owns its own lifecycle and
+  // onboarding messages, so a member's useful Home view is never overlaid with an admin-lock warning.
+  let banner = null;
+  let bannerObserver = null;
+  function showBootstrapBanner(home, full) {
+    const main = document.getElementById('app');
+    if (!main || activePage === 'dashboard' || activePage === 'admin') return;
+    const messages = {
+      setup: 'Home Base is in <strong>setup</strong>. The administrator must register two passkeys, including a hardware security key, and finish on Admin.',
+      recovery: 'Home Base is in <strong>recovery</strong>. Every session has ended; the administrator must finish recovery on Admin with a hardware key.',
+    };
+    const message = messages[home.state] || (!full ? 'This page is for your household administrator. <a href="/">Find your apps on Home</a>.' : '');
+    if (!message) {
+      if (banner) banner.remove();
+      banner = null;
       return;
     }
-    const messages = {
-      setup: 'Home Base is in <strong>setup</strong>. Until the administrator registers two passkeys, one of them a hardware security key, and finishes setup, plans and setting changes are refused.',
-      recovery: 'Home Base is in <strong>recovery</strong>. Every session has ended; only replacing and removing administrator passkeys works until it is finished with a hardware key.',
-    };
-    // Active, and this is the locked view (anyone but the unlocked administrator): every page's data is the
-    // administrator's (SID-006), so say why it is empty and where to go.
-    if (directory.state === 'active' && directory.caller && activePage !== 'admin') {
-      messages.active = directory.caller.member
-        ? 'These pages are the administrator\'s, and admin is locked. The administrator unlocks it with a passkey; everyone manages their own passkeys there too.'
-        : 'These pages are for the household\'s administrator.';
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.className = 'hb-card';
+      banner.setAttribute('role', 'status');
+      banner.style.cssText = 'border-color:var(--yellow);margin-bottom:1rem;';
     }
-    const main = document.getElementById('app');
-    if (!messages[directory.state] || !main) return;
-    const banner = document.createElement('div');
-    banner.className = 'hb-card';
-    banner.setAttribute('role', 'status');
-    banner.style.cssText = 'border-color:var(--yellow);margin-bottom:1rem;';
-    const link = directory.state === 'active' ? (directory.caller.member ? '<a href="/admin">Go to Admin</a>.' : '') : '<a href="/admin">Finish on Admin</a>.';
-    banner.innerHTML = `<p style="margin:0;">${messages[directory.state]} ${activePage === 'admin' ? 'Use Passkeys below.' : link}</p>`;
+    banner.innerHTML = `<p style="margin:0;">${message} ${messages[home.state] ? '<a href="/admin">Go to Admin</a>.' : ''}</p>`;
     main.prepend(banner);
-    // The page's own render replaces main's contents; keep the banner on top of whatever it draws.
-    new MutationObserver(() => { if (main.firstElementChild !== banner) main.prepend(banner); }).observe(main, { childList: true });
+    if (!bannerObserver) {
+      bannerObserver = new MutationObserver(() => { if (banner && main.firstElementChild !== banner) main.prepend(banner); });
+      bannerObserver.observe(main, { childList: true });
+    }
   }
 
   document.body.appendChild(sidebar);
   document.body.appendChild(bottom);
   document.body.appendChild(moreSheet);
-  refreshPreflightStatus();
-  showBootstrapBanner();
-
-  function toggleMoreSheet() {
-    moreSheet.classList.toggle('hidden');
-  }
-
-  const moreButtonEl = document.getElementById('hb-more-nav-btn');
-  if (moreButtonEl && moreItems.length) {
-    moreButtonEl.addEventListener('click', toggleMoreSheet);
-    moreSheet.querySelector('.hb-more-sheet-backdrop').addEventListener('click', toggleMoreSheet);
-  }
+  bottom.addEventListener('click', (event) => {
+    if (event.target.closest('#hb-more-nav-btn')) moreSheet.classList.toggle('hidden');
+  });
+  moreSheet.addEventListener('click', (event) => {
+    if (event.target.closest('.hb-more-sheet-backdrop')) moreSheet.classList.toggle('hidden');
+  });
+  window.HB.updateHomeNavigation = updateHomeNavigation;
+  updateHomeNavigation({ state: 'loading' });
+  window.HB.getHome().then(updateHomeNavigation).catch(() => updateHomeNavigation({ state: 'unavailable' }));
 }());
