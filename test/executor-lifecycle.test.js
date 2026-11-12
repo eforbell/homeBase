@@ -133,7 +133,8 @@ test('restore keeps the identity mode the app is in now, never the one in the ba
   assert.match(env, /^SOVEREIGN_AUTH_MODE=local$/m);
   assert.doesNotMatch(env, /SOVEREIGN_HOMEBASE_UID|SOVEREIGN_AUTH_MODE=tailnet/);
   // An app that can't trust the directory gets no mode at all, whatever the backup said.
-  await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: SOURCE });
+  const incapable = appLayout({ ...app, runtime: { ...app.runtime, identity: 'local' } });
+  await handlers['backup.restore'](op('backup.restore', { risk: 'destructive', archiveName: '20260924T101010Z' }), { layout: incapable });
   assert.doesNotMatch(fsImpl.readFileSync(ENV), /SOVEREIGN_AUTH_MODE|SOVEREIGN_HOMEBASE_UID/);
 });
 
@@ -142,6 +143,8 @@ test('restore keeps the address the app is reached at now, never the one in the 
   // against APP_PUBLIC_URL and won't start without one.
   const app = getAppById('home-source');
   const told = appLayout({ ...app, runtime: { ...app.runtime, identity: 'tailnet' }, config: { ...app.config, env: { ...app.config.env, APP_PUBLIC_URL: '{{externalUrl}}' } } });
+  const { APP_PUBLIC_URL: _address, ...envWithoutAddress } = app.config.env;
+  const untold = appLayout({ ...app, runtime: { ...app.runtime, identity: 'local' }, config: { ...app.config, env: envWithoutAddress } });
   const DB = 'DATABASE_URL=postgresql://homesource:Live-pass-123@127.0.0.1:5432/homesource\n';
   const NOW = 'APP_PUBLIC_URL=https://smith-source.example-tailnet.ts.net/source/\n';
   const TAILNET = 'SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n';
@@ -151,7 +154,7 @@ test('restore keeps the address the app is reached at now, never the one in the 
     ['', told, NOW],
     ['APP_PUBLIC_URL=https://elsewhere.example/source/\n', told, NOW],
     // An app that isn't told its address keeps whatever the backup has, as before.
-    ['APP_PUBLIC_URL=https://elsewhere.example/source/\n', SOURCE, 'APP_PUBLIC_URL=https://elsewhere.example/source/\n'],
+    ['APP_PUBLIC_URL=https://elsewhere.example/source/\n', untold, 'APP_PUBLIC_URL=https://elsewhere.example/source/\n'],
   ]) {
     const { fsImpl, handlers } = harness({
       [ENV]: { kind: 'file', content: `${DB}${NOW}${TAILNET}`, uid: 1001 },

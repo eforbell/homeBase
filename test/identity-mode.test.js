@@ -68,7 +68,10 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   // Family Pulse, the canary: a sensitive app, so it runs as its own user (refused below until it has moved).
   const pulse = appLayout(getAppById('family-pulse'));
   assert.deepEqual([pulse.identityModes, pulse.listen.kind, pulse.identity.own, pulse.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-pulse']);
-  assert.deepEqual(appLayout(getAppById('home-source')).identityModes, ['local'], 'on its socket, but its code reads no mode');
+  // Home Source, the other sensitive app that reads the mode: its own hostname and its own user.
+  const source = appLayout(getAppById('home-source'));
+  assert.deepEqual([source.identityModes, source.listen.kind, source.identity.own, source.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-source']);
+  assert.deepEqual(appLayout(getAppById('helm')).identityModes, ['local'], 'on its socket, but its code reads no mode');
   // Family Dinner: low-friction, on its socket as the shared user, and its code reads the mode.
   const dinner = appLayout(getAppById('family-dinner'));
   assert.deepEqual([dinner.identityModes, dinner.listen.kind, dinner.identity.own], [['local', 'tailnet'], 'unix', false]);
