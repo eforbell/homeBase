@@ -73,9 +73,9 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   const dinner = appLayout(getAppById('family-dinner'));
   assert.deepEqual([dinner.identityModes, dinner.listen.kind, dinner.identity.own], [['local', 'tailnet'], 'unix', false]);
   assert.deepEqual(appLayout(withIdentity('family-pulse', 'local')).identityModes, ['local']);
-  // Fast to Eat still listens on loopback TCP, where any local process could forge identity headers.
-  assert.throws(() => appLayout(withIdentity('fast-to-eat')), /needs runtime.listen 'unix'/);
-  assert.match(validateManifestEntry(withIdentity('fast-to-eat')).join('; '), /runtime.identity 'tailnet' needs runtime.listen 'unix'/);
+  // Home Drop still listens on loopback TCP, where any local process could forge identity headers.
+  assert.throws(() => appLayout(withIdentity('home-drop')), /needs runtime.listen 'unix'/);
+  assert.match(validateManifestEntry(withIdentity('home-drop')).join('; '), /runtime.identity 'tailnet' needs runtime.listen 'unix'/);
   assert.match(validateManifestEntry(withIdentity('family-pulse', 'headers')).join('; '), /runtime.identity must be 'local' or 'tailnet'/);
   assert.deepEqual(validateManifestEntry(getAppById('family-pulse')), []);
 });
@@ -382,21 +382,21 @@ test('the job runner records local mode when the switch completes, and the recor
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-mode-'));
   const store = new SqliteStateStore(path.join(dir, 'state.sqlite3'));
   store.init();
-  const record = { appId: 'fast-to-eat', name: 'Fast to Eat', port: 3007, mountPath: '/fte/', externalUrl: 'https://host/fte/', installRoot: '/opt/sovereign-home/apps/fastToEat', serviceName: 'fast-to-eat', ref: 'main', status: 'installed', plannedAt: 'x', updatedAt: 'x', managedBy: 'executor' };
+  const record = { appId: 'home-drop', name: 'Home Drop', port: 3012, mountPath: '/drop/', externalUrl: 'https://host/drop/', installRoot: '/opt/sovereign-home/apps/homeDrop', serviceName: 'home-drop', ref: 'main', status: 'installed', plannedAt: 'x', updatedAt: 'x', managedBy: 'executor' };
   store.upsertInstallation(record);
-  assert.equal(store.loadState().installations['fast-to-eat'].identityMode, 'local');
-  store.setIdentityMode('fast-to-eat', 'tailnet');
+  assert.equal(store.loadState().installations['home-drop'].identityMode, 'local');
+  store.setIdentityMode('home-drop', 'tailnet');
   store.upsertInstallation({ ...record, ref: 'abc', updatedAt: 'y' });
-  assert.equal(store.loadState().installations['fast-to-eat'].identityMode, 'tailnet', 'an update keeps it');
-  assert.throws(() => store.setIdentityMode('fast-to-eat', 'headers'));
+  assert.equal(store.loadState().installations['home-drop'].identityMode, 'tailnet', 'an update keeps it');
+  assert.throws(() => store.setIdentityMode('home-drop', 'headers'));
 
   const runner = new JobRunner(store, {
     runExecutorAction: async (_socket, _fields, { onEvent }) => { onEvent({ eventType: 'plan.accepted', planDigest: 'x', plan: { operations: [] } }); return {}; },
     readinessOptions: { attempts: 1, fetchImpl: async () => ({ ok: true, status: 200 }) },
   });
-  const id = runner.startTypedActionJob({ kind: 'identity-mode', target: 'fast-to-eat', action: { action: 'identity-mode', appId: 'fast-to-eat', mode: 'local' } });
+  const id = runner.startTypedActionJob({ kind: 'identity-mode', target: 'home-drop', action: { action: 'identity-mode', appId: 'home-drop', mode: 'local' } });
   for (let i = 0; i < 50 && store.getJob(id).status !== 'completed'; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.getJob(id).status, 'completed');
-  assert.equal(store.loadState().installations['fast-to-eat'].identityMode, 'local');
+  assert.equal(store.loadState().installations['home-drop'].identityMode, 'local');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 });

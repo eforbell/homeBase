@@ -437,7 +437,8 @@ test('remind-me: an every-minute dispatcher timer, a postgres install, and opera
   assert.equal(fresh.APP_PUBLIC_URL, 'https://homebase.tailnet/remind/');
   assert.equal(fresh.HOUSEHOLD_TIMEZONE, 'America/New_York');
   assert.equal(fresh.BRRR_ICON_URL, 'https://sovereignhome.org/images/apps/remind-me/icon-180.png');
-  assert.equal(fresh.HOST, '127.0.0.1');
+  assert.equal(fresh.SOVEREIGN_LISTEN, 'unix:/run/sovereign-apps/remind-me/app.sock');
+  assert.equal(fresh.HOST, undefined, 'on its socket, never TCP');
   // An operator's own icon or delivery window survives a reinstall; derived values do not.
   const { config } = getAppById('remind-me');
   for (const key of ['BRRR_ICON_URL', 'DELIVERY_GIVE_UP_HOURS', 'RETENTION_DAYS']) {
