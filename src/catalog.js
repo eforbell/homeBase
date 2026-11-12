@@ -142,6 +142,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // Listens on the unix socket SOVEREIGN_LISTEN names (familyHelp lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/help/',
@@ -204,6 +206,7 @@ const catalog = [
         OPENAI_API_KEY: '',
         OPENAI_MODEL: 'gpt-4o-mini',
         SETTINGS_PIN: '',
+        APP_PUBLIC_URL: '{{externalUrl}}',
       },
     },
     storage: {
@@ -402,6 +405,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // Listens on the unix socket SOVEREIGN_LISTEN names (fastToEat lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/fte/',
@@ -928,6 +933,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // Listens on the unix socket SOVEREIGN_LISTEN names (homeOps lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/ops/',
@@ -995,6 +1002,7 @@ const catalog = [
         OPENAI_API_KEY: '',
         OPENAI_MODEL: 'gpt-4o-mini',
         OPENAI_VISION_MODEL: 'gpt-4o',
+        APP_PUBLIC_URL: '{{externalUrl}}',
       },
     },
     storage: {
@@ -1089,6 +1097,8 @@ const catalog = [
       installCommand: 'npm ci --omit=dev',
       startCommand: 'node server.js',
       nodeEnv: 'production',
+      // Listens on the unix socket SOVEREIGN_LISTEN names (remindMe lib/listen.js), reachable only through nginx.
+      listen: 'unix',
     },
     network: {
       preferredMountPath: '/remind/',

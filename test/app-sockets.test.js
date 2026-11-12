@@ -38,23 +38,32 @@ test('nginx keeps each app\'s URI behavior over the socket: prefix-stripping and
     assert.match(renderAppLocations(helm), /proxy_pass http:\/\/unix:\/run\/sovereign-apps\/helm\/app\.sock;/);
     assert.doesNotMatch(renderAppLocations(helm), /app\.sock:\//, 'mount-preserving: no URI, so /helm/... passes through');
   });
-  const tcp = appLayout(getAppById('fast-to-eat'));
+  const tcp = appLayout(getAppById('home-drop'));
   assert.deepEqual(tcp.listen, { kind: 'tcp' });
-  assert.match(renderAppLocations(tcp), /proxy_pass http:\/\/127\.0\.0\.1:3007\/;/);
+  assert.match(renderAppLocations(tcp), /proxy_pass http:\/\/127\.0\.0\.1:3012\/;/);
 });
 
 test('the .env says where to listen: the socket, or loopback for apps that do not support one yet', () => {
   const password = 'Pass-word-1234';
   const env = (layout) => renderAppEnvFile({ layout, password, site: SITE });
-  assert.match(env(appLayout(getAppById('fast-to-eat'))), /^HOST=127\.0\.0\.1$/m);
-  assert.doesNotMatch(env(appLayout(getAppById('fast-to-eat'))), /SOVEREIGN_LISTEN/);
+  assert.match(env(appLayout(getAppById('home-drop'))), /^HOST=127\.0\.0\.1$/m);
+  assert.doesNotMatch(env(appLayout(getAppById('home-drop'))), /SOVEREIGN_LISTEN/);
   withSocket('family-pulse', (pulse) => {
     const text = env(pulse);
     assert.match(text, /^SOVEREIGN_LISTEN=unix:\/run\/sovereign-apps\/family-pulse\/app\.sock$/m);
     assert.doesNotMatch(text, /^HOST=/m);
   });
+  // The low-friction apps on their sockets: the shared user, and never a TCP HOST.
+  for (const id of ['family-plan', 'family-dinner', 'family-help', 'fast-to-eat', 'home-ops', 'remind-me']) {
+    const layout = appLayout(getAppById(id));
+    assert.deepEqual([layout.listen.kind, layout.identity.own], ['unix', false], id);
+    const text = env(layout);
+    assert.ok(text.split('\n').includes(`SOVEREIGN_LISTEN=unix:/run/sovereign-apps/${id}/app.sock`), id);
+    assert.doesNotMatch(text, /^HOST=/m, id);
+    assert.match(text, /^APP_PUBLIC_URL=https:\/\/\S+\/$/m, `${id} is told its own address`);
+  }
   // An operator's HOST=0.0.0.0 never survives a reinstall.
-  assert.match(renderAppEnvFile({ layout: appLayout(getAppById('fast-to-eat')), password, site: SITE, existingContent: 'HOST=0.0.0.0\n' }), /^HOST=127\.0\.0\.1$/m);
+  assert.match(renderAppEnvFile({ layout: appLayout(getAppById('home-drop')), password, site: SITE, existingContent: 'HOST=0.0.0.0\n' }), /^HOST=127\.0\.0\.1$/m);
   // Switching modes drops the other mode's key: a TCP app keeping SOVEREIGN_LISTEN would stay on the
   // socket while nginx points at its port.
   withSocket('family-pulse', (pulse) => {
@@ -82,8 +91,8 @@ test('the socket directory: owned by the app user, nginx\'s group, 2750, recreat
       await assert.rejects(() => bad['systemd.apply-tmpfiles'](op('systemd.apply-tmpfiles'), { layout: pulse }), /is not sovereign-pulse:www-data 2750/);
     }
   });
-  assert.throws(() => renderManagedFile(op('filesystem.write-managed-file', { purpose: 'app-tmpfiles', template: 'app-tmpfiles-v1' }), { layout: appLayout(getAppById('fast-to-eat')), identity: SHARED_IDENTITY }), (error) => error.code === 'POLICY_DENIED');
-  await assert.rejects(() => createBaseHandlers({ lookupUser: users() })['systemd.apply-tmpfiles'](op('systemd.apply-tmpfiles'), { layout: appLayout(getAppById('fast-to-eat')) }), /does not listen on a socket/);
+  assert.throws(() => renderManagedFile(op('filesystem.write-managed-file', { purpose: 'app-tmpfiles', template: 'app-tmpfiles-v1' }), { layout: appLayout(getAppById('home-drop')), identity: SHARED_IDENTITY }), (error) => error.code === 'POLICY_DENIED');
+  await assert.rejects(() => createBaseHandlers({ lookupUser: users() })['systemd.apply-tmpfiles'](op('systemd.apply-tmpfiles'), { layout: appLayout(getAppById('home-drop')) }), /does not listen on a socket/);
 });
 
 test('install and move plans create the socket directory before the app starts; tcp apps may not', () => {
@@ -96,7 +105,7 @@ test('install and move plans create the socket directory before the app starts; 
     assert.ok(moveIds.indexOf('reown-app') < moveIds.indexOf('ensure-socket-directory') && moveIds.indexOf('ensure-socket-directory') < moveIds.indexOf('start-service'));
     validateOperationPolicy(move);
   });
-  const tcpPlan = JSON.parse(JSON.stringify(buildAppInstallPlan({ appId: 'fast-to-eat' })));
+  const tcpPlan = JSON.parse(JSON.stringify(buildAppInstallPlan({ appId: 'home-drop' })));
   assert.equal(tcpPlan.operations.some((operation) => operation.type === 'systemd.apply-tmpfiles'), false);
   // A well-formed step a tcp app's plan was never compiled with: policy refuses it.
   const sneak = JSON.parse(JSON.stringify(tcpPlan));
