@@ -72,6 +72,12 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   // Family Dinner: low-friction, on its socket as the shared user, and its code reads the mode.
   const dinner = appLayout(getAppById('family-dinner'));
   assert.deepEqual([dinner.identityModes, dinner.listen.kind, dinner.identity.own], [['local', 'tailnet'], 'unix', false]);
+  // The other low-friction apps the same: on their sockets, the shared user, their code reads the mode.
+  for (const id of ['family-plan', 'family-help', 'fast-to-eat', 'home-ops', 'remind-me']) {
+    const layout = appLayout(getAppById(id));
+    assert.deepEqual([layout.identityModes, layout.listen.kind, layout.identity.own], [['local', 'tailnet'], 'unix', false], id);
+    assert.deepEqual(validateManifestEntry(getAppById(id)), [], id);
+  }
   assert.deepEqual(appLayout(withIdentity('family-pulse', 'local')).identityModes, ['local']);
   // Home Drop still listens on loopback TCP, where any local process could forge identity headers.
   assert.throws(() => appLayout(withIdentity('home-drop')), /needs runtime.listen 'unix'/);
