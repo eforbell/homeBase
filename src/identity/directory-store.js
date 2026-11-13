@@ -147,6 +147,11 @@ if op == "init":
         if "webauthn_v2_issued_at" not in household_columns:
             conn.execute("ALTER TABLE identity_household ADD COLUMN webauthn_v2_issued_at TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS identity_member_handle ON identity_members(webauthn_user_handle)")
+        # Refresh only our own definitions atomically, including databases used by earlier feature slices.
+        for trigger in ("identity_member_handle_insert", "identity_member_handle_allocation", "identity_member_handle_immutable",
+                        "identity_credential_handle_immutable", "identity_credential_handle_insert", "identity_passkey_marker_immutable",
+                        "identity_first_isolated_credential"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
         conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_member_handle_insert
             BEFORE INSERT ON identity_members WHEN NEW.webauthn_user_handle IS NOT NULL AND
               (length(NEW.webauthn_user_handle) != 43 OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
@@ -169,7 +174,8 @@ if op == "init":
             BEGIN SELECT RAISE(ABORT, 'INVALID_CREDENTIAL_HANDLE'); END""")
         conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_credential_handle_insert
             BEFORE INSERT ON identity_credentials
-            WHEN (NEW.handle_format = 'legacy-v1' AND NEW.webauthn_user_handle IS NOT NULL)
+            WHEN NEW.handle_format IS NULL OR NEW.handle_format NOT IN ('legacy-v1', 'isolated-v2')
+              OR (NEW.handle_format = 'legacy-v1' AND NEW.webauthn_user_handle IS NOT NULL)
               OR (NEW.handle_format = 'isolated-v2' AND (NEW.webauthn_user_handle IS NULL
                   OR length(NEW.webauthn_user_handle) != 43
                   OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
@@ -183,8 +189,9 @@ if op == "init":
         conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_first_isolated_credential
             AFTER INSERT ON identity_credentials WHEN NEW.handle_format = 'isolated-v2'
             BEGIN UPDATE identity_household SET webauthn_v2_issued_at = COALESCE(webauthn_v2_issued_at, NEW.created_at) WHERE id = 1; END""")
-        # A NULL left by a pre-upgrade member insert is allocated once under this write lock.
-        for member in conn.execute("SELECT member_id FROM identity_members WHERE webauthn_user_handle IS NULL").fetchall():
+        # Allocate a pre-upgrade NULL once. If isolated credentials already exist, a missing member
+        # handle is damaged metadata, not a fresh account: preserve checks and require restoration.
+        for member in conn.execute("SELECT member_id FROM identity_members AS m WHERE webauthn_user_handle IS NULL AND NOT EXISTS (SELECT 1 FROM identity_credentials AS c WHERE c.member_id = m.member_id AND c.handle_format = 'isolated-v2')").fetchall():
             handle = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
             conn.execute("UPDATE identity_members SET webauthn_user_handle = ? WHERE member_id = ?", (handle, member["member_id"]))
         conn.execute(

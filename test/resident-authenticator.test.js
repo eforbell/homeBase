@@ -3,11 +3,11 @@ const assert = require('node:assert/strict');
 const { browser, DOMAIN, PARENT, PASSPHRASE, startServer } = require('./support/household');
 const { createResidentAuthenticator } = require('./support/resident-authenticator');
 
-// Slice 3 must invert the replacement assertions after integrating isolated enrollment; do not delete them.
-test('characterizes the cross-suite resident-key replacement that ordinary static fixtures miss', async (t) => {
+// This end-to-end test characterized replacement before slice 3; it now locks the actual repair.
+for (const order of [['prod', 'rehearsal'], ['rehearsal', 'prod']]) test('independent suites retain one key in enrollment order ' + order.join(' then '), async (t) => {
   const key = createResidentAuthenticator({ kind: 'hardware' });
   const suites = [];
-  for (const instance of ['prod', 'rehearsal']) {
+  for (const instance of order) {
     const { base } = await startServer(t, { config: { instance } });
     const host = instance + '-homebase.' + DOMAIN;
     const parent = browser(base, PARENT, { host });
@@ -19,7 +19,7 @@ test('characterizes the cross-suite resident-key replacement that ordinary stati
     suites.push({ parent, origin, id: enrolled.body.credentialId });
   }
   assert.notEqual(suites[0].id, suites[1].id);
-  assert.equal(key.hasCredential(suites[0].id), false);
-  await assert.rejects(suites[0].parent.check(key, { origin: suites[0].origin }), { name: 'NotAllowedError' });
+  assert.equal(key.hasCredential(suites[0].id), true);
+  assert.equal((await suites[0].parent.check(key, { origin: suites[0].origin })).status, 200);
   assert.equal((await suites[1].parent.check(key, { origin: suites[1].origin })).status, 200);
 });

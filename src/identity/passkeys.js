@@ -46,7 +46,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
 
   // One ceremony helper per tailnet domain, sharing the challenge store.
   function webauthnFor(rpID) {
-    if (!ceremonies.has(rpID)) ceremonies.set(rpID, createWebAuthn({ rpID, store, now, ...(roots ? { roots } : {}) }));
+    if (!ceremonies.has(rpID)) ceremonies.set(rpID, createWebAuthn({ rpID, store, now, requireUserHandle: true, ...(roots ? { roots } : {}) }));
     return ceremonies.get(rpID);
   }
 
@@ -61,7 +61,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   async function enrollOptions({ site, standing, label, hardware, context = {} }) {
     return webauthnFor(site.rpID).registrationOptions({
       hostname: site.hostname,
-      member: memberOf(standing),
+      member: { ...memberOf(standing), userHandle: directory.enrollmentHandleFor(standing.member.userId) },
       purpose: 'enroll',
       action: { ...context, label: cleanLabel(label), hardware: hardware === true, standing: stoodAt(standing) },
       attestation: hardware === true ? 'direct' : 'none',
@@ -74,7 +74,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   async function enrollFinish({ site, standing, label, hardware, context = {}, response }) {
     const result = await webauthnFor(site.rpID).verifyRegistration({
       hostname: site.hostname,
-      member: memberOf(standing),
+      member: { ...memberOf(standing), userHandle: directory.enrollmentHandleFor(standing.member.userId) },
       purpose: 'enroll',
       action: { ...context, label: cleanLabel(label), hardware: hardware === true, standing: stoodAt(standing) },
       response,
@@ -84,6 +84,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
     return { ok: true, credential: {
       userId: standing.member.userId,
       credentialId: credential.id,
+      userHandle: credential.userHandle,
       kind: credential.kind,
       label: cleanLabel(label) || defaultLabel(credential.kind),
       publicKey: credential.publicKey,

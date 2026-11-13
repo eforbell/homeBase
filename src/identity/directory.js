@@ -309,6 +309,8 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
       requireUnchanged(data, member, expect);
       if (data.household.state !== 'active' && !member.administrator) refuse(409, 'BOOTSTRAP_STATE', `Only the administrator enrolls while Home Base is in ${data.household.state}.`);
       if (data.credentials.some((credential) => credential.credential_id === credentialId)) refuse(409, 'CONFLICT', 'That credential is already enrolled.');
+      // Keyless directory records can remain legacy, but every verified new enrollment is isolated.
+      if (publicKey && userHandle === null) refuse(409, 'INVALID_ENROLLMENT_HANDLE', 'A verified enrollment needs an explicit isolated account handle.');
       if (userHandle !== null && (!validAccountHandle(userHandle) || userHandle !== member.webauthn_user_handle)) {
         refuse(409, 'INVALID_ENROLLMENT_HANDLE', 'The enrollment account handle changed or is invalid; start again.');
       }
@@ -390,9 +392,11 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   // Only enrollment needs the member's current handle. Keep invalid metadata out of status/recovery
   // loading and out of checks, whose expectation belongs to the selected credential instead.
   function enrollmentHandleFor(userId) {
-    const member = load().members.find((entry) => entry.user_id === userId) || refuse(404, 'NOT_FOUND', 'No such member.');
+    const data = load();
+    const member = data.members.find((entry) => entry.user_id === userId) || refuse(404, 'NOT_FOUND', 'No such member.');
     if (!validAccountHandle(member.webauthn_user_handle)) {
-      const advice = member.webauthn_user_handle == null ? 'Restart Home Base to initialize this member account.' : 'Restore known-good identity metadata before enrolling more passkeys.';
+      const isolated = data.credentials.some((row) => row.member_id === member.member_id && row.handle_format === 'isolated-v2');
+      const advice = member.webauthn_user_handle == null && !isolated ? 'Restart Home Base to initialize this member account.' : 'Restore known-good identity metadata before enrolling more passkeys.';
       refuse(409, 'INVALID_ENROLLMENT_HANDLE', advice + ' Existing passkeys can still check.');
     }
     return member.webauthn_user_handle;

@@ -92,7 +92,10 @@ test('a missing or corrupt member enrollment handle never disables existing cred
   const credential = add(directory);
   removeGuards(db);
   sql(db, 'UPDATE identity_members SET webauthn_user_handle=NULL');
-  assert.throws(() => directory.enrollmentHandleFor('1001'), /restart/i);
+  assert.throws(() => directory.enrollmentHandleFor('1001'), /known-good identity metadata/i);
+  directory.init();
+  assert.equal(sql(db, 'SELECT webauthn_user_handle FROM identity_members')[0].webauthn_user_handle, null, 'do not invent another account handle over isolated credentials');
+  removeGuards(db);
   assert.equal(directory.credentialsFor('1001')[0].userHandle, credential.webauthn_user_handle);
   sql(db, "UPDATE identity_members SET webauthn_user_handle='broken'");
   assert.throws(() => directory.enrollmentHandleFor('1001'), { code: 'INVALID_ENROLLMENT_HANDLE' });
@@ -258,4 +261,20 @@ test('init has a bounded busy failure under a held writer lock, with no partial 
   } finally { locker.stdin.end('\n'); await exited; }
   directory.init();
   assert.equal(Buffer.from(directory.enrollmentHandleFor('1001'), 'base64url').length, 32);
+});
+
+test('init refreshes a prior feature-slice trigger and rejects unknown/null insert formats by name', (t) => {
+  const { db, store, directory } = fixture(t);
+  sql(db, 'DROP TRIGGER identity_credential_handle_insert');
+  sql(db, "CREATE TRIGGER identity_credential_handle_insert BEFORE INSERT ON identity_credentials WHEN NEW.handle_format='isolated-v2' AND NEW.webauthn_user_handle IS NULL BEGIN SELECT RAISE(ABORT,'INVALID_CREDENTIAL_HANDLE'); END");
+  directory.init();
+  const before = store.load();
+  const owner = before.members[0];
+  const record = { credential_id: 'foreign', member_id: owner.member_id, kind: 'hardware', label: 'x', orphaned: 0, created_at: at, revoked_at: null, public_key: 'x', counter: 0, backed_up: 0, handle_format: 'isolated-v2', webauthn_user_handle: Buffer.alloc(32, 13).toString('base64url') };
+  assert.equal(store.commit({ expectGeneration: before.household.generation, now: at, credentials: [record] }).handleError, 'INVALID_CREDENTIAL_HANDLE');
+  for (const format of ['unknown', null, undefined]) {
+    assert.equal(store.commit({ expectGeneration: before.household.generation, now: at, credentials: [{ ...record, handle_format: format, webauthn_user_handle: null }] }).handleError, 'INVALID_CREDENTIAL_HANDLE');
+  }
+  assert.throws(() => sql(db, "INSERT INTO identity_credentials (credential_id,member_id,kind,created_at,handle_format) VALUES ('bad-format',?,'hardware',?,'unknown')", [owner.member_id, at]), /INVALID_CREDENTIAL_HANDLE/);
+  assert.equal(store.load().household.webauthn_v2_issued_at, null);
 });
