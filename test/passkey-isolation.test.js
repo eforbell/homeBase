@@ -213,3 +213,35 @@ test('corrupt credential metadata also refuses enrollment before spending its ha
   const damaged = (await server.parent.get('/_sovereign/auth/status')).body.credentials.find((row) => row.credentialId === hardware.credentialId);
   assert.equal(damaged.handleMetadataValid, false);
 });
+
+test('hardware recovery can retain a still-working local legacy second credential without re-enrollment', async (t) => {
+  const a = await site(t, 'rehearsal');
+  const b = await site(t, 'prod');
+  const key = createResidentAuthenticator({ kind: 'hardware' });
+  const phoneA = createResidentAuthenticator({ kind: 'synced' });
+  const phoneB = createResidentAuthenticator({ kind: 'synced' });
+  const oldHardware = await legacyCredential(a, key, true);
+  const retainedPhone = await legacyCredential(a, phoneA, false);
+  assert.equal((await a.parent.check(key, { purpose: 'activate', origin: a.origin })).status, 200);
+  await legacyCredential(b, key, true);
+  await legacyCredential(b, phoneB, false);
+  assert.equal((await b.parent.check(key, { purpose: 'activate', origin: b.origin })).status, 200);
+  assert.equal((await a.parent.check(phoneA, { origin: a.origin })).status, 200);
+  assert.equal((await a.parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
+  const fixed = await a.parent.enroll(key, { label: 'Repaired hardware', hardware: true, origin: a.origin });
+  assert.equal(fixed.status, 201, JSON.stringify(fixed.body));
+  assert.equal((await a.parent.check(key, { origin: a.origin })).status, 200);
+  assert.equal((await a.parent.check(phoneA, { origin: a.origin })).status, 200);
+  const duplicatePhone = await a.parent.post('/_sovereign/auth/enroll/options', { label: 'Unnecessary replacement' });
+  assert.equal(duplicatePhone.status, 200);
+  assert.throws(() => phoneA.register(duplicatePhone.body.options, { origin: a.origin }), { name: 'InvalidStateError' });
+  assert.equal((await a.parent.post('/api/directory/credentials/' + oldHardware + '/revoke')).status, 200);
+  assert.equal((await a.parent.check(key, { purpose: 'activate', origin: a.origin })).status, 200);
+  const rows = sql(a.db, 'SELECT credential_id,handle_format,revoked_at,last_used_at FROM identity_credentials');
+  assert.equal(rows.filter((row) => row.handle_format === 'isolated-v2').length, 1);
+  const legacyPhone = rows.find((row) => row.credential_id === retainedPhone);
+  assert.equal(legacyPhone.handle_format, 'legacy-v1');
+  assert.equal(legacyPhone.revoked_at, null);
+  assert.ok(legacyPhone.last_used_at);
+  assert.equal((await b.parent.check(key, { origin: b.origin })).status, 200);
+});
