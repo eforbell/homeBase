@@ -16,6 +16,7 @@
 // Ceremonies run only on the hostname they were started on; the routes (passkey-routes.js) decide who may
 // start which one. RP ID is the tailnet domain (D17).
 const crypto = require('crypto');
+const { DirectoryError } = require('./directory');
 const { ACTION_HEADER, COOKIE_NAME, POLICY, assuranceCookie, createMemoryChallengeStore, createWebAuthn, policyFor, signToken, verifyToken } = require('sovereign-auth');
 
 const KINDS = new Set(['synced', 'device-bound', 'hardware']);
@@ -51,6 +52,8 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   }
 
   const memberOf = (standing) => ({ userId: standing.member.userId, login: standing.member.login, name: standing.member.name });
+  // Provider-facing display text identifies the suite without changing the authorization identity.
+  const enrollmentMemberOf = (standing) => ({ ...memberOf(standing), name: `${standing.member.name || standing.member.login} (${household})`, userHandle: directory.enrollmentHandleFor(standing.member.userId) });
   // Every challenge is bound to the directory as it stood when it was issued: a recovery, reset, revocation
   // or activation before the finish refuses the finish (wrong_action), even once Home Base is active again.
   const stoodAt = (standing) => ({ state: standing.state, epoch: standing.member.epoch, globalEpoch: standing.globalEpoch });
@@ -59,14 +62,21 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   // is what the authenticator proves either way (D15).
   // context: what else the challenge binds (the administrator's every-time authority, from the routes).
   async function enrollOptions({ site, standing, label, hardware, context = {} }) {
-    return webauthnFor(site.rpID).registrationOptions({
+    const member = enrollmentMemberOf(standing);
+    const expectedHandle = member.userHandle;
+    const options = await webauthnFor(site.rpID).registrationOptions({
       hostname: site.hostname,
-      member: { ...memberOf(standing), userHandle: directory.enrollmentHandleFor(standing.member.userId) },
+      member,
       purpose: 'enroll',
       action: { ...context, label: cleanLabel(label), hardware: hardware === true, standing: stoodAt(standing) },
       attestation: hardware === true ? 'direct' : 'none',
       excludeCredentials: directory.credentialsFor(standing.member.userId),
     });
+    // A stale/partial dependency install must fail before a browser can replace a resident key.
+    if (options?.user?.id !== expectedHandle) {
+      throw new DirectoryError(503, 'PASSKEY_LIBRARY_MISMATCH', 'The passkey library returned an unexpected account handle. Install the locked dependencies and restart Home Base before enrolling.');
+    }
+    return options;
   }
 
   // Returns { ok, credential } with what directory.addCredential stores, or { ok: false, reason }. The route
@@ -74,7 +84,7 @@ function createPasskeys({ directory, signingKey, household, roots, now = Date.no
   async function enrollFinish({ site, standing, label, hardware, context = {}, response }) {
     const result = await webauthnFor(site.rpID).verifyRegistration({
       hostname: site.hostname,
-      member: { ...memberOf(standing), userHandle: directory.enrollmentHandleFor(standing.member.userId) },
+      member: enrollmentMemberOf(standing),
       purpose: 'enroll',
       action: { ...context, label: cleanLabel(label), hardware: hardware === true, standing: stoodAt(standing) },
       response,

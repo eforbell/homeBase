@@ -154,8 +154,11 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
     const label = (id) => standing.credentials.find((credential) => credential.credentialId === id)?.label || null;
     return {
       state: standing.state,
+      instance: standing.household,
+      enrollmentMetadataValid: standing.enrollmentMetadataValid,
+      ...(standing.member.administrator ? { isolatedIssuedAt: standing.isolatedIssuedAt } : {}),
       member: { login: standing.member.login, name: standing.member.name, role: standing.member.role, administrator: standing.member.administrator },
-      credentials: standing.credentials.map(({ credentialId, label: name, kind, createdAt, lastUsedAt, usable }) => ({ credentialId, label: name, kind, createdAt, lastUsedAt, usable })),
+      credentials: standing.credentials.map(({ credentialId, label: name, kind, handleFormat, handleMetadataValid, createdAt, lastUsedAt, usable }) => ({ credentialId, label: name, kind, handleFormat, handleMetadataValid, createdAt, lastUsedAt, usable })),
       check: check.claims ? { credentialId: check.claims.cred, label: label(check.claims.cred), kind: check.claims.kind, checkedAt: new Date(check.claims.auth_time * 1000).toISOString(), ageSeconds: check.age } : null,
       administratorRuleMet: standing.meetsAdministratorRule,
       canActivate,

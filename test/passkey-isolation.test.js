@@ -46,6 +46,7 @@ test('public enrollment ignores browser-selected handles and stores only the tru
   assert.equal(started.status, 200);
   const expected = server.app.directory.enrollmentHandleFor('1001');
   assert.equal(started.body.options.user.id, expected);
+  assert.equal(started.body.options.user.displayName, 'Parent (prod)');
   const response = key.register(started.body.options, { origin: server.origin });
   response.userHandle = body.userHandle;
   const finished = await server.parent.post('/_sovereign/auth/enroll/finish', { ...body, response });
@@ -117,6 +118,8 @@ test('corrupt administrator metadata leaves status and passphrase recovery/revok
   assert.equal((await server.parent.post('/_sovereign/auth/enroll/options', { label: 'blocked' })).body.code, 'INVALID_CREDENTIAL_HANDLE');
   assert.equal((await server.parent.post('/api/directory/credentials/' + hardware.credentialId + '/revoke')).status, 200);
   assert.equal((await server.parent.check(server.phone)).status, 200);
+  const replacement = await server.parent.enroll(createResidentAuthenticator({ kind: 'hardware' }), { label: 'Verified recovery enrollment', hardware: true });
+  assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
   assert.equal(server.app.directory.state(), 'recovery');
 });
 
@@ -176,4 +179,37 @@ test('known metadata refusal does not spend a valid hardware enrollment token', 
   assert.equal((await server.parent.post('/_sovereign/auth/enroll/options', body, headers)).status, 200);
   assert.equal(sql(db, 'SELECT COUNT(*) AS n FROM identity_action_tokens WHERE jti=?', [jti])[0].n, 1);
   assert.equal((await server.parent.post('/_sovereign/auth/enroll/options', body, headers)).body.code, 'REPLAYED');
+});
+
+test('status diagnostics expose formats, validity and admin-only rollback metadata without account bytes', async (t) => {
+  const server = await activeHousehold(t);
+  const status = (await server.parent.get('/_sovereign/auth/status')).body;
+  assert.equal(status.instance, 'smith');
+  assert.equal(status.enrollmentMetadataValid, true);
+  assert.equal(typeof status.isolatedIssuedAt, 'string');
+  assert.ok(status.credentials.every((row) => row.handleFormat === 'isolated-v2' && row.handleMetadataValid));
+  assert.equal(JSON.stringify(status).includes(server.app.directory.enrollmentHandleFor('1001')), false);
+  server.app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  server.app.directory.addMember({ userId: '1001' }, { userId: '1002', role: 'kid' });
+  const kidStatus = (await browser(server.base, KID).get('/_sovereign/auth/status')).body;
+  assert.equal(Object.hasOwn(kidStatus, 'isolatedIssuedAt'), false);
+  assert.equal(Object.hasOwn(kidStatus, 'signingKey'), false);
+  assert.equal(JSON.stringify(server.snapshot()).includes('handleMetadataValid'), false);
+});
+
+test('corrupt credential metadata also refuses enrollment before spending its hardware token', async (t) => {
+  const server = await activeHousehold(t);
+  server.db = path.join(server.root, 'state.sqlite3');
+  const body = { label: 'Another backup', hardware: true };
+  const challenge = await server.parent.post('/_sovereign/auth/enroll/options', body);
+  const authorized = await server.parent.actionToken(server.yubikey, challenge.body);
+  assert.equal(authorized.status, 200);
+  const jti = JSON.parse(Buffer.from(authorized.body.token.split('.')[1], 'base64url').toString()).jti;
+  const hardware = (await server.parent.get('/_sovereign/auth/status')).body.credentials.find((row) => row.kind === 'hardware');
+  tamperCredential(server, hardware.credentialId);
+  const refused = await server.parent.post('/_sovereign/auth/enroll/options', body, { 'X-Sovereign-Action-Token': authorized.body.token });
+  assert.equal(refused.body.code, 'INVALID_CREDENTIAL_HANDLE');
+  assert.equal(sql(server.db, 'SELECT COUNT(*) AS n FROM identity_action_tokens WHERE jti=?', [jti])[0].n, 0);
+  const damaged = (await server.parent.get('/_sovereign/auth/status')).body.credentials.find((row) => row.credentialId === hardware.credentialId);
+  assert.equal(damaged.handleMetadataValid, false);
 });

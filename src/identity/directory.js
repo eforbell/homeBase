@@ -66,10 +66,21 @@ function validAccountHandle(value) {
   return bytes.length === 32 && bytes.toString('base64url') === value;
 }
 
+function credentialHandleMetadataValid(row) {
+  return (row.handle_format === 'legacy-v1' && row.webauthn_user_handle === null)
+    || (row.handle_format === 'isolated-v2' && validAccountHandle(row.webauthn_user_handle));
+}
+
+function enrollmentHandleConsistent(member, credentials) {
+  return validAccountHandle(member.webauthn_user_handle) && !credentials.some((row) => row.member_id === member.member_id
+    && row.handle_format === 'isolated-v2' && validAccountHandle(row.webauthn_user_handle)
+    && row.webauthn_user_handle !== member.webauthn_user_handle);
+}
+
 // A stored credential as sovereignAuth's ceremonies take it (only ones enrolled with a key can be used).
 function forCeremony(row, userId) {
   const legacy = row.handle_format === 'legacy-v1' && row.webauthn_user_handle === null;
-  if (!legacy && (row.handle_format !== 'isolated-v2' || !validAccountHandle(row.webauthn_user_handle))) {
+  if (!credentialHandleMetadataValid(row)) {
     refuse(409, 'INVALID_CREDENTIAL_HANDLE', 'A stored passkey has invalid account-handle metadata. Enter recovery and remove that entry.');
   }
   const userHandle = legacy ? Buffer.from(userId, 'utf8').toString('base64url') : row.webauthn_user_handle;
@@ -395,10 +406,9 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     const data = load();
     const member = data.members.find((entry) => entry.user_id === userId) || refuse(404, 'NOT_FOUND', 'No such member.');
     const isolated = data.credentials.filter((row) => row.member_id === member.member_id && row.handle_format === 'isolated-v2');
-    const mismatched = isolated.some((row) => validAccountHandle(row.webauthn_user_handle) && row.webauthn_user_handle !== member.webauthn_user_handle);
-    if (!validAccountHandle(member.webauthn_user_handle) || mismatched) {
+    if (!enrollmentHandleConsistent(member, data.credentials)) {
       const advice = member.webauthn_user_handle == null && !isolated.length ? 'Restart Home Base to initialize this member account.' : 'Restore known-good identity metadata before enrolling more passkeys.';
-      refuse(409, 'INVALID_ENROLLMENT_HANDLE', advice + ' Existing passkeys can still check.');
+      refuse(409, 'INVALID_ENROLLMENT_HANDLE', advice + ' Valid existing passkeys may still check.');
     }
     return member.webauthn_user_handle;
   }
@@ -453,9 +463,12 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     return {
       member: { userId: member.user_id, memberId: member.member_id, login: member.login, name: member.name, role: member.role, status: member.status, epoch: member.epoch, administrator: member.administrator },
       state: data.household.state,
+      household,
+      isolatedIssuedAt: data.household.webauthn_v2_issued_at,
+      enrollmentMetadataValid: enrollmentHandleConsistent(member, data.credentials),
       globalEpoch: data.household.global_epoch,
       credentials: data.credentials.filter((row) => row.member_id === member.member_id && usable(row)).map((row) => ({
-        credentialId: row.credential_id, label: row.label, kind: row.kind, createdAt: row.created_at, lastUsedAt: row.last_used_at, usable: Boolean(row.public_key),
+        credentialId: row.credential_id, label: row.label, kind: row.kind, handleFormat: row.handle_format, handleMetadataValid: credentialHandleMetadataValid(row), createdAt: row.created_at, lastUsedAt: row.last_used_at, usable: Boolean(row.public_key),
       })),
       meetsAdministratorRule: member.administrator && meetsCredentialRule(credentialsOf(data, member.member_id)),
     };
@@ -624,6 +637,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     return {
       state: data.household.state,
       household,
+      isolatedIssuedAt: data.household.webauthn_v2_issued_at,
       generation: data.household.generation,
       globalEpoch: data.household.global_epoch,
       pendingAdministratorLogin: data.household.pending_administrator_login || null,
@@ -639,7 +653,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         apps: appsFor(member),
         appsDefault: member.apps == null,
         credentials: data.credentials.filter((credential) => credential.member_id === member.member_id).map((credential) => ({
-          credentialId: credential.credential_id, kind: credential.kind, label: credential.label, orphaned: credential.orphaned, createdAt: credential.created_at, lastUsedAt: credential.last_used_at || null, revokedAt: credential.revoked_at,
+          credentialId: credential.credential_id, kind: credential.kind, handleFormat: credential.handle_format, handleMetadataValid: credentialHandleMetadataValid(credential), label: credential.label, orphaned: credential.orphaned, createdAt: credential.created_at, lastUsedAt: credential.last_used_at || null, revokedAt: credential.revoked_at,
         })),
         grantExpiresAt: data.grants.find((grant) => grant.member_id === member.member_id)?.expires_at || null,
       })),

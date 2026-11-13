@@ -49,3 +49,9 @@ What changes for legacy hosts:
 ### Installer-built hosts (`install.sh`, executor mode)
 
 Refresh with `sudo bash install.sh --source-dir <checkout> --repair` (add `--git-ssh-key <key>` for private repositories). Use `--repair`, not `--repair-executor`: the executor loads shared code from `src/`, and web and executor move to protocol v2 together.
+
+## Instance-isolated passkey accounts
+
+New compatible Home Base builds preserve working legacy passkeys and issue isolated account handles for new registrations. Once the database records `webauthn_v2_issued_at`, do not downgrade below a build that verifies both legacy and isolated credentials. This is an **operational** version floor, not a startup guard added to old executables. A database backup does not restore private credentials replaced on a hardware key.
+
+Rehearse and follow [Instance-isolated passkeys](docs/suite-identity-rollout-runbook.md#instance-isolated-passkeys) before a separately authorized rollout. Do not enroll the shared key on an unpatched suite, force a still-working suite to re-register, or reset the key to repair this incident.

@@ -12,7 +12,7 @@ const founder = { userId: '1001', login: 'parent@example.com' };
 const at = '2026-11-01T00:00:00.000Z';
 function sql(db, statement, values = []) {
   const script = 'import sqlite3,sys,json; c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row; r=c.execute(sys.argv[2],json.loads(sys.argv[3])); print(json.dumps([dict(x) for x in r.fetchall()])); c.commit()';
-  return JSON.parse(execFileSync('python3', ['-c', script, db, statement, JSON.stringify(values)], { encoding: 'utf8' }));
+  return JSON.parse(execFileSync('python3', ['-c', script, db, statement, JSON.stringify(values)], { encoding: 'utf8', stdio: 'pipe' }));
 }
 function fixture(t, legacy = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-account-store-'));
@@ -303,4 +303,44 @@ test('init refreshes every currently managed trigger rather than leaving a stale
     assert.equal(refreshed.length, 1);
     assert.doesNotMatch(refreshed[0].sql, /BEGIN SELECT 1;/);
   }
+});
+
+test('revoked isolated history still prevents a new namespace; a verified offline restore preserves auth state', (t) => {
+  const { db, store, directory } = fixture(t);
+  const credential = add(directory);
+  directory.revokeCredential(founder, credential.credential_id);
+  const before = store.load();
+  removeGuards(db);
+  sql(db, "UPDATE identity_members SET webauthn_user_handle=? WHERE user_id='1001'", [Buffer.alloc(32, 16).toString('base64url')]);
+  directory.init();
+  assert.throws(() => directory.enrollmentHandleFor('1001'), /known-good identity metadata/i);
+  const repair = `
+import base64,sqlite3,sys
+c=sqlite3.connect(sys.argv[1],isolation_level=None)
+c.execute("BEGIN IMMEDIATE")
+try:
+    expected=sys.argv[2]
+    raw=base64.urlsafe_b64decode(expected+'=')
+    assert len(raw)==32 and base64.urlsafe_b64encode(raw).decode().rstrip('=')==expected
+    owner=c.execute("SELECT member_id FROM identity_members WHERE user_id=?",('1001',)).fetchone()[0]
+    handles={r[0] for r in c.execute("SELECT webauthn_user_handle FROM identity_credentials WHERE member_id=? AND handle_format='isolated-v2'",(owner,))}
+    assert handles=={expected},'Original account value must be proven, not guessed'
+    guard=c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='identity_member_handle_immutable'").fetchone()[0]
+    c.execute("DROP TRIGGER identity_member_handle_immutable")
+    c.execute("UPDATE identity_members SET webauthn_user_handle=? WHERE member_id=?",(expected,owner))
+    c.execute(guard)
+    c.execute("COMMIT")
+except BaseException:
+    c.execute("ROLLBACK")
+    raise
+`;
+  assert.throws(() => execFileSync('python3', ['-c', repair, db, Buffer.alloc(32, 17).toString('base64url')], { stdio: 'pipe' }), /Original account value/);
+  assert.throws(() => directory.enrollmentHandleFor('1001'), /known-good identity metadata/i);
+  execFileSync('python3', ['-c', repair, db, credential.webauthn_user_handle], { stdio: 'pipe' });
+  directory.init();
+  assert.equal(directory.enrollmentHandleFor('1001'), credential.webauthn_user_handle);
+  assert.deepEqual(store.load().household, before.household);
+  assert.deepEqual(store.load().credentials, before.credentials);
+  assert.deepEqual(store.load().members, before.members);
+  assert.throws(() => sql(db, "UPDATE identity_members SET webauthn_user_handle='changed'"), /INVALID_MEMBER_HANDLE/);
 });
