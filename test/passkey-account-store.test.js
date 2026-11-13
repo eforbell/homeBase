@@ -191,3 +191,71 @@ test('an unknown stored credential format is still revocable through raw recover
   directory.revokeCredential(founder, 'new-key');
   assert.equal(directory.credentialsFor('1001').length, 0);
 });
+
+test('store commits reject non-null immutable mismatches instead of reporting a misleading success', (t) => {
+  const { store, directory } = fixture(t);
+  add(directory);
+  const initial = store.load();
+  for (const patch of [{ member_id: 'foreign' }, { handle_format: 'legacy-v1' }, { webauthn_user_handle: Buffer.alloc(32, 9).toString('base64url') }]) {
+    const result = store.commit({ expectGeneration: initial.household.generation, now: at, credentials: [{ ...initial.credentials[0], ...patch }] });
+    assert.equal(result.handleError, 'INVALID_CREDENTIAL_HANDLE');
+    assert.equal(store.load().household.generation, initial.household.generation);
+  }
+  const owner = initial.members[0];
+  const result = store.commit({ expectGeneration: initial.household.generation, now: at, members: [{ ...owner, webauthn_user_handle: Buffer.alloc(32, 10).toString('base64url') }] });
+  assert.equal(result.handleError, 'INVALID_MEMBER_HANDLE');
+});
+
+test('v2 owner association and member handle shape are enforced inside the store', (t) => {
+  const { store, directory } = fixture(t);
+  const initial = store.load();
+  const owner = initial.members[0];
+  const record = { credential_id: 'foreign-handle', member_id: owner.member_id, kind: 'hardware', label: 'x', orphaned: 0, created_at: at, revoked_at: null, public_key: 'x', counter: 0, backed_up: 0, handle_format: 'isolated-v2', webauthn_user_handle: Buffer.alloc(32, 11).toString('base64url') };
+  assert.equal(store.commit({ expectGeneration: initial.household.generation, now: at, credentials: [record] }).handleError, 'INVALID_CREDENTIAL_HANDLE');
+  const other = { ...owner, member_id: 'm_other', user_id: '1002', login: 'kid@example.com', webauthn_user_handle: 'broken' };
+  assert.equal(store.commit({ expectGeneration: initial.household.generation, now: at, members: [other] }).handleError, 'INVALID_MEMBER_HANDLE');
+  const duplicateUser = { ...other, user_id: owner.user_id, webauthn_user_handle: Buffer.alloc(32, 12).toString('base64url') };
+  assert.ok(store.commit({ expectGeneration: initial.household.generation, now: at, members: [duplicateUser] }).integrity);
+  assert.equal(store.load().household.webauthn_v2_issued_at, null);
+  assert.equal(directory.enrollmentHandleFor('1001'), owner.webauthn_user_handle);
+});
+
+test('a transaction failure after the first v2 insert rolls back its marker, and restored markers are immutable', (t) => {
+  const { db, store, directory } = fixture(t);
+  const initial = store.load();
+  const record = { credential_id: 'good-first', member_id: initial.members[0].member_id, kind: 'hardware', label: 'x', orphaned: 0, created_at: at, revoked_at: null, public_key: 'x', counter: 0, backed_up: 0, handle_format: 'isolated-v2', webauthn_user_handle: directory.enrollmentHandleFor('1001') };
+  const result = store.commit({ expectGeneration: initial.household.generation, now: at, credentials: [record, { ...record, credential_id: 'bad-next', webauthn_user_handle: null }] });
+  assert.equal(result.handleError, 'INVALID_CREDENTIAL_HANDLE');
+  assert.equal(store.load().credentials.length, 0);
+  assert.equal(store.load().household.webauthn_v2_issued_at, null);
+  add(directory);
+  const issued = store.load().household.webauthn_v2_issued_at;
+  assert.throws(() => sql(db, 'UPDATE identity_household SET webauthn_v2_issued_at=NULL'), /INVALID_PASSKEY_MARKER/);
+  sql(db, 'DROP TRIGGER identity_passkey_marker_immutable');
+  sql(db, 'UPDATE identity_household SET webauthn_v2_issued_at=NULL');
+  directory.init();
+  assert.equal(store.load().household.webauthn_v2_issued_at, issued);
+});
+
+test('init has a bounded busy failure under a held writer lock, with no partial migration', { timeout: 30000 }, async (t) => {
+  const { db, directory } = fixture(t, true);
+  const { once } = require('node:events');
+  const locker = spawn('python3', ['-u', '-c', 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("BEGIN IMMEDIATE"); print("LOCKED",flush=True); input(); c.commit()', db]);
+  const exited = new Promise((resolve, reject) => { locker.once('error', reject); locker.once('exit', resolve); });
+  await Promise.race([once(locker.stdout, 'data'), exited.then(() => { throw new Error('Writer lock did not start'); })]);
+  try {
+    const modulePath = require.resolve('../src/identity/directory-store');
+    const started = Date.now();
+    const failure = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', 'require(process.argv[1]).createDirectoryStore(process.argv[2]).init({generation:3,now:process.argv[3]})', modulePath, db, at]);
+      let error = ''; child.stderr.on('data', (chunk) => { error += chunk; }); child.once('error', reject);
+      child.once('exit', (code) => resolve({ code, error }));
+    });
+    assert.notEqual(failure.code, 0);
+    assert.match(failure.error, /database is locked/);
+    assert.ok(Date.now() - started >= 4000);
+    assert.equal(sql(db, 'PRAGMA table_info(identity_credentials)').some((row) => row.name === 'handle_format'), false);
+  } finally { locker.stdin.end('\n'); await exited; }
+  directory.init();
+  assert.equal(Buffer.from(directory.enrollmentHandleFor('1001'), 'base64url').length, 32);
+});

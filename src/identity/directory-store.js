@@ -97,6 +97,8 @@ def upsert(table, key, fields, record, immutable=()):
     updates = ", ".join(f"{name}=excluded.{name}" for name in fields if name != key and name not in immutable)
     existing = conn.execute(f"SELECT * FROM {table} WHERE {key} = ?", (record[key],)).fetchone() if immutable else None
     if existing is not None:
+        if any(record.get(name) is not None and record[name] != existing[name] for name in immutable):
+            raise sqlite3.IntegrityError("INVALID_MEMBER_HANDLE" if table == "identity_members" else "INVALID_CREDENTIAL_HANDLE")
         # An existing corrupt credential must still be revocable. Do not run INSERT validation triggers
         # (as SQLite UPSERT does) when only its mutable fields need changing under our write lock.
         mutable = [name for name in fields if name != key and name not in immutable]
@@ -145,6 +147,17 @@ if op == "init":
         if "webauthn_v2_issued_at" not in household_columns:
             conn.execute("ALTER TABLE identity_household ADD COLUMN webauthn_v2_issued_at TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS identity_member_handle ON identity_members(webauthn_user_handle)")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_member_handle_insert
+            BEFORE INSERT ON identity_members WHEN NEW.webauthn_user_handle IS NOT NULL AND
+              (length(NEW.webauthn_user_handle) != 43 OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
+               OR substr(NEW.webauthn_user_handle, -1) NOT GLOB '[AEIMQUYcgkosw048]')
+            BEGIN SELECT RAISE(ABORT, 'INVALID_MEMBER_HANDLE'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_member_handle_allocation
+            BEFORE UPDATE OF webauthn_user_handle ON identity_members WHEN OLD.webauthn_user_handle IS NULL
+              AND NEW.webauthn_user_handle IS NOT NULL AND
+              (length(NEW.webauthn_user_handle) != 43 OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
+               OR substr(NEW.webauthn_user_handle, -1) NOT GLOB '[AEIMQUYcgkosw048]')
+            BEGIN SELECT RAISE(ABORT, 'INVALID_MEMBER_HANDLE'); END""")
         conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_member_handle_immutable
             BEFORE UPDATE OF webauthn_user_handle ON identity_members
             WHEN OLD.webauthn_user_handle IS NOT NULL AND NEW.webauthn_user_handle IS NOT OLD.webauthn_user_handle
@@ -160,8 +173,13 @@ if op == "init":
               OR (NEW.handle_format = 'isolated-v2' AND (NEW.webauthn_user_handle IS NULL
                   OR length(NEW.webauthn_user_handle) != 43
                   OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
-                  OR substr(NEW.webauthn_user_handle, -1) NOT GLOB '[AEIMQUYcgkosw048]'))
+                  OR substr(NEW.webauthn_user_handle, -1) NOT GLOB '[AEIMQUYcgkosw048]'
+                  OR NEW.webauthn_user_handle IS NOT (SELECT webauthn_user_handle FROM identity_members WHERE member_id = NEW.member_id)))
             BEGIN SELECT RAISE(ABORT, 'INVALID_CREDENTIAL_HANDLE'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_passkey_marker_immutable
+            BEFORE UPDATE OF webauthn_v2_issued_at ON identity_household
+            WHEN OLD.webauthn_v2_issued_at IS NOT NULL AND NEW.webauthn_v2_issued_at IS NOT OLD.webauthn_v2_issued_at
+            BEGIN SELECT RAISE(ABORT, 'INVALID_PASSKEY_MARKER'); END""")
         conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_first_isolated_credential
             AFTER INSERT ON identity_credentials WHEN NEW.handle_format = 'isolated-v2'
             BEGIN UPDATE identity_household SET webauthn_v2_issued_at = COALESCE(webauthn_v2_issued_at, NEW.created_at) WHERE id = 1; END""")
@@ -173,6 +191,9 @@ if op == "init":
             "INSERT OR IGNORE INTO identity_household (id, state, generation, global_epoch, updated_at) VALUES (1, 'setup', ?, 1, ?)",
             (int(payload["generation"]), payload["now"]),
         )
+        # Recover the informational marker if v2 rows were restored without it; never allocate a new
+        # credential or relabel a legacy record. Timestamps are the server's stored enrollment times.
+        conn.execute("UPDATE identity_household SET webauthn_v2_issued_at = (SELECT MIN(created_at) FROM identity_credentials WHERE handle_format = 'isolated-v2') WHERE id = 1 AND webauthn_v2_issued_at IS NULL")
         # Preserve the snapshot's monotonic generation without changing authorization epochs.
         conn.execute("UPDATE identity_household SET generation = MAX(generation, ?) WHERE id = 1", (int(payload["generation"]),))
         conn.execute("COMMIT")
@@ -239,8 +260,12 @@ elif op == "commit":
         result = apply()
     except sqlite3.IntegrityError as error:
         detail = str(error)
-        if "HANDLE" in detail or "handle" in detail:
-            result = {"ok": False, "handleError": "INVALID_MEMBER_HANDLE" if "MEMBER_HANDLE" in detail or "identity_members.webauthn_user_handle" in detail else "INVALID_CREDENTIAL_HANDLE"}
+        if detail in ("INVALID_MEMBER_HANDLE", "UNIQUE constraint failed: identity_members.webauthn_user_handle"):
+            result = {"ok": False, "handleError": "INVALID_MEMBER_HANDLE"}
+        elif detail == "INVALID_CREDENTIAL_HANDLE" or detail == "NOT NULL constraint failed: identity_credentials.handle_format" or detail.startswith("CHECK constraint failed: handle_format IN ("):
+            result = {"ok": False, "handleError": "INVALID_CREDENTIAL_HANDLE"}
+        elif detail == "INVALID_PASSKEY_MARKER":
+            result = {"ok": False, "handleError": "INVALID_PASSKEY_METADATA"}
         else:
             result = {"ok": False, "integrity": detail}
     except BaseException:
