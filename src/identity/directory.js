@@ -394,9 +394,10 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   function enrollmentHandleFor(userId) {
     const data = load();
     const member = data.members.find((entry) => entry.user_id === userId) || refuse(404, 'NOT_FOUND', 'No such member.');
-    if (!validAccountHandle(member.webauthn_user_handle)) {
-      const isolated = data.credentials.some((row) => row.member_id === member.member_id && row.handle_format === 'isolated-v2');
-      const advice = member.webauthn_user_handle == null && !isolated ? 'Restart Home Base to initialize this member account.' : 'Restore known-good identity metadata before enrolling more passkeys.';
+    const isolated = data.credentials.filter((row) => row.member_id === member.member_id && row.handle_format === 'isolated-v2');
+    const mismatched = isolated.some((row) => validAccountHandle(row.webauthn_user_handle) && row.webauthn_user_handle !== member.webauthn_user_handle);
+    if (!validAccountHandle(member.webauthn_user_handle) || mismatched) {
+      const advice = member.webauthn_user_handle == null && !isolated.length ? 'Restart Home Base to initialize this member account.' : 'Restore known-good identity metadata before enrolling more passkeys.';
       refuse(409, 'INVALID_ENROLLMENT_HANDLE', advice + ' Existing passkeys can still check.');
     }
     return member.webauthn_user_handle;

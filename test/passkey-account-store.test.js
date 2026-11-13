@@ -278,3 +278,29 @@ test('init refreshes a prior feature-slice trigger and rejects unknown/null inse
   assert.throws(() => sql(db, "INSERT INTO identity_credentials (credential_id,member_id,kind,created_at,handle_format) VALUES ('bad-format',?,'hardware',?,'unknown')", [owner.member_id, at]), /INVALID_CREDENTIAL_HANDLE/);
   assert.equal(store.load().household.webauthn_v2_issued_at, null);
 });
+
+test('a canonical but mismatched member handle cannot create a second account over isolated credentials', (t) => {
+  const { db, directory } = fixture(t);
+  const credential = add(directory);
+  removeGuards(db);
+  sql(db, 'UPDATE identity_members SET webauthn_user_handle=?', [Buffer.alloc(32, 14).toString('base64url')]);
+  directory.init();
+  assert.throws(() => directory.enrollmentHandleFor('1001'), /known-good identity metadata/i);
+  assert.equal(directory.credentialsFor('1001')[0].userHandle, credential.webauthn_user_handle);
+});
+
+test('init refreshes every currently managed trigger rather than leaving a stale no-op body', (t) => {
+  const { db, directory } = fixture(t);
+  const guards = sql(db, "SELECT name,tbl_name FROM sqlite_master WHERE type='trigger' AND name LIKE 'identity_%'");
+  assert.ok(guards.length >= 7);
+  for (const { name, tbl_name } of guards) {
+    sql(db, 'DROP TRIGGER "' + name + '"');
+    sql(db, 'CREATE TRIGGER "' + name + '" BEFORE INSERT ON "' + tbl_name + '" BEGIN SELECT 1; END');
+  }
+  directory.init();
+  for (const { name } of guards) {
+    const refreshed = sql(db, "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", [name]);
+    assert.equal(refreshed.length, 1);
+    assert.doesNotMatch(refreshed[0].sql, /BEGIN SELECT 1;/);
+  }
+});

@@ -208,6 +208,9 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
         const context = enrollContext(standing, authority.via);
         if (!finishing) {
           if (authority.consume) {
+            // Refuse already-knowable metadata damage before spending a hardware confirmation.
+            directory.enrollmentHandleFor(standing.member.userId);
+            directory.credentialsFor(standing.member.userId);
             const used = directory.consumeAction(authority.consume, { userId: standing.member.userId, ...expectOf(standing) });
             if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'passkey-enroll', target);
             audit('passkey-enroll', target, `hardware confirmed · jti ${authority.consume.jti}`);

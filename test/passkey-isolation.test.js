@@ -67,6 +67,15 @@ test('repairing an overwritten suite keeps the live suite legacy credentials usa
   assert.equal((await a.parent.check(key, { purpose: 'activate', origin: a.origin })).status, 200);
   const oldB = [await legacyCredential(b, key, true), await legacyCredential(b, phone, false)];
   assert.equal((await b.parent.check(key, { purpose: 'activate', origin: b.origin })).status, 200);
+  const duplicateBody = { label: 'Do not replace the working legacy key', hardware: true };
+  const authority = await b.parent.post('/_sovereign/auth/enroll/options', duplicateBody);
+  assert.equal(authority.status, 401);
+  const token = await b.parent.actionToken(key, authority.body, { origin: b.origin });
+  assert.equal(token.status, 200);
+  const duplicate = await b.parent.post('/_sovereign/auth/enroll/options', duplicateBody, { 'X-Sovereign-Action-Token': token.body.token });
+  assert.equal(duplicate.status, 200);
+  assert.throws(() => key.register(duplicate.body.options, { origin: b.origin }), { name: 'InvalidStateError' });
+  assert.equal((await b.parent.check(key, { origin: b.origin })).status, 200);
   await assert.rejects(a.parent.check(key, { origin: a.origin }), { name: 'NotAllowedError' });
   assert.equal((await b.parent.check(phone, { origin: b.origin })).status, 200);
   assert.equal((await a.parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
@@ -143,4 +152,28 @@ test('a damaged member enrollment handle blocks enrollment but not valid existin
   assert.equal(refused.body.code, 'INVALID_ENROLLMENT_HANDLE');
   assert.match(refused.body.error, /known-good identity metadata/i);
   assert.equal((await server.parent.check(server.phone)).status, 200);
+});
+
+test('known metadata refusal does not spend a valid hardware enrollment token', async (t) => {
+  const server = await activeHousehold(t);
+  const db = path.join(server.root, 'state.sqlite3');
+  const body = { label: 'Backup key', hardware: true };
+  const challenge = await server.parent.post('/_sovereign/auth/enroll/options', body);
+  const authorized = await server.parent.actionToken(server.yubikey, challenge.body);
+  assert.equal(authorized.status, 200);
+  const jti = JSON.parse(Buffer.from(authorized.body.token.split('.')[1], 'base64url').toString('utf8')).jti;
+  const expected = server.app.directory.enrollmentHandleFor('1001');
+  sql(db, 'DROP TRIGGER identity_member_handle_immutable');
+  sql(db, 'UPDATE identity_members SET webauthn_user_handle=?', [Buffer.alloc(32, 15).toString('base64url')]);
+  server.app.directory.init();
+  const headers = { 'X-Sovereign-Action-Token': authorized.body.token };
+  const refused = await server.parent.post('/_sovereign/auth/enroll/options', body, headers);
+  assert.equal(refused.body.code, 'INVALID_ENROLLMENT_HANDLE');
+  assert.equal(sql(db, 'SELECT COUNT(*) AS n FROM identity_action_tokens WHERE jti=?', [jti])[0].n, 0);
+  sql(db, 'DROP TRIGGER identity_member_handle_immutable');
+  sql(db, 'UPDATE identity_members SET webauthn_user_handle=?', [expected]);
+  server.app.directory.init();
+  assert.equal((await server.parent.post('/_sovereign/auth/enroll/options', body, headers)).status, 200);
+  assert.equal(sql(db, 'SELECT COUNT(*) AS n FROM identity_action_tokens WHERE jti=?', [jti])[0].n, 1);
+  assert.equal((await server.parent.post('/_sovereign/auth/enroll/options', body, headers)).body.code, 'REPLAYED');
 });
