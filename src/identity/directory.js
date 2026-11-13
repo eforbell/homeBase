@@ -579,6 +579,13 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
       .map((entry) => ({ userId: entry.userId, login: entry.login, name: entry.name, seenAt: new Date(entry.seenAt).toISOString() }));
   }
 
+  // Read-only acknowledgement of the ingress resolver's observation, for this caller only. A home-page
+  // GET must not create candidates, admit members or issue enrollment grants.
+  function candidateObserved(userId, login) {
+    const candidate = candidates.get(userId);
+    return Boolean(candidate && candidate.login === login && now() - candidate.seenAt < CANDIDATE_MS);
+  }
+
   // What the administrator sees. Credentials are described, never their keys; grants by expiry only.
   function describe() {
     const data = load();
@@ -621,7 +628,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
 
   return {
     activate, addCredential, addMember, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, init, isAdministrator, issueGrant,
-    lookup, memberStatus, publish, recordAssertion, reset, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
+    lookup, candidateObserved, memberStatus, publish, recordAssertion, reset, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }
 

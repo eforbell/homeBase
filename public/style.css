@@ -35,6 +35,12 @@ a:hover { text-decoration: underline; }
 
 .hb-muted { color: var(--muted); }
 
+/* Member home uses the same cards and responsive grid as the administrator's dashboard. */
+.hb-home-identity { overflow-wrap: anywhere; }
+.hb-home-app { display: flex; flex-direction: column; align-items: flex-start; gap: 1.25rem; }
+.hb-home-app h2 { overflow-wrap: anywhere; }
+.hb-home-app .hb-btn { margin-top: auto; }
+
 .hb-section-label {
   font-size: 0.7rem;
   font-weight: 700;

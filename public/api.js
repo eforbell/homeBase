@@ -37,6 +37,19 @@
     return checkResponse(response, payload);
   }
 
+  // Navigation and the landing controller share the initial request. Refreshes stay in memory only;
+  // no identity, app grants or enrollment codes are persisted in browser storage.
+  let homeRequest = null;
+  function getHome({ refresh = false } = {}) {
+    if (refresh || !homeRequest) {
+      homeRequest = getJson('/api/home').catch((error) => {
+        homeRequest = null;
+        throw error;
+      });
+    }
+    return homeRequest;
+  }
+
   // A POST. If Home Base answers that it needs a passkey (a check, or the hardware key for a privileged plan,
   // SID-006), the prompt runs and the identical request is sent once more, with the confirmation it got.
   async function postJson(url, body) {
@@ -200,6 +213,7 @@
 
   window.HB = {
     getJson,
+    getHome,
     postJson,
     escapeHtml,
     formatTimestamp,
