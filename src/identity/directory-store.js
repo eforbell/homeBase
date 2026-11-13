@@ -96,10 +96,17 @@ def upsert(table, key, fields, record, immutable=()):
     marks = ", ".join("?" for _ in fields)
     updates = ", ".join(f"{name}=excluded.{name}" for name in fields if name != key and name not in immutable)
     existing = conn.execute(f"SELECT * FROM {table} WHERE {key} = ?", (record[key],)).fetchone() if immutable else None
-    conn.execute(
-        f"INSERT INTO {table} ({names}) VALUES ({marks}) ON CONFLICT({key}) DO UPDATE SET {updates}",
-        [existing[name] if existing is not None and name in immutable else record.get(name) for name in fields],
-    )
+    if existing is not None:
+        # An existing corrupt credential must still be revocable. Do not run INSERT validation triggers
+        # (as SQLite UPSERT does) when only its mutable fields need changing under our write lock.
+        mutable = [name for name in fields if name != key and name not in immutable]
+        assignments = ", ".join(f"{name} = ?" for name in mutable)
+        conn.execute(f"UPDATE {table} SET {assignments} WHERE {key} = ?", [record.get(name) for name in mutable] + [record[key]])
+    else:
+        conn.execute(
+            f"INSERT INTO {table} ({names}) VALUES ({marks}) ON CONFLICT({key}) DO UPDATE SET {updates}",
+            [record.get(name) for name in fields],
+        )
 
 def emit(value):
     sys.stdout.write(json.dumps(value))

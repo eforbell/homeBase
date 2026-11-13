@@ -78,6 +78,7 @@ test('corrupt credential metadata refuses ceremonies, but status and recovery re
   add(directory);
   removeGuards(db);
   sql(db, "UPDATE identity_credentials SET webauthn_user_handle='corrupt!'");
+  directory.init(); // Restore guards as a restart/restore would; recovery must still revoke the bad row.
   assert.doesNotThrow(() => directory.describe());
   assert.doesNotThrow(() => directory.standing('1001'));
   assert.throws(() => directory.credentialsFor('1001'), { code: 'INVALID_CREDENTIAL_HANDLE' });
