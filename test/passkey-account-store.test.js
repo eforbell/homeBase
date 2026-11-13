@@ -179,3 +179,15 @@ test('a failed migration rolls back DDL and preserves existing handles before a 
   directory.init();
   assert.equal(directory.enrollmentHandleFor('1001'), duplicate);
 });
+
+test('an unknown stored credential format is still revocable through raw recovery operations', (t) => {
+  const { db, directory } = fixture(t);
+  add(directory);
+  removeGuards(db);
+  execFileSync('python3', ['-c', 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("PRAGMA ignore_check_constraints=ON"); c.execute("UPDATE identity_credentials SET handle_format=\'unknown\'"); c.commit()', db]);
+  directory.init();
+  assert.throws(() => directory.credentialsFor('1001'), { code: 'INVALID_CREDENTIAL_HANDLE' });
+  assert.doesNotThrow(() => directory.describe());
+  directory.revokeCredential(founder, 'new-key');
+  assert.equal(directory.credentialsFor('1001').length, 0);
+});
