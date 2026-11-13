@@ -446,3 +446,82 @@ When the administrator has lost both their passkeys and the passphrase, or recov
 ### Tailnet rename
 
 **Not supported yet.** On a cut-over host, the executor refuses a cutover under a different instance name or tailnet domain, and Home Base's domain setting is locked. Nothing rebinds passkeys either: they belong to the tailnet domain, so a renamed tailnet would leave every passkey unusable. Don't rename the tailnet, or change the instance, on a host that has been cut over. Changing the instance alone wouldn't affect passkeys, but it renames every service and isn't supported either.
+
+## Instance-isolated passkeys
+
+This procedure applies only to a reviewed, compatible release, in a separately authorized rollout. It does not authorize deploying a draft branch to production. Rehearse first on two disposable suites with independent identity databases, the actual hardware key, and the deployed Node/Python/SQLite versions.
+
+### What changes, and what does not
+
+New registrations have a persisted opaque account handle per member in each independent suite. The tailnet domain remains the WebAuthn RP ID. The instance tag controls hosting policy; it is not a WebAuthn domain. New provider-facing display names include the suite instance, without changing the Tailscale login or authorization ID.
+
+- **Isolated** means the credential uses the new account namespace.
+- **Legacy (compatible)** means an existing credential still uses its original ID-derived handle. Working legacy keys do not have to be re-registered. A NULL stored handle on a legacy row is intentional, not corruption; the member's new enrollment handle does not rewrite that key.
+- **Invalid account metadata** identifies a malformed stored credential record, not proof of a damaged physical key. Status/recovery remain available. An enrollment-metadata warning can instead mean missing member metadata or a well-formed mismatch on either side.
+- Stored rows, attestation kind and D11 counts are not proof that the device still holds its private credential. Check the particular credential's fresh use. Do not reset the physical key to fix this incident.
+- A copied identity database copies account handles. It is not a way to create an independent rehearsal suite. Same-suite host moves/restores preserve those handles. Tailnet/domain changes are still a separate unsupported migration.
+
+### Roll out without flipping the working key again
+
+1. Use fresh ordinary passkey checks to identify the **working** and **overwritten** suites; do not assume their roles from their names or yesterday's timestamps. Check hardware and synced providers separately. An assertion does not replace a credential; registration can. If neither suite works, use the established recovery procedure rather than this one-live shortcut.
+2. Keep SSH/root access and verify the recovery passphrase without exposing it. Take protected SQLite/config/signing-key backups using Part A. Freeze enrollment of the shared key through every unpatched instance throughout the coordinated window.
+3. Upgrade the overwritten suite to the reviewed compatible build **before** entering recovery. Install its locked dependency and verify the running service restarted; files changed on disk are not proof the daemon loaded them. `PASSKEY_LIBRARY_MISMATCH` means stop and repair the dependency/process installation, not reset a key. In Admin, explicitly enter recovery with the passphrase from the administrator's tailnet account. Enroll and freshly check both the hardware credential and the second usable credential needed to activate. Record the new entries/IDs and confirm their `lastUsedAt` or the status check's `credentialId`, not just a generic success from an older entry.
+4. After each new registration, verify the working suite's old hardware/synced credential still checks. Both devices/providers may have lost old entries: do not count ghost rows as a replacement. The new suite's entries should say **Isolated**; its provider display name includes that instance.
+5. Only after confirming usable replacements, remove the overwritten suite's obsolete entries. During setup/recovery the Passkeys **Remove** button uses the existing passphrase-authorized Directory revoke route; it does not request a hardware confirmation. In active Home Base, administrator removal still uses the ordinary hardware-every-time route and preserves D11. Then finish recovery with a fresh hardware check.
+6. Upgrade the working suite to stop new legacy issuance. Do not force its still-working key into recovery or re-enroll it. Verify both suites, their sensitive-app origins, and checks after service restarts. Keep the remaining legacy entries inventoried.
+7. **Stop** if the real key unexpectedly treats an overwritten ID as excluded, or enrollment on one suite still breaks the other. Do not weaken exclusions or delete working access just to obtain a passing test. Same-device enrollment on the live legacy suite is intentionally duplicate-protected.
+
+This is accidental replacement prevention between cooperating suites, not a new browser-enforced boundary against hostile sibling origins sharing the RP ID. Physical/provider behavior is an acceptance gate, not something the software authenticator proves.
+
+### Diagnose metadata without exposing keys
+
+The administrator sees the first-isolated-credential warning once any member has issued an isolated credential. That timestamp is informational server enrollment metadata; it is not cryptographic clock proof. After issuance, a pre-compatibility binary is an unsupported downgrade: it may reject new assertions and still issue shared legacy handles. Old binaries have no new startup guard. The warning and release/runbook discipline enforce this floor operationally.
+
+For root-only, read-only comparison, set `DB` to the service's effective configured database (the following is the default). The output contains labels/IDs to redact before sharing, but no public-key bytes, signing key, passphrase hash, token or raw account handle:
+
+```sh
+DB=/var/lib/sovereign-home/homebase/home-base.sqlite3
+sudo python3 - "$DB" <<'PY'
+import base64, hashlib, json, pathlib, sqlite3, sys
+c = sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + '?mode=ro', uri=True)
+c.row_factory = sqlite3.Row
+
+def fingerprint(value):
+    if value is None:
+        return 'unset'
+    try:
+        raw = base64.b64decode(value + '=' * (-len(value) % 4), altchars=b'-_', validate=True)
+        if len(raw) != 32 or base64.urlsafe_b64encode(raw).decode().rstrip('=') != value:
+            return 'invalid'
+        return hashlib.sha256(raw).hexdigest()[:16]
+    except (ValueError, TypeError):
+        return 'invalid'
+
+print(dict(c.execute('SELECT state, webauthn_v2_issued_at FROM identity_household WHERE id=1').fetchone()))
+for row in c.execute('''SELECT m.user_id, m.login, m.webauthn_user_handle AS member_handle,
+ c.label, c.kind, c.handle_format, c.webauthn_user_handle AS credential_handle,
+ c.revoked_at, c.last_used_at FROM identity_members m
+ JOIN identity_credentials c ON c.member_id=m.member_id ORDER BY m.user_id,c.created_at'''):
+    item = dict(row)
+    item['member_fingerprint'] = fingerprint(item.pop('member_handle'))
+    stored = item.pop('credential_handle')
+    item['credential_fingerprint'] = 'legacy: ID-derived' if item['handle_format'] == 'legacy-v1' else fingerprint(stored)
+    print(json.dumps(item))
+PY
+```
+
+Compare **all** isolated rows owned by the affected member, revoked ones included. A valid-looking mismatch may be in the member row or a credential row; equality/shape alone does not establish which copy is right. Revoking a well-formed mismatched historical row does not clear the enrollment warning, because the history still protects against silently creating another account. Fingerprints are diagnostic hints, not values to write back.
+
+### Corruption exits and restoring the same account
+
+- If a credential has malformed account metadata, enter explicit administrator recovery and remove the identified invalid entry with **Remove**. This is a different failure from ordinary authenticator exclusion: clearing a corrupt record may be necessary **before** options can be generated. Keep other working access, enroll/check the needed replacements, and activate with hardware. An active administrator can use the existing Directory API to revoke an affected non-admin credential; no new policy bypass is introduced.
+- A NULL member handle from an old writer with no isolated history is allocated on a compatible restart; the error says so. With isolated history, a missing, invalid or inconsistent member handle is **not** reallocated, even after all those credentials are revoked. Existing valid credential checks may remain usable, but enrollment is paused.
+- `homebase admin reset` is not a namespace repair: it retains the member/account and revokes administrator credentials. Do not reset the hardware key, generate a replacement member handle, relabel credential handles or clear the rollback marker to hide the problem.
+
+A proven same-account restoration is an **offline, maintainer-assisted maintenance operation**, not an in-product rebind command:
+
+1. Stop Home Base in an approved maintenance window and take a fresh protected SQLite backup. Confirm the affected stable member ID/login and the exact **original** canonical 32-byte handle from a known-good backup. Current isolated rows (including revoked rows) provide supporting evidence; if they disagree or the original cannot be proven, stop for case-specific recovery. Do not guess between a damaged member value and a damaged credential value.
+2. Under one `BEGIN IMMEDIATE` transaction, verify that every owned isolated row agrees with that proven original handle. Preserve all credential IDs, verification keys, counters, revocations, roles, epochs and signing keys. For a member-only repair, capture the exact SQL of `identity_member_handle_immutable`, temporarily remove **only that guard inside the transaction**, perform a parameterized update of **one** `identity_members.webauthn_user_handle`, and recreate the captured guard before committing. Keep canonical/unique constraints active. Roll back the entire transaction, including DDL, on any failed validation or write. Never leave guards disabled on a running service.
+3. Restart the compatible build, which refreshes its managed guards, and re-check each suite/credential before further enrollment. Record the maintenance reason, affected member, backup/version references and check results without logging handle bytes. If a credential row also needs restoration, this member-only procedure must abort; arrange case-specific restoration from trusted metadata, not arbitrary relabeling or a blind whole-database rollback.
+
+The transaction/abort/guard-restoration recipe is exercised only on disposable metadata fixtures in `test/passkey-account-store.test.js`. It is not a tested production disaster-recovery service. Restoring database rows cannot restore a private credential removed from a physical key, and restoring a whole old database can also roll back authorization/revocation state; neither is a routine rollback shortcut.

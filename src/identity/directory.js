@@ -60,10 +60,32 @@ function toRow(member) {
   return { ...member, administrator: member.administrator ? 1 : 0, apps: member.apps == null ? null : JSON.stringify(member.apps) };
 }
 
+function validAccountHandle(value) {
+  if (typeof value !== 'string' || value.length !== 43) return false;
+  const bytes = Buffer.from(value, 'base64url');
+  return bytes.length === 32 && bytes.toString('base64url') === value;
+}
+
+function credentialHandleMetadataValid(row) {
+  return (row.handle_format === 'legacy-v1' && row.webauthn_user_handle === null)
+    || (row.handle_format === 'isolated-v2' && validAccountHandle(row.webauthn_user_handle));
+}
+
+function enrollmentHandleConsistent(member, credentials) {
+  return validAccountHandle(member.webauthn_user_handle) && !credentials.some((row) => row.member_id === member.member_id
+    && row.handle_format === 'isolated-v2' && validAccountHandle(row.webauthn_user_handle)
+    && row.webauthn_user_handle !== member.webauthn_user_handle);
+}
+
 // A stored credential as sovereignAuth's ceremonies take it (only ones enrolled with a key can be used).
-function forCeremony(row) {
+function forCeremony(row, userId) {
+  const legacy = row.handle_format === 'legacy-v1' && row.webauthn_user_handle === null;
+  if (!credentialHandleMetadataValid(row)) {
+    refuse(409, 'INVALID_CREDENTIAL_HANDLE', 'A stored passkey has invalid account-handle metadata. Enter recovery and remove that entry.');
+  }
+  const userHandle = legacy ? Buffer.from(userId, 'utf8').toString('base64url') : row.webauthn_user_handle;
   return {
-    id: row.credential_id, publicKey: row.public_key, counter: row.counter, transports: row.transports ? JSON.parse(row.transports) : [],
+    id: row.credential_id, userHandle, publicKey: row.public_key, counter: row.counter, transports: row.transports ? JSON.parse(row.transports) : [],
     kind: row.kind, root: row.root, deviceType: row.device_type, backedUp: row.backed_up !== 0, label: row.label,
   };
 }
@@ -168,6 +190,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
       if (result.replayed) refuse(409, 'REPLAYED', 'That confirmation was already used; confirm again.');
       if (result.expired) refuse(409, 'EXPIRED', 'That confirmation expired; confirm again.');
       if (result.passphraseChanged) refuse(409, 'PASSPHRASE_CHANGED', 'The admin passphrase changed while this request was in flight; unlock again.');
+      if (result.handleError) refuse(409, result.handleError, 'The passkey account-handle metadata violates a storage constraint.');
       if (result.integrity) refuse(409, 'CONFLICT', `That would give two members the same login or user ID (${result.integrity}).`);
     }
     return refuse(409, 'BUSY', 'The directory kept changing; try again.');
@@ -205,6 +228,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     return {
       member_id: `m_${crypto.randomBytes(6).toString('hex')}`,
       user_id: identity.userId,
+      webauthn_user_handle: crypto.randomBytes(32).toString('base64url'),
       login: identity.login,
       name: identity.name || identity.login,
       role: 'parent',
@@ -289,15 +313,20 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   // authenticator proved: its key, flags and, for hardware, the root). In setup and recovery only the
   // administrator enrolls.
   // expect and expectPassphraseHash: what the enrollment's authorization saw (requireUnchanged).
-  function addCredential({ userId, credentialId, kind, label = '', publicKey = null, counter = 0, transports = [], aaguid = null, deviceType = null, backedUp = true, root = null, expect = null, expectPassphraseHash = null }) {
+  function addCredential({ userId, credentialId, kind, label = '', publicKey = null, counter = 0, transports = [], aaguid = null, deviceType = null, backedUp = true, root = null, userHandle = null, expect = null, expectPassphraseHash = null }) {
     if (!KINDS.has(kind)) refuse(400, 'INVALID', `Unknown credential kind ${kind}.`);
     return change((data) => {
       const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active') || refuse(404, 'NOT_FOUND', 'No such member.');
       requireUnchanged(data, member, expect);
       if (data.household.state !== 'active' && !member.administrator) refuse(409, 'BOOTSTRAP_STATE', `Only the administrator enrolls while Home Base is in ${data.household.state}.`);
       if (data.credentials.some((credential) => credential.credential_id === credentialId)) refuse(409, 'CONFLICT', 'That credential is already enrolled.');
+      // Keyless directory records can remain legacy, but every verified new enrollment is isolated.
+      if (publicKey && userHandle === null) refuse(409, 'INVALID_ENROLLMENT_HANDLE', 'A verified enrollment needs an explicit isolated account handle.');
+      if (userHandle !== null && (!validAccountHandle(userHandle) || userHandle !== member.webauthn_user_handle)) {
+        refuse(409, 'INVALID_ENROLLMENT_HANDLE', 'The enrollment account handle changed or is invalid; start again.');
+      }
       const record = {
-        credential_id: credentialId, member_id: member.member_id, kind, label: String(label), orphaned: 0, created_at: iso(), revoked_at: null,
+        credential_id: credentialId, member_id: member.member_id, handle_format: userHandle === null ? 'legacy-v1' : 'isolated-v2', webauthn_user_handle: userHandle, kind, label: String(label), orphaned: 0, created_at: iso(), revoked_at: null,
         public_key: publicKey, counter: Number(counter) || 0, transports: JSON.stringify(transports || []), aaguid, device_type: deviceType, backed_up: backedUp === false ? 0 : 1, root, last_used_at: null,
       };
       return {
@@ -368,7 +397,20 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   function credentialsFor(userId) {
     const data = load();
     const member = data.members.find((entry) => entry.user_id === userId);
-    return member ? credentialsOf(data, member.member_id).filter((row) => row.public_key).map(forCeremony) : [];
+    return member ? credentialsOf(data, member.member_id).filter((row) => row.public_key).map((row) => forCeremony(row, member.user_id)) : [];
+  }
+
+  // Only enrollment needs the member's current handle. Keep invalid metadata out of status/recovery
+  // loading and out of checks, whose expectation belongs to the selected credential instead.
+  function enrollmentHandleFor(userId) {
+    const data = load();
+    const member = data.members.find((entry) => entry.user_id === userId) || refuse(404, 'NOT_FOUND', 'No such member.');
+    const isolated = data.credentials.filter((row) => row.member_id === member.member_id && row.handle_format === 'isolated-v2');
+    if (!enrollmentHandleConsistent(member, data.credentials)) {
+      const advice = member.webauthn_user_handle == null && !isolated.length ? 'Restart Home Base to initialize this member account.' : 'Restore known-good identity metadata before enrolling more passkeys.';
+      refuse(409, 'INVALID_ENROLLMENT_HANDLE', advice + ' Valid existing passkeys may still check.');
+    }
+    return member.webauthn_user_handle;
   }
 
   // Stores what a verified assertion showed (sovereignAuth's update), merged so that the kind only falls and
@@ -377,10 +419,10 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     return change((data) => {
       const member = data.members.find((entry) => entry.user_id === userId) || refuse(404, 'NOT_FOUND', 'No such member.');
       const row = credentialsOf(data, member.member_id).find((entry) => entry.credential_id === credentialId) || refuse(404, 'NOT_FOUND', 'No such credential.');
-      const merged = mergeCredentialUpdate(forCeremony(row), update);
+      const merged = mergeCredentialUpdate(forCeremony(row, member.user_id), update);
       const next = { ...row, kind: merged.kind, counter: merged.counter, device_type: merged.deviceType, backed_up: merged.backedUp ? 1 : 0, last_used_at: iso() };
       const audit = merged.kind === row.kind ? [] : [{ action: 'credential-kind', target: member.member_id, outcome: `${row.kind} to ${merged.kind}` }];
-      return { change: { credentials: [next], audit }, value: forCeremony(next) };
+      return { change: { credentials: [next], audit }, value: forCeremony(next, member.user_id) };
     });
   }
 
@@ -421,9 +463,12 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     return {
       member: { userId: member.user_id, memberId: member.member_id, login: member.login, name: member.name, role: member.role, status: member.status, epoch: member.epoch, administrator: member.administrator },
       state: data.household.state,
+      household,
+      isolatedIssuedAt: data.household.webauthn_v2_issued_at,
+      enrollmentMetadataValid: enrollmentHandleConsistent(member, data.credentials),
       globalEpoch: data.household.global_epoch,
       credentials: data.credentials.filter((row) => row.member_id === member.member_id && usable(row)).map((row) => ({
-        credentialId: row.credential_id, label: row.label, kind: row.kind, createdAt: row.created_at, lastUsedAt: row.last_used_at, usable: Boolean(row.public_key),
+        credentialId: row.credential_id, label: row.label, kind: row.kind, handleFormat: row.handle_format, handleMetadataValid: credentialHandleMetadataValid(row), createdAt: row.created_at, lastUsedAt: row.last_used_at, usable: Boolean(row.public_key),
       })),
       meetsAdministratorRule: member.administrator && meetsCredentialRule(credentialsOf(data, member.member_id)),
     };
@@ -592,6 +637,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     return {
       state: data.household.state,
       household,
+      isolatedIssuedAt: data.household.webauthn_v2_issued_at,
       generation: data.household.generation,
       globalEpoch: data.household.global_epoch,
       pendingAdministratorLogin: data.household.pending_administrator_login || null,
@@ -607,7 +653,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         apps: appsFor(member),
         appsDefault: member.apps == null,
         credentials: data.credentials.filter((credential) => credential.member_id === member.member_id).map((credential) => ({
-          credentialId: credential.credential_id, kind: credential.kind, label: credential.label, orphaned: credential.orphaned, createdAt: credential.created_at, lastUsedAt: credential.last_used_at || null, revokedAt: credential.revoked_at,
+          credentialId: credential.credential_id, kind: credential.kind, handleFormat: credential.handle_format, handleMetadataValid: credentialHandleMetadataValid(credential), label: credential.label, orphaned: credential.orphaned, createdAt: credential.created_at, lastUsedAt: credential.last_used_at || null, revokedAt: credential.revoked_at,
         })),
         grantExpiresAt: data.grants.find((grant) => grant.member_id === member.member_id)?.expires_at || null,
       })),
@@ -627,7 +673,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
 
   return {
-    activate, addCredential, addMember, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, init, isAdministrator, issueGrant,
+    activate, addCredential, addMember, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, enrollmentHandleFor, init, isAdministrator, issueGrant,
     lookup, candidateObserved, memberStatus, publish, recordAssertion, reset, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }

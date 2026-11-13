@@ -154,8 +154,11 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
     const label = (id) => standing.credentials.find((credential) => credential.credentialId === id)?.label || null;
     return {
       state: standing.state,
+      instance: standing.household,
+      enrollmentMetadataValid: standing.enrollmentMetadataValid,
+      ...(standing.member.administrator ? { isolatedIssuedAt: standing.isolatedIssuedAt } : {}),
       member: { login: standing.member.login, name: standing.member.name, role: standing.member.role, administrator: standing.member.administrator },
-      credentials: standing.credentials.map(({ credentialId, label: name, kind, createdAt, lastUsedAt, usable }) => ({ credentialId, label: name, kind, createdAt, lastUsedAt, usable })),
+      credentials: standing.credentials.map(({ credentialId, label: name, kind, handleFormat, handleMetadataValid, createdAt, lastUsedAt, usable }) => ({ credentialId, label: name, kind, handleFormat, handleMetadataValid, createdAt, lastUsedAt, usable })),
       check: check.claims ? { credentialId: check.claims.cred, label: label(check.claims.cred), kind: check.claims.kind, checkedAt: new Date(check.claims.auth_time * 1000).toISOString(), ageSeconds: check.age } : null,
       administratorRuleMet: standing.meetsAdministratorRule,
       canActivate,
@@ -208,6 +211,9 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
         const context = enrollContext(standing, authority.via);
         if (!finishing) {
           if (authority.consume) {
+            // Refuse already-knowable metadata damage before spending a hardware confirmation.
+            directory.enrollmentHandleFor(standing.member.userId);
+            directory.credentialsFor(standing.member.userId);
             const used = directory.consumeAction(authority.consume, { userId: standing.member.userId, ...expectOf(standing) });
             if (used !== 'redeemed') return refusal(res, 409, USED[used][0], USED[used][1], 'passkey-enroll', target);
             audit('passkey-enroll', target, `hardware confirmed · jti ${authority.consume.jti}`);
