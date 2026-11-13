@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { browser, DOMAIN, PARENT, PASSPHRASE, startServer } = require('./support/household');
 const { createResidentAuthenticator } = require('./support/resident-authenticator');
 
+// Slice 3 must invert the replacement assertions after integrating isolated enrollment; do not delete them.
 test('characterizes the cross-suite resident-key replacement that ordinary static fixtures miss', async (t) => {
   const key = createResidentAuthenticator({ kind: 'hardware' });
   const suites = [];
