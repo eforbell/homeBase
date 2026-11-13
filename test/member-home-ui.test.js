@@ -20,10 +20,27 @@ function page(answers, { activePage = 'dashboard' } = {}) {
   let timerId = 0;
   function node() {
     const classes = new Set();
-    return { innerHTML: '', className: '', style: {}, events: {},
+    let html = '';
+    return { className: '', style: {}, events: {}, children: [], observers: [], parent: null,
+      get innerHTML() { return html; },
+      set innerHTML(value) {
+        html = value;
+        for (const child of this.children) child.parent = null;
+        this.children = [];
+        for (const callback of this.observers) queueMicrotask(callback);
+      },
+      get firstElementChild() { return this.children[0] || null; },
+      prepend(child) {
+        child.remove(); this.children.unshift(child); child.parent = this;
+        for (const callback of this.observers) queueMicrotask(callback);
+      },
+      remove() {
+        if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);
+        this.parent = null;
+      },
       classList: { add: (name) => classes.add(name), toggle: (name) => classes.has(name) ? classes.delete(name) : classes.add(name) },
       addEventListener(type, fn) { this.events[type] = fn; },
-      setAttribute() {}, querySelector() { return null; }, remove() {}, prepend() {},
+      setAttribute() {}, querySelector() { return null; },
     };
   }
   const root = node();
@@ -44,12 +61,12 @@ function page(answers, { activePage = 'dashboard' } = {}) {
   };
   const context = vm.createContext({ window, document, console,
     sessionStorage: { getItem: (key) => stored.get(key), setItem: (key, value) => stored.set(key, value) },
-    MutationObserver: class { observe() {} },
+    MutationObserver: class { constructor(callback) { this.callback = callback; } observe(el) { el.observers.push(this.callback); } },
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; },
     clearTimeout: (id) => timers.delete(id),
     fetch: async (url) => {
       sent.push(url);
-      const body = url === '/api/home' ? answers[Math.min(responseIndex++, answers.length - 1)] : admin[url];
+      const body = await (url === '/api/home' ? answers[Math.min(responseIndex++, answers.length - 1)] : admin[url]);
       if (body instanceof Error) throw body;
       assert.notEqual(body, undefined, `unexpected request ${url}`);
       return { ok: true, text: async () => JSON.stringify(body) };
@@ -156,4 +173,55 @@ test('shared navigation hides operational links on member self-service pages too
   assert.deepEqual(ui.sent, ['/api/home']);
   assert.match(ui.nav(), />Passkeys</);
   assert.doesNotMatch(ui.nav(), /href="\/(?:apps|jobs|config|network)"/);
+});
+
+test('passphrase-unlocked setup and recovery keep the operational dashboard, full nav and lifecycle notice', async () => {
+  for (const lifecycle of ['setup', 'recovery']) {
+    const ui = page([{ state: 'administrator', lifecycle, canUnlockAdmin: true }]); await tick();
+    assert.match(ui.root.innerHTML, /System readiness/);
+    assert.match(ui.nav(), /href="\/jobs"/);
+    assert.equal(ui.root.children.length, 1, 'the lifecycle banner survives the dashboard render');
+    assert.match(ui.root.firstElementChild.innerHTML, new RegExp(`<strong>${lifecycle}</strong>`));
+    assert.match(ui.root.firstElementChild.innerHTML, /href="\/admin"/);
+  }
+});
+
+test('locked administrator retains an unlock entry during a snapshot or publication outage', async () => {
+  const ui = page([{ state: 'unavailable', canUnlockAdmin: true, caller }]); await tick();
+  assert.match(ui.root.innerHTML, /href="\/admin">Unlock administration/);
+  assert.match(ui.nav(), /href="\/admin"/);
+  assert.match(ui.nav(), />Admin</);
+  assert.deepEqual(ui.sent, ['/api/home']);
+});
+
+test('operational pages show no misleading access banner while loading, on legacy hosts or on lookup failure', async () => {
+  let resolve;
+  const pending = new Promise((done) => { resolve = done; });
+  const ui = page([pending], { activePage: 'jobs' });
+  assert.equal(ui.root.children.length, 0, 'loading does not imply the user is unauthorized');
+  resolve({ state: 'legacy' }); await tick();
+  assert.equal(ui.root.children.length, 0);
+  assert.match(ui.nav(), /href="\/jobs"/);
+  const unavailable = page([new Error('offline')], { activePage: 'jobs' }); await tick();
+  assert.equal(unavailable.root.children.length, 0, 'lookup failure does not imply the user is unauthorized');
+});
+
+test('locked administrator gets unlock guidance on operational pages; other members get a Home link', async () => {
+  const locked = page([{ ...member, canUnlockAdmin: true }], { activePage: 'jobs' }); await tick();
+  assert.match(locked.root.firstElementChild.innerHTML, /Administration is locked/);
+  assert.match(locked.root.firstElementChild.innerHTML, /href="\/admin"/);
+  const kid = page([member], { activePage: 'jobs' }); await tick();
+  assert.match(kid.root.firstElementChild.innerHTML, /Find your apps on Home/);
+  assert.doesNotMatch(kid.root.firstElementChild.innerHTML, /href="\/admin"/);
+});
+
+test('tab focus does not reload and discard an unlocked or legacy administrators in-progress dashboard', async () => {
+  for (const state of ['legacy', 'administrator']) {
+    const ui = page([{ state }]); await tick();
+    const sent = [...ui.sent];
+    ui.root.innerHTML = 'Bootstrap submission in progress';
+    await ui.visibility('hidden'); await ui.visibility('visible');
+    assert.deepEqual(ui.sent, sent);
+    assert.equal(ui.root.innerHTML, 'Bootstrap submission in progress');
+  }
 });

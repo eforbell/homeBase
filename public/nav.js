@@ -94,7 +94,7 @@
     const homeLink = { ...navItems[0], label: 'Home' };
     const selfService = home.state === 'member';
     const lifecycle = home.state === 'setup' || home.state === 'recovery';
-    const items = full ? navItems : [homeLink, ...(selfService || lifecycle ? [{ ...navItems[5],
+    const items = full ? navItems : [homeLink, ...(selfService || lifecycle || home.canUnlockAdmin ? [{ ...navItems[5],
       label: home.canUnlockAdmin || lifecycle ? 'Admin' : 'Passkeys',
     }] : [])];
     const mobileItems = full ? items.slice(0, 4) : items;
@@ -143,18 +143,26 @@
     hadAdminNavigation = full;
   }
 
-  // Only non-home pages need a contextual banner. The landing controller owns its own lifecycle and
-  // onboarding messages, so a member's useful Home view is never overlaid with an admin-lock warning.
+  // Member home owns its own welcome/lifecycle messages. The operational dashboard and admin pages
+  // retain the setup/recovery notice, even for an unlocked passphrase session.
   let banner = null;
   let bannerObserver = null;
   function showBootstrapBanner(home, full) {
     const main = document.getElementById('app');
-    if (!main || activePage === 'dashboard' || activePage === 'admin') return;
+    if (!main) return;
     const messages = {
       setup: 'Home Base is in <strong>setup</strong>. The administrator must register two passkeys, including a hardware security key, and finish on Admin.',
       recovery: 'Home Base is in <strong>recovery</strong>. Every session has ended; the administrator must finish recovery on Admin with a hardware key.',
     };
-    const message = messages[home.state] || (!full ? 'This page is for your household administrator. <a href="/">Find your apps on Home</a>.' : '');
+    const lifecycleMessage = messages[home.lifecycle || home.state];
+    let message = '';
+    if (lifecycleMessage && (activePage !== 'dashboard' || full)) {
+      message = `${lifecycleMessage} ${activePage === 'admin' ? 'Use Passkeys below.' : '<a href="/admin">Go to Admin</a>.'}`;
+    } else if (!full && !['dashboard', 'admin'].includes(activePage) && !['loading', 'unavailable'].includes(home.state)) {
+      message = home.canUnlockAdmin
+        ? 'Administration is locked. <a href="/admin">Unlock administration</a> to use this page.'
+        : 'This page is for your household administrator. <a href="/">Find your apps on Home</a>.';
+    }
     if (!message) {
       if (banner) banner.remove();
       banner = null;
@@ -166,7 +174,7 @@
       banner.setAttribute('role', 'status');
       banner.style.cssText = 'border-color:var(--yellow);margin-bottom:1rem;';
     }
-    banner.innerHTML = `<p style="margin:0;">${message} ${messages[home.state] ? '<a href="/admin">Go to Admin</a>.' : ''}</p>`;
+    banner.innerHTML = `<p style="margin:0;">${message}</p>`;
     main.prepend(banner);
     if (!bannerObserver) {
       bannerObserver = new MutationObserver(() => { if (banner && main.firstElementChild !== banner) main.prepend(banner); });

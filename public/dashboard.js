@@ -4,6 +4,7 @@
   let waiting = false;
   let loading = false;
   let suspended = false;
+  let fullView = false;
 
   function stopRefresh() {
     clearTimeout(refreshTimer);
@@ -60,7 +61,7 @@
     root.innerHTML = `<div class="hb-stack">
       <section class="hb-card"><h1 style="margin:0;">${title}</h1>${identity}
         <p>${message}</p><p class="hb-muted">${detail}</p>
-        <div class="hb-actions">${refresh}${['setup', 'recovery'].includes(home.state) ? '<a class="hb-btn" href="/admin">Administrator: finish on Admin</a>' : ''}</div>
+        <div class="hb-actions">${refresh}${unlock}${['setup', 'recovery'].includes(home.state) && !home.canUnlockAdmin ? '<a class="hb-btn" href="/admin">Administrator: finish on Admin</a>' : ''}</div>
         ${home.state === 'waiting' ? '<p class="hb-muted" role="status" style="margin-bottom:0;">Waiting for your administrator. No passkey is required to see your apps.</p>' : ''}
       </section>
     </div>`;
@@ -76,8 +77,9 @@
       const home = await window.HB.getHome({ refresh });
       if (suspended) return;
       waiting = home.state === 'waiting';
+      fullView = home.state === 'legacy' || home.state === 'administrator';
       window.HB.updateHomeNavigation(home);
-      if (home.state === 'legacy' || home.state === 'administrator') {
+      if (fullView) {
         document.title = 'Home Base - Dashboard';
         await loadAdministrator();
       } else {
@@ -85,6 +87,7 @@
       }
     } catch (_error) {
       if (!suspended) {
+        fullView = false;
         window.HB.updateHomeNavigation({ state: 'unavailable' });
         renderHome({ state: 'unavailable' });
       }
@@ -355,8 +358,8 @@
     if (event.target.closest('[data-home-refresh]')) load({ refresh: true });
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') load({ refresh: true });
-    else stopRefresh();
+    if (document.visibilityState !== 'visible') stopRefresh();
+    else if (!fullView) load({ refresh: true });
   });
   window.addEventListener('pagehide', () => { suspended = true; stopRefresh(); });
   window.addEventListener('pageshow', (event) => {

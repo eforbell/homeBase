@@ -114,6 +114,7 @@ test('member home: snapshot failures and login mismatch fail closed without host
   await admit(household);
   install(root, 'family-dinner');
   const kid = browser(base, KID);
+  const lockedAdmin = browser(base, PARENT);
   assert.equal((await kid.get('/api/home')).body.apps.length, 1);
   const file = path.join(root, 'identity', 'snapshot.json');
   const original = fs.readFileSync(file, 'utf8');
@@ -123,17 +124,28 @@ test('member home: snapshot failures and login mismatch fail closed without host
     assert.deepEqual(home.apps, []);
     assert.doesNotMatch(JSON.stringify(home), /snapshot|\/identity|hb-passkeys|message|reason|generation/);
   };
+  const checkAdmin = async () => {
+    const home = (await lockedAdmin.get('/api/home')).body;
+    assert.equal(home.state, 'unavailable');
+    assert.equal(home.canUnlockAdmin, true, 'snapshot failure must not hide the administrator unlock entry');
+    assert.deepEqual(home.apps, []);
+    assert.equal((await lockedAdmin.get('/api/state')).status, 401);
+  };
   for (const patch of [
     (data) => { data.written_at = new Date(Date.now() - 180_000).toISOString(); },
     (data) => { data.members.find((member) => member.user_id === '1002').login = 'changed@example.com'; },
   ]) {
     const data = JSON.parse(original); patch(data); fs.writeFileSync(file, JSON.stringify(data)); await check();
   }
-  fs.writeFileSync(file, 'not JSON'); await check();
+  fs.writeFileSync(file, 'not JSON'); await check(); await checkAdmin();
   fs.writeFileSync(file, original); fs.chmodSync(path.dirname(file), 0o777); await check();
   fs.chmodSync(path.dirname(file), 0o755); fs.unlinkSync(file); await check();
   app.directory.publish();
   assert.equal((await kid.get('/api/home')).body.state, 'member', 'a retry recovers');
+  const mismatch = JSON.parse(original);
+  mismatch.members.find((member) => member.user_id === '1001').login = 'renamed-parent@example.com';
+  fs.writeFileSync(file, JSON.stringify(mismatch)); await checkAdmin();
+  app.directory.publish();
 
   // A publisher failure stops admission immediately, even if its last good file has not aged out yet.
   fs.renameSync(file, `${file}.saved`);
@@ -141,13 +153,20 @@ test('member home: snapshot failures and login mismatch fail closed without host
   assert.equal(app.directory.publish(), null);
   fs.rmdirSync(file);
   fs.renameSync(`${file}.saved`, file);
-  await check();
+  await check(); await checkAdmin();
   app.directory.publish();
   assert.equal((await kid.get('/api/home')).body.state, 'member');
 });
 
 test('member home: locked administrator gets a launcher; lifecycle restrictions and unlocked admin survive', async (t) => {
   const { base: setupBase } = await startServer(t);
+  assert.equal((await browser(setupBase, KID).get('/api/home')).body.state, 'setup');
+  const setupAdmin = browser(setupBase, PARENT);
+  assert.equal((await setupAdmin.post('/api/admin/setup', { passphrase: PASSPHRASE })).status, 200);
+  const setup = (await setupAdmin.get('/api/home')).body;
+  assert.equal(setup.state, 'administrator');
+  assert.equal(setup.lifecycle, 'setup');
+  assert.deepEqual(setup.apps, []);
   assert.equal((await browser(setupBase, KID).get('/api/home')).body.state, 'setup');
   const { root, base, parent } = await activeHousehold(t);
   install(root, 'family-dinner');
@@ -159,7 +178,11 @@ test('member home: locked administrator gets a launcher; lifecycle restrictions 
   assert.equal(home.apps.length, 1);
   assert.equal((await locked.get('/api/state')).status, 401);
   assert.equal((await parent.post('/api/directory/recovery', { passphrase: PASSPHRASE })).status, 200);
-  for (const client of [parent, locked, browser(base, KID)]) {
+  const recoveryAdmin = (await parent.get('/api/home')).body;
+  assert.equal(recoveryAdmin.state, 'administrator');
+  assert.equal(recoveryAdmin.lifecycle, 'recovery');
+  assert.deepEqual(recoveryAdmin.apps, []);
+  for (const client of [locked, browser(base, KID)]) {
     const recovery = (await client.get('/api/home')).body;
     assert.equal(recovery.state, 'recovery');
     assert.deepEqual(recovery.apps, []);

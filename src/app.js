@@ -983,18 +983,18 @@ function createApp(config) {
       const admin = administrator ? await getAdminStatus(req, stateStore, adminOptions) : null;
       // All authorization data is read after the identity/session waits, including the lifecycle state.
       const lifecycle = directory.state();
+      if (admin?.unlocked) return view('administrator', caller, { canUnlockAdmin: true, lifecycle });
       if (lifecycle !== 'active') return view(lifecycle, caller, { canUnlockAdmin: administrator });
       if (!identity) return view('unidentified');
-      if (admin?.unlocked) return view('administrator', caller, { canUnlockAdmin: true });
       const current = snapshotReader.current();
-      if (!current.ok) return view('unavailable', caller);
+      if (!current.ok) return view('unavailable', caller, { canUnlockAdmin: administrator });
       const member = current.snapshot.byUserId.get(identity.userId);
       if (!member) return view('waiting', caller, { candidateObserved: directory.candidateObserved(identity.userId, identity.login) });
-      if (member.login !== identity.login) return view('unavailable', caller);
+      if (member.login !== identity.login) return view('unavailable', caller, { canUnlockAdmin: administrator });
       if (member.status !== 'active') return view('disabled', caller);
       // A failed publication clears ingress admission even while the last file is still within its age
       // window. Do not bypass that fail-closed state just because whois still identifies the device.
-      if (directory.memberStatus(identity.userId) !== 'active') return view('unavailable', caller);
+      if (directory.memberStatus(identity.userId) !== 'active') return view('unavailable', caller, { canUnlockAdmin: administrator });
       const headers = { 'x-sovereign-user-id': identity.userId, 'x-sovereign-login': identity.login };
       const state = stateStore.loadState();
       const allowed = Object.fromEntries(catalog
