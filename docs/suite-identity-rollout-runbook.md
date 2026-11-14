@@ -25,13 +25,13 @@ Use this runbook as the host procedure; do not start a second, parallel cutover.
 
 ### Release gate for instance-isolated passkeys
 
-**Production stop gate:** Home Base [PR #60](https://github.com/eforbell/homeBase/pull/60) and sovereignAuth [PR #7](https://github.com/eforbell/sovereignAuth/pull/7) are draft at this amendment. Advisory code reviews and software/container tests do not authorize production. Before using the feature on a production host, record:
+**Production stop gate:** Check source-landing status in Home Base [PR #60](https://github.com/eforbell/homeBase/pull/60) and sovereignAuth [PR #7](https://github.com/eforbell/sovereignAuth/pull/7). Source merges, advisory code reviews and software/container tests do not authorize production. Before using the feature on a production host, record:
 
 - the approved, merged Home Base commit and its final-main sovereignAuth pin, with matching lockfile;
 - the required independent/security reviews and the two-suite physical-key/synced-provider rehearsal;
 - the tested OS, running Node/Python/SQLite versions, maintenance owner, backup location and rollback limits.
 
-For an authorized disposable-VM rehearsal, you may select an explicitly reviewed candidate commit instead; record it as a candidate, not a release. Do not use a moving branch name as the deployment record or treat the current dependency feature pin as the final production pin. Keep the existing non-production suite on an independent identity database, not a production database clone.
+For an authorized disposable-VM rehearsal, you may select an explicitly reviewed candidate commit instead; record it as a candidate, not a release. Do not use a moving branch name as the deployment record or treat a prerelease dependency feature pin as the final production pin. Keep the existing non-production suite on an independent identity database, not a production database clone.
 
 Define the plan before changing the host: target instance, tailnet DNS domain, administrator tailnet login, installed apps to switch, and apps that must remain on their own sign-in. The instance/tag identify the suite operationally; the persisted opaque handles isolate its new credentials. Changing the tag does not migrate keys.
 
