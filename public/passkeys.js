@@ -76,6 +76,7 @@
     return window.HB.postJson(`${AUTH}check/finish`, { purpose, kind, response });
   }
 
+  const FORMAT_LABELS = { 'legacy-v1': 'Legacy (compatible)', 'isolated-v2': 'Isolated' };
   const KIND_LABELS = { hardware: 'hardware key (attested)', 'device-bound': 'this device only', synced: 'synced passkey' };
 
   function ago(iso) {
@@ -89,16 +90,25 @@
 
   function nextStep(status) {
     const admin = status.member.administrator;
+    let metadata = '';
+    if (status.enrollmentMetadataValid === false) metadata = 'Enrollment account metadata is unavailable or inconsistent. Valid existing passkeys may still check; consult the recovery runbook before enrolling.';
+    else if (status.credentials.some((credential) => credential.handleMetadataValid === false)) {
+      if (!admin) metadata = 'Stored passkey metadata is invalid. Ask the administrator to remove the affected entry.';
+      else if (status.state === 'active') metadata = 'Stored passkey metadata is invalid. Enter recovery to remove the affected entry; do not reset your hardware key.';
+      else metadata = 'Remove the affected entry below, then verify the remaining passkeys; do not reset your hardware key.';
+    }
     if (status.state === 'active') {
+      if (metadata) return metadata;
       if (admin && !status.administratorRuleMet) return 'Your passkeys no longer include two with an attested hardware key (an update can stop trusting a maker\'s keys). Enter recovery with the passphrase and register a new hardware key.';
       if (!status.credentials.length) return 'You have no passkey yet: enter the enrollment code the administrator gave you, then register one.';
       // The check button beside the status says the rest.
       return '';
     }
-    if (!admin) return `Home Base is in ${status.state}: only the administrator registers passkeys now.`;
+    if (!admin) return `${metadata ? `${metadata} ` : ''}Home Base is in ${status.state}: only the administrator registers passkeys now.`;
+    if (metadata) return `${metadata} To finish ${status.state}, keep or register at least two usable passkeys, including an attested hardware key, and finish with a fresh hardware check.`;
     if (!status.administratorRuleMet) {
       const hardware = status.credentials.some((credential) => credential.kind === 'hardware');
-      return `To finish ${status.state}, register at least two passkeys${hardware ? '' : ', including a hardware security key (tick "hardware key")'}. Then finish with the hardware key.`;
+      return `To finish ${status.state}, keep or register at least two usable passkeys${hardware ? '' : ', including a hardware security key (tick "hardware key")'}. Then finish with the hardware key.`;
     }
     return status.canActivate ? 'Ready: finish with your hardware key to make Home Base active.' : 'Unlock with the passphrase above to finish.';
   }
@@ -123,8 +133,9 @@
       ? status.credentials.map((credential) => `
           <li class="hb-row" style="flex-wrap:wrap;gap:0.4rem;">
             <strong>${esc(credential.label)}</strong>
+            <span class="${credential.handleMetadataValid === false ? 'hb-warn' : 'hb-muted'}">${esc(credential.handleMetadataValid === false ? 'Invalid account metadata' : FORMAT_LABELS[credential.handleFormat] || 'Account metadata unavailable')}</span>
             <span class="hb-muted">${esc(KIND_LABELS[credential.kind] || credential.kind)} · added ${esc(ago(credential.createdAt))} · last used ${esc(ago(credential.lastUsedAt))}</span>
-            ${status.member.administrator && status.state !== 'active' ? '' : `<button class="hb-btn" type="button" data-passkey-revoke="${esc(credential.credentialId)}" style="margin-left:auto;">Remove</button>`}
+            <button class="hb-btn" type="button" data-passkey-revoke="${esc(credential.credentialId)}"${status.member.administrator && status.state !== 'active' ? ' data-passkey-directory-revoke="true"' : ''} style="margin-left:auto;">Remove</button>
           </li>`).join('')
       : '<li class="hb-muted">No passkeys yet.</li>';
     const checkLine = status.check
@@ -144,7 +155,7 @@
     const step = nextStep(status);
     return `
       <h2 style="margin-top:0;">Passkeys</h2>
-      <p class="hb-muted" style="margin:0 0 0.6rem;">${esc(status.member.name || status.member.login)} · ${esc(status.member.role)}${status.member.administrator ? ' · administrator' : ''} · Home Base is <strong>${esc(status.state)}</strong></p>
+      <p class="hb-muted" style="margin:0 0 0.6rem;">${status.instance ? `${esc(status.instance)} · ` : ''}${esc(status.member.name || status.member.login)} · ${esc(status.member.role)}${status.member.administrator ? ' · administrator' : ''} · Home Base is <strong>${esc(status.state)}</strong></p>
       <div class="hb-row" style="flex-wrap:wrap;gap:0.6rem;align-items:center;margin:0 0 0.6rem;">
         <span>${checkLine}</span>
         ${checkButton}
@@ -153,6 +164,8 @@
       ${step ? `<p class="hb-warn" style="margin:0 0 0.8rem;">${esc(step)}</p>` : ''}
       ${memberHint}
       ${status.member.administrator && status.state === 'active' ? '<p class="hb-muted" style="margin:0 0 0.8rem;">Adding or removing your passkeys asks for your hardware key every time. Removing one ends your checks everywhere, so check again afterwards.</p>' : ''}
+      ${status.member.administrator && status.isolatedIssuedAt ? `<p class="hb-warn">Isolated accounts are in use (first issued ${esc(window.HB.formatTimestamp(status.isolatedIssuedAt))}). Do not downgrade to a build that cannot verify isolated credentials.</p>` : ''}
+      ${status.credentials.some((credential) => credential.handleFormat === 'legacy-v1') ? '<p class="hb-muted">Working legacy credentials remain compatible. New registrations are isolated to this suite; do not re-enroll this key on an unpatched instance.</p>' : ''}
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0 0 0.9rem;">${rows}</ul>
       <div class="hb-grid hb-grid-2">
         <form class="hb-form-grid" data-passkey-action="enroll">
@@ -213,7 +226,11 @@
       if (!button) return;
       const result = node.querySelector('[data-check-result]');
       try {
-        await guardedPost(`${AUTH}credentials/revoke`, { credentialId: button.dataset.passkeyRevoke });
+        if (button.dataset.passkeyDirectoryRevoke === 'true') {
+          await guardedPost(`/api/directory/credentials/${encodeURIComponent(button.dataset.passkeyRevoke)}/revoke`, {});
+        } else {
+          await guardedPost(`${AUTH}credentials/revoke`, { credentialId: button.dataset.passkeyRevoke });
+        }
         reload();
       } catch (error) {
         result.textContent = error.message;

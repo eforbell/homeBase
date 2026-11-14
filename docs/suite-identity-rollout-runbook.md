@@ -6,9 +6,34 @@ For the operator of a Home Base host. It takes a host from today's ingress (one 
 
 Each part ends at a **stop point**: a state the host can stay in for as long as you like. Nothing here is required. A host that never starts keeps today's ingress, and its apps keep their own sign-in.
 
-**Status.** Every step has run on a test VM. Part B has run on one production host; the four defects found there are fixed and folded into the steps and the recovery section below. Part C has run on the test VM only.
+**Status.** The original socket/tailnet sequence ran on a test VM; Part B also ran on one production host. The isolated-account feature has software and supported-Linux test evidence, but physical/provider/deployed-stack acceptance and release gates remain open. The amendment below is an operator draft, not evidence of a new production rollout.
 
 **Placeholders.** `<host>` is the host's MagicDNS name, `<tailnet>` the tailnet domain (`<name>.ts.net`), `<instance>` this household's instance name, `<app>` a catalog app ID, `<key>` a sensitive app's service key (`pulse`, `source`, `helm`, `bitcoin-accounting`).
+
+## Choose the starting point
+
+Use this runbook as the host procedure; do not start a second, parallel cutover.
+
+| Host state | Start here | Preserve |
+| --- | --- | --- |
+| Fresh supported Linux host, no Home Base | [Release gate](#release-gate-for-instance-isolated-passkeys), then [A0: install and bootstrap](#a0-fresh-host-install-and-bootstrap), then A1 through D | SSH access and the chosen instance name |
+| Installer-managed Home Base, directory off | [Release gate](#release-gate-for-instance-isolated-passkeys), then A1 | Existing database, configuration and app credentials |
+| Socket ingress complete, directory off | Release gate and A1/A2/A4; A6 if guards are off, then verify B9 and start C after the report period | Existing services and approvals; do not cut over twice |
+| Directory active, existing keys work | Release gate and A1/A2/A4, then [healthy active-suite checks](#upgrade-a-healthy-active-suite); C5/C6 only where needed, then C7 | Working legacy credentials, roles, app grants and suite database; no recovery or re-enrollment |
+| Directory active, shared key stopped matching | Release gate and A1/A2/A4.1–A4.2, then [incident recovery](#roll-out-without-flipping-the-working-key-again); remaining app updates after recovery | Any working credential and the other suite; no second ingress cutover |
+| Directory in setup/recovery | Release gate and A1/A2; A4.1–A4.2 unless already verified on the selected commit. Only after the dependency probe passes, confirm the socket address and finish C4/recovery; app updates follow activation | Existing account namespace; do not reset or re-claim the household |
+
+### Release gate for instance-isolated passkeys
+
+**Production stop gate:** Check source-landing status in Home Base [PR #60](https://github.com/eforbell/homeBase/pull/60) and sovereignAuth [PR #7](https://github.com/eforbell/sovereignAuth/pull/7). Source merges, advisory code reviews and software/container tests do not authorize production. Before using the feature on a production host, record:
+
+- the approved, merged Home Base commit and its final-main sovereignAuth pin, with matching lockfile;
+- the required independent/security reviews and the two-suite physical-key/synced-provider rehearsal;
+- the tested OS, running Node/Python/SQLite versions, maintenance owner, backup location and rollback limits.
+
+For an authorized disposable-VM rehearsal, you may select an explicitly reviewed candidate commit instead; record it as a candidate, not a release. Do not use a moving branch name as the deployment record or treat a prerelease dependency feature pin as the final production pin. Keep the existing non-production suite on an independent identity database, not a production database clone.
+
+Define the plan before changing the host: target instance, tailnet DNS domain, administrator tailnet login, installed apps to switch, and apps that must remain on their own sign-in. The instance/tag identify the suite operationally; the persisted opaque handles isolate its new credentials. Changing the tag does not migrate keys.
 
 ## Rules
 
@@ -25,12 +50,60 @@ Each part ends at a **stop point**: a state the host can stay in for as long as 
 
 ## Part A. Prepare
 
-Nothing in Part A changes how anyone reaches the host.
+A0 installs a fresh host; A4 refreshes code and restarts services. Run them in an approved maintenance window. The inventory/backup checks are read-only except for writing protected backups. Part B changes the ingress. Run the guarded `bash` blocks in Bash; their subshells stop on a failed check without closing your SSH session. Set each env key once; edit an existing assignment/remove duplicates instead of repeating an append command.
+
+### A0. Fresh-host install and bootstrap
+
+Skip this subsection on an existing managed host. Use [install.md](install.md) for supported Ubuntu/Debian versions, runtime provisioning and private-repository access. Install/connect Tailscale using its [Linux installation procedure](https://tailscale.com/docs/install/linux); keep an SSH route that does not depend on Home Base or Serve. Joining the tailnet is not app membership.
+
+1. Populate a **root-owned** source checkout at `/root/homebase-src` through approved GitHub access. The example uses HTTPS; private repositories need the host's approved read-only credentials. The installer and its npm dependency fetches must work as root. The executor's `--git-ssh-key` option handles private managed-app fetches; it is not a substitute for access needed to obtain the source/dependency in the first place.
+   ```sh
+   sudo git clone https://github.com/eforbell/homeBase.git /root/homebase-src
+   ```
+   If that directory exists, inspect it rather than cloning over it. Set `HOMEBASE_COMMIT` to the approved 40-character commit from the release/rehearsal record, and `INSTALLER_VERSION` to the reviewed installer version label (for example, `v0.1.0` only where that label applies):
+   ```bash
+   (
+   set -euo pipefail
+   : "${HOMEBASE_COMMIT:?set the approved immutable Home Base commit}"
+   : "${INSTALLER_VERSION:?set the reviewed installer version label}"
+   test "$(sudo git -C /root/homebase-src status --porcelain)" = ""
+   sudo git -C /root/homebase-src fetch origin
+   sudo git -C /root/homebase-src checkout --detach "$HOMEBASE_COMMIT"
+   test "$(sudo git -C /root/homebase-src rev-parse HEAD)" = "$HOMEBASE_COMMIT"
+   sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src --version "$INSTALLER_VERSION" --dry-run
+   )
+   ```
+   Inspect the preview. If it succeeds and matches the maintenance plan, apply in a separate command:
+   ```bash
+   (
+   set -euo pipefail
+   : "${HOMEBASE_COMMIT:?set the approved immutable Home Base commit}"
+   test "$(sudo git -C /root/homebase-src status --porcelain)" = ""
+   test "$(sudo git -C /root/homebase-src rev-parse HEAD)" = "$HOMEBASE_COMMIT"
+   : "${INSTALLER_VERSION:?set the reviewed installer version label}"
+   sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src --version "$INSTALLER_VERSION"
+   systemctl is-active homebase homebase-executor.socket
+   )
+   ```
+   The installer installs services, not the app suite or the host bootstrap. It refuses an existing unsupported Node runtime instead of replacing it under other services. Follow the Node upgrade procedure first if needed; do not change system runtimes mid-cutover.
+2. From the operator workstation, open the setup-only SSH tunnel:
+   ```sh
+   ssh -N -L 3080:127.0.0.1:3080 <you>@<host>
+   ```
+   Open `http://127.0.0.1:3080/admin`, configure/unlock the admin passphrase, and store it in the operator's password manager. In Config, set the intended host/domain and review **Bootstrap / repair host** before running the typed bootstrap. Check its completed job and preflight results:
+   ```sh
+   systemctl is-active nginx postgresql
+   sudo nginx -t
+   ```
+   Do not enable `HOME_BASE_DIRECTORY` yet. Passphrase setup here is not C4's claim of the tailnet administrator.
+3. Install the selected apps from their Home Base pages in their own sign-in mode, one at a time. Complete their initial setup and record their local credentials; check health and take an app backup before proceeding. Use the supported executor/adoption procedure for apps that predate Home Base management. Keep automatic bootstrap off and confirm changes through the typed plans, not shell commands pasted into the web service.
+
+**Stop point A0.** Managed web/executor and host bootstrap are healthy; chosen apps work locally behind the existing gateway. Continue A1. Leave the directory off through Part B so you can finish publishing/moving the ingress before passkey setup restricts privileged changes.
 
 ### A1. Check the starting point
 
 ```sh
-sudo grep -E '^HOME_BASE_(EXECUTION_MODE|STATE_DB|DATA_DIR|INSTANCE)=' /etc/sovereign-home/homebase.env
+sudo grep -E '^HOME_BASE_(EXECUTION_MODE|STATE_DB|DATA_DIR|IDENTITY_SIGNING_KEY|INSTANCE)=' /etc/sovereign-home/homebase.env
 systemctl is-active homebase homebase-executor.socket
 tailscale version
 ```
@@ -41,15 +114,51 @@ tailscale version
 
 ### A2. Back up, and write down where things are
 
-```sh
-D=/root/rollout-$(date +%F); sudo mkdir -p "$D"
-sudo tailscale serve status --json | sudo tee "$D/serve-status.json" >/dev/null
-sudo tailscale serve get-config --all | sudo tee "$D/serve-config.json" >/dev/null
+Confirm the service's **effective** database and signing-key paths, including systemd overrides (`systemctl cat homebase` and A1's filtered env check); do not publish the unfiltered unit/env output or source its environment file in a shell. The paths below are the installer defaults. Adjust them if configured differently, and stop if the database is missing or the path is ambiguous. Keep enrollment, revocation and signing-key rotation paused during the backup. Treat every backup as secret and root-only.
+
+```bash
+(
+set -euo pipefail
+DB=/var/lib/sovereign-home/homebase/home-base.sqlite3
+KEY=/var/lib/sovereign-home/homebase/identity-signing-key.pem
+DIRECTORY_NEVER_ENABLED=no  # set yes only after confirming it has never been enabled
+sudo test -f "$DB"
+D=$(sudo mktemp -d /root/homebase-rollout-XXXXXXXX)
+sudo chmod 0700 "$D"
+printf 'Protected rollback directory: %s\n' "$D"
 sudo tar czf "$D/etc-nginx.tgz" /etc/nginx
 sudo tar czf "$D/etc-sovereign-home.tgz" /etc/sovereign-home
-DB=$(sudo grep -oP '^HOME_BASE_STATE_DB=\K.*' /etc/sovereign-home/homebase.env)
-sudo python3 -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1]).backup(sqlite3.connect(sys.argv[2]))' "$DB" "$D/home-base.sqlite3"
+sudo python3 - "$DB" "$D/home-base.sqlite3" <<'PYTHON'
+import pathlib, sqlite3, sys
+source = sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + '?mode=ro', uri=True)
+with sqlite3.connect(sys.argv[2]) as backup:
+    source.backup(backup)
+    assert backup.execute('PRAGMA quick_check').fetchall() == [('ok',)]
+source.close()
+PYTHON
+if sudo test -f "$KEY"; then
+  sudo cp -p "$KEY" "$D/identity-signing-key.pem"
+  KEY_DIR=$(dirname "$KEY")
+  KEY_NAME=$(basename "$KEY")
+  RETIRED="$KEY_DIR/${KEY_NAME%.*}-retired.json"
+  if sudo test -f "$RETIRED"; then
+    sudo cp -p "$RETIRED" "$D/identity-signing-key-retired.json"
+  fi
+  sudo cmp "$KEY" "$D/identity-signing-key.pem"
+else
+  test "$DIRECTORY_NEVER_ENABLED" = yes || { printf '%s\n' 'STOP: effective signing key missing' >&2; exit 1; }
+  printf '%s\n' 'Never-enabled directory: no signing key to copy.'
+fi
+sudo test -s "$D/home-base.sqlite3"
+sudo tailscale serve status --json | sudo tee "$D/serve-status.json" >/dev/null
+if ! sudo tailscale serve get-config --all | sudo tee "$D/serve-config.json" >/dev/null; then
+  printf '%s\n' 'STOP: database/key backups exist, but Serve capture is incomplete. See A3 root-handler check before proceeding.' >&2
+  exit 1
+fi
+)
 ```
+
+If the directory has ever been enabled, require the effective signing key and verify its backup before continuing. A never-enabled host has no key yet. Confirm never-enabled status from the operator history and database state before allowing a missing key; an existing household row, or uncertainty about prior use, is reason to stop for investigation. Also copy any configured data-directory control files such as `ingress-confirmations.json` into the protected directory; do not replace the SQLite backup with a live database file copy. Record the printed backup path and the current code/dependency commits. These backups support case-specific recovery; restoring an old database can undo revocations and is not routine rollback.
 
 Then back up every installed app from its page in Home Base (**Backup**).
 
@@ -75,16 +184,68 @@ Write down:
 - [ ] Which units run as `sovereign`, and which as `sovereign-<key>`.
 - [ ] Any node-level Serve entry on `:443`. A rollback needs nginx to bind 443, and that entry would block it.
 
-### A4. Update Home Base, then every app
+### A4. Install the selected Home Base code, then update every app
 
-1. Update Home Base to the current release, from a root-owned clone of the repository:
-   ```sh
-   sudo git -C /root/homebase-src pull --ff-only
-   sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src --repair
-   systemctl is-active homebase homebase-executor.socket
+**Code rollback gate:** Before selecting any older commit, inspect `webauthn_v2_issued_at` with [the read-only diagnostic](#diagnose-metadata-without-exposing-keys). After it is set, do not install a pre-compatibility binary: it lacks a startup guard and can issue shared handles again. An older commit is not safe merely because the installer accepts its version label. A null marker is necessary for considering a pre-feature rollback, not proof that other schema/ingress changes are reversible; use only a rehearsed, approved rollback. After isolated issuance, keep a reviewed compatible build and use Recovery for failed access instead.
+
+On an existing installer-managed host, use a maintenance window with no running executor job and no credential enrollment. The installer also checks idle state. If it cannot confirm that state, stop; do not add `--force`. Do not use this path over an unmanaged checkout or legacy sudo install; use the migration procedure linked in A1. `--repair --dry-run` briefly creates an executor maintenance flag and checks idle state, then releases it; it is not entirely read-only or a complete validation of Node, source, dependencies or the eventual repair.
+
+1. Select the approved immutable `HOMEBASE_COMMIT` in the clean root-owned source checkout, as in A0. Stop if it has local modifications; do not reset or clean them away. Preserve the **installed** version marker when refreshing source:
+   ```bash
+   (
+   set -euo pipefail
+   : "${HOMEBASE_COMMIT:?set the approved immutable Home Base commit}"
+   test "$(sudo git -C /root/homebase-src status --porcelain)" = ""
+   sudo git -C /root/homebase-src fetch origin
+   sudo git -C /root/homebase-src checkout --detach "$HOMEBASE_COMMIT"
+   test "$(sudo git -C /root/homebase-src rev-parse HEAD)" = "$HOMEBASE_COMMIT"
+   INSTALLER_VERSION=$(sudo cat /opt/sovereign-home/homebase/.homebase-version)
+   sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src --version "$INSTALLER_VERSION" --repair --dry-run
+   )
    ```
-2. Update each app from its page, one at a time. After the update, every app listens on loopback only (`HOST=127.0.0.1`) or, for socket apps, on its own socket. Anything that used an app's port directly (`http://<host>:3000/…`, a bookmark, a script) must now use its Home Base address.
-3. Check each app is healthy on its page before the next. A red badge between steps 1 and 2 is real: health checks still reach an app on its old port until it is updated.
+   Inspect the preview. If it succeeds and matches the maintenance plan, apply in a separate command:
+   ```bash
+   (
+   set -euo pipefail
+   : "${HOMEBASE_COMMIT:?set the approved immutable Home Base commit}"
+   test "$(sudo git -C /root/homebase-src status --porcelain)" = ""
+   test "$(sudo git -C /root/homebase-src rev-parse HEAD)" = "$HOMEBASE_COMMIT"
+   INSTALLER_VERSION=$(sudo cat /opt/sovereign-home/homebase/.homebase-version)
+   BEFORE_START=$(systemctl show homebase -p ExecMainStartTimestampMonotonic --value)
+   sudo bash /root/homebase-src/install.sh --source-dir /root/homebase-src --version "$INSTALLER_VERSION" --repair
+   test "$(systemctl show homebase -p ExecMainStartTimestampMonotonic --value)" != "$BEFORE_START"
+   systemctl is-active homebase homebase-executor.socket
+   test "$(sudo cat /opt/sovereign-home/homebase/.homebase-source-commit)" = "$HOMEBASE_COMMIT"
+   systemctl show homebase -p MainPID -p ExecMainStartTimestamp
+   )
+   ```
+   The recorded source commit must equal the selected commit, and the web process must have restarted. `--repair` refreshes web, executor, shared modules and locked dependencies while preserving state/configuration. A same-version rerun without it preserves old code; `--repair-executor` is not the full refresh. The installed version label and source commit are different records: this is source repair, not a supported version-marker upgrade. Do not edit the marker to bypass a refusal. A failed apply can leave partially refreshed code/dependencies even when the source marker changed. Stop, fix the cause and rerun the same selected apply; do not restart a mixed tree by hand or infer success from the marker alone.
+2. Confirm the new service and its locked passkey dependency agree **before any key registration**. Run the following with the binary of the running service; it creates only transient in-memory options, with no browser/authenticator or database enrollment:
+   ```bash
+   (
+   set -euo pipefail
+   PID=$(systemctl show homebase -p MainPID --value)
+   test "${PID:-0}" -gt 0
+   sudo "/proc/$PID/exe" --version
+   sudo "/proc/$PID/exe" - /opt/sovereign-home/homebase <<'NODE'
+   const assert = require('node:assert/strict');
+   const path = require('node:path');
+   const { createWebAuthn } = require(path.join(process.argv[2], 'node_modules/sovereign-auth'));
+   (async () => {
+     const service = createWebAuthn({ rpID: 'deployment-probe.invalid', requireUserHandle: true });
+     const expected = Buffer.alloc(32, 7).toString('base64url');
+     const request = { hostname: 'test.deployment-probe.invalid', member: { userId: 'deployment-probe', userHandle: expected }, purpose: 'enroll' };
+     const options = await service.registrationOptions(request);
+     assert.equal(options.user.id, expected);
+     await assert.rejects(service.registrationOptions({ ...request, member: { userId: 'deployment-probe' } }));
+     console.log('Locked passkey dependency: explicit handles and strict mode OK');
+   })().catch((error) => { console.error(error.message); process.exitCode = 1; });
+   NODE
+   )
+   ```
+   This child-process probe checks installed files/API, not the old daemon's module cache. Use it together with the restart/start-time check. After C3 (or on a directory already enabled), open the tailnet Passkeys page and confirm the running backend supplies instance/format diagnostics. On `PASSKEY_LIBRARY_MISMATCH`, stop enrollment and repair the install/restart; do not reset the key or work around it with an old binary.
+3. Update each app from its page, one at a time. After the update, every app listens on loopback only (`HOST=127.0.0.1`) or, for socket apps, on its own socket. Anything that used an app's port directly (`http://<host>:3000/…`, a bookmark, a script) must now use its Home Base address.
+4. Check each app is healthy on its page before the next. A red badge between the Home Base refresh and app updates is real: health checks still reach an app on its old port until it is updated.
 
 ### A5. Move each sensitive app to its own user
 
@@ -130,12 +291,14 @@ Plan a quiet hour. **Apps are unreachable from the cutover (B4) until their serv
 
 ### B1. Tailnet console
 
+Merge the policy examples into the existing document, preserving unrelated rules/groups. Review the console policy tests before applying. Use the official [Services](https://tailscale.com/docs/features/tailscale-services) and [tags](https://tailscale.com/docs/features/tags) references if the console differs from the tested baseline.
+
 1. **Choose the instance name**: lowercase letters, digits and single dashes, at most 24 characters, starting with a letter (`smith`). It prefixes every service. **Changing it after the cutover isn't supported** (see [Tailnet rename](#tailnet-rename)), so choose carefully.
 2. **Define the services** on the console's Services page, each with port `tcp:443`:
    - `svc:<instance>-home`: every low-friction app, by path (`/dinner/`, `/plan/`, …);
    - `svc:<instance>-homebase`: Home Base itself, and later all passkey management;
    - `svc:<instance>-<key>` for each **installed** sensitive app.
-3. **Give this host its own tag**, owned by the administrator alone and held by no other machine, then add it to the host on the Machines page:
+3. **Preserve operator SSH access before tagging.** Add/review the grant for the operator to reach this host on SSH, keep the original session open, then test a second connection after the policy/tag change. Tagging changes the server's network identity; do not rely on a user-owned-device rule still applying. **Give this host its own tag**, owned by the administrator alone and held by no other machine, then add it to the host on the Machines page:
    ```jsonc
    "tagOwners": { "tag:<instance>-host": ["<administrator login>"] }
    ```
@@ -266,7 +429,7 @@ New addresses; update bookmarks and the iOS wrapper's start URL.
 
 ### C1. Enforce Home Base's request guards
 
-After A6's few days:
+If guards are off, perform A6 and collect its report period first. If already in report mode, review the existing period; if already enforced, verify its checks without resetting it. After A6's few days:
 ```sh
 journalctl -u homebase | grep 'would refuse'
 ```
@@ -287,19 +450,19 @@ sudo systemctl restart homebase
 journalctl -u homebase -n 50 | grep 'household directory: publishing'
 ```
 
-Home Base comes up in **setup**. Until setup is finished, it runs no privileged plan or setting change, and every page says so.
+On a newly initialized identity database, Home Base comes up in **setup**. Confirm B6 is complete before this step: passkeys cannot be enrolled through the SSH tunnel or old port. An existing database may instead be active/recovering; do not re-claim it, turn the directory off, or reset it just to repeat this walkthrough. Follow the starting-point table and account-upgrade section. During setup/recovery, finish credentials before attempting the remaining privileged changes.
 
 ### C4. Set up the administrator
 
 On `https://<instance>-homebase.<tailnet>/admin`:
-1. Unlock with the passphrase. Your tailnet identity is recorded as the administrator.
+1. For first setup only, unlock with the passphrase from the intended administrator's **own, untagged user device**. Confirm the displayed tailnet login before claiming the household. The tagged server is not the administrator's browser identity.
 2. Under **Passkeys**, register:
    - a synced passkey, for daily use;
    - a hardware security key, with **It's a hardware security key** ticked (it must prove its maker; only keys from a vendor sovereignAuth pins count);
    - a second hardware key, kept offline as a spare.
-3. **Finish setup with my hardware key.** Home Base becomes **active**. That tap also opens admin for 8 hours.
+3. On the compatible build, newly enrolled entries must show **Isolated**; confirm the instance and check the actual credentials. Stop on a namespace/library error rather than deleting entries or falling back to shared handles. **Finish setup with my hardware key.** Home Base becomes **active**. That tap also opens admin for 8 hours.
 4. **Without an API credential, confirm each service again.** Confirmations from Part B were made with the passphrase; once Home Base is active, an app can switch only on a service confirmed with the hardware key. On the Network page press **I checked the console: no other host is approved** for each service, after checking the console again. Until you do, **Use tailnet identity** doesn't appear.
-5. Check that the passphrase now opens only recovery (**Enter recovery**). From now on **Unlock admin with a passkey** opens admin, and **Lock admin** closes it in that browser. Adding or removing an administrator passkey, and every privileged plan, asks for the hardware key each time.
+5. Confirm that the UI offers the passphrase only for **Enter recovery**. Do not enter it merely as a read-only test: entering recovery ends sessions across the suite. Test that state transition on the rehearsal host or in an approved production recovery window. From now on **Unlock admin with a passkey** opens admin, and **Lock admin** closes it in that browser. Adding or removing an administrator passkey, and every privileged plan, asks for the hardware key each time.
 
 Home Base signs its sessions with its own key, beside its database. Rotate it under **Signing key** on the Passkeys card (hardware key each time); tick **It may have been exposed** only if it may have been, because that ends every session at once.
 
@@ -313,13 +476,25 @@ By default a member reaches every installed app except trading and Bitcoin accou
 
 ### C6. Switch each app
 
-Per app, starting with a low-friction one:
+The installed app version and the selected Home Base catalog must both support the switch. In this branch the declared support is:
+
+| Apps | Service / target mode |
+| --- | --- |
+| Family Help, Family Dinner, Family Plan, Fast to Eat, Home Ops, Remind Me | Shared `svc:<instance>-home`; eligible for tailnet identity after the deployed-version checks |
+| Family Pulse | Dedicated `svc:<instance>-pulse`; eligible after its own-user/socket and version checks |
+| Home Source | Dedicated `svc:<instance>-source`; eligible after its own-user/socket and version checks |
+| Helm, Bitcoin Accounting | Dedicated services/sockets, but **no catalog tailnet-mode declaration in this branch**; keep their own sign-in |
+| Bug Base, Home Drop | **No catalog tailnet-mode declaration in this branch**; keep their own sign-in |
+
+Re-check the actual release catalog and the Network row, not only this table. A service hostname, socket, or Home Base app grant does not prove an app implements identity-aware authorization. If the deployment requires every installed app to use suite identity, hold acceptance until the missing app integrations ship; do not set its env mode by hand or mark it complete because another app works. Preserve network/ingress protections for apps kept local as well as their own credentials.
+
+Per eligible app, starting with a low-friction one:
 1. **Update it** to a version that supports tailnet identity (its Network row stops saying "this version can't use tailnet identity yet").
 2. Network page → its row → **Use tailnet identity**, with the hardware key. Home Base offers it only when the host is cut over, the app's service is published and verified (or confirmed), and the app supports it. The executor checks again, then writes the mode into the app's `.env` and restarts it. It refuses, saying why, when:
    - the app isn't on its socket (update it);
    - its address isn't its service hostname yet (update it: step B8);
    - a sensitive app still runs as `sovereign` (step A5).
-3. **Link members**, once: each parent opens `https://<service>.<tailnet>/<app>/`, lands on its **link** page, and matches each household member to the app's own person. A sensitive app asks for a passkey first.
+3. **Link members**, once, where the app requires a mapping: each parent opens `https://<service>.<tailnet>/<app>/`, lands on its **link** page, and matches each household member to the app's own person. A sensitive app asks for a passkey first.
 4. Check:
    - [ ] each member lands as themselves;
    - [ ] a kid sees only what kids see, and parent-only actions refuse them;
@@ -327,7 +502,19 @@ Per app, starting with a low-friction one:
    - [ ] a sensitive app asks parents for a passkey, about once a month per device.
 5. Back out: **Return to its own sign-in** on the same row. Its own passphrases and PINs still work.
 
-**Stop point C.** Members sign in with their tailnet identity in each switched app.
+### C7. Operator acceptance and handoff
+
+Before declaring this host complete, record:
+- [ ] Exact Home Base/dependency commits, running runtime versions, instance/tag/domain and backup references; no unresolved release gate.
+- [ ] Home Base on its strict tailnet socket address, directory **active**, correct administrator identity, actual passkey checks and the expected **Isolated** or retained **Legacy (compatible)** entries. The passphrase opens recovery, not active admin by itself.
+- [ ] Each targeted supported app shows tailnet mode and passes parent/kid/access-denied checks. Each excluded/unsupported app is listed as **local**, with its own sign-in verified. A narrower result is not "all installed apps converted."
+- [ ] Each member has the intended app list and local-person mappings; no enrollment code substituted for admission, network access or app permission.
+- [ ] For multiple suites using one hardware key, perform [the two-suite account checks](#roll-out-without-flipping-the-working-key-again) on the actual devices/providers, in both orders, and after service restarts. Keep any still-working legacy second credential; a software fixture is not this acceptance result.
+- [ ] During the next approved privileged plan, observe the hardware-every-time confirmation. Do not launch an unapproved mutation just to test the prompt. Keep read-only checks separate from changes.
+- [ ] Health alerts, backup/restore evidence and one switched app's return-to-local rehearsal are recorded; other Serve services remain unchanged.
+- [ ] Operator handoff includes recovery credentials/storage, the code downgrade floor after `webauthn_v2_issued_at`, the unsupported active-directory ingress rollback, and the maintenance owner/rollback window.
+
+**Stop point C.** Members sign in with their tailnet identity in each verified switched app; explicitly excluded apps retain their own sign-in.
 
 ## Part D. Clean-up
 
@@ -380,7 +567,7 @@ Never clear or rewrite the other service.
 
 **A member sees "doesn't know you yet".** They aren't a member, are disabled, or the app isn't in their app list (C5). **"Almost there"**: a parent hasn't linked them in that app yet (C6.3).
 
-**The administrator has lost their passkeys.** **Enter recovery** with the passphrase on Admin, then register new administrator keys and finish with a hardware key. If the passphrase is lost too, see [Reset](#reset-root-shell).
+**The administrator has lost a key or a shared key stopped matching after enrollment on another suite.** Stop registrations through unpatched builds and follow [the isolated-account upgrade](#roll-out-without-flipping-the-working-key-again). Enter recovery with the passphrase only where needed; register/check the missing hardware credential, keep any second credential that still works, then finish with hardware. Do not reset the physical key or force a working suite to re-enroll. If the passphrase is lost too, see [Reset](#reset-root-shell).
 
 **Never downgrade the executor** while Home Base is on its socket: an older executor puts nginx back on `:3080` without updating its record. If it happened, upgrade the executor again, check `sudo nginx -t`, and run the cutover again.
 
@@ -415,7 +602,7 @@ After C1 (request guards) and C6 (an app switched):
 - [ ] A cookie set on the home hostname with `Domain=<tailnet>` is ignored by every sensitive app and by Home Base.
 - [ ] A privileged plan asks for the hardware key every time, and a token for one plan can't run another.
 - [ ] Revoking a passkey refuses its session within one snapshot interval.
-- [ ] Recovery: the passphrase, while active, ends sessions and allows only re-enrollment.
+- [ ] Recovery: entering it with the passphrase while active ends sessions and permits administrator credential enrollment/revocation, not app operations or privileged plans.
 
 Probing an app through nginx with curl needs the fetch metadata a browser sends, once each:
 ```sh
@@ -446,3 +633,95 @@ When the administrator has lost both their passkeys and the passphrase, or recov
 ### Tailnet rename
 
 **Not supported yet.** On a cut-over host, the executor refuses a cutover under a different instance name or tailnet domain, and Home Base's domain setting is locked. Nothing rebinds passkeys either: they belong to the tailnet domain, so a renamed tailnet would leave every passkey unusable. Don't rename the tailnet, or change the instance, on a host that has been cut over. Changing the instance alone wouldn't affect passkeys, but it renames every service and isn't supported either.
+
+## Instance-isolated passkeys
+
+Use this section for the existing-active-suite entries in the starting-point table, and for C4/C7 account verification. It supplements the same host procedure, not a second ingress cutover. It applies only to a reviewed, compatible release, in a separately authorized rollout. It does not authorize deploying a draft branch to production. Rehearse first on two disposable suites with independent identity databases, the actual hardware key, and the deployed Node/Python/SQLite versions.
+
+### What changes, and what does not
+
+New registrations have a persisted opaque account handle per member in each independent suite. The tailnet domain remains the WebAuthn RP ID. The instance tag controls hosting policy; it is not a WebAuthn domain. New provider-facing display names include the suite instance, without changing the Tailscale login or authorization ID.
+
+- **Isolated** means the credential uses the new account namespace.
+- **Legacy (compatible)** means an existing credential still uses its original ID-derived handle. Working legacy keys do not have to be re-registered. A NULL stored handle on a legacy row is intentional, not corruption; the member's new enrollment handle does not rewrite that key.
+- **Invalid account metadata** identifies a malformed stored credential record, not proof of a damaged physical key. Status/recovery remain available. An enrollment-metadata warning can instead mean missing member metadata or a well-formed mismatch on either side.
+- Stored rows, attestation kind and D11 counts are not proof that the device still holds its private credential. Check the particular credential's fresh use. Do not reset the physical key to fix this incident.
+- A copied identity database copies account handles. It is not a way to create an independent rehearsal suite. Same-suite host moves/restores preserve those handles. Tailnet/domain changes are still a separate unsupported migration.
+
+### Upgrade a healthy active suite
+
+After A1/A2/A4, confirm the instance and account-format diagnostics on Passkeys. Freshly check each credential you rely on; existing entries can remain **Legacy (compatible)**. Keep the household active. Do not enter recovery, delete working keys or re-enroll just to change that label. Resume C5/C6 only for incomplete membership/app work, and record C7 acceptance.
+
+If the same hardware key or synced provider serves multiple healthy suites, upgrade each independent suite before allowing further registration. Verify each old credential after each upgrade, freeze registration on unpatched suites, and preserve working legacy entries. Registration on the compatible build uses isolated handles; an upgrade alone does not migrate old entries. Use the following incident path only if a required credential is actually missing or overwritten.
+
+### Roll out without flipping the working key again
+
+1. Use fresh ordinary passkey checks to identify the **working** and **overwritten** suites; do not assume their roles from their names or yesterday's timestamps. Check hardware and synced providers separately. An assertion does not replace a credential; registration can. If neither suite works, use the established recovery procedure rather than this one-live shortcut.
+2. Keep SSH/root access and verify the recovery passphrase without exposing it. Take protected SQLite/config/signing-key backups using Part A. Freeze enrollment of the shared key through every unpatched instance throughout the coordinated window.
+3. Upgrade the overwritten suite to the reviewed compatible build **before** entering recovery. Install its locked dependency and verify the running service restarted; files changed on disk are not proof the daemon loaded them. `PASSKEY_LIBRARY_MISMATCH` means stop and repair the dependency/process installation, not reset a key. In Admin, explicitly enter recovery with the passphrase from the administrator's tailnet account. Register and freshly check the missing hardware credential. Keep and freshly verify any second credential that still works; register another only if needed to meet D11. Do not force a working local legacy phone/key to re-enroll: ordinary exclusions intentionally protect it. Record any new entries/IDs and confirm their `lastUsedAt` or the status check's `credentialId`, not just a generic success from a different older entry.
+4. After each new registration, verify the working suite's old hardware/synced credential still checks. Both devices/providers may have lost old entries: do not count ghost rows as a replacement. Newly registered entries should say **Isolated**; retained legacy entries remain **Legacy (compatible)**. Registration options supply an instance-labelled display name; the provider controls how it presents that text.
+5. Only after confirming usable replacements, remove the overwritten suite's obsolete entries. During setup/recovery the Passkeys **Remove** button uses the existing passphrase-authorized Directory revoke route; it does not request a hardware confirmation. In active Home Base, administrator removal still uses the ordinary hardware-every-time route and preserves D11. Then finish recovery with a fresh hardware check.
+6. Upgrade the working suite to stop new legacy issuance. Do not force its still-working key into recovery or re-enroll it. Verify both suites, their sensitive-app origins, and checks after service restarts. Keep the remaining legacy entries inventoried.
+7. **Stop** if the real key unexpectedly treats an overwritten ID as excluded, or enrollment on one suite still breaks the other. Do not weaken exclusions or delete working access just to obtain a passing test. Same-device enrollment on the live legacy suite is intentionally duplicate-protected.
+
+This is accidental replacement prevention between cooperating suites, not a new browser-enforced boundary against hostile sibling origins sharing the RP ID. Physical/provider behavior is an acceptance gate, not something the software authenticator proves.
+
+### Diagnose metadata without exposing keys
+
+The administrator sees the first-isolated-credential warning once any member has issued an isolated credential. That timestamp is informational server enrollment metadata; it is not cryptographic clock proof. After issuance, a pre-compatibility binary is an unsupported downgrade: it may reject new assertions and still issue shared legacy handles. Old binaries have no new startup guard. The warning and release/runbook discipline enforce this floor operationally.
+
+For root-only, read-only comparison, set `DB` to the service's effective configured database (the following is the default). The output contains labels/IDs to redact before sharing, but no public-key bytes, signing key, passphrase hash, token or raw account handle:
+
+```sh
+DB=/var/lib/sovereign-home/homebase/home-base.sqlite3
+sudo python3 - "$DB" <<'PY'
+import base64, hashlib, json, pathlib, sqlite3, sys
+c = sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + '?mode=ro', uri=True)
+c.row_factory = sqlite3.Row
+
+def fingerprint(value):
+    if value is None:
+        return 'unset'
+    try:
+        raw = base64.b64decode(value + '=' * (-len(value) % 4), altchars=b'-_', validate=True)
+        if len(raw) != 32 or base64.urlsafe_b64encode(raw).decode().rstrip('=') != value:
+            return 'invalid'
+        return hashlib.sha256(raw).hexdigest()[:16]
+    except (ValueError, TypeError):
+        return 'invalid'
+
+print(dict(c.execute('SELECT state, webauthn_v2_issued_at FROM identity_household WHERE id=1').fetchone()))
+for row in c.execute('''SELECT m.user_id, m.login, m.webauthn_user_handle AS member_handle,
+ c.credential_id, c.label, c.kind, c.handle_format, c.webauthn_user_handle AS credential_handle,
+ c.revoked_at, c.last_used_at FROM identity_members m
+ LEFT JOIN identity_credentials c ON c.member_id=m.member_id ORDER BY m.user_id,c.created_at'''):
+    item = dict(row)
+    item['member_fingerprint'] = fingerprint(item.pop('member_handle'))
+    stored = item.pop('credential_handle')
+    if item['credential_id'] is None:
+        item['credential_fingerprint'] = 'no credential'
+    elif item['handle_format'] == 'legacy-v1':
+        item['credential_fingerprint'] = 'legacy: ID-derived' if stored is None else 'invalid'
+    elif item['handle_format'] == 'isolated-v2':
+        item['credential_fingerprint'] = fingerprint(stored) if stored is not None else 'invalid'
+    else:
+        item['credential_fingerprint'] = 'invalid format'
+    print(json.dumps(item))
+PY
+```
+
+Compare **all** isolated rows owned by the affected member, revoked ones included. A valid-looking mismatch may be in the member row or a credential row; equality/shape alone does not establish which copy is right. Revoking a well-formed mismatched historical row does not clear the enrollment warning, because the history still protects against silently creating another account. Fingerprints are diagnostic hints, not values to write back.
+
+### Corruption exits and restoring the same account
+
+- If a credential has malformed account metadata, enter explicit administrator recovery and remove the identified invalid entry with **Remove**. This is a different failure from ordinary authenticator exclusion: clearing a corrupt record may be necessary **before** options can be generated. Keep other working access, enroll/check the needed replacements, and activate with hardware. An active administrator can use the existing Directory API to revoke an affected non-admin credential; no new policy bypass is introduced.
+- A NULL member handle from an old writer with no isolated history is allocated on a compatible restart; the error says so. With isolated history, a missing, invalid or inconsistent member handle is **not** reallocated, even after all those credentials are revoked. Existing valid credential checks may remain usable, but enrollment is paused.
+- `homebase admin reset` is not a namespace repair: it retains the member/account and revokes administrator credentials. Do not reset the hardware key, generate a replacement member handle, relabel credential handles or clear the rollback marker to hide the problem.
+
+A proven same-account restoration is an **offline, maintainer-assisted maintenance operation**, not an in-product rebind command:
+
+1. Stop Home Base in an approved maintenance window and take a fresh protected SQLite backup. Confirm the affected stable member ID/login and the exact **original** canonical 32-byte handle from a known-good backup. Current isolated rows (including revoked rows) provide supporting evidence; if they disagree or the original cannot be proven, stop for case-specific recovery. Do not guess between a damaged member value and a damaged credential value.
+2. Under one `BEGIN IMMEDIATE` transaction, verify that every owned isolated row agrees with that proven original handle. Preserve all credential IDs, verification keys, counters, revocations, roles, epochs and signing keys. For a member-only repair, capture the exact SQL of `identity_member_handle_immutable`, temporarily remove **only that guard inside the transaction**, perform a parameterized update of **one** `identity_members.webauthn_user_handle`, and recreate the captured guard before committing. Keep canonical/unique constraints active. Roll back the entire transaction, including DDL, on any failed validation or write. Never leave guards disabled on a running service.
+3. Restart the compatible build, which refreshes its managed guards, and re-check each suite/credential before further enrollment. Record the maintenance reason, affected member, backup/version references and check results without logging handle bytes. If a credential row also needs restoration, this member-only procedure must abort; arrange case-specific restoration from trusted metadata, not arbitrary relabeling or a blind whole-database rollback.
+
+The transaction/abort/guard-restoration recipe is exercised only on disposable metadata fixtures in `test/passkey-account-store.test.js`. It is not a tested production disaster-recovery service. Restoring database rows cannot restore a private credential removed from a physical key, and restoring a whole old database can also roll back authorization/revocation state; neither is a routine rollback shortcut.

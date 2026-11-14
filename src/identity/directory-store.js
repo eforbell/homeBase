@@ -13,6 +13,7 @@ const { spawnSync } = require('child_process');
 
 const PYTHON_SCRIPT = `
 import json
+import base64
 import os
 import secrets
 import sqlite3
@@ -76,11 +77,13 @@ CREATE TABLE IF NOT EXISTS identity_action_tokens (
 );
 """
 
-MEMBER_FIELDS = ["member_id", "user_id", "login", "name", "role", "administrator", "status", "epoch", "apps", "created_at", "updated_at"]
+MEMBER_FIELDS = ["member_id", "user_id", "login", "name", "role", "administrator", "status", "epoch", "apps", "created_at", "updated_at", "webauthn_user_handle"]
 # What the passkey service (SID-005) keeps to verify a credential's assertions: added to databases from before it.
 CREDENTIAL_KEY_COLUMNS = [
     ("public_key", "TEXT"), ("counter", "INTEGER NOT NULL DEFAULT 0"), ("transports", "TEXT"), ("aaguid", "TEXT"),
     ("device_type", "TEXT"), ("backed_up", "INTEGER NOT NULL DEFAULT 1"), ("root", "TEXT"), ("last_used_at", "TEXT"),
+    ("handle_format", "TEXT NOT NULL DEFAULT 'legacy-v1' CHECK (handle_format IN ('legacy-v1', 'isolated-v2'))"),
+    ("webauthn_user_handle", "TEXT"),
 ]
 CREDENTIAL_FIELDS = ["credential_id", "member_id", "kind", "label", "orphaned", "created_at", "revoked_at"] + [name for name, _ in CREDENTIAL_KEY_COLUMNS]
 GRANT_FIELDS = ["member_id", "code_hash", "issued_by", "created_at", "expires_at"]
@@ -88,14 +91,24 @@ GRANT_FIELDS = ["member_id", "code_hash", "issued_by", "created_at", "expires_at
 def rows(sql, args=()):
     return [dict(row) for row in conn.execute(sql, args)]
 
-def upsert(table, key, fields, record):
+def upsert(table, key, fields, record, immutable=()):
     names = ", ".join(fields)
     marks = ", ".join("?" for _ in fields)
-    updates = ", ".join(f"{name}=excluded.{name}" for name in fields if name != key)
-    conn.execute(
-        f"INSERT INTO {table} ({names}) VALUES ({marks}) ON CONFLICT({key}) DO UPDATE SET {updates}",
-        [record.get(name) for name in fields],
-    )
+    updates = ", ".join(f"{name}=excluded.{name}" for name in fields if name != key and name not in immutable)
+    existing = conn.execute(f"SELECT * FROM {table} WHERE {key} = ?", (record[key],)).fetchone() if immutable else None
+    if existing is not None:
+        if any(record.get(name) is not None and record[name] != existing[name] for name in immutable):
+            raise sqlite3.IntegrityError("INVALID_MEMBER_HANDLE" if table == "identity_members" else "INVALID_CREDENTIAL_HANDLE")
+        # An existing corrupt credential must still be revocable. Do not run INSERT validation triggers
+        # (as SQLite UPSERT does) when only its mutable fields need changing under our write lock.
+        mutable = [name for name in fields if name != key and name not in immutable]
+        assignments = ", ".join(f"{name} = ?" for name in mutable)
+        conn.execute(f"UPDATE {table} SET {assignments} WHERE {key} = ?", [record.get(name) for name in mutable] + [record[key]])
+    else:
+        conn.execute(
+            f"INSERT INTO {table} ({names}) VALUES ({marks}) ON CONFLICT({key}) DO UPDATE SET {updates}",
+            [record.get(name) for name in fields],
+        )
 
 def emit(value):
     sys.stdout.write(json.dumps(value))
@@ -117,18 +130,83 @@ def take_action(action, now_seconds, now):
     return "taken"
 
 if op == "init":
-    conn.executescript(SCHEMA)
-    present = {row["name"] for row in conn.execute("PRAGMA table_info(identity_credentials)")}
-    for name, declaration in CREDENTIAL_KEY_COLUMNS:
-        if name not in present:
-            conn.execute(f"ALTER TABLE identity_credentials ADD COLUMN {name} {declaration}")
-    conn.execute(
-        "INSERT OR IGNORE INTO identity_household (id, state, generation, global_epoch, updated_at) VALUES (1, 'setup', ?, 1, ?)",
-        (int(payload["generation"]), payload["now"]),
-    )
-    # A directory restored from an older database, or started after a preview, must not publish a
-    # generation lower than the snapshot already on disk: apps refuse a generation going backwards.
-    conn.execute("UPDATE identity_household SET generation = MAX(generation, ?) WHERE id = 1", (int(payload["generation"]),))
+    # executescript may commit a preceding transaction. Execute these schema statements under our lock.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in SCHEMA.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        present = {row["name"] for row in conn.execute("PRAGMA table_info(identity_credentials)")}
+        for name, declaration in CREDENTIAL_KEY_COLUMNS:
+            if name not in present:
+                conn.execute(f"ALTER TABLE identity_credentials ADD COLUMN {name} {declaration}")
+        member_columns = {row["name"] for row in conn.execute("PRAGMA table_info(identity_members)")}
+        if "webauthn_user_handle" not in member_columns:
+            conn.execute("ALTER TABLE identity_members ADD COLUMN webauthn_user_handle TEXT")
+        household_columns = {row["name"] for row in conn.execute("PRAGMA table_info(identity_household)")}
+        if "webauthn_v2_issued_at" not in household_columns:
+            conn.execute("ALTER TABLE identity_household ADD COLUMN webauthn_v2_issued_at TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS identity_member_handle ON identity_members(webauthn_user_handle)")
+        # Refresh only our own definitions atomically, including databases used by earlier feature slices.
+        for trigger in ("identity_member_handle_insert", "identity_member_handle_allocation", "identity_member_handle_immutable",
+                        "identity_credential_handle_immutable", "identity_credential_handle_insert", "identity_passkey_marker_immutable",
+                        "identity_first_isolated_credential"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_member_handle_insert
+            BEFORE INSERT ON identity_members WHEN NEW.webauthn_user_handle IS NOT NULL AND
+              (length(NEW.webauthn_user_handle) != 43 OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
+               OR substr(NEW.webauthn_user_handle, -1) NOT GLOB '[AEIMQUYcgkosw048]')
+            BEGIN SELECT RAISE(ABORT, 'INVALID_MEMBER_HANDLE'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_member_handle_allocation
+            BEFORE UPDATE OF webauthn_user_handle ON identity_members WHEN OLD.webauthn_user_handle IS NULL
+              AND NEW.webauthn_user_handle IS NOT NULL AND
+              (length(NEW.webauthn_user_handle) != 43 OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
+               OR substr(NEW.webauthn_user_handle, -1) NOT GLOB '[AEIMQUYcgkosw048]')
+            BEGIN SELECT RAISE(ABORT, 'INVALID_MEMBER_HANDLE'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_member_handle_immutable
+            BEFORE UPDATE OF webauthn_user_handle ON identity_members
+            WHEN OLD.webauthn_user_handle IS NOT NULL AND NEW.webauthn_user_handle IS NOT OLD.webauthn_user_handle
+            BEGIN SELECT RAISE(ABORT, 'INVALID_MEMBER_HANDLE'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_credential_handle_immutable
+            BEFORE UPDATE OF handle_format, webauthn_user_handle, member_id ON identity_credentials
+            WHEN NEW.handle_format IS NOT OLD.handle_format OR NEW.webauthn_user_handle IS NOT OLD.webauthn_user_handle
+                 OR NEW.member_id IS NOT OLD.member_id
+            BEGIN SELECT RAISE(ABORT, 'INVALID_CREDENTIAL_HANDLE'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_credential_handle_insert
+            BEFORE INSERT ON identity_credentials
+            WHEN NEW.handle_format IS NULL OR NEW.handle_format NOT IN ('legacy-v1', 'isolated-v2')
+              OR (NEW.handle_format = 'legacy-v1' AND NEW.webauthn_user_handle IS NOT NULL)
+              OR (NEW.handle_format = 'isolated-v2' AND (NEW.webauthn_user_handle IS NULL
+                  OR length(NEW.webauthn_user_handle) != 43
+                  OR NEW.webauthn_user_handle GLOB '*[^A-Za-z0-9_-]*'
+                  OR substr(NEW.webauthn_user_handle, -1) NOT GLOB '[AEIMQUYcgkosw048]'
+                  OR NEW.webauthn_user_handle IS NOT (SELECT webauthn_user_handle FROM identity_members WHERE member_id = NEW.member_id)))
+            BEGIN SELECT RAISE(ABORT, 'INVALID_CREDENTIAL_HANDLE'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_passkey_marker_immutable
+            BEFORE UPDATE OF webauthn_v2_issued_at ON identity_household
+            WHEN OLD.webauthn_v2_issued_at IS NOT NULL AND NEW.webauthn_v2_issued_at IS NOT OLD.webauthn_v2_issued_at
+            BEGIN SELECT RAISE(ABORT, 'INVALID_PASSKEY_MARKER'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS identity_first_isolated_credential
+            AFTER INSERT ON identity_credentials WHEN NEW.handle_format = 'isolated-v2'
+            BEGIN UPDATE identity_household SET webauthn_v2_issued_at = COALESCE(webauthn_v2_issued_at, NEW.created_at) WHERE id = 1; END""")
+        # Allocate a pre-upgrade NULL once. If isolated credentials already exist, a missing member
+        # handle is damaged metadata, not a fresh account: preserve checks and require restoration.
+        for member in conn.execute("SELECT member_id FROM identity_members AS m WHERE webauthn_user_handle IS NULL AND NOT EXISTS (SELECT 1 FROM identity_credentials AS c WHERE c.member_id = m.member_id AND c.handle_format = 'isolated-v2')").fetchall():
+            handle = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+            conn.execute("UPDATE identity_members SET webauthn_user_handle = ? WHERE member_id = ?", (handle, member["member_id"]))
+        conn.execute(
+            "INSERT OR IGNORE INTO identity_household (id, state, generation, global_epoch, updated_at) VALUES (1, 'setup', ?, 1, ?)",
+            (int(payload["generation"]), payload["now"]),
+        )
+        # Recover the informational marker if v2 rows were restored without it; never allocate a new
+        # credential or relabel a legacy record. Timestamps are the server's stored enrollment times.
+        conn.execute("UPDATE identity_household SET webauthn_v2_issued_at = (SELECT MIN(created_at) FROM identity_credentials WHERE handle_format = 'isolated-v2') WHERE id = 1 AND webauthn_v2_issued_at IS NULL")
+        # Preserve the snapshot's monotonic generation without changing authorization epochs.
+        conn.execute("UPDATE identity_household SET generation = MAX(generation, ?) WHERE id = 1", (int(payload["generation"]),))
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
     emit({"ok": True})
 
 elif op == "load":
@@ -161,9 +239,9 @@ elif op == "commit":
                 conn.execute(f"UPDATE identity_household SET {name} = ? WHERE id = 1", (household[name],))
         conn.execute("UPDATE identity_household SET generation = ?, updated_at = ? WHERE id = 1", (generation, payload["now"]))
         for record in payload.get("members", []):
-            upsert("identity_members", "member_id", MEMBER_FIELDS, record)
+            upsert("identity_members", "member_id", MEMBER_FIELDS, record, ("webauthn_user_handle",))
         for record in payload.get("credentials", []):
-            upsert("identity_credentials", "credential_id", CREDENTIAL_FIELDS, record)
+            upsert("identity_credentials", "credential_id", CREDENTIAL_FIELDS, record, ("member_id", "handle_format", "webauthn_user_handle"))
         if payload.get("revokeSessions"):
             conn.execute("DELETE FROM homebase_admin_sessions")
             conn.execute("DELETE FROM identity_enrollment_grants")
@@ -188,7 +266,15 @@ elif op == "commit":
     try:
         result = apply()
     except sqlite3.IntegrityError as error:
-        result = {"ok": False, "integrity": str(error)}
+        detail = str(error)
+        if detail in ("INVALID_MEMBER_HANDLE", "UNIQUE constraint failed: identity_members.webauthn_user_handle"):
+            result = {"ok": False, "handleError": "INVALID_MEMBER_HANDLE"}
+        elif detail == "INVALID_CREDENTIAL_HANDLE" or detail == "NOT NULL constraint failed: identity_credentials.handle_format" or detail.startswith("CHECK constraint failed: handle_format IN ("):
+            result = {"ok": False, "handleError": "INVALID_CREDENTIAL_HANDLE"}
+        elif detail == "INVALID_PASSKEY_MARKER":
+            result = {"ok": False, "handleError": "INVALID_PASSKEY_METADATA"}
+        else:
+            result = {"ok": False, "integrity": detail}
     except BaseException:
         conn.execute("ROLLBACK")
         raise
