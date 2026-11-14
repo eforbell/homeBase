@@ -499,13 +499,20 @@ def fingerprint(value):
 
 print(dict(c.execute('SELECT state, webauthn_v2_issued_at FROM identity_household WHERE id=1').fetchone()))
 for row in c.execute('''SELECT m.user_id, m.login, m.webauthn_user_handle AS member_handle,
- c.label, c.kind, c.handle_format, c.webauthn_user_handle AS credential_handle,
+ c.credential_id, c.label, c.kind, c.handle_format, c.webauthn_user_handle AS credential_handle,
  c.revoked_at, c.last_used_at FROM identity_members m
- JOIN identity_credentials c ON c.member_id=m.member_id ORDER BY m.user_id,c.created_at'''):
+ LEFT JOIN identity_credentials c ON c.member_id=m.member_id ORDER BY m.user_id,c.created_at'''):
     item = dict(row)
     item['member_fingerprint'] = fingerprint(item.pop('member_handle'))
     stored = item.pop('credential_handle')
-    item['credential_fingerprint'] = 'legacy: ID-derived' if item['handle_format'] == 'legacy-v1' else fingerprint(stored)
+    if item['credential_id'] is None:
+        item['credential_fingerprint'] = 'no credential'
+    elif item['handle_format'] == 'legacy-v1':
+        item['credential_fingerprint'] = 'legacy: ID-derived' if stored is None else 'invalid'
+    elif item['handle_format'] == 'isolated-v2':
+        item['credential_fingerprint'] = fingerprint(stored) if stored is not None else 'invalid'
+    else:
+        item['credential_fingerprint'] = 'invalid format'
     print(json.dumps(item))
 PY
 ```
