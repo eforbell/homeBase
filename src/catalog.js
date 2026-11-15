@@ -586,6 +586,10 @@ const catalog = [
       startCommand: '.venv/bin/helm-web',
       pythonVenv: '.venv',
       listen: 'unix',
+      // Feature-10: reads SOVEREIGN_AUTH_MODE (web/suite_identity.py, on sovereignAuth's Python package): parents with
+      // access and a passkey replace its passphrase, and Schwab's sign-in follows the suite's OAuth flow. As a
+      // sensitive app, it switches only once it runs as its own user (app.set-identity-mode).
+      identity: 'tailnet',
     },
     // Feature-10: a single-operator app; members get it only when the administrator grants it (SID-004).
     identity: { defaultAccess: 'administrator' },
@@ -604,7 +608,7 @@ const catalog = [
       notes: [
         'HomeBase preserves the /helm/ mount path when proxying; Helm must tolerate HELM_WEB_BASE_PATH=/helm on incoming requests.',
         'Schwab has no sandbox, so production installs should keep Helm read-only until order placement is deliberately reviewed.',
-        'Schwab OAuth callback may need a dedicated HTTPS host that routes to Helm /oauth/callback.',
+        'In tailnet mode, SCHWAB_CALLBACK_URL must be Helm\'s landing page on its own hostname (APP_PUBLIC_URL + oauth/callback), registered with Schwab.',
       ],
     },
     database: {
@@ -665,6 +669,8 @@ const catalog = [
         'ADVISOR_PROVIDER',
         'ADVISOR_MODEL',
         'HELM_MODEL_SYNTHESIS_ENABLED',
+        // The redirect URI registered with Schwab: the operator's, never re-rendered.
+        'SCHWAB_CALLBACK_URL',
       ],
       env: {
         ...SOVEREIGN_FONT_ENV_TEMPLATE,
