@@ -685,6 +685,8 @@ const catalog = [
         OPENAI_API_KEY: '',
         BRRR_SECRET: '',
         HELM_PUBLIC_URL: '{{externalUrl}}',
+        // Helm's own address as members open it (Feature-10): in tailnet mode every write's Origin must match it.
+        APP_PUBLIC_URL: '{{externalUrl}}',
         MONITOR_POSITION_MOVE_PCT: '7',
         MONITOR_PORTFOLIO_DRAWDOWN_PCT: '4',
         MONITOR_COOLDOWN_MINUTES: '180',
