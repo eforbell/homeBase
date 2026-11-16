@@ -85,7 +85,7 @@ Rules (also in [executor-app-runbook.md](executor-app-runbook.md), section 3):
 - A socket has no peer address. Anything keyed on the client address (rate limits, logs) reads `X-Forwarded-For`, trusting one hop (Express `trust proxy` 1).
 - Keep every path unchanged. nginx decides whether the mount (`/pulse/`) is stripped.
 
-Copy `familyPulse/lib/listen.js` for Node. The Python listeners (`helm/src/python/schwab_helm/web/listen.py`, `bitcoinAccounting/src/python/web/listen.py`) still treat a blank `SOVEREIGN_LISTEN` as TCP, which the rule above forbids: fix that before copying either.
+Copy `familyPulse/lib/listen.js` for Node, and `helm/src/python/schwab_helm/web/listen.py` or `bitcoinAccounting/src/python/web/listen.py` for Python.
 
 ## 5. Slice 2: Home Base catalog, socket and address
 
@@ -123,7 +123,7 @@ config: {
 
 Pin a commit, not a branch: hosts install it with no GitHub credentials and no registry. Commit the updated `package-lock.json`, and check that `npm ci --omit=dev` (the catalog's install command) still works from a clean checkout. The library is plain CommonJS for **Node 22 or later**, with no build step and no install scripts. When it changes, move the pin deliberately, in its own PR, and run the app's tests against it.
 
-**Python apps can't onboard yet.** sovereignAuth is Node only. A Python port must pass the same conformance vectors (`vectors/`) before Helm or Bitcoin Accounting can use it; until then they can take the socket (slice 1) and nothing more.
+**Python apps** use sovereignAuth's Python package (`python/`), which passes the same conformance vectors (`vectors/`). Pin a merge commit in both `requirements.lock` and `pyproject.toml`: `sovereign-auth @ git+https://github.com/eforbell/sovereignAuth@<commit>#subdirectory=python`. It has the same parts under Python names (`create_identity`, `create_request_guard` with `GuardMiddleware` for ASGI, `create_assurance`, `create_oauth_flow`). Helm is the reference: `src/python/schwab_helm/web/suite_identity.py`.
 
 One module, `lib/suite-identity.js`, owns everything about who is asking. Its factory runs once at startup and returns middleware. Copy the shape of Family Pulse's.
 

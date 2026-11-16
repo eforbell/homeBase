@@ -71,7 +71,10 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   // Home Source, the other sensitive app that reads the mode: its own hostname and its own user.
   const source = appLayout(getAppById('home-source'));
   assert.deepEqual([source.identityModes, source.listen.kind, source.identity.own, source.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-source']);
-  assert.deepEqual(appLayout(getAppById('helm')).identityModes, ['local'], 'on its socket, but its code reads no mode');
+  // Helm, the first Python app (sovereignAuth's Python package): sensitive, so its own hostname and its own user.
+  const helm = appLayout(getAppById('helm'));
+  assert.deepEqual([helm.identityModes, helm.listen.kind, helm.identity.own, helm.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-helm']);
+  assert.deepEqual(validateManifestEntry(getAppById('helm')), []);
   // Family Dinner: low-friction, on its socket as the shared user, and its code reads the mode.
   const dinner = appLayout(getAppById('family-dinner'));
   assert.deepEqual([dinner.identityModes, dinner.listen.kind, dinner.identity.own], [['local', 'tailnet'], 'unix', false]);
@@ -157,6 +160,18 @@ test('Family Pulse is told its own address, which its tailnet mode needs and its
   // The administrator's Plaid choices survive an update: sandbox, and the redirect URI registered with Plaid.
   const kept = render(ingress, 'PLAID_ENV=sandbox\nPLAID_OAUTH_REDIRECT_URI=https://callbacks.example.com/oauth/callback\n');
   assert.deepEqual([kept.PLAID_ENV, kept.PLAID_OAUTH_REDIRECT_URI, kept.APP_PUBLIC_URL], ['sandbox', 'https://callbacks.example.com/oauth/callback', 'https://smith-pulse.example-tailnet.ts.net/pulse/']);
+});
+
+test('Helm is told its own address, and the Schwab callback registered for it survives an update', () => {
+  // Helm's tailnet mode needs APP_PUBLIC_URL on its service hostname, and its Schwab sign-in returns to the landing
+  // page there (helm web/routes/oauth.py), which the operator registers with Schwab and sets by hand.
+  const layout = appLayout(getAppById('helm'));
+  const site = { hostname: 'host', domain: 'example-tailnet.ts.net', householdTimezone: 'America/New_York' };
+  const render = (ingress, existingContent = '') => parseDotEnv(renderAppEnvFile({ layout, password: 'pw-123456789012', site, ingress, existingContent, fsImpl: createFakeFs() }));
+  const callback = 'https://smith-helm.example-tailnet.ts.net/helm/oauth/callback';
+  const after = render(JSON.parse(CUT_OVER), `APP_PUBLIC_URL=https://host.example-tailnet.ts.net/helm/\nSCHWAB_CALLBACK_URL=${callback}\nSOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n`);
+  assert.deepEqual([after.APP_PUBLIC_URL, after.SCHWAB_CALLBACK_URL, after.SOVEREIGN_AUTH_MODE], ['https://smith-helm.example-tailnet.ts.net/helm/', callback, 'tailnet']);
+  assert.ok(getAppById('helm').config.preserveExistingKeys.includes('SCHWAB_CALLBACK_URL'), 'kept by name, not by its empty template');
 });
 
 test('the plan: the switch, then a restart, only for an app that supports the mode', (t) => {
