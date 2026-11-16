@@ -75,6 +75,10 @@ test('the catalog says which apps can trust tailnet identity, only on their sock
   const helm = appLayout(getAppById('helm'));
   assert.deepEqual([helm.identityModes, helm.listen.kind, helm.identity.own, helm.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-helm']);
   assert.deepEqual(validateManifestEntry(getAppById('helm')), []);
+  // Bitcoin Accounting, the second: the same, on numenor.
+  const accounting = appLayout(getAppById('bitcoin-accounting'));
+  assert.deepEqual([accounting.identityModes, accounting.listen.kind, accounting.identity.own, accounting.identity.user], [['local', 'tailnet'], 'unix', true, 'sovereign-bitcoin-accounting']);
+  assert.deepEqual(validateManifestEntry(getAppById('bitcoin-accounting')), []);
   // Family Dinner: low-friction, on its socket as the shared user, and its code reads the mode.
   const dinner = appLayout(getAppById('family-dinner'));
   assert.deepEqual([dinner.identityModes, dinner.listen.kind, dinner.identity.own], [['local', 'tailnet'], 'unix', false]);
@@ -172,6 +176,17 @@ test('Helm is told its own address, and the Schwab callback registered for it su
   const after = render(JSON.parse(CUT_OVER), `APP_PUBLIC_URL=https://host.example-tailnet.ts.net/helm/\nSCHWAB_CALLBACK_URL=${callback}\nSOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n`);
   assert.deepEqual([after.APP_PUBLIC_URL, after.SCHWAB_CALLBACK_URL, after.SOVEREIGN_AUTH_MODE], ['https://smith-helm.example-tailnet.ts.net/helm/', callback, 'tailnet']);
   assert.ok(getAppById('helm').config.preserveExistingKeys.includes('SCHWAB_CALLBACK_URL'), 'kept by name, not by its empty template');
+});
+
+test('Bitcoin Accounting is told its own address, under the mount it serves', () => {
+  // Its tailnet mode refuses to start unless APP_PUBLIC_URL's path is BITCOIN_ACCOUNTING_WEB_BASE_PATH plus '/'.
+  const layout = appLayout(getAppById('bitcoin-accounting'));
+  const site = { hostname: 'host', domain: 'example-tailnet.ts.net', householdTimezone: 'America/New_York' };
+  const after = parseDotEnv(renderAppEnvFile({ layout, password: 'pw-123456789012', site, ingress: JSON.parse(CUT_OVER), existingContent: 'SOVEREIGN_AUTH_MODE=tailnet\nSOVEREIGN_HOMEBASE_UID=990\n', fsImpl: createFakeFs() }));
+  const address = new URL(after.APP_PUBLIC_URL);
+  assert.equal(address.origin, 'https://smith-bitcoin-accounting.example-tailnet.ts.net');
+  assert.equal(address.pathname, `${after.BITCOIN_ACCOUNTING_WEB_BASE_PATH}/`);
+  assert.equal(after.SOVEREIGN_AUTH_MODE, 'tailnet');
 });
 
 test('the plan: the switch, then a restart, only for an app that supports the mode', (t) => {
