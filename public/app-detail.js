@@ -81,35 +81,16 @@
   }
 
 
-  function isTerminalJobStatus(status) {
-    return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
-  }
-
+  // The finished job (then the page repaints, or onComplete runs), or null once the watch gives up (api.js).
   async function waitForJobCompletion(jobId, resultNode, { refreshOnComplete = true, onComplete = null } = {}) {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      try {
-        const job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
-        if (resultNode) {
-          resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> ${window.HB.escapeHtml(job.status)}.`;
-        }
-        if (isTerminalJobStatus(job.status)) {
-          if (typeof onComplete === 'function') {
-            onComplete(job);
-          } else if (refreshOnComplete) {
-            setTimeout(() => load(), 650);
-          }
-          return job;
-        }
-      } catch (error) {
-        if (resultNode) resultNode.textContent = error.message;
-        return null;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+    const job = await window.HB.watchJob(jobId, resultNode);
+    if (!job) return null;
+    if (typeof onComplete === 'function') {
+      onComplete(job);
+    } else if (refreshOnComplete) {
+      setTimeout(() => load(), 650);
     }
-    if (resultNode) {
-      resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> is still running. Open the job for details.`;
-    }
-    return null;
+    return job;
   }
 
   async function handleBackup(form) {
@@ -156,12 +137,10 @@
       const response = await window.HB.postJson(`/api/apps/${appId}/execute`, payload);
       const mode = dryRun ? `${actionLabel} dry-run` : actionLabel;
       resultNode.innerHTML = `${mode} job <a href="/jobs/${window.HB.escapeHtml(response.jobId)}">#${window.HB.escapeHtml(response.jobId)}</a> started. This page will refresh when it finishes.`;
-      void waitForJobCompletion(response.jobId, resultNode, {
-        onComplete: () => {
-          form.dataset.submitting = 'false';
-          if (submitButton) submitButton.disabled = false;
-          load();
-        },
+      // The form is released however the watch ends; a finished job repaints the page.
+      void waitForJobCompletion(response.jobId, resultNode, { onComplete: () => load() }).finally(() => {
+        form.dataset.submitting = 'false';
+        if (submitButton) submitButton.disabled = false;
       });
       return;
     } catch (error) {

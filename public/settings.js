@@ -194,31 +194,11 @@
     }
   }
 
-  function isTerminalJobStatus(status) {
-    return ['completed', 'failed', 'cancelled'].includes(String(status || ''));
-  }
-
+  // The finished job, after onComplete; or null once the watch gives up (api.js).
   async function waitForJobCompletion(jobId, resultNode, { onComplete = null } = {}) {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      try {
-        const job = await window.HB.getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
-        if (resultNode) {
-          resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> ${window.HB.escapeHtml(job.status)}.`;
-        }
-        if (isTerminalJobStatus(job.status)) {
-          if (typeof onComplete === 'function') onComplete(job);
-          return job;
-        }
-      } catch (error) {
-        if (resultNode) resultNode.textContent = error.message;
-        return null;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-    }
-    if (resultNode) {
-      resultNode.innerHTML = `Job <a href="/jobs/${window.HB.escapeHtml(jobId)}">#${window.HB.escapeHtml(jobId)}</a> is still running. Open the job for details.`;
-    }
-    return null;
+    const job = await window.HB.watchJob(jobId, resultNode);
+    if (job && typeof onComplete === 'function') onComplete(job);
+    return job;
   }
 
   async function triggerHomebaseAction(endpoint, body, resultNode, form = null) {
@@ -231,12 +211,10 @@
       const payload = await window.HB.postJson(endpoint, body);
       if (payload && payload.jobId) {
         resultNode.innerHTML = `Started job <a href="/jobs/${window.HB.escapeHtml(payload.jobId)}">#${window.HB.escapeHtml(payload.jobId)}</a>. This page will refresh when it finishes.`;
-        void waitForJobCompletion(payload.jobId, resultNode, {
-          onComplete: () => {
-            if (form) form.dataset.submitting = 'false';
-            buttons.forEach((button) => { button.disabled = false; });
-            load();
-          },
+        // The form is released however the watch ends; a finished job repaints the page.
+        void waitForJobCompletion(payload.jobId, resultNode, { onComplete: () => load() }).finally(() => {
+          if (form) form.dataset.submitting = 'false';
+          buttons.forEach((button) => { button.disabled = false; });
         });
         return;
       }
