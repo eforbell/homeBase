@@ -71,6 +71,37 @@
     return checkResponse(response, payload);
   }
 
+  // Watches a job until it finishes: the finished job, or null if Home Base stopped answering or it is still
+  // running after about three minutes. One failed read is not the end of it: an install reloads nginx and keeps
+  // the host busy, and a Home Base update restarts Home Base, so a read can fail (a whois that times out answers
+  // as if admin were locked) while the job carries on. Only reads that keep failing for about 30 seconds stop
+  // the watch.
+  const JOB_WATCH = { intervalMs: 1500, attempts: 120, failuresAllowed: 20 };
+  async function watchJob(jobId, resultNode, { intervalMs = JOB_WATCH.intervalMs, attempts = JOB_WATCH.attempts, failuresAllowed = JOB_WATCH.failuresAllowed } = {}) {
+    const number = `<a href="/jobs/${escapeHtml(jobId)}">#${escapeHtml(jobId)}</a>`;
+    const link = `Job ${number}`;
+    const show = (html) => { if (resultNode) resultNode.innerHTML = html; };
+    let failures = 0;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const job = await getJson(`/api/jobs/${encodeURIComponent(jobId)}`);
+        failures = 0;
+        show(`${link} ${escapeHtml(job.status)}.`);
+        if (['completed', 'failed', 'cancelled'].includes(String(job.status || ''))) return job;
+      } catch (error) {
+        failures += 1;
+        if (failures >= failuresAllowed) {
+          show(`Lost track of job ${number} (${escapeHtml(error.message)}). Open the job for details, or reload this page.`);
+          return null;
+        }
+        show(`${link}: checking again (${escapeHtml(error.message)})...`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    show(`${link} is still running. Open the job for details.`);
+    return null;
+  }
+
   function escapeHtml(value) {
     return String(value == null ? '' : value)
       .replaceAll('&', '&amp;')
@@ -226,5 +257,6 @@
     dependencyStatus,
     dependencyPill,
     confirmInline,
+    watchJob,
   };
 }());
