@@ -492,6 +492,10 @@ const catalog = [
       startCommand: '.venv/bin/bitcoin-accounting-web --host 127.0.0.1 --port {{port}}',
       pythonVenv: '.venv',
       listen: 'unix',
+      // Feature-10: reads SOVEREIGN_AUTH_MODE (web/suite_identity.py, on sovereignAuth's Python package): parents with
+      // access and a passkey replace its passphrase. As a sensitive app, it switches only once it runs as its own user
+      // (app.set-identity-mode).
+      identity: 'tailnet',
     },
     // Feature-10: a single-operator app; members get it only when the administrator grants it (SID-004).
     identity: { defaultAccess: 'administrator' },
@@ -543,6 +547,9 @@ const catalog = [
         PGDATABASE: '{{dbName}}',
         BITCOIN_ACCOUNTING_ENV: 'production',
         BITCOIN_ACCOUNTING_WEB_BASE_PATH: '{{mountBasePath}}',
+        // Its own address as members open it (Feature-10): in tailnet mode every write's Origin must match it, and its
+        // path must be the mount above.
+        APP_PUBLIC_URL: '{{externalUrl}}',
         BITCOIN_ACCOUNTING_WEB_DOCS: '0',
         BITCOIN_ACCOUNTING_WEB_ALLOW_SQLITE: '0',
         BITCOIN_ACCOUNTING_AUTH_ENABLED: '1',
