@@ -47,6 +47,29 @@ test('whois identity alone: who an address is, with no login check and no admiss
   assert.equal(await identify('100.64.0.9'), null, 'unknown');
 });
 
+test('a whois that fails is asked once more before the answer is no identity', async () => {
+  const logs = [];
+  let answers = [() => { throw new SyntaxError('Unexpected end of JSON input'); }, () => KID];
+  let calls = 0;
+  const whois = async () => { calls += 1; return answers.shift()(); };
+  const identify = createWhoisIdentity({ whois, status: async () => STATUS, log: (line) => logs.push(line), retryMs: 1 });
+  assert.deepEqual(await identify('fd7a:115c:a1e0::5934:ff6b'), { userId: '4242', login: 'kid@example.com', name: 'Kid Ö' });
+  assert.equal(calls, 2);
+  assert.deepEqual(logs, [], 'a lookup that came good is not a failure');
+  // Twice is the limit: then nobody gets an identity, and the log says so.
+  answers = [() => { throw new Error('first'); }, () => { throw new Error('second'); }, () => KID];
+  calls = 0;
+  assert.equal(await identify('fd7a:115c:a1e0::5934:ff6b'), null);
+  assert.equal(calls, 2);
+  assert.match(logs[0], /^identity: whois fd7a:115c:a1e0::5934:ff6b failed 2 times \(second\); no identity$/);
+});
+
+test('a peer whois answers for, however it answers, is asked only once', async () => {
+  const { resolve, calls } = resolver({ whois: async () => TAGGED });
+  assert.equal(await resolve(ask('100.64.0.8', 'tagged-devices')), null);
+  assert.equal(calls.whois, 1, 'only a failed lookup is asked again');
+});
+
 test("the host's own addresses never get an identity, however they are written (IPv4 and IPv6)", async () => {
   const self = { ...KID };
   const { resolve, calls } = resolver({ whois: async () => self });

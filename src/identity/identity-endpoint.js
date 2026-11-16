@@ -18,6 +18,11 @@ const CACHE_MS = 5_000;
 const SELF_CACHE_MS = 60_000;
 const CACHE_LIMIT = 1_000;
 const LOGIN = /^[\x21-\x7e]{1,320}$/;
+// A whois that fails is asked once more, a moment later, before the answer is "no identity": tailscaled has been
+// seen to answer one lookup with nothing at all (exit 0, no JSON) while the host was busy. The second answer is
+// as fresh as the first, and if it fails too, nobody gets an identity.
+const WHOIS_ATTEMPTS = 2;
+const WHOIS_RETRY_MS = 150;
 
 function runJson(binary, args, timeoutMs = 3_000) {
   return new Promise((resolve, reject) => {
@@ -48,7 +53,7 @@ const NO_DIRECTORY = Object.freeze({ lookup: () => null });
 // Who a tailnet address is, from tailscaled alone: { userId, login, name }, or null for the host's own
 // addresses (spike 3), tagged devices (D2), a failed lookup or an ID that isn't one. Neither the login
 // check nor admission happens here.
-function createWhoisIdentity({ whois = tailscaleWhois, status = tailscaleStatus, now = Date.now, log = () => {} } = {}) {
+function createWhoisIdentity({ whois = tailscaleWhois, status = tailscaleStatus, now = Date.now, log = () => {}, retryMs = WHOIS_RETRY_MS } = {}) {
   let self = { addresses: null, at: -Infinity };
 
   async function selfAddresses() {
@@ -69,9 +74,17 @@ function createWhoisIdentity({ whois = tailscaleWhois, status = tailscaleStatus,
     }
     if (addresses.has(addr)) return null;
     let who;
-    try { who = await whois(addr); } catch (error) {
-      log(`identity: whois ${addr} failed (${error.message}); no identity`);
-      return null;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        who = await whois(addr);
+        break;
+      } catch (error) {
+        if (attempt >= WHOIS_ATTEMPTS) {
+          log(`identity: whois ${addr} failed ${attempt} times (${error.message}); no identity`);
+          return null;
+        }
+        await new Promise((resolve) => setTimeout(resolve, retryMs));
+      }
     }
     const node = who?.Node;
     const profile = who?.UserProfile;
@@ -84,9 +97,9 @@ function createWhoisIdentity({ whois = tailscaleWhois, status = tailscaleStatus,
   };
 }
 
-function createIdentityResolver({ whois = tailscaleWhois, status = tailscaleStatus, directory = NO_DIRECTORY, now = Date.now, log = () => {} } = {}) {
+function createIdentityResolver({ whois = tailscaleWhois, status = tailscaleStatus, directory = NO_DIRECTORY, now = Date.now, log = () => {}, retryMs } = {}) {
   const cache = new Map();
-  const identify = createWhoisIdentity({ whois, status, now, log });
+  const identify = createWhoisIdentity({ whois, status, now, log, retryMs });
 
   async function lookup(addr, serveLogin) {
     const identity = await identify(addr);
