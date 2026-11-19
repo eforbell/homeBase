@@ -1087,6 +1087,12 @@ function createApp(config) {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = url.pathname;
       const method = req.method || 'GET';
+      // Static files (page scripts, styles, icons, fonts) are the same for everyone and depend on nothing
+      // stored: answer them before reading state. Each state read is a SQLite query in a child process that
+      // blocks every other request, so a page's dozen files used to queue behind two of them each. Only
+      // where this port is still Home Base (on its socket, or before the move); the route matrix calls these
+      // public, and a GET changes nothing.
+      if (method === 'GET' && (req.homeBaseVia === 'socket' || !homeBaseOnSocket()) && staticAnswer(res, method, pathname)) return;
       const state = stateStore.loadState();
       const homeBaseConfigOverride = stateStore.getHomeBaseConfig() || {};
       const effectiveConfig = mergeHomeBaseConfig(config, homeBaseConfigOverride);
@@ -2485,6 +2491,26 @@ function createApp(config) {
   const gatewaySite = config.nginxGatewaySite || '/etc/nginx/sites-available/sovereign-home';
   const gatewayApplied = config.nginxGatewayApplied || APPLIED_PATH;
   let gatewayRead = { at: -Infinity, onSocket: false };
+  // Serves a static file or the fonts' CSS if pathname is one, and says whether it did.
+  function staticAnswer(res, method, pathname) {
+    if (method !== 'GET') return false;
+    if (method === 'GET' && pathname === '/sovereign-fonts.css') {
+      res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'public, max-age=300' });
+      res.end(buildSovereignFontsCss());
+      return true;
+    }
+    const font = resolveSovereignFontAssetPath(pathname);
+    if (font) {
+      serveStaticFile(res, font);
+      return true;
+    }
+    if (routeFor('GET', pathname) !== STATIC_ROUTE) return false;
+    const asset = resolvePublicAsset(pathname);
+    if (!asset) return false;
+    serveStaticFile(res, asset);
+    return true;
+  }
+
   function homeBaseOnSocket() {
     if (Date.now() - gatewayRead.at < (config.gatewayReadIntervalMs ?? 2000)) return gatewayRead.onSocket;
     const read = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } };

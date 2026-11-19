@@ -2792,3 +2792,40 @@ test('a patch posture collection under way is shared, so a Refresh does not answ
     await new Promise((resolve) => executor.close(resolve));
   }
 });
+
+test('static files and the fonts CSS are served without reading state; everything else still reads it', async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-base-static-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const server = await startServer({
+    appName: 'Home Base',
+    stateDbPath: path.join(tempDir, 'state.sqlite3'),
+    port: 0,
+    serviceUser: 'sovereign',
+    defaultHostname: 'homebase',
+    defaultDomain: 'tailnet',
+  });
+  t.after(() => server.close());
+  // Every state read is a SQLite query in a child process that blocks other requests: count them.
+  let reads = 0;
+  const { loadState, getHomeBaseConfig } = SqliteStateStore.prototype;
+  SqliteStateStore.prototype.loadState = function counted(...args) { reads += 1; return loadState.apply(this, args); };
+  SqliteStateStore.prototype.getHomeBaseConfig = function counted(...args) { reads += 1; return getHomeBaseConfig.apply(this, args); };
+  t.after(() => { Object.assign(SqliteStateStore.prototype, { loadState, getHomeBaseConfig }); });
+
+  const fetched = async (url) => { reads = 0; const res = await fetch(`${server.url}${url}`); await res.arrayBuffer(); return { status: res.status, type: res.headers.get('content-type'), reads }; };
+  for (const url of ['/style.css', '/passkeys.js', '/favicon.svg', '/sovereign-fonts.css']) {
+    const answer = await fetched(url);
+    assert.equal(answer.status, 200, url);
+    assert.equal(answer.reads, 0, `${url} read state`);
+  }
+  assert.match((await fetched('/sovereign-fonts.css')).type, /text\/css/);
+  const missing = await fetched('/no-such-file.css');
+  assert.equal(missing.status, 404);
+  assert.equal(missing.reads, 0);
+  // Not static: a page shell, the API and anything outside the public directory go the long way.
+  assert.ok((await fetched('/admin')).reads > 0, 'a page shell is routed as before');
+  assert.ok((await fetched('/api/state')).reads > 0);
+  assert.equal((await fetched('/_sovereign/auth/x.js')).status, 404);
+  const traversal = await fetch(`${server.url}/..%2fsrc%2fapp.js`);
+  assert.equal(traversal.status, 404);
+});
