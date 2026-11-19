@@ -601,6 +601,14 @@ function createApp(config) {
     passphraseSession: (req) => passphraseSession(req, stateStore, adminOptions),
     // appAttestRoots is for tests only (loadConfig never sets it): in use, sovereignAuth's pinned Apple roots.
     nativeApp: config.nativeApp || null, appAttestRoots: config.appAttestRoots || null,
+    // Only a plan whose app is in the catalog is described by name: a page chose the path, so an unknown id
+    // (or a service name) is never echoed into the sheet as if it were an app.
+    describePlan: (planPath) => {
+      const app = planPath.match(/^\/api\/(?:ingress\/)?apps\/([^/]+)\//);
+      if (app && !getAppById(app[1])) return null;
+      if (planPath.startsWith('/api/ingress/services/')) return null;
+      return describePlan(planPath);
+    },
   }) : null;
   if (config.nativeAppError) warn(`native app: ${config.nativeAppError}; app instances and the handoff stay off`);
   // Passkeys run on per-service hostnames only, so only once the host is cut over: the hostname the request

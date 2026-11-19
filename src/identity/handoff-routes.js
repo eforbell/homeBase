@@ -74,10 +74,27 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
     ? { purpose: 'action', kind: record.kind, audience: shared.homeBaseApp, action: { act: record.policy, tgt: record.action.target, dig: record.action.digest, handoff: record.id } }
     : { purpose: 'step-up', kind: record.kind, action: { handoff: record.id } });
 
+  // An action's target in words, the way its own prompt says it: Home Base's passkey changes, or a
+  // privileged plan ("METHOD /path settings … installs …"), described as the plan's route describes it.
+  function actionWords(record) {
+    const target = record.action.target;
+    // Each phrase only under the policy its route uses, so the sheet never says more than the token binds.
+    if (record.policy === 'manage-admin-credential' && target.startsWith('enroll:')) return 'add an administrator passkey';
+    if (record.policy === 'manage-admin-credential' && target.startsWith('revoke:')) return 'remove an administrator passkey';
+    if (record.policy === 'privileged-plan' && target === 'signing-key:rotate') return 'rotate the signing key';
+    if (record.policy !== 'privileged-plan') return null;
+    const plan = target.match(/^[A-Z]+ (\/\S*) settings /);
+    const words = plan && shared.describePlan ? shared.describePlan(plan[1]) : null;
+    return words && words !== 'run this plan' ? words : null;
+  }
+
   // What the sheet shows, from the record (never from the URL).
   function summary(record, here, standing) {
     const key = record.kind === 'hardware' ? ' with your hardware key' : '';
-    if (record.purpose === 'action') return `Confirm ${record.policy} for ${record.action.target || 'Home Base'} in Home Base${key}.`;
+    if (record.purpose === 'action') {
+      const words = actionWords(record);
+      return words ? `Confirm${key} to ${words}.` : `Confirm this change to Home Base${key}.`;
+    }
     if (!here.homeBase) return `Confirm it's you to open ${here.label || here.hostname}${key}.`;
     return standing.member.administrator ? `Unlock administration on Home Base${key}.` : `Confirm it's you on Home Base${key}.`;
   }
