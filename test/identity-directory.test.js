@@ -452,3 +452,84 @@ test('a passkey ceremony commits only if what authorized it still holds when it 
   assert.throws(() => directory.addCredential({ userId: KID.userId, credentialId: 'kid-2', kind: 'synced', expect: kidView }), { code: 'STALE' });
   assert.throws(() => directory.revokeOwnCredential(KID.userId, 'kid-1', { expect: kidView }), { code: 'STALE' });
 });
+
+// App instances (native handoff, part 1): one installation of the household's app, with its App Attest key.
+const KEY = (n) => Buffer.alloc(32, n).toString('base64');
+const instance = (userId, n = 1, extra = {}) => ({ userId, keyId: KEY(n), publicKey: `spki-${n}`, environment: 'production', label: `Phone ${n}`, ...extra });
+
+test('app instances: registered to an active member in active Home Base, listed, and found by key', (t) => {
+  const context = fixture(t);
+  const setupOnly = context.make();
+  setupOnly.claim(FOUNDER);
+  assert.throws(() => setupOnly.registerAppInstance(instance(FOUNDER.userId)), { code: 'BOOTSTRAP_STATE' });
+
+  const directory = activeDirectory(fixture(t));
+  directory.lookup(KID.userId, KID);
+  const kid = directory.addMember({ userId: FOUNDER.userId }, { userId: KID.userId, role: 'kid' });
+  const registered = directory.registerAppInstance(instance(KID.userId, 1, { label: ' Kid\u0007\'s phone ', receipt: 'receipt-bytes' }));
+  assert.equal(registered.memberId, kid.member_id);
+  assert.equal(registered.label, 'Kid\'s phone', 'control characters and spaces are dropped');
+  assert.throws(() => directory.registerAppInstance(instance(KID.userId, 1)), { code: 'APP_INSTANCE_EXISTS' });
+  assert.throws(() => directory.registerAppInstance(instance(OTHER.userId, 2)), { code: 'NOT_FOUND' }, 'only members');
+  assert.throws(() => directory.registerAppInstance(instance(KID.userId, 3, { keyId: 'not a key' })), { code: 'INVALID' });
+  assert.throws(() => directory.registerAppInstance(instance(KID.userId, 3, { keyId: KEY(3).replace('=', 'A') })), { code: 'INVALID' });
+  assert.throws(() => directory.registerAppInstance(instance(KID.userId, 3, { environment: 'simulator' })), { code: 'INVALID' });
+  assert.throws(() => directory.registerAppInstance(instance(KID.userId, 3, { counter: -1 })), { code: 'INVALID' });
+
+  assert.deepEqual(directory.appInstance(KEY(1)), { keyId: KEY(1), userId: KID.userId, memberId: kid.member_id, publicKey: 'spki-1', counter: 0, label: 'Kid\'s phone' });
+  assert.equal(directory.appInstance(KEY(9)), null);
+  assert.equal(directory.appInstance('not a key'), null);
+  const listed = directory.describe().members.find((member) => member.memberId === kid.member_id).appInstances;
+  assert.deepEqual(listed.map(({ keyId, label, environment, lastUsedAt }) => ({ keyId, label, environment, lastUsedAt })), [{ keyId: KEY(1), label: 'Kid\'s phone', environment: 'production', lastUsedAt: null }]);
+  assert.equal(JSON.stringify(directory.describe()).includes('receipt-bytes'), false, 'the receipt stays in the database');
+  assert.equal(JSON.stringify(directory.describe()).includes('spki-1'), false, 'and so does the key');
+});
+
+test('app instances: the counter only moves from the value its check read', (t) => {
+  const directory = activeDirectory(fixture(t));
+  directory.registerAppInstance(instance(FOUNDER.userId));
+  assert.equal(directory.advanceAppInstance(KEY(1), 0, 1), true);
+  assert.equal(directory.advanceAppInstance(KEY(1), 0, 2), false, 'a racing assertion that read 0 loses');
+  assert.equal(directory.advanceAppInstance(KEY(1), 1, 1), false, 'never sideways');
+  assert.equal(directory.advanceAppInstance(KEY(1), 1, 0), false, 'never back');
+  assert.equal(directory.advanceAppInstance(KEY(9), 0, 1), false, 'no such key');
+  assert.equal(directory.advanceAppInstance(KEY(1), 1, 5), true);
+  assert.equal(directory.appInstance(KEY(1)).counter, 5);
+  assert.ok(directory.describe().members[0].appInstances[0].lastUsedAt);
+});
+
+test('app instances: the administrator revokes one; disabling a member removes theirs', (t) => {
+  const context = fixture(t);
+  const directory = activeDirectory(context);
+  directory.lookup(KID.userId, KID);
+  const kid = directory.addMember({ userId: FOUNDER.userId }, { userId: KID.userId, role: 'kid' });
+  directory.registerAppInstance(instance(KID.userId, 1));
+  directory.registerAppInstance(instance(KID.userId, 2));
+  directory.registerAppInstance(instance(FOUNDER.userId, 3));
+
+  assert.throws(() => directory.revokeAppInstance({ userId: KID.userId }, KEY(1)), { code: 'NOT_ADMINISTRATOR' });
+  assert.deepEqual(directory.revokeAppInstance({ userId: FOUNDER.userId }, KEY(1)), { revoked: KEY(1) });
+  assert.equal(directory.appInstance(KEY(1)), null);
+  assert.throws(() => directory.revokeAppInstance({ userId: FOUNDER.userId }, KEY(1)), { code: 'NOT_FOUND' });
+
+  directory.updateMember({ userId: FOUNDER.userId }, kid.member_id, { status: 'disabled' });
+  assert.equal(directory.appInstance(KEY(2)), null);
+  directory.updateMember({ userId: FOUNDER.userId }, kid.member_id, { status: 'active' });
+  assert.equal(directory.appInstance(KEY(2)), null, 'gone, not hidden: re-enabled, the app registers again');
+  assert.equal(directory.appInstance(KEY(3)).userId, FOUNDER.userId, 'other members keep theirs');
+
+  const audit = context.stateStore.listAdminAudit(50);
+  assert.ok(audit.some((entry) => entry.action === 'app-instance-register'));
+  assert.ok(audit.some((entry) => entry.action === 'app-instance-revoke' && entry.target === kid.member_id));
+  assert.ok(audit.some((entry) => entry.action === 'member-update' && /; 1 app instance\(s\) removed$/.test(entry.outcome)));
+});
+
+test('app instances: a database from before them gains the table', (t) => {
+  const context = fixture(t);
+  const directory = activeDirectory(context);
+  require('child_process').execFileSync('python3', ['-c', 'import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute("DROP TABLE identity_app_instances");c.commit()', context.dbPath]);
+  const again = context.make();
+  again.registerAppInstance(instance(FOUNDER.userId));
+  assert.equal(again.appInstance(KEY(1)).userId, FOUNDER.userId);
+  assert.equal(directory.appInstance(KEY(1)).userId, FOUNDER.userId);
+});
