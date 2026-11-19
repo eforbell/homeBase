@@ -7,6 +7,7 @@ const { appInstanceClientData } = require('sovereign-auth');
 const { createFakeApple } = require('./support/app-attest');
 const path = require('path');
 const { SqliteStateStore } = require('../src/state/sqlite-store');
+const { nativeAppFromEnv } = require('../src/config');
 const { KID, PARENT, PULSE, activeHousehold, browser, startServer } = require('./support/household');
 
 const APP_ID = 'ABCDE12345.org.example.homebase';
@@ -132,4 +133,36 @@ test('every registration and refusal is audited', async (t) => {
   const audit = new SqliteStateStore(path.join(root, 'state.sqlite3')).listAdminAudit(50);
   assert.ok(audit.some((entry) => entry.action === 'app-instance-register' && /production$/.test(entry.outcome)));
   assert.ok(audit.some((entry) => entry.action === 'app-instance-register' && entry.outcome === 'refused' && entry.reason === 'wrong_environment'));
+});
+
+test('one member\'s challenges never push out another\'s; their own oldest goes first', async (t) => {
+  const { app, base, parent } = await activeHousehold(t, nativeConfig());
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const candidate = (await parent.get('/api/directory')).body.candidates.find((entry) => entry.login === 'kid@example.com');
+  assert.equal((await parent.post('/api/directory/members', { userId: candidate.userId, role: 'kid' })).status, 201);
+  const kid = browser(base, KID);
+
+  const issued = (await parent.post('/_sovereign/auth/app/challenge')).body;
+  const attested = await apple.attest({ clientData: appInstanceClientData({ household: issued.household, userId: issued.userId, challenge: issued.challenge }) });
+  for (let i = 0; i < 50; i += 1) assert.equal((await kid.post('/_sovereign/auth/app/challenge')).status, 200);
+  const answer = await parent.post('/_sovereign/auth/app/register', { challenge: issued.challenge, keyId: attested.keyId, attestation: attested.attestation });
+  assert.equal(answer.status, 201, JSON.stringify(answer.body));
+
+  const first = (await kid.post('/_sovereign/auth/app/challenge')).body;
+  for (let i = 0; i < 8; i += 1) await kid.post('/_sovereign/auth/app/challenge');
+  const kidAttested = await apple.attest({ clientData: appInstanceClientData({ household: first.household, userId: first.userId, challenge: first.challenge }) });
+  const pushedOut = await kid.post('/_sovereign/auth/app/register', { challenge: first.challenge, keyId: kidAttested.keyId, attestation: kidAttested.attestation });
+  assert.deepEqual(pushedOut.body, { error: 'app_instance_refused', reason: 'unknown_challenge' });
+  assert.equal((await register(kid)).answer.status, 201, 'the newest still work');
+});
+
+test('the native app setting: both values, valid, and development only on an explicit yes', () => {
+  const env = { HOME_BASE_NATIVE_APP_ID: APP_ID, HOME_BASE_NATIVE_APP_SCHEME: 'homebase' };
+  assert.deepEqual(nativeAppFromEnv({}), { nativeApp: null, error: null });
+  assert.deepEqual(nativeAppFromEnv(env).nativeApp, NATIVE_APP);
+  assert.match(nativeAppFromEnv({ ...env, HOME_BASE_NATIVE_APP_ID: 'org.example.homebase' }).error, /TEAMID/);
+  assert.match(nativeAppFromEnv({ HOME_BASE_NATIVE_APP_ID: APP_ID }).error, /SCHEME/);
+  assert.match(nativeAppFromEnv({ ...env, HOME_BASE_NATIVE_APP_SCHEME: 'Home Base' }).error, /SCHEME/);
+  for (const value of ['true', ' TRUE ', '1', 'yes', 'on']) assert.equal(nativeAppFromEnv({ ...env, HOME_BASE_APP_ATTEST_DEVELOPMENT: value }).nativeApp.development, true, value);
+  for (const value of ['false ', 'false', '0', 'no', 'off', '', 'ture']) assert.equal(nativeAppFromEnv({ ...env, HOME_BASE_APP_ATTEST_DEVELOPMENT: value }).nativeApp.development, false, value);
 });

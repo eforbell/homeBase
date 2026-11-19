@@ -32,7 +32,9 @@ function nativeAppFromEnv(env) {
   if (!appId && !scheme) return { nativeApp: null, error: null };
   if (!/^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$/.test(appId)) return { nativeApp: null, error: 'HOME_BASE_NATIVE_APP_ID must be <TEAMID>.<bundle id>' };
   if (!/^[a-z][a-z0-9+.-]{2,31}$/.test(scheme)) return { nativeApp: null, error: 'HOME_BASE_NATIVE_APP_SCHEME must be a lower-case URL scheme of 3 to 32 characters' };
-  return { nativeApp: { appId, scheme, development: boolFromEnv(env.HOME_BASE_APP_ATTEST_DEVELOPMENT, false) }, error: null };
+  // A trust opt-in: only an explicit yes turns it on ("false " or a typo leaves it off).
+  const development = ['1', 'true', 'yes', 'on'].includes(String(env.HOME_BASE_APP_ATTEST_DEVELOPMENT || '').trim().toLowerCase());
+  return { nativeApp: { appId, scheme, development }, error: null };
 }
 
 function loadConfig(env = process.env) {

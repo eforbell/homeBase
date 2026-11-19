@@ -67,7 +67,8 @@ const TARGET_MAX = 512;
 const NATIVE_ROUTES = new Set(['POST app/challenge', 'POST app/register']);
 const APP_CHALLENGE_MS = 5 * 60_000;
 const APP_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
-const APP_CHALLENGES_MAX = 1000;
+// Live challenges a member may hold at once: their own oldest goes first, so nobody can push out another's.
+const APP_CHALLENGES_PER_MEMBER = 8;
 // A real attestation is about 6 KB, about 8 KB in base64.
 const APP_ATTESTATION_MAX = 32 * 1024;
 // Why a confirmation could not be used (directory.consumeAction's answers).
@@ -102,12 +103,15 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
   const audit = (action, target, outcome, reason) => recordAdminAudit(stateStore, { action, target, outcome, reason });
 
   // App-instance challenges, in memory: a restart forgets them, and they last 5 minutes anyway. Taken once.
+  // Expired ones are dropped; past APP_CHALLENGES_PER_MEMBER live ones, the member's own oldest. Members are
+  // the household's, so that bounds the whole store.
   const appChallenges = new Map();
   function issueAppChallenge(record) {
     for (const [challenge, entry] of appChallenges) {
-      if (now() - entry.issued > APP_CHALLENGE_MS || appChallenges.size >= APP_CHALLENGES_MAX) appChallenges.delete(challenge);
-      else break;
+      if (now() - entry.issued > APP_CHALLENGE_MS) appChallenges.delete(challenge);
     }
+    const own = [...appChallenges.values()].filter((entry) => entry.userId === record.userId);
+    for (const entry of own.slice(0, Math.max(0, own.length - APP_CHALLENGES_PER_MEMBER + 1))) appChallenges.delete(entry.challenge);
     appChallenges.set(record.challenge, record);
   }
   function takeAppChallenge(challenge) {
