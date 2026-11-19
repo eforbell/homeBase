@@ -65,6 +65,15 @@ const ROUTES = [
   // The household's native app registering this installation (an app instance, which grants nothing alone).
   ['POST', '/_sovereign/auth/app/challenge', 'self', 'use-app', 'route'],
   ['POST', '/_sovereign/auth/app/register', 'self', 'use-app', 'route'],
+  // The native handoff: a page in the app begins and redeems, the app attests, a Safari sheet confirms. The
+  // sheet's page and script are the same for everyone and change nothing.
+  ['GET', '/_sovereign/auth/handoff/sheet', 'public'],
+  ['GET', '/_sovereign/auth/handoff/sheet.js', 'public'],
+  ['POST', '/_sovereign/auth/handoff/begin', 'self', 'use-app', 'route'],
+  ['POST', '/_sovereign/auth/handoff/attest', 'self', 'use-app', 'route'],
+  ['POST', '/_sovereign/auth/handoff/options', 'self', 'use-app', 'route'],
+  ['POST', '/_sovereign/auth/handoff/finish', 'self', 'use-app', 'route'],
+  ['POST', '/_sovereign/auth/handoff/redeem', 'self', 'use-app', 'route'],
   // The administrator's, in the passkey service: it requires the administrator and an every-time token itself.
   ['POST', '/_sovereign/auth/signing-key/rotate', 'administrator', 'privileged-plan', 'route'],
 

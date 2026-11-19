@@ -616,7 +616,10 @@ function createApp(config) {
     // nginx admits the hostname with or without the default port (ingress-layout.js); nothing else.
     const forwarded = typeof req.headers['x-forwarded-host'] === 'string' ? req.headers['x-forwarded-host'].toLowerCase().replace(/:443$/, '') : '';
     const service = forwarded ? ingressServices({ instance: ingress.instance, domain: ingress.domain, apps: catalog }).find((entry) => entry.strict && entry.hostname === forwarded) : null;
-    return service ? { hostname: service.hostname, rpID: ingress.domain, homeBase: service.key === HOMEBASE_SERVICE } : null;
+    if (!service) return null;
+    // label: the app's name, for what the handoff's sheet says is being confirmed.
+    const label = service.key === HOMEBASE_SERVICE ? 'Home Base' : service.appIds.map((id) => catalog.find((app) => app.id === id)?.name || id).join(', ');
+    return { hostname: service.hostname, rpID: ingress.domain, homeBase: service.key === HOMEBASE_SERVICE, label };
   }
   const ingressRoutes = createIngressRoutes({
     stateStore, jobRunner, sendJson, parseBody, recordAdminAudit, executionBlockOutcome,
