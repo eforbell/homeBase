@@ -63,13 +63,26 @@
   }
 
   async function enroll({ label, hardware, grant }) {
+    if (inApp()) throw new Error(IN_SAFARI);
     const { options } = await guardedPost(`${AUTH}enroll/options`, { label, hardware, grant });
     let response;
     try { response = await create(options); } catch (error) { throw ceremonyError(error); }
     return window.HB.postJson(`${AUTH}enroll/finish`, { label, hardware, grant, response });
   }
 
+  // Inside the household's iPhone app, whose web view can't run a passkey ceremony: the shared helper hands
+  // checks to the app (the native handoff). Registering a passkey and activation stay in a browser.
+  const inApp = () => Boolean(window.SovereignStepUp && window.SovereignStepUp.inApp && window.SovereignStepUp.inApp());
+  const IN_SAFARI = 'Open Home Base in Safari to do this: passkeys are registered, and Home Base is activated, in a browser.';
+
   async function check({ purpose = 'step-up', kind } = {}) {
+    if (inApp()) {
+      if (purpose !== 'step-up') throw new Error(IN_SAFARI);
+      // The form's button was the tap; the app's sheet asks for the passkey.
+      const done = await window.SovereignStepUp.satisfy({ level: 'session', kind, message: 'Unlock administration with your passkey.' }, { confirmed: true });
+      if (done === false) throw new Error('Not unlocked: the check was cancelled.');
+      return { ok: true };
+    }
     const { options } = await window.HB.postJson(`${AUTH}check/options`, { purpose, kind });
     let response;
     try { response = await get(options); } catch (error) { throw ceremonyError(error); }

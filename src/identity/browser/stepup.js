@@ -4,6 +4,13 @@
 // the ceremony with Home Base's passkey service on this hostname, and retries the identical request once:
 // with the action token for an every-time policy, or with the assurance cookie the check just set. It never
 // retries a request that changed, and a second refusal is the answer.
+//
+// Inside the household's iPhone app (window.sovereign, version 1), the page's web view can't run a passkey
+// ceremony, so the helper hands it to the app (the native handoff, sovereignAuth wire contract section 13):
+// after the same tap it begins a handoff here, the app attests it and opens a Safari sheet that runs the
+// ceremony, and once the sheet closes the helper redeems the result here, the cookie or the token, and
+// retries as before. One handoff at a time per page: other step-ups wait for it, and a check's cookie then
+// serves them all. If the app can't do it on this phone, the helper says so instead of trying in the page.
 (function sovereignStepUp() {
   const AUTH = '/_sovereign/auth/';
   const HEADER = 'X-Sovereign-Action-Token';
@@ -83,9 +90,73 @@
     });
   }
 
+  // A message with one button, for what can't be done here.
+  async function notice(message) {
+    await confirmTap(message, 'OK');
+  }
+
+  // The household's app, when this page is in it: version 1 of window.sovereign, with handoff(id).
+  function bridge() {
+    const app = window.sovereign;
+    return app && app.version === 1 && typeof app.handoff === 'function' ? app : null;
+  }
+
+  // The handoff in flight on this page: { check, hardware, done } where done settles to true once its result
+  // was redeemed, false otherwise.
+  let current = null;
+
+  // A step-up through the app. Returns as satisfy does.
+  async function satisfyInApp(app, stepUp, { confirmed = false } = {}) {
+    const everyTime = stepUp.level === 'every-time';
+    const hardware = stepUp.kind === 'hardware';
+    // Wait for the handoff already running. A check that went through set this hostname's cookie, which
+    // serves this check too unless this one needs hardware and that one didn't.
+    while (current) {
+      const before = current;
+      const done = await before.done;
+      if (done && !everyTime && before.check && (before.hardware || !hardware)) return null;
+      if (current === before) current = null;
+    }
+    let settle;
+    current = { check: !everyTime, hardware, done: new Promise((resolve) => { settle = resolve; }) };
+    const mine = current;
+    let redeemed = false;
+    try {
+      const message = stepUp.message || (everyTime ? 'Confirm this action with your passkey.' : 'Check with your passkey to continue.');
+      if (!confirmed && !(await confirmTap(message, hardware ? 'Use hardware key' : 'Use passkey'))) return false;
+      const request = everyTime
+        ? { purpose: 'action', action: { policy: stepUp.policy, target: stepUp.target, digest: stepUp.digest } }
+        : { purpose: 'check', kind: stepUp.kind };
+      const { id } = await post('handoff/begin', request);
+      try {
+        await app.handoff(id);
+      } catch (error) {
+        // Cancelled, or not possible: the record is redeemed anyway, so its cookie goes now.
+        post('handoff/redeem', { id }).catch(() => {});
+        const reason = error && (error.message || error.code || error);
+        if (reason === 'unavailable') {
+          await notice('This check can\'t be done in the app on this phone. Open this page in Safari to continue.');
+          return false;
+        }
+        if (reason === 'cancelled') return false;
+        throw error instanceof Error ? error : new Error(String(reason || 'The app could not confirm this.'));
+      }
+      const answer = await post('handoff/redeem', { id });
+      redeemed = true;
+      return everyTime ? answer.token : null;
+    } finally {
+      settle(redeemed);
+      if (current === mine) current = null;
+    }
+  }
+
   // The ceremony a step-up answer asks for. Returns the action token for an every-time policy, or null once
-  // the check has set the cookie; false if the member cancelled.
-  async function satisfy(stepUp) {
+  // the check has set the cookie; false if the member cancelled. confirmed (in the app only): the page already
+  // asked for the tap (a form's own button, say), so the helper doesn't ask again; in a browser the tap is
+  // what starts the passkey prompt, so it is always asked for.
+  async function satisfy(stepUp, { confirmed = false } = {}) {
+    const app = bridge();
+    if (app) return satisfyInApp(app, stepUp, { confirmed });
     const everyTime = stepUp.level === 'every-time';
     const request = everyTime
       ? { purpose: 'action', action: { policy: stepUp.policy, target: stepUp.target, digest: stepUp.digest } }
@@ -118,5 +189,5 @@
     return send(token);
   }
 
-  window.SovereignStepUp = { fetch: stepUpFetch, satisfy };
+  window.SovereignStepUp = { fetch: stepUpFetch, satisfy, inApp: () => Boolean(bridge()) };
 })();
