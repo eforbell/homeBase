@@ -125,6 +125,19 @@ function createDirectoryRoutes({ directory, binding, stateStore, sendJson, parse
       return true;
     }
 
+    // An app instance (the household's iPhone app on one phone) the administrator removes: a lost phone, say.
+    if (method === 'POST' && pathname === '/api/directory/app-instances/revoke') {
+      const body = await parseBody(req);
+      const actor = await administrator(req, res, 'app-instance-revoke', 'directory');
+      if (!actor) return true;
+      try {
+        sendJson(res, 200, { ok: true, ...directory.revokeAppInstance(actor, String(body.keyId || '')) });
+      } catch (error) {
+        fail(res, error, { action: 'app-instance-revoke', target: 'directory' });
+      }
+      return true;
+    }
+
     sendJson(res, 404, { error: 'Not found' });
     return true;
   }

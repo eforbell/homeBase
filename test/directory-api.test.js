@@ -267,3 +267,30 @@ test('recovery requested on a passphrase root replaces mid-request is refused, a
   assert.equal(recovery.body.code, 'PASSPHRASE_CHANGED');
   assert.equal(app.directory.state(), 'active');
 });
+
+test('the administrator removes a member\'s app instance; nobody else can', async (t) => {
+  const household = require('./support/household');
+  const { app, base, parent } = await household.activeHousehold(t);
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const candidate = (await parent.get('/api/directory')).body.candidates.find((entry) => entry.login === 'kid@example.com');
+  assert.equal((await parent.post('/api/directory/members', { userId: candidate.userId, role: 'kid' })).status, 201);
+  const keyId = Buffer.alloc(32, 7).toString('base64');
+  app.directory.registerAppInstance({ userId: '1002', keyId, publicKey: 'spki', environment: 'production', label: 'Kid phone' });
+  const kidRow = async () => (await parent.get('/api/directory')).body.members.find((member) => member.login === 'kid@example.com');
+  assert.deepEqual((await kidRow()).appInstances.map((instance) => instance.keyId), [keyId]);
+
+  const kid = household.browser(base, household.KID);
+  const refused = await kid.post('/api/directory/app-instances/revoke', { keyId });
+  assert.equal(refused.status, 401);
+  assert.equal(refused.body.code, 'ADMIN_UNLOCK_REQUIRED');
+  assert.equal((await kidRow()).appInstances.length, 1);
+
+  const removed = await parent.post('/api/directory/app-instances/revoke', { keyId });
+  assert.equal(removed.status, 200, JSON.stringify(removed.body));
+  assert.deepEqual(removed.body, { ok: true, revoked: keyId });
+  assert.deepEqual((await kidRow()).appInstances, []);
+  assert.equal(app.directory.appInstance(keyId), null);
+  const again = await parent.post('/api/directory/app-instances/revoke', { keyId });
+  assert.equal(again.status, 404);
+  assert.equal(again.body.code, 'NOT_FOUND');
+});

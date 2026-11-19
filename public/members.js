@@ -1,7 +1,9 @@
 // Feature-10: the Members card on the Admin page. It lists the household directory, who has a passkey, and gives
 // the administrator a single-use enrollment code for a member who has none (POST /api/directory/members/<id>/grant).
 // It also adds a member from the tailnet accounts that opened Home Base in the last day (POST /api/directory/members),
-// and changes which apps a member may open (POST /api/directory/members/<id> with apps).
+// and changes which apps a member may open (POST /api/directory/members/<id> with apps). It lists each member's app
+// instances (the household's iPhone app on one of their phones) and removes one (POST
+// /api/directory/app-instances/revoke): a lost phone, say. The app registers again if it is still in use.
 // It shows only what GET /api/directory gives an unlocked administrator: never a key, and a code only once.
 (function homeBaseMembers() {
   const esc = (value) => window.HB.escapeHtml(value);
@@ -20,6 +22,28 @@
     return pending
       ? `<span class="hb-warn">No passkey yet</span> · a code is waiting until ${esc(time(member.grantExpiresAt))}`
       : '<span class="hb-warn">No passkey yet</span>';
+  }
+
+  const day = (iso) => new Date(iso).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+
+  // The member's app instances, each with a Remove button. None, nothing: most members won't have the app.
+  function appInstancesBlock(member) {
+    const instances = member.appInstances || [];
+    if (!instances.length) return '';
+    const row = (instance) => {
+      const name = instance.label || 'Unnamed phone';
+      const notes = [`registered ${day(instance.createdAt)}`, instance.lastUsedAt ? `last used ${day(instance.lastUsedAt)}` : 'not used yet', instance.environment === 'development' ? 'a development build' : ''].filter(Boolean);
+      return `
+          <li class="hb-members-instance" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:0.4rem;">
+            <span style="overflow-wrap:anywhere;">${esc(name)} <span class="hb-muted">(${esc(notes.join(', '))})</span></span>
+            <button class="hb-btn" type="button" data-app-instance-revoke="${esc(instance.keyId)}" data-app-instance-name="${esc(name)}">Remove</button>
+          </li>`;
+    };
+    return `
+        <div class="hb-members-instances">
+          <p class="hb-members-line">The Home Base app on ${instances.length} phone${instances.length === 1 ? '' : 's'}:</p>
+          <ul class="hb-members-instance-list" style="list-style:none;margin:0.3rem 0 0;padding:0;display:grid;gap:0.35rem;">${instances.map(row).join('')}</ul>
+        </div>`;
   }
 
   // A code is for an active member with no passkey, in active Home Base: before then, only the administrator enrolls.
@@ -95,6 +119,7 @@
         <div class="hb-members-tags">${tags.map((tag) => `<span class="hb-badge">${esc(tag)}</span>`).join('')}</div>
         <p class="hb-muted hb-members-line">Apps: ${esc(apps)}</p>
         <p class="hb-members-line">${passkeyLine(member)}</p>
+        ${appInstancesBlock(member)}
         ${appsEditor(directory, member, drafts && drafts.get(member.memberId))}
         ${issue}
         <div data-member-code>${shown ? codeBlock(shown.name, shown.grant) : ''}</div>
@@ -297,6 +322,23 @@
     } });
   }
 
+  // Removes an app instance; the card is then drawn again from the directory.
+  async function revokeAppInstance(node, button) {
+    const problem = button.closest('[data-member]').querySelector('[data-member-error]');
+    button.disabled = true;
+    problem.innerHTML = '<p class="hb-muted" style="margin:0.4rem 0 0;">Removing…</p>';
+    try {
+      await window.HB.postJson('/api/directory/app-instances/revoke', { keyId: button.dataset.appInstanceRevoke });
+    } catch (error) {
+      problem.innerHTML = warn(error.message);
+      button.disabled = false;
+      return;
+    }
+    await mount(node, { failed: (message) => {
+      problem.innerHTML = warn(`Removed ${button.dataset.appInstanceName}, but the list couldn't be read again: ${message} Reload the page to see it.`);
+    } });
+  }
+
   // The default chosen: the boxes show what the default gives and can't be changed. A list chosen: they can.
   function chooseMode(radio) {
     const editor = radio.closest('[data-member-apps]');
@@ -367,12 +409,14 @@
       const add = event.target.closest('[data-member-add]');
       const button = event.target.closest('[data-member-grant]');
       const save = event.target.closest('[data-member-apps-save]');
-      if ((!refresh && !add && !button && !save) || busy.has(node)) return;
+      const revoke = event.target.closest('[data-app-instance-revoke]');
+      if ((!refresh && !add && !button && !save && !revoke) || busy.has(node)) return;
       setBusy(node, true);
       try {
         if (refresh) await checkAgain(node, refresh);
         else if (add) await addMember(node, add);
         else if (save) await saveApps(node, save);
+        else if (revoke) await revokeAppInstance(node, revoke);
         else await issueCode(node, button);
       } finally {
         setBusy(node, false);

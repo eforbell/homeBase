@@ -592,3 +592,54 @@ test('a kept draft is drawn with every app it chose, installed now or not; one o
   assert.doesNotMatch(editorOf(drawn, 'm_02'), /family-dinner/, 'ticked there only as the default gave it then: not offered');
   assert.deepEqual(fresh.get('m_02').boxes.map((box) => [box.value, box.checked, box.disabled]), [['family-pulse', true, true], ['family-plan', true, true], ['family-dinner', true, true], ['helm', false, true]]);
 });
+
+// App instances: the household's iPhone app on a member's phones.
+const KEY_A = `${'A'.repeat(43)}=`;
+const instanceOf = (overrides) => ({ keyId: KEY_A, label: 'Parent\'s iPhone', environment: 'production', createdAt: '2026-11-19T12:00:00.000Z', lastUsedAt: null, ...overrides });
+function removeButton(keyId, name) {
+  const error = fakeSlot();
+  const row = { querySelector: (selector) => (selector === '[data-member-error]' ? error : null) };
+  const button = { dataset: { appInstanceRevoke: keyId, appInstanceName: name }, disabled: false, closest(selector) { if (selector === '[data-app-instance-revoke]') return this; if (selector === '[data-member]') return row; return null; } };
+  return { button, error };
+}
+
+test('each member\'s app instances are listed with a Remove button; none, nothing; names escaped', async () => {
+  const node = fakeNode();
+  await load({ state: 'active', members: [
+    member({ memberId: 'm_01', appInstances: [instanceOf(), instanceOf({ keyId: `${'B'.repeat(43)}=`, label: '<b>Kid</b>', environment: 'development', lastUsedAt: '2026-11-20T08:00:00.000Z' }), instanceOf({ keyId: `${'C'.repeat(43)}=`, label: '' })] }),
+    member({ memberId: 'm_02', login: 'second@example.com', appInstances: [] }),
+  ] }).members.mount(node);
+  assert.match(node.innerHTML, /The Home Base app on 3 phones:/);
+  assert.equal((node.innerHTML.match(/data-app-instance-revoke=/g) || []).length, 3);
+  assert.match(node.innerHTML, /Parent&#39;s iPhone <span class="hb-muted">\(registered .+?, not used yet\)/);
+  assert.match(node.innerHTML, /&lt;b&gt;Kid&lt;\/b&gt; <span class="hb-muted">\(registered [^)]*last used [^)]*a development build\)/);
+  assert.doesNotMatch(node.innerHTML, /<b>Kid/);
+  assert.match(node.innerHTML, /Unnamed phone/);
+  assert.equal((node.innerHTML.match(/The Home Base app on/g) || []).length, 1, 'a member with none gets no line');
+
+  const one = fakeNode();
+  await load({ state: 'active', members: [member({ appInstances: [instanceOf()] })] }).members.mount(one);
+  assert.match(one.innerHTML, /The Home Base app on 1 phone:/);
+});
+
+test('Remove posts the key, then shows the directory again; a refusal says why and leaves the button', async () => {
+  let reads = 0;
+  let refuse = false;
+  const { members, posted } = load(() => { reads += 1; return { state: 'active', members: [member({ appInstances: reads === 1 ? [instanceOf()] : [] })] }; }, { post: async () => { if (refuse) throw new Error('No such app instance.'); return { ok: true, revoked: KEY_A }; } });
+  const node = fakeNode();
+  members.wire(node);
+  await members.mount(node);
+  const first = removeButton(KEY_A, 'Parent\'s iPhone');
+  await node.click({ target: first.button });
+  assert.equal(JSON.stringify(posted), JSON.stringify([['/api/directory/app-instances/revoke', { keyId: KEY_A }]]));
+  assert.equal(reads, 2, 'read again after removing');
+  assert.doesNotMatch(node.innerHTML, /data-app-instance-revoke/);
+
+  refuse = true;
+  const drawn = node.innerHTML;
+  const second = removeButton(KEY_A, 'Parent\'s iPhone');
+  await node.click({ target: second.button });
+  assert.match(second.error.innerHTML, /hb-warn.*No such app instance/);
+  assert.equal(second.button.disabled, false);
+  assert.equal(node.innerHTML, drawn, 'a refused removal doesn\'t redraw the card');
+});
