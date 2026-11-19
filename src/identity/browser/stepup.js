@@ -131,8 +131,14 @@
       try {
         await app.handoff(id);
       } catch (error) {
-        // Cancelled, or not possible: the record is redeemed anyway, so its cookie goes now.
-        post('handoff/redeem', { id }).catch(() => {});
+        // Cancelled, or not possible: the record is redeemed anyway, so its cookie goes now, and before the
+        // next handoff starts, so a late answer can't land on top of it. If the sheet had in fact finished
+        // (the app only lost the callback), that redemption is the result.
+        const late = await post('handoff/redeem', { id }).catch(() => null);
+        if (late) {
+          redeemed = true;
+          return everyTime ? late.token : null;
+        }
         const reason = error && (error.message || error.code || error);
         if (reason === 'unavailable') {
           await notice('This check can\'t be done in the app on this phone. Open this page in Safari to continue.');

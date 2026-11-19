@@ -48,7 +48,7 @@ function load({ bridge = undefined, answer = (labels) => labels.find((label) => 
     const body = init.body ? JSON.parse(init.body) : undefined;
     const headers = new Headers(init.headers || {});
     sent.push({ url, method: init.method || 'GET', body, token: headers.get('x-sovereign-action-token') });
-    const [status, answerBody] = respond(url, body, headers, sent);
+    const [status, answerBody] = await respond(url, body, headers, sent);
     return response(status, answerBody);
   };
   const window = { matchMedia: () => ({ matches: false }), location: { reload() {} } };
@@ -61,22 +61,37 @@ function load({ bridge = undefined, answer = (labels) => labels.find((label) => 
   return { helper: window.SovereignStepUp, passkeys: window.HBPasskeys, sent, modals };
 }
 
-// A bridge that records each handoff and settles it as told (default: the sheet confirmed).
+// A bridge that records each handoff and settles it as told (default: the sheet confirmed). confirmed: the
+// ids whose sheet finished, which is what lets Home Base's redeem succeed.
 function fakeBridge(outcome = () => Promise.resolve()) {
   const ids = [];
-  return { ids, version: 1, handoff(id) { ids.push(id); return outcome(id, ids.length); } };
+  const confirmed = new Set();
+  return {
+    ids,
+    confirmed,
+    version: 1,
+    handoff(id) {
+      ids.push(id);
+      return outcome(id, ids.length, confirmed).then((value) => { confirmed.add(id); return value; });
+    },
+  };
 }
 
 const STEP_UP = { error: 'step_up_required', policy: 'open-documents', level: 'session', kind: 'any' };
 const EVERY_TIME = { error: 'step_up_required', policy: 'privileged-plan', level: 'every-time', kind: 'hardware', target: 'plan x', digest: 'd'.repeat(43) };
 
-// A server: /api/thing answers 401 (stepUp) until the retry carries what the handoff gave.
-function server(stepUp = STEP_UP, { ids = [ID] } = {}) {
+// A server: /api/thing answers 401 (stepUp) until the retry carries what the handoff gave. A handoff redeems
+// only once its sheet finished (bridge.confirmed), as Home Base's does.
+function server(bridge, stepUp = STEP_UP, { ids = [ID] } = {}) {
   let begun = 0;
   const redeemed = new Set();
   return (url, body, headers) => {
     if (url === '/_sovereign/auth/handoff/begin') return [200, { id: ids[begun++] || ids.at(-1) }];
-    if (url === '/_sovereign/auth/handoff/redeem') { redeemed.add(body.id); return [200, stepUp.level === 'every-time' ? { ok: true, token: `token-${body.id.slice(0, 4)}` } : { ok: true }]; }
+    if (url === '/_sovereign/auth/handoff/redeem') {
+      if (!bridge.confirmed.has(body.id)) return [403, { error: 'handoff_refused', reason: 'not_done' }];
+      redeemed.add(body.id);
+      return [200, stepUp.level === 'every-time' ? { ok: true, token: `token-${body.id.slice(0, 4)}` } : { ok: true }];
+    }
     if (url.startsWith('/api/')) {
       const passes = stepUp.level === 'every-time' ? Boolean(headers.get('x-sovereign-action-token')) : redeemed.size > 0;
       return passes ? [200, { ok: true }] : [401, stepUp];
@@ -100,7 +115,7 @@ test('a bridge of another version is not this one: the page runs the ceremony as
 
 test('a check in the app: the tap, begin, the app\'s sheet, redeem, then the identical retry', async () => {
   const bridge = fakeBridge();
-  const { helper, sent, modals } = load({ bridge, respond: server() });
+  const { helper, sent, modals } = load({ bridge, respond: server(bridge) });
   assert.equal(helper.inApp(), true);
   const answer = await helper.fetch('/api/thing', { method: 'POST', body: '{"a":1}' });
   assert.equal(answer.status, 200);
@@ -117,7 +132,7 @@ test('a check in the app: the tap, begin, the app\'s sheet, redeem, then the ide
 
 test('an every-time action in the app: the handoff\'s token goes with the retry', async () => {
   const bridge = fakeBridge();
-  const { helper, sent, modals } = load({ bridge, respond: server(EVERY_TIME) });
+  const { helper, sent, modals } = load({ bridge, respond: server(bridge, EVERY_TIME) });
   const answer = await helper.fetch('/api/thing', { method: 'POST', body: '{}' });
   assert.equal(answer.status, 200);
   assert.deepEqual(modals[0].buttons, ['Cancel', 'Use hardware key']);
@@ -127,7 +142,7 @@ test('an every-time action in the app: the handoff\'s token goes with the retry'
 
 test('cancelled at the tap: no handoff begins and the 401 is the answer', async () => {
   const bridge = fakeBridge();
-  const { helper, sent } = load({ bridge, answer: () => 'Cancel', respond: server() });
+  const { helper, sent } = load({ bridge, answer: () => 'Cancel', respond: server(bridge) });
   const answer = await helper.fetch('/api/thing', { method: 'POST', body: '{}' });
   assert.equal(answer.status, 401);
   assert.deepEqual(sent.map((request) => request.url), ['/api/thing']);
@@ -136,7 +151,7 @@ test('cancelled at the tap: no handoff begins and the 401 is the answer', async 
 
 test('cancelled in the sheet: the handoff is redeemed only to clear it, and nothing is retried', async () => {
   const bridge = fakeBridge(() => Promise.reject(new Error('cancelled')));
-  const { helper, sent } = load({ bridge, respond: (url, body, headers) => (url === '/_sovereign/auth/handoff/redeem' ? [403, { error: 'handoff_refused', reason: 'not_done' }] : server()(url, body, headers)) });
+  const { helper, sent } = load({ bridge, respond: server(bridge) });
   const answer = await helper.fetch('/api/thing', { method: 'POST', body: '{}' });
   assert.equal(answer.status, 401);
   await tick();
@@ -145,7 +160,7 @@ test('cancelled in the sheet: the handoff is redeemed only to clear it, and noth
 
 test('not possible in the app on this phone: the helper says so rather than trying in the page', async () => {
   const bridge = fakeBridge(() => Promise.reject(new Error('unavailable')));
-  const { helper, sent, modals } = load({ bridge, respond: server() });
+  const { helper, sent, modals } = load({ bridge, respond: server(bridge) });
   const answer = await helper.fetch('/api/thing', { method: 'POST', body: '{}' });
   assert.equal(answer.status, 401);
   assert.equal(modals.length, 2);
@@ -156,14 +171,14 @@ test('not possible in the app on this phone: the helper says so rather than tryi
 
 test('any other failure from the app is an error, not a silent 401', async () => {
   const bridge = fakeBridge(() => Promise.reject(new Error('attest failed: unknown_key')));
-  const { helper } = load({ bridge, respond: server() });
+  const { helper } = load({ bridge, respond: server(bridge) });
   await assert.rejects(helper.fetch('/api/thing', { method: 'POST', body: '{}' }), /attest failed: unknown_key/);
 });
 
 test('one handoff at a time: two checks share one, and each request is retried', async () => {
   let release;
   const bridge = fakeBridge(() => new Promise((resolve) => { release = resolve; }));
-  const { helper, sent } = load({ bridge, respond: server() });
+  const { helper, sent } = load({ bridge, respond: server(bridge) });
   const first = helper.fetch('/api/thing', { method: 'POST', body: '{"n":1}' });
   const second = helper.fetch('/api/thing', { method: 'POST', body: '{"n":2}' });
   while (!release) await tick();
@@ -178,7 +193,7 @@ test('one handoff at a time: a hardware check or an action after a check gets it
   const releases = [];
   const bridge = fakeBridge(() => new Promise((resolve) => { releases.push(resolve); }));
   const ids = [ID, 'J'.repeat(42) + 'E'];
-  const { helper } = load({ bridge, respond: server(STEP_UP, { ids }) });
+  const { helper } = load({ bridge, respond: server(bridge, STEP_UP, { ids }) });
   const check = helper.satisfy(STEP_UP);
   const hardware = helper.satisfy({ ...STEP_UP, kind: 'hardware' });
   while (releases.length < 1) await tick();
@@ -193,7 +208,7 @@ test('one handoff at a time: a hardware check or an action after a check gets it
 test('Admin in the app: unlocking goes through the app without a second tap; registering and activating say to use Safari', async () => {
   const bridge = fakeBridge();
   const status = { state: 'active', instance: 'smith', member: { login: 'parent@example.com', name: 'Parent', role: 'parent', administrator: true }, credentials: [], check: null, administratorRuleMet: true, canActivate: false, enrollmentMetadataValid: true };
-  const { passkeys, sent, modals } = load({ bridge, withPasskeys: true, respond: (url, body, headers, all) => (url === '/_sovereign/auth/status' ? [200, status] : server()(url, body, headers, all)) });
+  const { passkeys, sent, modals } = load({ bridge, withPasskeys: true, respond: (url, body, headers, all) => (url === '/_sovereign/auth/status' ? [200, status] : server(bridge)(url, body, headers, all)) });
   assert.equal(JSON.stringify(await passkeys.check({ purpose: 'step-up' })), '{"ok":true}');
   assert.equal(modals.length, 0, 'the form\'s own button was the tap');
   assert.deepEqual(sent.map((request) => [request.url, request.body]), [
@@ -203,4 +218,33 @@ test('Admin in the app: unlocking goes through the app without a second tap; reg
   await assert.rejects(passkeys.check({ purpose: 'activate' }), /Open Home Base in Safari/);
   await assert.rejects(passkeys.enroll({ label: 'x' }), /Open Home Base in Safari/);
   assert.equal(sent.length, 2, 'neither reached Home Base');
+});
+
+test('a cancel from the app after the sheet had finished: its result is used, and the next handoff waits for it', async () => {
+  // The first sheet finished, but the app lost the callback and reports a cancel.
+  const bridge = fakeBridge((id, n, confirmed) => {
+    if (n !== 1) return Promise.resolve();
+    confirmed.add(id);
+    return Promise.reject(new Error('cancelled'));
+  });
+  const ids = [ID, 'J'.repeat(42) + 'E'];
+  const base = server(bridge, STEP_UP, { ids });
+  const order = [];
+  let releaseFirstRedeem;
+  const { helper } = load({ bridge, respond: (url, body, headers) => {
+    const step = url.replace('/_sovereign/auth/', '');
+    order.push(step);
+    // The cleanup redemption answers late: nothing may begin before it does.
+    if (step === 'handoff/redeem' && body.id === ID) return new Promise((resolve) => { releaseFirstRedeem = () => resolve(base(url, body, headers)); });
+    return base(url, body, headers);
+  } });
+  const first = helper.satisfy({ ...STEP_UP, kind: 'hardware' });
+  const second = helper.satisfy({ ...STEP_UP, kind: 'hardware' });
+  while (!releaseFirstRedeem) await tick();
+  await tick();
+  assert.deepEqual(order, ['handoff/begin', 'handoff/redeem'], 'held at the first redemption');
+  releaseFirstRedeem();
+  assert.deepEqual(await Promise.all([first, second]), [null, null]);
+  assert.deepEqual(bridge.ids, [ID], 'the first counted, so the second (hardware too) needed no sheet of its own');
+  assert.deepEqual(order, ['handoff/begin', 'handoff/redeem']);
 });
