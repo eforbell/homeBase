@@ -78,9 +78,11 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
   // privileged plan ("METHOD /path settings … installs …"), described as the plan's route describes it.
   function actionWords(record) {
     const target = record.action.target;
-    if (target.startsWith('enroll:')) return 'add an administrator passkey';
-    if (target.startsWith('revoke:')) return 'remove an administrator passkey';
-    if (target === 'signing-key:rotate') return 'rotate the signing key';
+    // Each phrase only under the policy its route uses, so the sheet never says more than the token binds.
+    if (record.policy === 'manage-admin-credential' && target.startsWith('enroll:')) return 'add an administrator passkey';
+    if (record.policy === 'manage-admin-credential' && target.startsWith('revoke:')) return 'remove an administrator passkey';
+    if (record.policy === 'privileged-plan' && target === 'signing-key:rotate') return 'rotate the signing key';
+    if (record.policy !== 'privileged-plan') return null;
     const plan = target.match(/^[A-Z]+ (\/\S*) settings /);
     const words = plan && shared.describePlan ? shared.describePlan(plan[1]) : null;
     return words && words !== 'run this plan' ? words : null;

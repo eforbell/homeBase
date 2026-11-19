@@ -329,4 +329,17 @@ test('an action\'s summary says what it does in words, never the raw target', as
   assert.equal(await summaryFor('POST /api/homebase/update-self settings a installs b plan c'), 'Confirm with your hardware key to update Home Base.');
   assert.equal(await summaryFor('POST /api/nothing-known settings a installs b'), 'Confirm this change to Home Base with your hardware key.');
   assert.equal(await summaryFor('<script>alert(1)</script>'), 'Confirm this change to Home Base with your hardware key.');
+  // A page chose the target: an app that isn't in the catalog, or a service name, is never echoed.
+  assert.equal(await summaryFor('POST /api/apps/your-bank-is-safe/restart/execute settings a installs b'), 'Confirm this change to Home Base with your hardware key.');
+  assert.equal(await summaryFor('POST /api/ingress/apps/your-bank-is-safe/tailnet-mode settings a installs b'), 'Confirm this change to Home Base with your hardware key.');
+  assert.equal(await summaryFor('POST /api/ingress/services/anything-at-all/publish settings a installs b'), 'Confirm this change to Home Base with your hardware key.');
+  // Passkey changes by name, only under their own policy.
+  assert.equal(await summaryFor('enroll:m_01'), 'Confirm this change to Home Base with your hardware key.', 'enroll: under privileged-plan says nothing it doesn\'t bind');
+  const passkeyChange = async (target) => {
+    const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'action', action: { policy: 'manage-admin-credential', target, digest: 'd'.repeat(43) } })).body;
+    await attest(id);
+    return (await sheet().post('/_sovereign/auth/handoff/options', { id })).body.summary;
+  };
+  assert.equal(await passkeyChange('enroll:m_01'), 'Confirm with your hardware key to add an administrator passkey.');
+  assert.equal(await passkeyChange('revoke:abc'), 'Confirm with your hardware key to remove an administrator passkey.');
 });
