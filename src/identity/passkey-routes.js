@@ -102,9 +102,10 @@ function actionRequest(action, standing) {
 
 // passphraseSession(req): admin-auth's passphraseSession, bound to this Home Base.
 // signingKey: the keyring (signing-key.js createKeyring), for rotation and the administrator's status.
+// describePlan(path): a privileged plan's route in words ("restart Bug Base"), for the handoff's sheet.
 // nativeApp: { appId, scheme, development } (config.js), or null for no app instances. appAttestRoots: the
 // App Attest roots (tests only; otherwise sovereignAuth's pinned Apple roots).
-function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf, nativeApp = null, appAttestRoots = null, now = () => Date.now() }) {
+function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf, nativeApp = null, appAttestRoots = null, describePlan = null, now = () => Date.now() }) {
   const audit = (action, target, outcome, reason) => recordAdminAudit(stateStore, { action, target, outcome, reason });
 
   // App-instance challenges, in memory: a restart forgets them, and they last 5 minutes anyway. Taken once.
@@ -205,7 +206,7 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
   // The native handoff decides as check/options and check/finish do, with these.
   const handoffRoutes = nativeApp ? createHandoffRoutes({
     directory, passkeys, nativeApp, sendJson, audit, now,
-    shared: { actionRequest, ceremonyError, usedPasskey, expectOf, moved, windowSeconds, homeBaseApp: HOME_BASE_APP, refusal },
+    shared: { actionRequest, ceremonyError, usedPasskey, expectOf, moved, windowSeconds, homeBaseApp: HOME_BASE_APP, refusal, describePlan },
   }) : null;
 
   // What this caller may enroll with now: { ok, via, passphraseHash, consume } or { ok: false, statusCode,
