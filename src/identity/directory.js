@@ -28,6 +28,12 @@ const ATTEMPTS = 5;
 const ROLES = new Set(['parent', 'kid']);
 const STATUSES = new Set(['active', 'disabled']);
 const KINDS = new Set(['synced', 'device-bound', 'hardware']);
+const ENVIRONMENTS = new Set(['production', 'development']);
+const APP_LABEL_MAX = 60;
+// An App Attest key ID: SHA-256 of the key, in standard base64 (the way the app sends it).
+const KEY_ID = /^[A-Za-z0-9+/]{43}=$/;
+const validKeyId = (value) => typeof value === 'string' && KEY_ID.test(value) && Buffer.from(value, 'base64').toString('base64') === value;
+const appLabel = (label) => String(label ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, APP_LABEL_MAX);
 
 class DirectoryError extends Error {
   constructor(statusCode, code, message) {
@@ -112,6 +118,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
       members: data.members.map(fromRow),
       credentials: data.credentials.map((row) => ({ ...row, orphaned: Boolean(row.orphaned) })),
       grants: data.grants,
+      appInstances: data.appInstances || [],
     };
   }
 
@@ -454,6 +461,61 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
   const kindWithoutRoot = (row) => credentialKind({ deviceType: row.device_type, backedUp: row.backed_up !== 0, root: null });
 
+  // App instances (native handoff, part 1): one installation of the household's app on one phone, registered
+  // to one member with the App Attest key it proved. An instance grants nothing on its own: it only lets that
+  // installation take part in a handoff, which still needs the member's passkey. So registering needs only
+  // the member's tailnet identity, in active Home Base, and the attestation the route verified.
+  function registerAppInstance({ userId, keyId, publicKey, counter = 0, receipt = null, environment, label = '' }) {
+    if (!validKeyId(keyId)) refuse(400, 'INVALID', 'An app instance\'s key ID is 32 bytes in base64.');
+    if (typeof publicKey !== 'string' || !publicKey) refuse(400, 'INVALID', 'An app instance needs its public key.');
+    if (!Number.isSafeInteger(counter) || counter < 0) refuse(400, 'INVALID', 'An app instance\'s counter is a whole number.');
+    if (!ENVIRONMENTS.has(environment)) refuse(400, 'INVALID', 'An app instance is production or development.');
+    return change((data) => {
+      requireState(data, ['active'], 'Registering the app');
+      const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active') || refuse(404, 'NOT_FOUND', 'No such member.');
+      if (data.appInstances.some((row) => row.key_id === keyId)) refuse(409, 'APP_INSTANCE_EXISTS', 'That app key is already registered.');
+      const row = { key_id: keyId, member_id: member.member_id, public_key: publicKey, counter, receipt, environment, label: appLabel(label), created_at: iso(), last_used_at: null };
+      return {
+        change: { appInstances: [row], audit: [{ action: 'app-instance-register', target: member.member_id, outcome: `${row.label ? `"${row.label}" ` : ''}(${keyId.slice(0, 12)}…) ${environment}` }] },
+        value: { keyId, memberId: member.member_id, label: row.label, environment, createdAt: row.created_at },
+      };
+    });
+  }
+
+  // The key an assertion is checked against: { keyId, userId, memberId, publicKey, counter, label }, or null
+  // when no active member holds it.
+  function appInstance(keyId) {
+    if (!validKeyId(keyId)) return null;
+    const data = load();
+    const row = data.appInstances.find((entry) => entry.key_id === keyId);
+    const member = row && data.members.find((entry) => entry.member_id === row.member_id && entry.status === 'active');
+    return member ? { keyId, userId: member.user_id, memberId: member.member_id, publicKey: row.public_key, counter: row.counter, label: row.label } : null;
+  }
+
+  // A verified assertion's new counter, stored only if the counter is still the one its check read (from):
+  // the compare-and-swap that makes a racing assertion by the same key lose. True if it was stored.
+  function advanceAppInstance(keyId, from, to) {
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || to <= from) return false;
+    return change((data) => {
+      const row = data.appInstances.find((entry) => entry.key_id === keyId);
+      if (!row || row.counter !== from) return { change: {}, value: false };
+      return { change: { appInstances: [{ ...row, counter: to, last_used_at: iso() }] }, value: true };
+    });
+  }
+
+  // The administrator removes an app instance (a lost phone, say). The app registers again if it is still
+  // in use; nothing it did before carries over.
+  function revokeAppInstance(actor, keyId) {
+    return change((data) => {
+      requireAdministrator(data, actor.userId);
+      const row = data.appInstances.find((entry) => entry.key_id === keyId) || refuse(404, 'NOT_FOUND', 'No such app instance.');
+      return {
+        change: { deleteAppInstances: [keyId], audit: [{ action: 'app-instance-revoke', target: row.member_id, outcome: `${row.label ? `"${row.label}" ` : ''}(${keyId.slice(0, 12)}…)` }] },
+        value: { revoked: keyId },
+      };
+    });
+  }
+
   // What a check is decided on, read fresh: the member (with the administrator flag), the household's state
   // and global epoch. Null for anyone who isn't a member.
   function standing(userId) {
@@ -515,7 +577,9 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
       // Disabling a member or changing their access ends their assurance cookies (wire contract, section 7).
       const accessChanged = next.status !== member.status || JSON.stringify(appsFor(next)) !== JSON.stringify(appsFor(member));
       if (accessChanged) next.epoch = member.epoch + 1;
-      return { change: { members: [toRow(next)], audit: [{ action: 'member-update', target: memberId, outcome: Object.keys(patch).sort().join(',') }] }, value: next };
+      // A disabled member's app instances go with their access: re-enabled, the app registers again.
+      const dropped = next.status === 'disabled' ? data.appInstances.filter((row) => row.member_id === memberId).map((row) => row.key_id) : [];
+      return { change: { members: [toRow(next)], ...(dropped.length ? { deleteAppInstances: dropped } : {}), audit: [{ action: 'member-update', target: memberId, outcome: `${Object.keys(patch).sort().join(',')}${dropped.length ? `; ${dropped.length} app instance(s) removed` : ''}` }] }, value: next };
     });
   }
 
@@ -656,6 +720,9 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
           credentialId: credential.credential_id, kind: credential.kind, handleFormat: credential.handle_format, handleMetadataValid: credentialHandleMetadataValid(credential), label: credential.label, orphaned: credential.orphaned, createdAt: credential.created_at, lastUsedAt: credential.last_used_at || null, revokedAt: credential.revoked_at,
         })),
         grantExpiresAt: data.grants.find((grant) => grant.member_id === member.member_id)?.expires_at || null,
+        appInstances: data.appInstances.filter((row) => row.member_id === member.member_id).map((row) => ({
+          keyId: row.key_id, label: row.label, environment: row.environment, createdAt: row.created_at, lastUsedAt: row.last_used_at || null,
+        })),
       })),
       candidates: recentCandidates(data),
       // What a member's app list is chosen from. administratorDefault: only an administrator gets it by default.
@@ -673,8 +740,8 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
 
   return {
-    activate, addCredential, addMember, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, enrollmentHandleFor, init, isAdministrator, issueGrant,
-    lookup, candidateObserved, memberStatus, publish, recordAssertion, reset, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
+    activate, addCredential, addMember, advanceAppInstance, appInstance, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, enrollmentHandleFor, init, isAdministrator, issueGrant,
+    lookup, candidateObserved, memberStatus, publish, recordAssertion, registerAppInstance, reset, revokeAppInstance, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }
 

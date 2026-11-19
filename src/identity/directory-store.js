@@ -69,6 +69,21 @@ CREATE TABLE IF NOT EXISTS identity_enrollment_grants (
   expires_at TEXT NOT NULL
 );
 
+-- App instances (native handoff, part 1): one installation of the household's app on one phone, with the
+-- App Attest key it registered. They grant nothing on their own. (No semicolons in these comments: the
+-- schema is run one statement at a time, split on them.)
+CREATE TABLE IF NOT EXISTS identity_app_instances (
+  key_id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL REFERENCES identity_members(member_id),
+  public_key TEXT NOT NULL,
+  counter INTEGER NOT NULL DEFAULT 0,
+  receipt TEXT,
+  environment TEXT NOT NULL CHECK (environment IN ('production', 'development')),
+  label TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  last_used_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS identity_action_tokens (
   jti TEXT PRIMARY KEY,
   app TEXT NOT NULL,
@@ -87,6 +102,7 @@ CREDENTIAL_KEY_COLUMNS = [
 ]
 CREDENTIAL_FIELDS = ["credential_id", "member_id", "kind", "label", "orphaned", "created_at", "revoked_at"] + [name for name, _ in CREDENTIAL_KEY_COLUMNS]
 GRANT_FIELDS = ["member_id", "code_hash", "issued_by", "created_at", "expires_at"]
+APP_INSTANCE_FIELDS = ["key_id", "member_id", "public_key", "counter", "receipt", "environment", "label", "created_at", "last_used_at"]
 
 def rows(sql, args=()):
     return [dict(row) for row in conn.execute(sql, args)]
@@ -216,6 +232,9 @@ elif op == "load":
         "members": rows("SELECT * FROM identity_members ORDER BY created_at, member_id"),
         "credentials": rows("SELECT * FROM identity_credentials ORDER BY created_at, credential_id"),
         "grants": rows("SELECT * FROM identity_enrollment_grants ORDER BY member_id"),
+        # A database from before app instances, read before init adds them, has none.
+        "appInstances": rows("SELECT * FROM identity_app_instances ORDER BY created_at, key_id")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'identity_app_instances'").fetchone() else [],
     })
 
 elif op == "commit":
@@ -249,6 +268,10 @@ elif op == "commit":
             conn.execute("DELETE FROM identity_enrollment_grants WHERE member_id = ?", (member_id,))
         for record in payload.get("grants", []):
             upsert("identity_enrollment_grants", "member_id", GRANT_FIELDS, record)
+        for record in payload.get("appInstances", []):
+            upsert("identity_app_instances", "key_id", APP_INSTANCE_FIELDS, record)
+        for key_id in payload.get("deleteAppInstances", []):
+            conn.execute("DELETE FROM identity_app_instances WHERE key_id = ?", (key_id,))
         if "passphraseHash" in payload:
             conn.execute(
                 "INSERT INTO homebase_admin_credentials (id, passphrase_hash, created_at, updated_at) VALUES (1, ?, ?, ?) "
