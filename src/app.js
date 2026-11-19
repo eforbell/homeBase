@@ -1142,20 +1142,7 @@ function createApp(config) {
         if (/^\/apps\/[^/]+$/.test(normalizedPath)) return servePublicPage(res, 'app.html');
         if (/^\/jobs\/\d+$/.test(normalizedPath)) return servePublicPage(res, 'job.html');
       }
-      if (method === 'GET' && pathname === '/sovereign-fonts.css') {
-        res.writeHead(200, {
-          'content-type': 'text/css; charset=utf-8',
-          'cache-control': 'public, max-age=300',
-        });
-        res.end(buildSovereignFontsCss());
-        return;
-      }
-      if (method === 'GET') {
-        const sovereignFontAssetPath = resolveSovereignFontAssetPath(pathname);
-        if (sovereignFontAssetPath) {
-          return serveStaticFile(res, sovereignFontAssetPath);
-        }
-      }
+      // Static files and the fonts were answered before state was read (staticAnswer).
 
       if (method === 'GET' && pathname === '/api/home') {
         return sendJson(res, 200, await describeHome(req, effectiveConfig));
@@ -2450,13 +2437,6 @@ function createApp(config) {
           appId: restoreExecuteMatch[1],
           dryRun: body.dryRun !== false,
         });
-      }
-
-      if (method === 'GET') {
-        const assetPath = resolvePublicAsset(pathname);
-        if (assetPath) {
-          return serveStaticFile(res, assetPath);
-        }
       }
 
       return notFound(res);

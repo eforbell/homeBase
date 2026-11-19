@@ -96,6 +96,11 @@ test('the port stays Home Base until nginx runs a gateway that reaches it on its
   assert.equal(page.status, 308);
   assert.equal(page.headers.get('location'), `${HOMEBASE_ORIGIN}/apps?tab=updates`);
   assert.equal((await loopback(base, 'HEAD', '/admin')).headers.get('location'), `${HOMEBASE_ORIGIN}/admin`);
+  // Static files too: they are served before state is read, but only where this port is still Home Base.
+  const style = await loopback(base, 'GET', '/style.css');
+  assert.equal(style.status, 308);
+  assert.equal(style.headers.get('location'), `${HOMEBASE_ORIGIN}/style.css`);
+  assert.equal((await loopback(base, 'GET', '/sovereign-fonts.css')).status, 308);
   // A forged caller gets no identity and no data: whoami and the API redirect like any page.
   const forged = await loopback(base, 'GET', '/api/identity/whoami');
   assert.equal(forged.status, 308);
