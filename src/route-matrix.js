@@ -62,6 +62,9 @@ const ROUTES = [
   ['POST', '/_sovereign/auth/check/finish', 'self', 'use-app', 'route'],
   ['POST', '/_sovereign/auth/credentials/revoke', 'self', 'manage-own-credential', 'route'],
   ['POST', '/_sovereign/auth/sign-out', 'self', 'use-app', 'route'],
+  // The household's native app registering this installation (an app instance, which grants nothing alone).
+  ['POST', '/_sovereign/auth/app/challenge', 'self', 'use-app', 'route'],
+  ['POST', '/_sovereign/auth/app/register', 'self', 'use-app', 'route'],
   // The administrator's, in the passkey service: it requires the administrator and an every-time token itself.
   ['POST', '/_sovereign/auth/signing-key/rotate', 'administrator', 'privileged-plan', 'route'],
 

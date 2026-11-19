@@ -599,7 +599,10 @@ function createApp(config) {
   const passkeyRoutes = directory ? createPasskeyRoutes({
     directory, passkeys, signingKey, binding: directoryBinding, stateStore, sendJson, parseBody, recordAdminAudit,
     passphraseSession: (req) => passphraseSession(req, stateStore, adminOptions),
+    // appAttestRoots is for tests only (loadConfig never sets it): in use, sovereignAuth's pinned Apple roots.
+    nativeApp: config.nativeApp || null, appAttestRoots: config.appAttestRoots || null,
   }) : null;
+  if (config.nativeAppError) warn(`native app: ${config.nativeAppError}; app instances and the handoff stay off`);
   // Passkeys run on per-service hostnames only, so only once the host is cut over: the hostname the request
   // came in on (Serve's X-Forwarded-Host, which nginx checks), and RP ID the tailnet domain. homeBase: it is
   // Home Base's own hostname, where everything runs; a sensitive app's hostname gets checks only (D21).

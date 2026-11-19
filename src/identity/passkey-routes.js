@@ -16,6 +16,11 @@
 //   action    active: a fresh ceremony for one every-time action (wire contract, section 9), which answers
 //             with an action token bound to the app, the policy key, the target and the request digest.
 //
+// With the household's native app configured (nativeApp), Home Base's hostname also registers app instances
+// (sovereignAuth docs/native-handoff.md, part 1): app/challenge issues a challenge bound to the member and this
+// hostname for 5 minutes, and app/register verifies the App Attest attestation over it and stores the key. An
+// app instance grants nothing on its own, so the member's tailnet identity is all registering needs.
+//
 // Rotating the signing key (signing-key/rotate) is the administrator's, in active Home Base, with an
 // every-time hardware token (privileged-plan: rotating secrets).
 //
@@ -23,9 +28,10 @@
 // stepup.js (served here) turns into a prompt and one retry of the identical request.
 //
 // Every POST passes the mutation guard first (src/request-guard.js, before routing).
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { POLICY, requestDigest, policyFor } = require('sovereign-auth');
+const { POLICY, appInstanceClientData, appInstanceReason, requestDigest, policyFor, verifyAttestation } = require('sovereign-auth');
 const { DirectoryError } = require('./directory');
 
 const PREFIX = '/_sovereign/auth/';
@@ -57,6 +63,14 @@ const APP_ROUTES = new Set(['GET stepup.js', 'POST check/options', 'POST check/f
 const HOME_BASE_APP = 'homebase';
 const STEPUP_SCRIPT = fs.readFileSync(path.join(__dirname, 'browser', 'stepup.js'));
 const TARGET_MAX = 512;
+// What exists only with the household's native app configured.
+const NATIVE_ROUTES = new Set(['POST app/challenge', 'POST app/register']);
+const APP_CHALLENGE_MS = 5 * 60_000;
+const APP_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
+// Live challenges a member may hold at once: their own oldest goes first, so nobody can push out another's.
+const APP_CHALLENGES_PER_MEMBER = 8;
+// A real attestation is about 6 KB, about 8 KB in base64.
+const APP_ATTESTATION_MAX = 32 * 1024;
 // Why a confirmation could not be used (directory.consumeAction's answers).
 const USED = {
   replayed: ['REPLAYED', 'That confirmation was already used; confirm again.'],
@@ -83,8 +97,69 @@ function actionRequest(action, standing) {
 
 // passphraseSession(req): admin-auth's passphraseSession, bound to this Home Base.
 // signingKey: the keyring (signing-key.js createKeyring), for rotation and the administrator's status.
-function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf }) {
+// nativeApp: { appId, scheme, development } (config.js), or null for no app instances. appAttestRoots: the
+// App Attest roots (tests only; otherwise sovereignAuth's pinned Apple roots).
+function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateStore, sendJson, parseBody, recordAdminAudit, passphraseSession: sessionOf, nativeApp = null, appAttestRoots = null, now = () => Date.now() }) {
   const audit = (action, target, outcome, reason) => recordAdminAudit(stateStore, { action, target, outcome, reason });
+
+  // App-instance challenges, in memory: a restart forgets them, and they last 5 minutes anyway. Taken once.
+  // Expired ones are dropped; past APP_CHALLENGES_PER_MEMBER live ones, the member's own oldest. Members are
+  // the household's, so that bounds the whole store.
+  const appChallenges = new Map();
+  function issueAppChallenge(record) {
+    for (const [challenge, entry] of appChallenges) {
+      if (now() - entry.issued > APP_CHALLENGE_MS) appChallenges.delete(challenge);
+    }
+    const own = [...appChallenges.values()].filter((entry) => entry.userId === record.userId);
+    for (const entry of own.slice(0, Math.max(0, own.length - APP_CHALLENGES_PER_MEMBER + 1))) appChallenges.delete(entry.challenge);
+    appChallenges.set(record.challenge, record);
+  }
+  function takeAppChallenge(challenge) {
+    const record = appChallenges.get(challenge) || null;
+    appChallenges.delete(challenge);
+    return record;
+  }
+
+  // Registers an app instance: the challenge is taken first, so it gets one attempt, then checked against
+  // this member and hostname, then the attestation is verified over it (sovereignAuth's verifyAttestation).
+  function registerApp(res, here, standing, body) {
+    const target = standing.member.memberId;
+    const refused = (reason) => {
+      audit('app-instance-register', target, 'refused', reason);
+      sendJson(res, reason === 'malformed' ? 400 : 403, { error: 'app_instance_refused', reason });
+      return true;
+    };
+    const { challenge, keyId, attestation, label } = body || {};
+    if (typeof challenge !== 'string' || !APP_CHALLENGE.test(challenge)) return refused('malformed');
+    const record = takeAppChallenge(challenge);
+    if (!record) return refused('unknown_challenge');
+    const age = now() - record.issued;
+    if (!(age >= 0 && age <= APP_CHALLENGE_MS)) return refused('expired');
+    if (record.userId !== standing.member.userId) return refused('wrong_member');
+    if (record.hostname !== here.hostname) return refused('wrong_hostname');
+    if (typeof keyId !== 'string' || typeof attestation !== 'string' || attestation.length > APP_ATTESTATION_MAX || (label !== undefined && typeof label !== 'string')) return refused('malformed');
+    let verified;
+    try {
+      verified = verifyAttestation({
+        attestation,
+        keyId,
+        clientData: appInstanceClientData({ household: standing.household, userId: standing.member.userId, challenge }),
+        appId: nativeApp.appId,
+        issuedAt: new Date(record.issued),
+        environments: nativeApp.development ? ['production', 'development'] : ['production'],
+        now: new Date(now()),
+        ...(appAttestRoots ? { roots: appAttestRoots } : {}),
+      });
+    } catch (error) {
+      return refused(appInstanceReason(error));
+    }
+    const registered = directory.registerAppInstance({
+      userId: standing.member.userId, keyId: verified.keyId, publicKey: verified.publicKey, counter: verified.counter,
+      receipt: Buffer.from(verified.receipt).toString('base64'), environment: verified.environment, label,
+    });
+    sendJson(res, 201, { ok: true, keyId: registered.keyId, environment: registered.environment, label: registered.label });
+    return true;
+  }
 
   function refusal(res, statusCode, code, error, action, target) {
     if (action) audit(action, target || 'passkeys', 'refused', code);
@@ -171,7 +246,7 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
   async function handle({ req, res, method, pathname, here }) {
     if (!pathname.startsWith(PREFIX)) return false;
     const route = `${method} ${pathname.slice(PREFIX.length)}`;
-    if (!here || (!here.homeBase && !APP_ROUTES.has(route))) {
+    if (!here || (!here.homeBase && !APP_ROUTES.has(route)) || (NATIVE_ROUTES.has(route) && !nativeApp)) {
       sendJson(res, 404, { error: 'Not found.' });
       return true;
     }
@@ -202,6 +277,17 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
         sendJson(res, 200, describe(standing, check, Boolean(await activation())));
         return true;
       }
+
+      if (route === 'POST app/challenge') {
+        if (standing.state !== 'active') return refusal(res, 409, 'BOOTSTRAP_STATE', `Home Base is in ${standing.state}: the app registers once it is active.`);
+        const challenge = crypto.randomBytes(32).toString('base64url');
+        issueAppChallenge({ challenge, userId: standing.member.userId, hostname: here.hostname, issued: now() });
+        // What the app's client data needs besides the challenge (sovereign-app-instance/1).
+        sendJson(res, 200, { challenge, household: standing.household, userId: standing.member.userId, expiresInSeconds: APP_CHALLENGE_MS / 1000 });
+        return true;
+      }
+
+      if (route === 'POST app/register') return registerApp(res, here, standing, body);
 
       if (route === 'POST enroll/options' || route === 'POST enroll/finish') {
         const finishing = route === 'POST enroll/finish';
