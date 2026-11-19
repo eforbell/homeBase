@@ -82,6 +82,26 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
     return standing.member.administrator ? `Unlock administration on Home Base${key}.` : `Confirm it's you on Home Base${key}.`;
   }
 
+  // What check/options would decide for this request as the member stands now: null, or the refusal. Begin
+  // asks it, and options and finish ask it again, since the member's standing (an administrator demoted, a
+  // passkey revoked) can change during the five minutes a record lasts.
+  function authorize({ purpose, policy, kind, action }, here, standing) {
+    const no = (status, code, error) => ({ status, body: { error, code } });
+    if (!here.homeBase && purpose !== 'check') return no(400, 'INVALID', 'Only checks run on this hostname; Home Base does the rest on its own.');
+    if (purpose === 'action') {
+      const allowed = shared.actionRequest({ policy, target: action?.target, digest: action?.digest }, standing);
+      if (allowed.forbidden) return no(403, 'NOT_AUTHORIZED', 'Only the administrator confirms that.');
+      if (allowed.error) return no(400, 'INVALID', allowed.error);
+    }
+    const usable = standing.credentials.filter((credential) => credential.usable && (kind === 'any' || credential.kind === 'hardware'));
+    if (!usable.length) return no(409, 'NO_CREDENTIAL', `${kind === 'hardware' ? 'You have no attested hardware key enrolled.' : 'You have no passkey enrolled yet.'}${here.homeBase ? '' : ' Register one on Home Base\'s Admin page.'}`);
+    return null;
+  }
+  // Thrown from options' issue callback, so a refused record never gets a challenge.
+  class Refused extends Error {
+    constructor(refusal) { super(refusal.body.error); this.refusal = refusal; }
+  }
+
   const send = (res, answer) => {
     if (answer.clearCookie) res.setHeader('Set-Cookie', answer.clearCookie);
     sendJson(res, answer.status, answer.body);
@@ -101,17 +121,12 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
     if (route === 'POST handoff/begin') {
       const purpose = body.purpose === 'action' || body.purpose === 'check' ? body.purpose : null;
       if (!purpose) return shared.refusal(res, 400, 'INVALID', 'A handoff is for a check or an action.');
-      if (!here.homeBase && purpose !== 'check') return shared.refusal(res, 400, 'INVALID', 'Only checks run on this hostname; Home Base does the rest on its own.');
-      let action = null;
-      if (purpose === 'action') {
-        action = shared.actionRequest(body.action, standing);
-        if (action.forbidden) return shared.refusal(res, 403, 'NOT_AUTHORIZED', 'Only the administrator confirms that.', 'passkey-action', target);
-        if (action.error) return shared.refusal(res, 400, 'INVALID', action.error);
-      }
-      const kind = body.kind === 'hardware' || action?.policy.kind === 'hardware' ? 'hardware' : 'any';
-      const usable = standing.credentials.filter((credential) => credential.usable && (kind === 'any' || credential.kind === 'hardware'));
-      if (!usable.length) return shared.refusal(res, 409, 'NO_CREDENTIAL', `${kind === 'hardware' ? 'You have no attested hardware key enrolled.' : 'You have no passkey enrolled yet.'}${here.homeBase ? '' : ' Register one on Home Base\'s Admin page.'}`);
-      const started = await handoff.begin({ member, hostname, purpose, policy: action ? action.key : 'step-up', kind, action: action && { target: action.target, digest: action.digest } });
+      const action = purpose === 'action' ? shared.actionRequest(body.action, standing) : null;
+      const kind = body.kind === 'hardware' || action?.policy?.kind === 'hardware' ? 'hardware' : 'any';
+      const request = { purpose, policy: action ? String(body.action?.policy) : 'step-up', kind, action: action && { target: body.action?.target, digest: body.action?.digest } };
+      const refused = authorize(request, here, standing);
+      if (refused) return shared.refusal(res, refused.status, refused.body.code, refused.body.error, refused.body.code === 'NOT_AUTHORIZED' ? 'passkey-action' : undefined, target);
+      const started = await handoff.begin({ member, hostname, ...request });
       res.setHeader('Set-Cookie', started.setCookie);
       sendJson(res, 200, started.body);
       return true;
@@ -128,7 +143,23 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
     }
 
     if (route === 'POST handoff/options') {
-      const answer = await handoff.options({ member, hostname, body, issue: (record) => passkeys.checkOptions({ site: here, standing, ...bound(record) }) });
+      let answer;
+      try {
+        answer = await handoff.options({
+          member,
+          hostname,
+          body,
+          issue: (record) => {
+            const refused = authorize(record, here, standing);
+            if (refused) throw new Refused(refused);
+            return passkeys.checkOptions({ site: here, standing, ...bound(record) });
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof Refused)) throw error;
+        sendJson(res, error.refusal.status, error.refusal.body);
+        return true;
+      }
       if (!answer.ok) return send(res, answer);
       sendJson(res, 200, { options: answer.options, summary: summary(answer.record, here, standing) });
       return true;
@@ -141,6 +172,11 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
         body,
         verify: async (record, assertion) => {
           const what = record.purpose === 'action' ? 'passkey-action' : 'passkey-step-up';
+          const refused = authorize(record, here, standing);
+          if (refused) {
+            audit(what, target, 'refused', refused.body.code);
+            return { ok: false, ...refused };
+          }
           const result = await passkeys.checkFinish({ site: here, standing, ...bound(record), response: assertion });
           if (!result.ok) {
             audit(what, target, 'refused', result.reason);

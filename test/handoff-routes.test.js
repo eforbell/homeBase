@@ -266,3 +266,52 @@ test('every handoff result is audited with the app key that attested it', async 
   const audit = new SqliteStateStore(require('path').join(root, 'state.sqlite3')).listAdminAudit(50);
   assert.ok(audit.some((entry) => entry.action === 'passkey-step-up' && entry.outcome.includes(`in the app (key ${instance.keyId.slice(0, 12)}…)`)), JSON.stringify(audit.slice(0, 5)));
 });
+
+test('options and finish ask again what begin asked: a revoked passkey or a lost authority stops the handoff', async (t) => {
+  const { app, base, parent, yubikey } = await activeHousehold(t, nativeConfig());
+  const instance = await registerApp(parent);
+  const { webView, attest, sheet } = phone(base, PARENT, instance);
+  const action = { policy: 'privileged-plan', target: 'restore nightly', digest: 'd'.repeat(43) };
+
+  // Demoted between begin and options (a root reset hands administration to someone else, say).
+  const original = app.directory.standing;
+  const demote = () => { app.directory.standing = (userId) => { const standing = original(userId); return standing && { ...standing, member: { ...standing.member, administrator: false } }; }; };
+  t.after(() => { app.directory.standing = original; });
+  const before = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'action', action })).body.id;
+  await attest(before);
+  demote();
+  const noOptions = await sheet().post('/_sovereign/auth/handoff/options', { id: before });
+  assert.equal(noOptions.status, 403, JSON.stringify(noOptions.body));
+  assert.equal(noOptions.body.code, 'NOT_AUTHORIZED');
+
+  // Demoted between options and finish.
+  app.directory.standing = original;
+  const during = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'action', action })).body.id;
+  await attest(during);
+  const inSheet = sheet();
+  const options = await inSheet.post('/_sovereign/auth/handoff/options', { id: during });
+  demote();
+  const noFinish = await inSheet.post('/_sovereign/auth/handoff/finish', { id: during, assertion: yubikey.authenticate(options.body.options, { origin: ORIGIN }) });
+  assert.equal(noFinish.status, 403, JSON.stringify(noFinish.body));
+  assert.equal(noFinish.body.code, 'NOT_AUTHORIZED');
+  app.directory.standing = original;
+  assert.deepEqual((await webView.post('/_sovereign/auth/handoff/redeem', { id: during })).body, { error: 'handoff_refused', reason: 'not_done' });
+});
+
+test('a member whose only passkey is revoked mid-handoff is told so, not a server error', async (t) => {
+  const { app, base, parent } = await activeHousehold(t, nativeConfig());
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const added = await parent.post('/api/directory/members', { userId: '1002', role: 'kid' });
+  const { code } = (await parent.post(`/api/directory/members/${added.body.memberId}/grant`)).body;
+  const kid = browser(base, KID);
+  const enrolled = await kid.enroll(createAuthenticator(), { label: 'Tablet', grant: code });
+  assert.equal(enrolled.status, 201, JSON.stringify(enrolled.body));
+  const instance = await registerApp(kid);
+  const { webView, attest, sheet } = phone(base, KID, instance);
+  const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'check' })).body;
+  await attest(id);
+  assert.equal((await parent.post(`/api/directory/credentials/${enrolled.body.credentialId}/revoke`)).status, 200);
+  const options = await sheet().post('/_sovereign/auth/handoff/options', { id });
+  assert.equal(options.status, 409, JSON.stringify(options.body));
+  assert.equal(options.body.code, 'NO_CREDENTIAL');
+});
