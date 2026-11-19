@@ -100,6 +100,7 @@ const ROUTES = [
   ['POST', '/api/directory/members/:id', 'administrator', 'change-role'],
   ['POST', '/api/directory/members/:id/grant', 'administrator', 'open-admin'],
   ['POST', '/api/directory/credentials/:id/revoke', 'administrator', 'open-admin'],
+  ['POST', '/api/directory/app-instances/revoke', 'administrator', 'open-admin'],
   ['POST', '/api/homebase/runtime-plan', 'administrator', 'open-admin'],
   ['POST', '/api/homebase/update-self', 'administrator', 'privileged-plan'],
   ['POST', '/api/homebase/install-self', 'administrator', 'privileged-plan'],
