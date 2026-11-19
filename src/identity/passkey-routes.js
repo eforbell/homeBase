@@ -33,6 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const { POLICY, appInstanceClientData, appInstanceReason, requestDigest, policyFor, verifyAttestation } = require('sovereign-auth');
 const { DirectoryError } = require('./directory');
+const { createHandoffRoutes, serveSheet } = require('./handoff-routes');
 
 const PREFIX = '/_sovereign/auth/';
 // Ceremony refusals (wire contract, section 11) in words a member can act on; the reason code stays in the
@@ -57,14 +58,18 @@ const ADMIN_WINDOW_SECONDS = policyFor('open-admin').window_seconds;
 // A sensitive app's cookie lives as long as the longest app session; each app checks its own window from
 // auth_time (open-documents, 30 days; open-operator, 24 hours).
 const APP_WINDOW_SECONDS = Math.max(...Object.values(POLICY.policies).filter((policy) => policy.level === 'session' && !policy.administrator).map((policy) => policy.window_seconds));
+// The native handoff (handoff-routes.js), on Home Base's hostname and a sensitive app's: an app's pages ask
+// for checks through it too. Listed here, where the route matrix's test finds every route.
+const HANDOFF_ROUTES = ['GET handoff/sheet', 'GET handoff/sheet.js', 'POST handoff/begin', 'POST handoff/attest', 'POST handoff/options', 'POST handoff/finish', 'POST handoff/redeem'];
 // What a sensitive app's hostname serves; anything else there is absent.
-const APP_ROUTES = new Set(['GET stepup.js', 'POST check/options', 'POST check/finish', 'POST sign-out']);
+const APP_ROUTES = new Set(['GET stepup.js', 'POST check/options', 'POST check/finish', 'POST sign-out', ...HANDOFF_ROUTES]);
 // Home Base's own every-time actions name it as their app.
 const HOME_BASE_APP = 'homebase';
 const STEPUP_SCRIPT = fs.readFileSync(path.join(__dirname, 'browser', 'stepup.js'));
 const TARGET_MAX = 512;
 // What exists only with the household's native app configured.
-const NATIVE_ROUTES = new Set(['POST app/challenge', 'POST app/register']);
+// The sheet's page and script are static and change nothing, so they are served either way.
+const NATIVE_ROUTES = new Set(['POST app/challenge', 'POST app/register', ...HANDOFF_ROUTES.filter((route) => route.startsWith('POST '))]);
 const APP_CHALLENGE_MS = 5 * 60_000;
 const APP_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 // Live challenges a member may hold at once: their own oldest goes first, so nobody can push out another's.
@@ -195,6 +200,13 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
   // What the authorization saw, which every commit it leads to requires unchanged.
   const expectOf = (standing) => ({ state: standing.state, globalEpoch: standing.globalEpoch, epoch: standing.member.epoch });
   const moved = (before, after) => !after || after.state !== before.state || after.globalEpoch !== before.globalEpoch || after.member.epoch !== before.epoch;
+  const windowSeconds = (here) => (here.homeBase ? ADMIN_WINDOW_SECONDS : APP_WINDOW_SECONDS);
+
+  // The native handoff decides as check/options and check/finish do, with these.
+  const handoffRoutes = nativeApp ? createHandoffRoutes({
+    directory, passkeys, nativeApp, sendJson, audit, now,
+    shared: { actionRequest, ceremonyError, usedPasskey, expectOf, moved, windowSeconds, homeBaseApp: HOME_BASE_APP, refusal },
+  }) : null;
 
   // What this caller may enroll with now: { ok, via, passphraseHash, consume } or { ok: false, statusCode,
   // code, error } or { ok: false, stepUp: [policy, code, message, every] }. finishing: the enroll/finish
@@ -250,6 +262,7 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
       sendJson(res, 404, { error: 'Not found.' });
       return true;
     }
+    if (route === 'GET handoff/sheet' || route === 'GET handoff/sheet.js') return serveSheet(res, route);
     if (route === 'GET stepup.js') {
       res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
       res.end(STEPUP_SCRIPT);
@@ -288,6 +301,8 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
       }
 
       if (route === 'POST app/register') return registerApp(res, here, standing, body);
+
+      if (HANDOFF_ROUTES.includes(route) && await handoffRoutes.handle({ req, res, route, body, here, standing })) return true;
 
       if (route === 'POST enroll/options' || route === 'POST enroll/finish') {
         const finishing = route === 'POST enroll/finish';
@@ -364,7 +379,7 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
           sendJson(res, 200, { ok: true, token: issued.token });
           return true;
         }
-        const issued = passkeys.issueCookie({ site: here, standing: now, credentialId: result.credentialId, kind: result.kind, windowSeconds: here.homeBase ? ADMIN_WINDOW_SECONDS : APP_WINDOW_SECONDS });
+        const issued = passkeys.issueCookie({ site: here, standing: now, credentialId: result.credentialId, kind: result.kind, windowSeconds: windowSeconds(here) });
         res.setHeader('Set-Cookie', issued.header);
         // Enough to trace any cookie to this check, or show that no check issued it: its session ID and key.
         audit(`passkey-${purpose}`, target, `${purpose === 'activate' ? 'active; ' : ''}checked ${result.kind} with ${usedPasskey(now, result.credentialId)} on ${here.hostname} · sid ${issued.sid} · key ${issued.kid}`);
