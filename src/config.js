@@ -21,6 +21,20 @@ function loopbackFromEnv(value) {
   return String(value || '').trim().toLowerCase() === 'off' ? 'off' : 'redirect';
 }
 
+// The household's native app (sovereignAuth docs/native-handoff.md): its App ID, "<TEAMID>.<bundle id>", and
+// the callback scheme its sign-in sheet returns to. Install config, never code. Unset, or not valid, there are
+// no app instances and no handoff (error says why, for the startup log). App Attest's development
+// environment is refused unless HOME_BASE_APP_ATTEST_DEVELOPMENT allows it; TestFlight and the App Store are
+// production.
+function nativeAppFromEnv(env) {
+  const appId = String(env.HOME_BASE_NATIVE_APP_ID || '').trim();
+  const scheme = String(env.HOME_BASE_NATIVE_APP_SCHEME || '').trim();
+  if (!appId && !scheme) return { nativeApp: null, error: null };
+  if (!/^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$/.test(appId)) return { nativeApp: null, error: 'HOME_BASE_NATIVE_APP_ID must be <TEAMID>.<bundle id>' };
+  if (!/^[a-z][a-z0-9+.-]{2,31}$/.test(scheme)) return { nativeApp: null, error: 'HOME_BASE_NATIVE_APP_SCHEME must be a lower-case URL scheme of 3 to 32 characters' };
+  return { nativeApp: { appId, scheme, development: boolFromEnv(env.HOME_BASE_APP_ATTEST_DEVELOPMENT, false) }, error: null };
+}
+
 function loadConfig(env = process.env) {
   const rootDir = process.cwd();
   // Beside the database when only that is set: an older env file may not name a data directory, and the checkout is
@@ -38,6 +52,7 @@ function loadConfig(env = process.env) {
   const homeBaseExecutionModeMissing = !String(env.HOME_BASE_EXECUTION_MODE || '').trim()
     && boolFromEnv(env.HOME_BASE_ENABLE_PRIVILEGED_JOBS, false);
 
+  const native = nativeAppFromEnv(env);
   return {
     appName: 'Home Base',
     rootDir,
@@ -64,6 +79,8 @@ function loadConfig(env = process.env) {
     loopback: loopbackFromEnv(env.HOME_BASE_LOOPBACK),
     // Feature-10 SID-001: this household's instance name (svc:<instance>-home, ...), unset until cutover.
     instance: String(env.HOME_BASE_INSTANCE || '').trim(),
+    nativeApp: native.nativeApp,
+    nativeAppError: native.error,
     // A read-only Tailscale trust credential for D23 verification; absent means administrator confirmation.
     tailscaleApiCredentialPath: env.HOME_BASE_TAILSCALE_API_CREDENTIAL || path.join(env.HOME_BASE_CONFIG_DIR || '/etc/sovereign-home', 'tailscale-api.env'),
     administratorLogin: String(env.HOME_BASE_ADMINISTRATOR_LOGIN || '').trim(),
@@ -102,4 +119,4 @@ function loadConfig(env = process.env) {
   };
 }
 
-module.exports = { loadConfig };
+module.exports = { loadConfig, nativeAppFromEnv };
