@@ -64,7 +64,17 @@ test('member home: an ingress-observed visitor becomes a member without any cred
   assert.equal((await kid.get('/api/state')).status, 401);
   const response = await fetch(`${base}/api/home`, { headers: { 'x-forwarded-for': KID, 'x-forwarded-host': HOMEBASE } });
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  assert.deepEqual(Object.keys(await response.json()).sort(), ['apps', 'caller', 'canUnlockAdmin', 'state']);
+  assert.deepEqual(Object.keys(await response.json()).sort(), ['apps', 'caller', 'canUnlockAdmin', 'household', 'state']);
+});
+
+test('member home: the household name is the instance, in every state, and absent when unset', async (t) => {
+  const household = await activeHousehold(t);
+  assert.equal((await browser(household.base, KID).get('/api/home')).body.household, 'smith', 'waiting');
+  assert.equal((await browser(household.base, PARENT).get('/api/home')).body.household, 'smith', 'administrator');
+  const legacy = await startServer(t, { config: { directory: false } });
+  assert.equal((await browser(legacy.base, KID).get('/api/home')).body.household, 'smith', 'legacy');
+  const unnamed = await startServer(t, { config: { directory: false, instance: '' } });
+  assert.equal('household' in (await browser(unnamed.base, KID).get('/api/home')).body, false);
 });
 
 test('member home: grants, installed status, operator defaults and current hostnames filter the server response', async (t) => {

@@ -988,7 +988,10 @@ function createApp(config) {
   // A caller's landing view, never an administrator payload with fields hidden by the browser. Unknown
   // callers learn only their own onboarding state; ingress (not this GET) records candidate visits.
   async function describeHome(req, effectiveConfig) {
-    const view = (state, caller = null, extra = {}) => ({ state, caller, canUnlockAdmin: false, apps: [], ...extra });
+    // household: the instance name (svc:<instance>-home), a short name the app lists households by. It's in
+    // every service's hostname already, so it's no secret; an instance not yet cut over has none.
+    const household = String(effectiveConfig.instance || '').trim();
+    const view = (state, caller = null, extra = {}) => ({ state, caller, canUnlockAdmin: false, apps: [], ...(household ? { household } : {}), ...extra });
     if (!directory) return view('legacy');
     try {
       const identity = await callerOf(req);
