@@ -4,6 +4,7 @@ const ALLOWED_GIT_TRANSPORTS = new Set(['https', 'ssh', 'ssh-key']);
 const TAILSCALE_MANAGED_SERVICE_ID_PATTERN = /^svc:[a-z0-9](?:[a-z0-9-_.]{0,61}[a-z0-9])?$/i;
 const TIMEZONE_PATTERN = /^[A-Za-z_]+\/[A-Za-z_\/-]+$/;
 const SAFE_ABSOLUTE_PATH_PATTERN = /^\/[A-Za-z0-9._/-]+$/;
+const HOUSEHOLD_NAME_MAX = 60;
 
 function mergeHomeBaseConfig(baseConfig, override = {}) {
   return {
@@ -16,6 +17,7 @@ function mergeHomeBaseConfig(baseConfig, override = {}) {
     healthAlertsWebhookUrl: override.healthAlertsWebhookUrl != null ? String(override.healthAlertsWebhookUrl) : String(baseConfig.healthAlertsWebhookUrl || ''),
     tailscaleManagedServiceId: override.tailscaleManagedServiceId || baseConfig.tailscaleManagedServiceId || 'svc:home',
     householdTimezone: override.householdTimezone || baseConfig.householdTimezone || 'America/New_York',
+    householdName: override.householdName != null ? String(override.householdName) : String(baseConfig.householdName || ''),
   };
 }
 
@@ -32,6 +34,7 @@ function toClientHomeBaseConfig(config, override = {}) {
     healthAlertsWebhookUrl: effective.healthAlertsWebhookUrl || '',
     tailscaleManagedServiceId: effective.tailscaleManagedServiceId || 'svc:home',
     householdTimezone: effective.householdTimezone || 'America/New_York',
+    householdName: effective.householdName || '',
     serviceUser: config.serviceUser,
     baseInstallDir: config.baseInstallDir,
     baseBackupDir: config.baseBackupDir,
@@ -68,7 +71,7 @@ function validateAbsolutePath(value, fieldName) {
 
 function validateHomeBaseConfigPatch(payload, currentConfig) {
   const patch = payload && typeof payload === 'object' ? payload : {};
-  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId', 'householdTimezone'];
+  const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId', 'householdTimezone', 'householdName'];
   const unknownFields = Object.keys(patch).filter((field) => !allowedFields.includes(field));
   if (unknownFields.length) {
     return { error: `Unknown field(s): ${unknownFields.join(', ')}` };
@@ -86,6 +89,7 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
     healthAlertsWebhookUrl: patch.healthAlertsWebhookUrl != null ? String(patch.healthAlertsWebhookUrl).trim() : String(currentConfig.healthAlertsWebhookUrl || ''),
     tailscaleManagedServiceId: patch.tailscaleManagedServiceId != null ? String(patch.tailscaleManagedServiceId).trim() : String(currentConfig.tailscaleManagedServiceId || 'svc:home'),
     householdTimezone: patch.householdTimezone != null ? String(patch.householdTimezone).trim() : String(currentConfig.householdTimezone || 'America/New_York'),
+    householdName: patch.householdName != null ? String(patch.householdName).trim() : String(currentConfig.householdName || ''),
   };
 
   const hostnameError = validateHostname(candidate.hostname);
@@ -123,6 +127,11 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
 
   if (!TIMEZONE_PATTERN.test(candidate.householdTimezone)) {
     return { error: 'householdTimezone must be a valid IANA timezone (e.g. America/New_York)' };
+  }
+
+  // Shown in the Home Base app's household list, to anyone on the tailnet who reaches Home Base.
+  if ([...candidate.householdName].length > HOUSEHOLD_NAME_MAX || /\p{Cc}/u.test(candidate.householdName)) {
+    return { error: `householdName must be one line of at most ${HOUSEHOLD_NAME_MAX} characters` };
   }
 
   return { value: candidate };

@@ -76,6 +76,11 @@ test('member home: the household name is the instance, in every state, and absen
   assert.equal((await browser(household.base, PARENT).get('/api/home')).body.household, 'smith', 'administrator');
   const legacy = await startServer(t, { config: { directory: false } });
   assert.equal((await browser(legacy.base, KID).get('/api/home')).body.household, 'smith', 'legacy');
+  // The administrator's name for the household takes the instance's place (Settings → Household name).
+  new SqliteStateStore(path.join(household.root, 'state.sqlite3')).setHomeBaseConfig({
+    hostname: 'homebase', domain: DOMAIN, gitTransport: 'https', householdName: 'The Smiths', updatedAt: new Date().toISOString(),
+  });
+  assert.equal((await browser(household.base, KID).get('/api/home')).body.household, 'The Smiths', 'named');
   const unnamed = await startServer(t, { config: { directory: false, instance: '' } });
   assert.equal('household' in (await browser(unnamed.base, KID).get('/api/home')).body, false);
 });

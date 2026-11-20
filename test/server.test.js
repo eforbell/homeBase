@@ -576,6 +576,7 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(before.healthAlertsEnabled, false);
     assert.equal(before.healthAlertsWebhookUrl, '');
     assert.equal(before.tailscaleManagedServiceId, 'svc:home');
+    assert.equal(before.householdName, '');
 
     const updateRes = await fetch(`${server.url}/api/homebase/config`, {
       method: 'POST',
@@ -588,10 +589,12 @@ test('homebase config endpoint returns defaults and persists validated updates',
         healthAlertsEnabled: true,
         healthAlertsWebhookUrl: 'https://alerts.example.test/hook',
         tailscaleManagedServiceId: 'svc:test',
+        householdName: '  The Smiths 🏡 ',
       }),
     });
     assert.equal(updateRes.status, 200);
     const updated = await updateRes.json();
+    assert.equal(updated.householdName, 'The Smiths 🏡');
     assert.equal(updated.hostname, 'erebor');
     assert.equal(updated.domain, 'example.ts.net');
     assert.equal(updated.gitTransport, 'ssh-key');
@@ -607,6 +610,14 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal(after.gitTransport, 'ssh-key');
     assert.equal(after.healthAlertsEnabled, true);
     assert.equal(after.tailscaleManagedServiceId, 'svc:test');
+    assert.equal(after.householdName, 'The Smiths 🏡', 'kept');
+    // Another setting saved without it leaves it be; an empty one clears it.
+    const post = async (body) => (await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) }, body: JSON.stringify(body),
+    })).json();
+    assert.equal((await post({ healthAlertsEnabled: false })).householdName, 'The Smiths 🏡');
+    assert.equal((await post({ householdName: '  ' })).householdName, '');
+    assert.equal((await (await fetch(`${server.url}/api/homebase/config`)).json()).householdName, '');
   } finally {
     await server.close();
   }
@@ -1375,6 +1386,22 @@ test('homebase config endpoint rejects invalid updates', async () => {
       body: JSON.stringify({ serviceUser: 'root' }),
     });
     assert.equal(unknownField.status, 400);
+
+    for (const householdName of ['x'.repeat(61), 'The\nSmiths', 'Tab\there']) {
+      const bad = await fetch(`${server.url}/api/homebase/config`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
+        body: JSON.stringify({ householdName }),
+      });
+      assert.equal(bad.status, 400, JSON.stringify(householdName));
+      assert.match((await bad.json()).error, /householdName must be one line of at most 60/);
+    }
+    const sixty = await fetch(`${server.url}/api/homebase/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) },
+      body: JSON.stringify({ householdName: '🏡'.repeat(60) }),
+    });
+    assert.equal(sixty.status, 200, '60 characters, counted as characters');
   } finally {
     await server.close();
   }
