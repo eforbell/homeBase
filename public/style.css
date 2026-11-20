@@ -172,3 +172,10 @@ a:hover { text-decoration: underline; }
 /* Ingress card (Network): service names and hostnames are long unbroken words; let them break on phones. */
 [data-ingress] { overflow-wrap: anywhere; }
 [data-ingress] .hb-row > * { min-width: 0; }
+
+/* Admin opened with an enrollment code from the Home Base app: only "Add your passkey" (passkeys.js). */
+body.hb-passkey-focus .hb-app-sidebar,
+body.hb-passkey-focus .hb-app-bottom-bar,
+body.hb-passkey-focus .hb-more-sheet {
+  display: none !important;
+}

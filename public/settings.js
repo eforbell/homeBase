@@ -843,6 +843,14 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
 
   async function load() {
     try {
+      // Opened from the app's "Add a passkey" with a code: only that, unless it turns out not to fit.
+      if (page === 'admin' && window.HBPasskeys && window.HBPasskeys.focused && window.HBPasskeys.focused()) {
+        root.innerHTML = '<div class="hb-stack"><section class="hb-card" data-passkeys><p class="hb-muted" style="margin:0;">Loading…</p></section></div>';
+        const node = root.querySelector('[data-passkeys]');
+        window.HBPasskeys.wire(node);
+        await window.HBPasskeys.mount(node);
+        if (window.HBPasskeys.focused()) return;
+      }
       // Admin renders from the lock state alone: it is where admin is unlocked, and where members manage their
       // passkeys, so it loads nothing that needs the unlocked administrator (SID-006).
       const adminReads = page !== 'admin';
