@@ -85,3 +85,17 @@ test('a failure while focused shows the Admin error with the navigation back', a
   assert.equal(passkeys.focused(), false);
   assert.match(html, /Request failed \(500\)/);
 });
+
+test('Config offers a saved timezone outside its list as itself, so saving keeps it', async () => {
+  const render = (householdTimezone) => renderPage('config', {
+    '/api/admin/status': { configured: true, unlocked: true, sessionExpiresAt: new Date().toISOString() },
+    '/api/homebase/config': { hostname: 'homebase', domain: 'tailnet', householdTimezone, ingress: { instance: null, cutOver: false } },
+    '/api/homebase/status': { systemd: { active: 'active' } },
+    '/api/preflight': { checks: [] },
+  });
+  const london = (await render('Europe/London')).html;
+  assert.match(london, /<option value="Europe\/London" selected>Europe\/London<\/option>/);
+  const chicago = (await render('America/Chicago')).html;
+  assert.match(chicago, /<option value="America\/Chicago" selected>/);
+  assert.doesNotMatch(chicago, /<option value="America\/Chicago" selected>America\/Chicago<\/option>/, 'a listed zone is not offered twice');
+});

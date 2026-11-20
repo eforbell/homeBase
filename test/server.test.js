@@ -616,6 +616,21 @@ test('homebase config endpoint returns defaults and persists validated updates',
       method: 'POST', headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) }, body: JSON.stringify(body),
     })).json();
     assert.equal((await post({ healthAlertsEnabled: false })).householdName, 'The Smiths 🏡');
+    // The household timezone is stored too (it used to revert on reload), and kept by other saves.
+    assert.equal(after.householdTimezone, 'America/New_York', 'the default until one is saved');
+    assert.equal((await post({ householdTimezone: 'America/Chicago' })).householdTimezone, 'America/Chicago');
+    assert.equal((await post({ healthAlertsEnabled: false })).householdTimezone, 'America/Chicago');
+    assert.equal((await (await fetch(`${server.url}/api/homebase/config`)).json()).householdTimezone, 'America/Chicago', 'after a reload');
+    // Stored, a zone the executor refuses (over 64 characters) or that doesn't exist would break installs.
+    // Wrong case is refused against the host's zone files (isKnownTimezone's own test covers hosts without).
+    const caseChecked = fs.existsSync('/usr/share/zoneinfo') ? ['america/chicago', 'AMERICA/NEW_YORK'] : [];
+    for (const householdTimezone of [`America/${'x'.repeat(60)}`, 'America/Atlantis', 'Foo/Bar', ...caseChecked]) {
+      const refused = await fetch(`${server.url}/api/homebase/config`, {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) }, body: JSON.stringify({ householdTimezone }),
+      });
+      assert.equal(refused.status, 400, householdTimezone);
+    }
+    assert.equal((await post({ householdTimezone: 'Europe/London' })).householdTimezone, 'Europe/London', 'a real zone outside the US list');
     assert.equal((await post({ householdName: '  ' })).householdName, '');
     assert.equal((await (await fetch(`${server.url}/api/homebase/config`)).json()).householdName, '');
   } finally {

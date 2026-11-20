@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS homebase_config (
   health_alerts_webhook_url TEXT,
   tailscale_managed_service_id TEXT,
   household_name TEXT,
+  household_timezone TEXT,
   updated_at TEXT NOT NULL
 );
 
@@ -135,6 +136,9 @@ if op == "init":
         conn.execute("ALTER TABLE homebase_config ADD COLUMN tailscale_managed_service_id TEXT")
     if "household_name" not in columns:
         conn.execute("ALTER TABLE homebase_config ADD COLUMN household_name TEXT")
+    # Saved by Config since it was offered, but never stored until this column: NULL keeps the default.
+    if "household_timezone" not in columns:
+        conn.execute("ALTER TABLE homebase_config ADD COLUMN household_timezone TEXT")
     installation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(installations)")}
     if "managed_by" not in installation_columns:
         conn.execute("ALTER TABLE installations ADD COLUMN managed_by TEXT")
@@ -626,7 +630,7 @@ elif op == "list_app_update_statuses":
 
 elif op == "get_homebase_config":
     row = conn.execute(
-        "SELECT hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, tailscale_managed_service_id, household_name, updated_at FROM homebase_config WHERE id = 1"
+        "SELECT hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, tailscale_managed_service_id, household_name, household_timezone, updated_at FROM homebase_config WHERE id = 1"
     ).fetchone()
     if row is None:
         emit(None)
@@ -640,6 +644,7 @@ elif op == "get_homebase_config":
             "healthAlertsWebhookUrl": row["health_alerts_webhook_url"] or "",
             "tailscaleManagedServiceId": row["tailscale_managed_service_id"] or "svc:home",
             "householdName": row["household_name"] or "",
+            "householdTimezone": row["household_timezone"] or None,
             "updatedAt": row["updated_at"],
         })
 
@@ -648,8 +653,8 @@ elif op == "set_homebase_config":
     conn.execute(
         """
         INSERT INTO homebase_config (
-          id, hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, tailscale_managed_service_id, household_name, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, hostname, domain, git_transport, git_ssh_key_path, health_alerts_enabled, health_alerts_webhook_url, tailscale_managed_service_id, household_name, household_timezone, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           hostname=excluded.hostname,
           domain=excluded.domain,
@@ -659,6 +664,7 @@ elif op == "set_homebase_config":
           health_alerts_webhook_url=excluded.health_alerts_webhook_url,
           tailscale_managed_service_id=excluded.tailscale_managed_service_id,
           household_name=excluded.household_name,
+          household_timezone=excluded.household_timezone,
           updated_at=excluded.updated_at
         """,
         (
@@ -670,6 +676,7 @@ elif op == "set_homebase_config":
             record.get("healthAlertsWebhookUrl", ""),
             record.get("tailscaleManagedServiceId", "svc:home"),
             record.get("householdName", ""),
+            record.get("householdTimezone") or None,
             record["updatedAt"],
         ),
     )

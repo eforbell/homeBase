@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/i;
 const ALLOWED_GIT_TRANSPORTS = new Set(['https', 'ssh', 'ssh-key']);
@@ -69,6 +71,27 @@ function validateAbsolutePath(value, fieldName) {
   return null;
 }
 
+// A zone apps can use: one Intl knows and, where the host has a zone database, a file in it with exactly
+// this name. TZ= and Python's zoneinfo read that file case-sensitively, and Intl alone accepts any case and
+// old aliases (US/Eastern) a host may not have. The pattern allows no dots, so the name stays inside it.
+function isKnownTimezone(zone, zoneinfo = '/usr/share/zoneinfo') {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+  } catch (_error) {
+    return false;
+  }
+  if (!fs.existsSync(zoneinfo)) return true;
+  let at = zoneinfo;
+  for (const part of zone.split('/')) {
+    let names;
+    try { names = fs.readdirSync(at); } catch (_error) { return false; }
+    // Exact names from the listing, even on a case-insensitive filesystem.
+    if (!names.includes(part)) return false;
+    at = path.join(at, part);
+  }
+  try { return fs.statSync(at).isFile(); } catch (_error) { return false; }
+}
+
 function validateHomeBaseConfigPatch(payload, currentConfig) {
   const patch = payload && typeof payload === 'object' ? payload : {};
   const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId', 'householdTimezone', 'householdName'];
@@ -125,7 +148,12 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
     return { error: 'tailscaleManagedServiceId must look like svc:<name> using letters, numbers, dashes, underscores, or dots' };
   }
 
-  if (!TIMEZONE_PATTERN.test(candidate.householdTimezone)) {
+  // Now that it's stored, a zone the executor refuses (isValidSite: at most 64 characters) would break every
+  // later install and update, and one that doesn't exist would leave apps on UTC: refuse both here.
+  // The zone files are checked only for a new zone, so one that later leaves the host (tzdata-legacy
+  // removed, say) doesn't block saving other settings.
+  const newZone = patch.householdTimezone != null && candidate.householdTimezone !== (currentConfig.householdTimezone || 'America/New_York');
+  if (!TIMEZONE_PATTERN.test(candidate.householdTimezone) || candidate.householdTimezone.length > 64 || (newZone && !isKnownTimezone(candidate.householdTimezone))) {
     return { error: 'householdTimezone must be a valid IANA timezone (e.g. America/New_York)' };
   }
 
@@ -149,6 +177,7 @@ function isValidSite(site) {
 }
 
 module.exports = {
+  isKnownTimezone,
   ALLOWED_GIT_TRANSPORTS,
   HOSTNAME_PATTERN,
   DOMAIN_PATTERN,
