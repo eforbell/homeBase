@@ -10,7 +10,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 // Run the actual API, navigation and dashboard scripts together, with deterministic browser events and
 // clocks. No static-source assertions: requests, rendering and polling must all behave together.
-function page(answers, { activePage = 'dashboard' } = {}) {
+function page(answers, { activePage = 'dashboard', config = {} } = {}) {
   const sent = [];
   const timers = new Map();
   const stored = new Map();
@@ -55,7 +55,7 @@ function page(answers, { activePage = 'dashboard' } = {}) {
   let responseIndex = 0;
   const admin = {
     '/api/state': { installations: {}, jobs: [] }, '/api/homebase/status': { systemd: { active: 'active' } },
-    '/api/homebase/config': { hostname: 'home', domain: 'example', baseBackupDir: '/private/backups' },
+    '/api/homebase/config': { hostname: 'home', domain: 'example', baseBackupDir: '/private/backups', ...config },
     '/api/homebase/bootstrap-status': { autoBootstrap: {} }, '/api/apps/health': { byAppId: {} },
     '/api/catalog': { apps: [] }, '/api/preflight': { checks: [] },
   };
@@ -166,6 +166,33 @@ test('only legacy and unlocked administrator views load the operational dashboar
     assert.ok(ui.sent.includes('/api/preflight'));
     assert.equal(ui.sent.filter((url) => url === '/api/home').length, 1);
   }
+});
+
+test('the household name shows in the navigation and on the home page, escaped', async () => {
+  const named = page([{ ...member, household: 'The <Smiths>' }]); await tick();
+  assert.match(named.nav(), /class="hb-nav-household">The &lt;Smiths&gt;</);
+  assert.match(named.root.innerHTML, /Household: <strong>The &lt;Smiths&gt;<\/strong>/);
+  const waiting = page([{ state: 'waiting', caller, household: 'Smiths' }]); await tick();
+  assert.match(waiting.root.innerHTML, /Household: <strong>Smiths</);
+  const older = page([member]); await tick();
+  assert.doesNotMatch(older.nav() + older.root.innerHTML, /hb-nav-household|Household:/);
+});
+
+test('the dashboard names the household, and after the cutover shows the instance addresses, not hostname.domain', async () => {
+  const cutOver = { householdName: 'The <Smiths>', hostnameIsPlaceholder: true,
+    ingress: { instance: 'smith', cutOver: true, homebaseUrl: 'https://smith-homebase.example/', appsUrl: 'https://smith-home.example/' } };
+  const ui = page([{ state: 'administrator', household: 'The <Smiths>' }], { config: cutOver }); await tick();
+  assert.match(ui.root.innerHTML, /Household: <strong>The &lt;Smiths&gt;<\/strong>/);
+  assert.match(ui.root.innerHTML, /Home Base: <a href="https:\/\/smith-homebase\.example\/">smith-homebase\.example<\/a> · Apps: smith-home\.example · Service: active/);
+  assert.doesNotMatch(ui.root.innerHTML, /Host: home\.example|Hostname is still default/);
+
+  const instanceOnly = page([{ state: 'administrator' }], { config: { ingress: { instance: 'smith', cutOver: false } } }); await tick();
+  assert.match(instanceOnly.root.innerHTML, /Household: <strong>smith</);
+  assert.match(instanceOnly.root.innerHTML, /Host: home\.example · Service: active/);
+
+  const legacy = page([{ state: 'legacy' }]); await tick();
+  assert.doesNotMatch(legacy.root.innerHTML, /Household:/);
+  assert.match(legacy.root.innerHTML, /Host: home\.example/);
 });
 
 test('shared navigation hides operational links on member self-service pages too', async () => {
