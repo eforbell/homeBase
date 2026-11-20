@@ -508,6 +508,10 @@
     `;
   }
 
+  // The zones offered by name. Another one set in Home Base's environment is offered as itself, so saving
+  // Config keeps it rather than picking the first of these.
+  const US_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu'];
+
   function renderConfigPage(config, status) {
     // The self-update button and the legacy git settings only work in legacy-sudo mode.
     const executorMode = status?.executionMode === 'executor';
@@ -565,6 +569,7 @@
                 <option value="America/Los_Angeles" ${config.householdTimezone === 'America/Los_Angeles' ? 'selected' : ''}>Pacific (America/Los_Angeles)</option>
                 <option value="America/Anchorage" ${config.householdTimezone === 'America/Anchorage' ? 'selected' : ''}>Alaska (America/Anchorage)</option>
                 <option value="Pacific/Honolulu" ${config.householdTimezone === 'Pacific/Honolulu' ? 'selected' : ''}>Hawaii (Pacific/Honolulu)</option>
+                ${config.householdTimezone && !US_TIMEZONES.includes(config.householdTimezone) ? `<option value="${window.HB.escapeHtml(config.householdTimezone)}" selected>${window.HB.escapeHtml(config.householdTimezone)}</option>` : ''}
               </select>
             </label>
             ${cutOver ? `<input type="hidden" name="tailscaleManagedServiceId" value="${window.HB.escapeHtml(config.tailscaleManagedServiceId || 'svc:home')}">` : `

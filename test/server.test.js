@@ -616,6 +616,11 @@ test('homebase config endpoint returns defaults and persists validated updates',
       method: 'POST', headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) }, body: JSON.stringify(body),
     })).json();
     assert.equal((await post({ healthAlertsEnabled: false })).householdName, 'The Smiths 🏡');
+    // The household timezone is stored too (it used to revert on reload), and kept by other saves.
+    assert.equal(after.householdTimezone, 'America/New_York', 'the default until one is saved');
+    assert.equal((await post({ householdTimezone: 'America/Chicago' })).householdTimezone, 'America/Chicago');
+    assert.equal((await post({ healthAlertsEnabled: false })).householdTimezone, 'America/Chicago');
+    assert.equal((await (await fetch(`${server.url}/api/homebase/config`)).json()).householdTimezone, 'America/Chicago', 'after a reload');
     assert.equal((await post({ householdName: '  ' })).householdName, '');
     assert.equal((await (await fetch(`${server.url}/api/homebase/config`)).json()).householdName, '');
   } finally {
