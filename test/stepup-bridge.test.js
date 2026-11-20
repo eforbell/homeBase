@@ -487,3 +487,60 @@ test('adding the passkey in the focused view: through the app, then back to Home
     ['/_sovereign/auth/handoff/redeem', undefined],
   ]);
 });
+
+// The focused form, as passkeys.js's submit handler sees it.
+function focusedForm() {
+  const result = { textContent: '', innerHTML: '', className: '' };
+  const button = { hidden: false, disabled: false };
+  return {
+    result,
+    button,
+    form: {
+      dataset: { passkeyAction: 'enroll', state: 'active', focused: 'true' },
+      elements: { label: { value: 'iPhone' }, hardware: { checked: false }, grant: { value: 'AbC-123_xyz789QRStuvWX' } },
+      querySelector: (selector) => (selector === '[data-result]' ? result : button),
+      closest() { return this; },
+    },
+  };
+}
+const submitter = (passkeys) => {
+  const listeners = {};
+  passkeys.wire({ addEventListener: (name, fn) => { listeners[name] = fn; }, querySelector: () => null });
+  return (form) => listeners.submit({ target: form, preventDefault() {} });
+};
+
+test('focused: a refused code says so with a way back, and the button works again; a second tap waits', async () => {
+  const bridge = fakeBridge();
+  let disabledWhileBegun = null;
+  const { form, button, result } = focusedForm();
+  const respond = (url) => {
+    if (url === '/_sovereign/auth/handoff/begin') { disabledWhileBegun = button.disabled; return [403, { error: 'That enrollment code is not valid; ask the administrator for a new one.', code: 'INVALID_GRANT' }]; }
+    return [404, {}];
+  };
+  const page = load({ bridge, withPasskeys: true, hash: '#grant=AbC-123_xyz789QRStuvWX', respond });
+  await submitter(page.passkeys)(form);
+  assert.equal(disabledWhileBegun, true, 'no second tap while it runs');
+  assert.equal(button.disabled, false);
+  assert.equal(result.textContent, 'That enrollment code is not valid; ask the administrator for a new one. To try again, tap Apps at the top and scan the code again.');
+  assert.deepEqual(bridge.ids, [], 'no sheet');
+});
+
+test('focused in a browser: success and failure each link back to Home Base', async () => {
+  const bytes = (text) => new TextEncoder().encode(text).buffer;
+  const create = async () => ({ id: 'cred', rawId: bytes('cred'), type: 'public-key', response: { clientDataJSON: bytes('{}'), attestationObject: bytes('att'), getTransports: () => [] }, getClientExtensionResults: () => ({}) });
+  let finish = [201, { ok: true, kind: 'synced', label: 'iPhone', askedForHardware: false }];
+  const respond = (url) => {
+    if (url === '/_sovereign/auth/enroll/options') return [200, { options: { challenge: 'Y2hhbGxlbmdl', user: { id: 'dXNlcg', name: 'v' }, rp: { id: 'example.ts.net' }, excludeCredentials: [] } }];
+    if (url === '/_sovereign/auth/enroll/finish') return finish;
+    return [404, {}];
+  };
+  const page = load({ withPasskeys: true, hash: '#grant=AbC-123_xyz789QRStuvWX', respond, create });
+  const ok = focusedForm();
+  await submitter(page.passkeys)(ok.form);
+  assert.equal(ok.result.innerHTML, 'Your passkey is added. <a href="/">Back to Home Base</a>');
+  assert.equal(ok.button.hidden, true);
+  finish = [403, { error: 'That enrollment code is not valid; ask the administrator for a new one.' }];
+  const bad = focusedForm();
+  await submitter(page.passkeys)(bad.form);
+  assert.equal(bad.result.innerHTML, 'That enrollment code is not valid; ask the administrator for a new one. <a href="/">Back to Home Base</a>');
+});

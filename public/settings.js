@@ -901,6 +901,8 @@ ${config.ingress?.cutOver ? '' : `        <section class="hb-card">
         });
       }
     } catch (error) {
+      // Whatever failed, the page shown now is the full one, with its navigation.
+      if (window.HBPasskeys && window.HBPasskeys.unfocus) window.HBPasskeys.unfocus();
       const pageTitle = page === 'config' ? 'Config' : (page ? page.charAt(0).toUpperCase() + page.slice(1) : 'Control plane');
       root.innerHTML = `
         <section class="hb-card">

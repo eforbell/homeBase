@@ -108,7 +108,9 @@
   const focusFits = (status) => status.state === 'active' && !status.member.administrator && !status.credentials.length;
   const deviceName = () => {
     const agent = (window.navigator && window.navigator.userAgent) || '';
-    return /iPad/.test(agent) ? 'iPad' : /iPhone/.test(agent) ? 'iPhone' : '';
+    // iPadOS reports a Mac, but a Mac has no touch screen.
+    const ipad = /iPad/.test(agent) || (/Macintosh/.test(agent) && (window.navigator.maxTouchPoints || 0) > 1);
+    return ipad ? 'iPad' : /iPhone/.test(agent) ? 'iPhone' : '';
   };
 
   function renderFocused(status) {
@@ -275,6 +277,9 @@
       const action = form.dataset.passkeyAction;
       const result = form.querySelector('[data-result]') || node.querySelector('[data-check-result]');
       result.textContent = 'Waiting for your passkey…';
+      // One at a time: a second tap would open a second sheet for the same code.
+      const submit = form.querySelector('button[type="submit"]');
+      if (submit) submit.disabled = true;
       try {
         if (action === 'rotate') {
           const done = await guardedPost(`${AUTH}signing-key/rotate`, { exposed: form.elements.exposed.checked });
@@ -300,7 +305,14 @@
           reload();
         }
       } catch (error) {
+        if (submit) submit.disabled = false;
         result.textContent = error.message;
+        // Focused, the code can't be changed and there's no navigation: always a way back (a new code is
+        // scanned again from the app).
+        if (form.dataset.focused === 'true') {
+          if (inApp()) result.textContent = `${error.message} To try again, tap Apps at the top and scan the code again.`;
+          else result.innerHTML = `${esc(error.message)} <a href="/">Back to Home Base</a>`;
+        }
       }
     });
     node.addEventListener('click', async (event) => {
@@ -320,5 +332,5 @@
     });
   }
 
-  window.HBPasskeys = { check, enroll, mount, wire, focused: () => focus };
+  window.HBPasskeys = { check, enroll, mount, wire, focused: () => focus, unfocus: () => setFocus(false) };
 })();
