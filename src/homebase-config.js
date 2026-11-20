@@ -150,7 +150,10 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
 
   // Now that it's stored, a zone the executor refuses (isValidSite: at most 64 characters) would break every
   // later install and update, and one that doesn't exist would leave apps on UTC: refuse both here.
-  if (!TIMEZONE_PATTERN.test(candidate.householdTimezone) || candidate.householdTimezone.length > 64 || !isKnownTimezone(candidate.householdTimezone)) {
+  // The zone files are checked only for a new zone, so one that later leaves the host (tzdata-legacy
+  // removed, say) doesn't block saving other settings.
+  const newZone = patch.householdTimezone != null && candidate.householdTimezone !== (currentConfig.householdTimezone || 'America/New_York');
+  if (!TIMEZONE_PATTERN.test(candidate.householdTimezone) || candidate.householdTimezone.length > 64 || (newZone && !isKnownTimezone(candidate.householdTimezone))) {
     return { error: 'householdTimezone must be a valid IANA timezone (e.g. America/New_York)' };
   }
 
@@ -174,6 +177,7 @@ function isValidSite(site) {
 }
 
 module.exports = {
+  isKnownTimezone,
   ALLOWED_GIT_TRANSPORTS,
   HOSTNAME_PATTERN,
   DOMAIN_PATTERN,
