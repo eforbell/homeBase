@@ -4,7 +4,10 @@
 // and changes which apps a member may open (POST /api/directory/members/<id> with apps). It lists each member's app
 // instances (the household's iPhone app on one of their phones) and removes one (POST
 // /api/directory/app-instances/revoke): a lost phone, say. The app registers again if it is still in use.
-// It shows only what GET /api/directory gives an unlocked administrator: never a key, and a code only once.
+// It shows only what GET /api/directory gives an unlocked administrator: never a key, and a code only once. The code
+// is also drawn as a QR code (qrcode-generator.js) that the member's Home Base app scans: "sovereign-grant/1", this
+// hostname and the code, on three lines. It grants nothing on its own: the app still runs the passkey sheet.
+
 (function homeBaseMembers() {
   const esc = (value) => window.HB.escapeHtml(value);
   const KIND_LABELS = { hardware: 'hardware key', 'device-bound': 'this device only', synced: 'synced passkey' };
@@ -178,14 +181,34 @@
       ${addSection(directory)}`;
   }
 
+  // The code as a QR code for the Home Base app, or '' when the encoder isn't there. Dark modules on white, with
+  // the quiet zone, whatever the page's theme, so a phone camera reads it.
+  function qrSvg(code) {
+    if (typeof window.qrcode !== 'function') return '';
+    const qr = window.qrcode(0, 'M');
+    qr.addData(`sovereign-grant/1\n${window.location.hostname}\n${code}`);
+    qr.make();
+    const count = qr.getModuleCount();
+    const margin = 4;
+    const size = count + margin * 2;
+    let path = '';
+    for (let row = 0; row < count; row += 1) {
+      for (let col = 0; col < count; col += 1) {
+        if (qr.isDark(row, col)) path += `M${col + margin} ${row + margin}h1v1h-1z`;
+      }
+    }
+    return `<svg data-code-qr role="img" aria-label="The enrollment code, for the Home Base app to scan" viewBox="0 0 ${size} ${size}" width="200" height="200" shape-rendering="crispEdges" style="display:block;margin:0.4rem 0;background:#ffffff;border-radius:6px;"><rect width="${size}" height="${size}" fill="#ffffff"/><path d="${path}" fill="#000000"/></svg>`;
+  }
+
   // The code, once: Home Base keeps only its hash, so it can't be shown again; a new one replaces it.
   function codeBlock(name, grant) {
     return `
       <div class="hb-members-code" role="status">
         <p style="margin:0 0 0.4rem;">Enrollment code for ${esc(name)}, until ${esc(time(grant.expiresAt))}:</p>
+        ${qrSvg(grant.code)}
         <code data-code>${esc(grant.code)}</code>
         <button class="hb-btn" type="button" data-member-copy>Copy</button>
-        <p class="hb-muted" style="margin:0.4rem 0 0;">Give it to them yourself. On Home Base's address they open Admin, enter the code under Passkeys and register one. It works once, and this page won't show it again.</p>
+        <p class="hb-muted" style="margin:0.4rem 0 0;">Give it to them yourself. In the Home Base app, they tap Add a passkey and scan this code, or paste it. In Safari, on Home Base's address, they open Admin, enter the code under Passkeys and register one. It works once, and this page won't show it again.</p>
       </div>`;
   }
 

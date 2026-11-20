@@ -635,6 +635,16 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     return liveGrantHash(load(), memberId, presented);
   }
 
+  // For the member's own Home Base app (GET /api/home): while they have no usable passkey and the administrator's
+  // grant is live, { expiresAt }; else null. Never the code: the administrator gives them that.
+  function passkeyInvite(userId) {
+    const data = load();
+    const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active');
+    if (!member || credentialsOf(data, member.member_id).length) return null;
+    const grant = data.grants.find((entry) => entry.member_id === member.member_id);
+    return grant && Date.parse(grant.expires_at) > now() ? { expiresAt: grant.expires_at } : null;
+  }
+
   // Used once by the passkey service before an enrollment ceremony (SID-005). True only for the first use.
   function consumeGrant(memberId, code) {
     try {
@@ -773,7 +783,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
 
   return {
     activate, addCredential, addMember, advanceAppInstance, appInstance, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, enrollmentHandleFor, grantHash, init, isAdministrator, issueGrant,
-    lookup, candidateObserved, memberStatus, publish, recordAssertion, registerAppInstance, reset, revokeAppInstance, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
+    lookup, candidateObserved, memberStatus, passkeyInvite, publish, recordAssertion, registerAppInstance, reset, revokeAppInstance, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }
 
