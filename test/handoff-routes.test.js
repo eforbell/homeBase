@@ -493,7 +493,7 @@ test('two finishes of one administrator enrollment at once store one passkey', a
 });
 
 test('an app instance removed mid-enrollment stops it, at options and in the commit', async (t) => {
-  const { app, code, grant, instance, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const { app, code, memberId, instance, kid: { webView, attest, sheet } } = await invitedKid(t);
   const administrator = { userId: app.directory.standing('1001')?.member.userId || '1001' };
   const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: code })).body;
   await attest(id);
@@ -509,7 +509,7 @@ test('an app instance removed mid-enrollment stops it, at options and in the com
   assert.equal(finished.status, 409, JSON.stringify(finished.body));
   assert.equal(finished.body.code, 'APP_INSTANCE_GONE');
   assert.equal((await sheet().post('/_sovereign/auth/handoff/options', { id })).body.code, 'APP_INSTANCE_GONE', 'and options says so too');
-  assert.ok(await grant(), 'the grant was never used');
+  assert.ok(app.directory.grantHash(memberId, { code }), 'the grant was never used');
 });
 
 test('another passkey after a recent check; the check\'s own 5 minutes bound the enrollment', async (t) => {
