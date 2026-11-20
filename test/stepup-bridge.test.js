@@ -26,14 +26,17 @@ function element() {
 const buttonsIn = (node) => (node.listeners.click ? [node] : []).concat(...node.children.map(buttonsIn));
 
 // answer: what the member taps in each modal, by its button's text ('Use passkey', 'OK', 'Cancel', …).
-function load({ bridge = undefined, answer = (labels) => labels.find((label) => label !== 'Cancel'), respond, withPasskeys = false, hash = '', create = null } = {}) {
+function load({ bridge = undefined, answer = (labels) => labels.find((label) => label !== 'Cancel'), respond, withPasskeys = false, hash = '', create = null, userAgent = '' } = {}) {
   const sent = [];
   const modals = [];
+  const classes = new Set(['app-has-nav']);
   const document = {
     createElement: element,
     addEventListener() {},
     removeEventListener() {},
     body: {
+      classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)), add: (name) => classes.add(name), remove: (name) => classes.delete(name) },
+      querySelector: () => ({}),
       append(backdrop) {
         const buttons = buttonsIn(backdrop);
         const text = backdrop.children[0].children[0].textContent;
@@ -51,7 +54,8 @@ function load({ bridge = undefined, answer = (labels) => labels.find((label) => 
     const [status, answerBody] = await respond(url, body, headers, sent);
     return response(status, answerBody);
   };
-  const window = { matchMedia: () => ({ matches: false }), location: { reload() {}, hash, pathname: '/admin', search: '' } };
+  let reloads = 0;
+  const window = { matchMedia: () => ({ matches: false }), location: { reload() { reloads += 1; }, hash, pathname: '/admin', search: '' }, navigator: { userAgent } };
   if (bridge) window.sovereign = bridge;
   const credentials = { get: async () => { throw new Error('no passkey prompt in the page here'); }, create: create || (async () => { throw new Error('no passkey prompt in the page here'); }) };
   const replaced = [];
@@ -60,7 +64,7 @@ function load({ bridge = undefined, answer = (labels) => labels.find((label) => 
   if (withPasskeys) vm.runInContext(API, context);
   vm.runInContext(STEPUP, context);
   if (withPasskeys) vm.runInContext(PASSKEYS, context);
-  return { helper: window.SovereignStepUp, passkeys: window.HBPasskeys, sent, modals, replaced, window };
+  return { helper: window.SovereignStepUp, passkeys: window.HBPasskeys, sent, modals, replaced, window, classes, reloads: () => reloads };
 }
 
 // A bridge that records each handoff and settles it as told (default: the sheet confirmed). confirmed: the
@@ -288,7 +292,7 @@ test('Admin#grant=<code> fills the enrollment code and leaves the address bar at
   assert.deepEqual(replaced, ['/admin'], 'cleared before anything else runs');
   const node = { innerHTML: '' };
   await passkeys.mount(node);
-  assert.match(node.innerHTML, /name="grant" autocomplete="one-time-code" value="AbC-123_xyz789QRStuvWX"/);
+  assert.match(node.innerHTML, /<input type="hidden" name="grant" value="AbC-123_xyz789QRStuvWX">/, 'the focused view carries it');
   assert.match(node.innerHTML, /Your enrollment code is filled in/);
 
   const plain = load({ bridge, withPasskeys: true, hash: '#grant=<script>', respond: (url) => (url === '/_sovereign/auth/status' ? [200, status] : [404, {}]) });
@@ -423,4 +427,120 @@ test('in a browser, adding a passkey runs in the page as before: no handoff', as
   assert.equal(added.kind, 'synced');
   assert.deepEqual(sent.map((request) => request.url), ['/_sovereign/auth/enroll/options', '/_sovereign/auth/enroll/finish']);
   assert.equal(sent[1].body.grant, 'the-code-1234');
+});
+
+const KID_STATUS = { state: 'active', instance: 'smith', member: { login: 'valerie@example.com', name: 'Valerie', role: 'parent', administrator: false }, credentials: [], check: null, administratorRuleMet: true, canActivate: false, enrollmentMetadataValid: true };
+
+test('Admin#grant=<code> for a member with no passkey is only "Add your passkey": no navigation, the code hidden, the name filled in', async () => {
+  const bridge = fakeBridge();
+  const page = load({ bridge, withPasskeys: true, hash: '#grant=AbC-123_xyz789QRStuvWX', userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_7 like Mac OS X)', respond: (url) => (url === '/_sovereign/auth/status' ? [200, KID_STATUS] : [404, {}]) });
+  assert.equal(page.passkeys.focused(), true);
+  assert.deepEqual([...page.classes], ['hb-passkey-focus'], 'the navigation is hidden from the start');
+  const node = { innerHTML: '' };
+  await page.passkeys.mount(node);
+  assert.match(node.innerHTML, /<h2[^>]*>Add your passkey<\/h2>/);
+  assert.match(node.innerHTML, /Valerie, a passkey lets you confirm it's you/);
+  assert.match(node.innerHTML, /<input type="hidden" name="grant" value="AbC-123_xyz789QRStuvWX">/);
+  assert.match(node.innerHTML, /name="label" maxlength="60" value="iPhone"/);
+  assert.doesNotMatch(node.innerHTML, /Not checked on this hostname|Signing key|No passkeys yet/, 'nothing else of Admin');
+  assert.equal(page.passkeys.focused(), true);
+});
+
+test('a code that doesn\'t fit (the administrator, or a member with a passkey) brings back the full Admin', async () => {
+  for (const status of [
+    { ...KID_STATUS, member: { ...KID_STATUS.member, administrator: true } },
+    { ...KID_STATUS, credentials: [{ credentialId: 'k', label: 'Phone', kind: 'synced', handleFormat: 'isolated-v2', handleMetadataValid: true, createdAt: null, lastUsedAt: null, usable: true }] },
+    { ...KID_STATUS, state: 'recovery' },
+  ]) {
+    const page = load({ bridge: fakeBridge(), withPasskeys: true, hash: '#grant=AbC-123_xyz789QRStuvWX', respond: (url) => (url === '/_sovereign/auth/status' ? [200, status] : [404, {}]) });
+    const node = { innerHTML: '' };
+    await page.passkeys.mount(node);
+    assert.equal(page.passkeys.focused(), false);
+    assert.deepEqual([...page.classes], ['app-has-nav'], 'navigation back');
+    assert.match(node.innerHTML, /<h2[^>]*>Passkeys<\/h2>/);
+  }
+  const plain = load({ bridge: fakeBridge(), withPasskeys: true, respond: (url) => (url === '/_sovereign/auth/status' ? [200, KID_STATUS] : [404, {}]) });
+  assert.equal(plain.passkeys.focused(), false, 'no code, no focus');
+});
+
+test('adding the passkey in the focused view: through the app, then back to Home Base, never on to the rest of Admin', async () => {
+  const bridge = fakeBridge();
+  const respond = (url, body, headers, all) => (url === '/_sovereign/auth/status' ? [200, KID_STATUS] : enrollServer(bridge)(url, body, headers, all));
+  const page = load({ bridge, withPasskeys: true, hash: '#grant=AbC-123_xyz789QRStuvWX', respond });
+  const result = { textContent: '', innerHTML: '' };
+  const button = { hidden: false };
+  const form = {
+    dataset: { passkeyAction: 'enroll', state: 'active', focused: 'true' },
+    elements: { label: { value: 'iPhone' }, hardware: { checked: false }, grant: { value: 'AbC-123_xyz789QRStuvWX' } },
+    querySelector: (selector) => (selector === '[data-result]' ? result : button),
+    closest() { return this; },
+  };
+  const listeners = {};
+  page.passkeys.wire({ addEventListener: (name, fn) => { listeners[name] = fn; }, querySelector: () => result });
+  await listeners.submit({ target: form, preventDefault() {} });
+  assert.equal(result.textContent, 'Your passkey is added. Tap Apps at the top to go back to Home Base.');
+  assert.equal(button.hidden, true);
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  assert.equal(page.reloads(), 0, 'no reload into the full Admin');
+  assert.deepEqual(page.sent.map((request) => [request.url, request.body && request.body.grant]), [
+    ['/_sovereign/auth/handoff/begin', 'AbC-123_xyz789QRStuvWX'],
+    ['/_sovereign/auth/handoff/redeem', undefined],
+  ]);
+});
+
+// The focused form, as passkeys.js's submit handler sees it.
+function focusedForm() {
+  const result = { textContent: '', innerHTML: '', className: '' };
+  const button = { hidden: false, disabled: false };
+  return {
+    result,
+    button,
+    form: {
+      dataset: { passkeyAction: 'enroll', state: 'active', focused: 'true' },
+      elements: { label: { value: 'iPhone' }, hardware: { checked: false }, grant: { value: 'AbC-123_xyz789QRStuvWX' } },
+      querySelector: (selector) => (selector === '[data-result]' ? result : button),
+      closest() { return this; },
+    },
+  };
+}
+const submitter = (passkeys) => {
+  const listeners = {};
+  passkeys.wire({ addEventListener: (name, fn) => { listeners[name] = fn; }, querySelector: () => null });
+  return (form) => listeners.submit({ target: form, preventDefault() {} });
+};
+
+test('focused: a refused code says so with a way back, and the button works again; a second tap waits', async () => {
+  const bridge = fakeBridge();
+  let disabledWhileBegun = null;
+  const { form, button, result } = focusedForm();
+  const respond = (url) => {
+    if (url === '/_sovereign/auth/handoff/begin') { disabledWhileBegun = button.disabled; return [403, { error: 'That enrollment code is not valid; ask the administrator for a new one.', code: 'INVALID_GRANT' }]; }
+    return [404, {}];
+  };
+  const page = load({ bridge, withPasskeys: true, hash: '#grant=AbC-123_xyz789QRStuvWX', respond });
+  await submitter(page.passkeys)(form);
+  assert.equal(disabledWhileBegun, true, 'no second tap while it runs');
+  assert.equal(button.disabled, false);
+  assert.equal(result.textContent, 'That enrollment code is not valid; ask the administrator for a new one. Tap Add passkey to try again, or Apps at the top to go back.');
+  assert.deepEqual(bridge.ids, [], 'no sheet');
+});
+
+test('focused in a browser: success and failure each link back to Home Base', async () => {
+  const bytes = (text) => new TextEncoder().encode(text).buffer;
+  const create = async () => ({ id: 'cred', rawId: bytes('cred'), type: 'public-key', response: { clientDataJSON: bytes('{}'), attestationObject: bytes('att'), getTransports: () => [] }, getClientExtensionResults: () => ({}) });
+  let finish = [201, { ok: true, kind: 'synced', label: 'iPhone', askedForHardware: false }];
+  const respond = (url) => {
+    if (url === '/_sovereign/auth/enroll/options') return [200, { options: { challenge: 'Y2hhbGxlbmdl', user: { id: 'dXNlcg', name: 'v' }, rp: { id: 'example.ts.net' }, excludeCredentials: [] } }];
+    if (url === '/_sovereign/auth/enroll/finish') return finish;
+    return [404, {}];
+  };
+  const page = load({ withPasskeys: true, hash: '#grant=AbC-123_xyz789QRStuvWX', respond, create });
+  const ok = focusedForm();
+  await submitter(page.passkeys)(ok.form);
+  assert.equal(ok.result.innerHTML, 'Your passkey is added. <a href="/">Back to Home Base</a>');
+  assert.equal(ok.button.hidden, true);
+  finish = [403, { error: 'That enrollment code is not valid; ask the administrator for a new one.' }];
+  const bad = focusedForm();
+  await submitter(page.passkeys)(bad.form);
+  assert.equal(bad.result.innerHTML, 'That enrollment code is not valid; ask the administrator for a new one. <a href="/">Back to Home Base</a>');
 });

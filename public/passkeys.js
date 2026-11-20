@@ -92,6 +92,43 @@
     }
   }
 
+  // With a code, Admin is just "Add your passkey": no navigation and nothing else of Admin, for a member who
+  // came from the app's invitation and shouldn't have to make sense of the rest. If the code doesn't fit
+  // them (they have a passkey, or Home Base isn't active), the page goes back to the full Admin.
+  let focus = Boolean(presentedGrant);
+  const body = document.body;
+  const setFocus = (on) => {
+    focus = on;
+    if (!body || !body.classList) return;
+    body.classList.toggle('hb-passkey-focus', on);
+    // nav.js marks the page for its sidebar and bottom bar; none are shown while focused.
+    if (on) body.classList.remove('app-has-nav'); else if (body.querySelector && body.querySelector('.hb-app-sidebar')) body.classList.add('app-has-nav');
+  };
+  if (focus) setFocus(true);
+  const focusFits = (status) => status.state === 'active' && !status.member.administrator && !status.credentials.length;
+  const deviceName = () => {
+    const agent = (window.navigator && window.navigator.userAgent) || '';
+    // iPadOS reports a Mac, but a Mac has no touch screen.
+    const ipad = /iPad/.test(agent) || (/Macintosh/.test(agent) && (window.navigator.maxTouchPoints || 0) > 1);
+    return ipad ? 'iPad' : /iPhone/.test(agent) ? 'iPhone' : '';
+  };
+
+  function renderFocused(status) {
+    return `
+      <h2 style="margin-top:0;">Add your passkey</h2>
+      <p style="margin:0 0 0.9rem;">${esc(status.member.name || status.member.login)}, a passkey lets you confirm it's you in your household's apps. Your enrollment code is filled in: name this passkey and add it.</p>
+      <form class="hb-form-grid" data-passkey-action="enroll" data-state="${esc(status.state)}" data-focused="true">
+        <label class="hb-label">Name for this passkey <input class="hb-input" name="label" maxlength="60" value="${esc(deviceName())}" placeholder="e.g. iPhone"></label>
+        <input type="hidden" name="grant" value="${esc(presentedGrant)}">
+        <details>
+          <summary class="hb-muted">Using a hardware security key?</summary>
+          <label class="hb-label hb-check-row" style="margin-top:0.5rem;"><input type="checkbox" name="hardware"> It's a hardware security key (asks it to prove its maker)</label>
+        </details>
+        <button class="hb-btn hb-btn-primary" type="submit">Add passkey</button>
+        <p class="hb-muted" data-result style="margin:0;"></p>
+      </form>`;
+  }
+
   async function check({ purpose = 'step-up', kind } = {}) {
     if (inApp()) {
       if (purpose !== 'step-up') throw new Error(IN_SAFARI);
@@ -218,9 +255,15 @@
     try {
       status = await window.HB.getJson(`${AUTH}status`);
     } catch (error) {
+      setFocus(false);
       node.innerHTML = `<h2 style="margin-top:0;">Passkeys</h2><p class="hb-muted" style="margin:0;">${esc(/not found/i.test(error.message) ? 'Passkeys run on Home Base\'s own hostname, once this host uses per-service sockets.' : error.message)}</p>`;
       return;
     }
+    if (focus && focusFits(status)) {
+      node.innerHTML = renderFocused(status);
+      return status;
+    }
+    setFocus(false);
     node.innerHTML = render(status);
     return status;
   }
@@ -234,6 +277,9 @@
       const action = form.dataset.passkeyAction;
       const result = form.querySelector('[data-result]') || node.querySelector('[data-check-result]');
       result.textContent = 'Waiting for your passkey…';
+      // One at a time: a second tap would open a second sheet for the same code.
+      const submit = form.querySelector('button[type="submit"]');
+      if (submit) submit.disabled = true;
       try {
         if (action === 'rotate') {
           const done = await guardedPost(`${AUTH}signing-key/rotate`, { exposed: form.elements.exposed.checked });
@@ -242,14 +288,31 @@
         } else if (action === 'enroll') {
           if (inApp() && form.dataset.state !== 'active') throw new Error(IN_SAFARI);
           const done = await enroll({ label: form.elements.label.value, hardware: form.elements.hardware.checked, grant: form.elements.grant ? form.elements.grant.value.trim() : undefined });
-          result.textContent = done.askedForHardware && done.kind !== 'hardware' ? `Registered, but as a ${KIND_LABELS[done.kind]}: it did not prove it is a hardware key.` : 'Registered.';
-          setTimeout(reload, 1200);
+          const added = done.askedForHardware && done.kind !== 'hardware' ? `Registered, but as a ${KIND_LABELS[done.kind]}: it did not prove it is a hardware key.` : 'Registered.';
+          if (form.dataset.focused === 'true') {
+            // Nothing more to do here: back to Home Base, not on to the rest of Admin.
+            const button = form.querySelector('button[type="submit"]');
+            if (button) button.hidden = true;
+            if (done.kind === 'hardware' || !done.askedForHardware) result.className = 'hb-ok';
+            if (inApp()) result.textContent = `${added === 'Registered.' ? 'Your passkey is added.' : added} Tap Apps at the top to go back to Home Base.`;
+            else result.innerHTML = `${esc(added === 'Registered.' ? 'Your passkey is added.' : added)} <a href="/">Back to Home Base</a>`;
+          } else {
+            result.textContent = added;
+            setTimeout(reload, 1200);
+          }
         } else {
           await check({ purpose: action === 'activate' ? 'activate' : 'step-up' });
           reload();
         }
       } catch (error) {
+        if (submit) submit.disabled = false;
         result.textContent = error.message;
+        // Focused, the code can't be changed and there's no navigation: always a way back (a new code is
+        // scanned again from the app's launcher).
+        if (form.dataset.focused === 'true') {
+          if (inApp()) result.textContent = `${error.message} Tap Add passkey to try again, or Apps at the top to go back.`;
+          else result.innerHTML = `${esc(error.message)} <a href="/">Back to Home Base</a>`;
+        }
       }
     });
     node.addEventListener('click', async (event) => {
@@ -269,5 +332,5 @@
     });
   }
 
-  window.HBPasskeys = { check, enroll, mount, wire };
+  window.HBPasskeys = { check, enroll, mount, wire, focused: () => focus, unfocus: () => setFocus(false) };
 })();
