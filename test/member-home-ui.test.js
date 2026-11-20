@@ -183,7 +183,7 @@ test('the dashboard names the household, and after the cutover shows the instanc
     ingress: { instance: 'smith', cutOver: true, homebaseUrl: 'https://smith-homebase.example/', appsUrl: 'https://smith-home.example/' } };
   const ui = page([{ state: 'administrator', household: 'The <Smiths>' }], { config: cutOver }); await tick();
   assert.match(ui.root.innerHTML, /Household: <strong>The &lt;Smiths&gt;<\/strong>/);
-  assert.match(ui.root.innerHTML, /Home Base: <a href="https:\/\/smith-homebase\.example\/">smith-homebase\.example<\/a> · Apps: <a href="https:\/\/smith-home\.example\/">smith-home\.example<\/a> · Service: active/);
+  assert.match(ui.root.innerHTML, /Home Base: <a href="https:\/\/smith-homebase\.example\/">smith-homebase\.example<\/a> · Apps: smith-home\.example · Service: active/);
   assert.doesNotMatch(ui.root.innerHTML, /Host: home\.example|Hostname is still default/);
 
   const instanceOnly = page([{ state: 'administrator' }], { config: { ingress: { instance: 'smith', cutOver: false } } }); await tick();

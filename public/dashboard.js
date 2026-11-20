@@ -271,7 +271,9 @@
       const ingress = config.ingress || {};
       // The administrator's name for the household, else the instance (as /api/home's household).
       const household = config.householdName || ingress.instance || '';
-      const addressLink = (url) => `<a href="${esc(url)}">${esc(String(url).replace(/^https:\/\//, '').replace(/\/$/, ''))}</a>`;
+      const bare = (url) => esc(String(url).replace(/^https:\/\//, '').replace(/\/$/, ''));
+      // The apps address is text: its root answers 404 on purpose (each app is under its own path).
+      const addressLink = (url) => `<a href="${esc(url)}">${bare(url)}</a>`;
       const installations = Object.values(state.installations || {});
       const jobs = Array.isArray(state.jobs) ? state.jobs : [];
       const healthByAppId = healthPayload.byAppId || {};
@@ -287,7 +289,7 @@
             ${household ? `<p class="hb-home-household" style="margin:0.35rem 0 0;">Household: <strong>${esc(household)}</strong></p>` : ''}
             <p class="hb-muted" style="margin:0.55rem 0 0;">
               ${ingress.cutOver
-                ? `Home Base: ${addressLink(ingress.homebaseUrl)} · Apps: ${addressLink(ingress.appsUrl)}`
+                ? `Home Base: ${addressLink(ingress.homebaseUrl)} · Apps: ${bare(ingress.appsUrl)}`
                 : `Host: ${esc(config.hostname)}.${esc(config.domain)}`} · Service: ${esc(status.systemd?.active || 'unknown')}
             </p>
             ${placeholderBanner}
