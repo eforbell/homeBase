@@ -70,6 +70,9 @@ test('member home: an ingress-observed visitor becomes a member without any cred
 test('member home: the household name is the instance, in every state, and absent when unset', async (t) => {
   const household = await activeHousehold(t);
   assert.equal((await browser(household.base, KID).get('/api/home')).body.household, 'smith', 'waiting');
+  const stranger = (await browser(household.base, '100.64.0.9').get('/api/home')).body;
+  assert.equal(stranger.state, 'unidentified');
+  assert.equal(stranger.household, 'smith', 'unidentified');
   assert.equal((await browser(household.base, PARENT).get('/api/home')).body.household, 'smith', 'administrator');
   const legacy = await startServer(t, { config: { directory: false } });
   assert.equal((await browser(legacy.base, KID).get('/api/home')).body.household, 'smith', 'legacy');
