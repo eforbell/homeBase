@@ -254,6 +254,9 @@ test('setup: no handoff until Home Base is active', async (t) => {
   const refused = await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'check' });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.code, 'BOOTSTRAP_STATE');
+  const enrolling = await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'Key' });
+  assert.equal(enrolling.status, 409, 'enrolling in setup stays in a browser, with the passphrase session');
+  assert.equal(enrolling.body.code, 'BOOTSTRAP_STATE');
 });
 
 test('every handoff result is audited with the app key that attested it', async (t) => {
@@ -367,7 +370,8 @@ async function invitedKid(t) {
 }
 
 test('a first passkey in the app: the grant\'s code at begin, the sheet registers, finish stores it, redeem reports', async (t) => {
-  const { app, root, code, instance, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const { app, root, code, memberId, instance, kid: { webView, attest, sheet } } = await invitedKid(t);
+  assert.ok(app.directory.grantHash(memberId, { code }), 'the grant is live before');
   assert.equal((await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone' })).body.code, 'GRANT_REQUIRED');
   assert.equal((await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: 'not-the-code' })).body.code, 'INVALID_GRANT', 'a wrong code fails before the sheet');
   const begun = await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: code });
@@ -388,7 +392,7 @@ test('a first passkey in the app: the grant\'s code at begin, the sheet register
   assert.equal(webView.cookies.has('__Host-sv_assurance'), false, 'adding a passkey is not a check');
   const status = (await webView.get('/_sovereign/auth/status')).body;
   assert.deepEqual(status.credentials.map((credential) => credential.label), ['iPhone']);
-  assert.equal(app.directory.grantHash(status.member.memberId, { code }), null, 'the grant is used up');
+  assert.equal(app.directory.grantHash(memberId, { code }), null, 'the grant is used up');
 
   const { SqliteStateStore } = require('../src/state/sqlite-store');
   const audit = new SqliteStateStore(require('path').join(root, 'state.sqlite3')).listAdminAudit(50);
@@ -455,6 +459,39 @@ test('a grant reissued after begin stops the enrollment, at options, at finish, 
   assert.equal((await webView.get('/_sovereign/auth/status')).body.credentials.length, 0, 'nothing was stored');
 });
 
+test('one grant, two enroll records: only the first stores a passkey', async (t) => {
+  const { code, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const ids = [];
+  for (const label of ['iPhone', 'iPad']) {
+    const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label, grant: code })).body;
+    await attest(id);
+    ids.push(id);
+  }
+  const sheets = [sheet(), sheet()];
+  const options = await Promise.all(ids.map((id, at) => sheets[at].post('/_sovereign/auth/handoff/options', { id })));
+  const finished = await Promise.all(ids.map((id, at) => sheets[at].post('/_sovereign/auth/handoff/finish', { id, assertion: createAuthenticator().register(options[at].body.options, { origin: ORIGIN }) })));
+  assert.deepEqual(finished.map((answer) => answer.status).sort(), [200, 403], JSON.stringify(finished.map((answer) => answer.body)));
+  assert.equal(finished.find((answer) => answer.status === 403).body.code, 'INVALID_GRANT');
+  assert.equal((await webView.get('/_sovereign/auth/status')).body.credentials.length, 1);
+});
+
+test('two finishes of one administrator enrollment at once store one passkey', async (t) => {
+  const { base, parent, yubikey } = await activeHousehold(t, nativeConfig());
+  const instance = await registerApp(parent);
+  const { webView, attest, sheet } = phone(base, PARENT, instance);
+  const body = { purpose: 'enroll', label: 'Backup key' };
+  const first = await webView.post('/_sovereign/auth/handoff/begin', body);
+  const token = (await webView.actionToken(yubikey, first.body)).body.token;
+  const { id } = (await webView.post('/_sovereign/auth/handoff/begin', body, { 'x-sovereign-action-token': token })).body;
+  await attest(id);
+  const inSheet = sheet();
+  const options = await inSheet.post('/_sovereign/auth/handoff/options', { id });
+  const before = (await webView.get('/_sovereign/auth/status')).body.credentials.length;
+  const finished = await Promise.all([createAuthenticator(), createAuthenticator()].map((key) => inSheet.post('/_sovereign/auth/handoff/finish', { id, assertion: key.register(options.body.options, { origin: ORIGIN }) })));
+  assert.deepEqual(finished.map((answer) => answer.status).sort(), [200, 403], JSON.stringify(finished.map((answer) => answer.body)));
+  assert.equal((await webView.get('/_sovereign/auth/status')).body.credentials.length, before + 1);
+});
+
 test('an app instance removed mid-enrollment stops it, at options and in the commit', async (t) => {
   const { app, code, grant, instance, kid: { webView, attest, sheet } } = await invitedKid(t);
   const administrator = { userId: app.directory.standing('1001')?.member.userId || '1001' };
@@ -499,6 +536,17 @@ test('another passkey after a recent check; the check\'s own 5 minutes bound the
   const options = await sheet().post('/_sovereign/auth/handoff/options', { id: late });
   assert.equal(options.status, 409, JSON.stringify(options.body));
   assert.equal(options.body.code, 'RECENT_CHECK_EXPIRED');
+  // Past the deadline between options and finish: finish refuses on its own.
+  Date.now.mock.mockImplementation(() => now + 4.5 * 60_000);
+  const atFinish = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPad' })).body.id;
+  await attest(atFinish);
+  const finishSheet = sheet();
+  const issued = await finishSheet.post('/_sovereign/auth/handoff/options', { id: atFinish });
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  Date.now.mock.mockImplementation(() => now + 5.5 * 60_000);
+  const lateFinish = await finishSheet.post('/_sovereign/auth/handoff/finish', { id: atFinish, assertion: createAuthenticator().register(issued.body.options, { origin: ORIGIN }) });
+  assert.equal(lateFinish.status, 409, JSON.stringify(lateFinish.body));
+  assert.equal(lateFinish.body.code, 'RECENT_CHECK_EXPIRED');
   Date.now.mock.restore();
 
   const fresh = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPad' })).body.id;
