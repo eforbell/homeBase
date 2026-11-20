@@ -37,7 +37,7 @@
         <ol style="padding-left:1.2rem;line-height:1.6;">
           <li>Install Tailscale and connect to the household's tailnet. Your administrator invites you.</li>
           <li>Install the Home Base app. Your administrator sends the invitation.</li>
-          <li>Open the app, tap <strong>Scan code</strong> and scan the code below. Or type the address.</li>
+          <li>Open the app, tap <strong>Scan a join code</strong> and scan the code below. Or type the address.</li>
         </ol>
         ${qrSvg(address)}
         <p style="margin:0.4rem 0 0;">Address: <code data-join-host>${esc(host)}</code></p>

@@ -191,7 +191,7 @@ test('accounts that opened Home Base are offered to add, with a role to choose a
   await load({ state: 'active', members: [member()], candidates: [] }).members.mount(none);
   assert.match(none.innerHTML, /No one new has opened Home Base yet/);
   assert.match(none.innerHTML, /data-members-refresh/);
-  assert.match(none.innerHTML, /<a href="\/join"[^>]*data-members-join>Show the join code<\/a>/);
+  assert.match(none.innerHTML, /<a class="hb-btn hb-btn-primary" href="\/join"[^>]*data-members-join>.*Show the join code<\/a>/s);
 });
 
 test('adding is offered only while Home Base is in setup or active, as the directory allows', async () => {

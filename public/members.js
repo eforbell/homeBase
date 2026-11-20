@@ -161,11 +161,13 @@
   function addSection(directory) {
     if (!mayEdit(directory)) return '';
     const candidates = directory.candidates || [];
-    const how = 'To add someone, have them open Home Base on their own device, signed in to the tailnet as themselves; they appear here for a day.';
+    const how = 'To add someone, have them join from their own device, signed in to the tailnet as themselves: show them the join code for the Home Base app, or have them open Home Base. They appear here for a day.';
     return `
       <h3 style="margin:1.2rem 0 0.3rem;">Add a member</h3>
       <p class="hb-muted" style="margin:0 0 0.6rem;">${esc(how)}</p>
-      <p style="margin:0 0 0.6rem;"><a href="/join" target="_blank" rel="noopener" data-members-join>Show the join code</a> <span class="hb-muted">for the Home Base app on their phone</span></p>
+      <div class="hb-actions" style="margin:0 0 0.8rem;">
+        <a class="hb-btn hb-btn-primary" href="/join" target="_blank" rel="noopener" data-members-join style="display:inline-flex;flex-direction:row;align-items:center;gap:0.45rem;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="flex-shrink:0;"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></svg>Show the join code</a>
+      </div>
       ${candidates.length ? `<ul class="hb-members">${candidates.map(candidateRow).join('')}</ul>` : '<p class="hb-muted" style="margin:0 0 0.6rem;">No one new has opened Home Base yet.</p>'}
       <div><button class="hb-btn" type="button" data-members-refresh>Check again</button><div data-members-refresh-error></div></div>`;
   }
