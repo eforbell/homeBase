@@ -215,6 +215,21 @@
   flex-shrink: 0;
 }
 
+.hb-nav-brand {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.hb-nav-household {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hb-nav-wordmark strong {
   font-weight: 700;
   color: var(--accent);

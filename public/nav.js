@@ -90,6 +90,8 @@
   let hadAdminNavigation = false;
 
   function updateHomeNavigation(home) {
+    // The household's name (/api/home's household: the administrator's, else the instance), on every page.
+    const household = typeof home.household === 'string' && home.household ? window.HB.escapeHtml(home.household) : '';
     const full = home.state === 'legacy' || home.state === 'administrator';
     const homeLink = { ...navItems[0], label: 'Home' };
     const selfService = home.state === 'member';
@@ -102,7 +104,7 @@
     sidebar.innerHTML = `
       <div class="hb-nav-wordmark">
         <svg class="hb-nav-logo" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2L1 9.5H4V18H9V14H11V18H16V9.5H19L10 2Z"/></svg>
-        <span>Home <strong>Base</strong></span>
+        <span class="hb-nav-brand"><span>Home <strong>Base</strong></span>${household ? `<span class="hb-nav-household">${household}</span>` : ''}</span>
         ${full ? `<span class="hb-status-dot hb-status-dot--${preflightStatus}" aria-label="System status"></span>` : ''}
       </div>
       ${renderLinks(activePage, items)}
@@ -127,7 +129,7 @@
             <svg class="hb-nav-logo" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2L1 9.5H4V18H9V14H11V18H16V9.5H19L10 2Z"/></svg>
             <div>
               <div class="hb-more-sheet-title">Home Base</div>
-              <div class="hb-more-sheet-copy">Network, admin, and config</div>
+              <div class="hb-more-sheet-copy">${household || 'Network, admin, and config'}</div>
             </div>
           </div>
           ${moreItems.map((item) => {

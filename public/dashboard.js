@@ -22,13 +22,14 @@
     const escape = window.HB.escapeHtml;
     const identity = home.caller
       ? `<p class="hb-muted hb-home-identity">Connected as <strong>${escape(home.caller.name || home.caller.login)}</strong>${home.caller.name ? ` · ${escape(home.caller.login)}` : ''}</p>` : '';
+    const household = home.household ? `<p class="hb-home-household" style="margin:0.35rem 0 0;">Household: <strong>${escape(home.household)}</strong></p>` : '';
     const refresh = '<button class="hb-btn" type="button" data-home-refresh>Check again</button>';
     const unlock = home.canUnlockAdmin ? '<a class="hb-btn" href="/admin">Unlock administration</a>' : '';
     if (home.state === 'member') {
       document.title = 'Home Base - Your apps';
       root.innerHTML = `<div class="hb-stack">
         <section class="hb-card">
-          <h1 style="margin:0;">Your apps</h1>${identity}
+          <h1 style="margin:0;">Your apps</h1>${household}${identity}
           <p class="hb-muted">Choose an app to get started. Each app checks its own access when you open it.</p>
           <div class="hb-actions">${unlock}${refresh}</div>
         </section>
@@ -59,7 +60,7 @@
     const [title, message, detail] = messages[home.state] || messages.unavailable;
     document.title = `Home Base - ${title}`;
     root.innerHTML = `<div class="hb-stack">
-      <section class="hb-card"><h1 style="margin:0;">${title}</h1>${identity}
+      <section class="hb-card"><h1 style="margin:0;">${title}</h1>${household}${identity}
         <p>${message}</p><p class="hb-muted">${detail}</p>
         <div class="hb-actions">${refresh}${unlock}${['setup', 'recovery'].includes(home.state) && !home.canUnlockAdmin ? '<a class="hb-btn" href="/admin">Administrator: finish on Admin</a>' : ''}</div>
         ${home.state === 'waiting' ? '<p class="hb-muted" role="status" style="margin-bottom:0;">Waiting for your administrator. No passkey is required to see your apps.</p>' : ''}
@@ -265,11 +266,17 @@
         window.HB.getJson('/api/apps/health'),
         window.HB.getJson('/api/catalog'),
       ]);
+      const esc = window.HB.escapeHtml;
+      // After the ingress cutover the addresses are the instance's services; hostname.domain is no longer used.
+      const ingress = config.ingress || {};
+      // The administrator's name for the household, else the instance (as /api/home's household).
+      const household = config.householdName || ingress.instance || '';
+      const addressLink = (url) => `<a href="${esc(url)}">${esc(String(url).replace(/^https:\/\//, '').replace(/\/$/, ''))}</a>`;
       const installations = Object.values(state.installations || {});
       const jobs = Array.isArray(state.jobs) ? state.jobs : [];
       const healthByAppId = healthPayload.byAppId || {};
       const catalogById = new Map((catalogPayload.apps || []).map((app) => [app.id, app]));
-      const placeholderBanner = config.hostnameIsPlaceholder
+      const placeholderBanner = config.hostnameIsPlaceholder && !ingress.cutOver
         ? '<p class="hb-warn" style="margin:0.4rem 0 0;">Hostname is still default (`homebase`). Update in Config before wider deployment.</p>'
         : '';
 
@@ -277,8 +284,11 @@
         <div class="hb-stack">
           <section class="hb-card">
             <h1 style="margin:0;">Dashboard</h1>
+            ${household ? `<p class="hb-home-household" style="margin:0.35rem 0 0;">Household: <strong>${esc(household)}</strong></p>` : ''}
             <p class="hb-muted" style="margin:0.55rem 0 0;">
-              Host: ${window.HB.escapeHtml(config.hostname)}.${window.HB.escapeHtml(config.domain)} · Service: ${window.HB.escapeHtml(status.systemd?.active || 'unknown')}
+              ${ingress.cutOver
+                ? `Home Base: ${addressLink(ingress.homebaseUrl)} · Apps: ${addressLink(ingress.appsUrl)}`
+                : `Host: ${esc(config.hostname)}.${esc(config.domain)}`} · Service: ${esc(status.systemd?.active || 'unknown')}
             </p>
             ${placeholderBanner}
           </section>
