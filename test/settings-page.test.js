@@ -86,7 +86,7 @@ test('a failure while focused shows the Admin error with the navigation back', a
   assert.match(html, /Request failed \(500\)/);
 });
 
-test('Config offers a timezone set outside its list as itself, so saving keeps it', async () => {
+test('Config offers a saved timezone outside its list as itself, so saving keeps it', async () => {
   const render = (householdTimezone) => renderPage('config', {
     '/api/admin/status': { configured: true, unlocked: true, sessionExpiresAt: new Date().toISOString() },
     '/api/homebase/config': { hostname: 'homebase', domain: 'tailnet', householdTimezone, ingress: { instance: null, cutOver: false } },

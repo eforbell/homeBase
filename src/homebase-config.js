@@ -69,6 +69,15 @@ function validateAbsolutePath(value, fieldName) {
   return null;
 }
 
+function isKnownTimezone(zone) {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
 function validateHomeBaseConfigPatch(payload, currentConfig) {
   const patch = payload && typeof payload === 'object' ? payload : {};
   const allowedFields = ['hostname', 'domain', 'gitTransport', 'gitSshKeyPath', 'healthAlertsEnabled', 'healthAlertsWebhookUrl', 'tailscaleManagedServiceId', 'householdTimezone', 'householdName'];
@@ -125,7 +134,9 @@ function validateHomeBaseConfigPatch(payload, currentConfig) {
     return { error: 'tailscaleManagedServiceId must look like svc:<name> using letters, numbers, dashes, underscores, or dots' };
   }
 
-  if (!TIMEZONE_PATTERN.test(candidate.householdTimezone)) {
+  // Now that it's stored, a zone the executor refuses (isValidSite: at most 64 characters) would break every
+  // later install and update, and one that doesn't exist would leave apps on UTC: refuse both here.
+  if (!TIMEZONE_PATTERN.test(candidate.householdTimezone) || candidate.householdTimezone.length > 64 || !isKnownTimezone(candidate.householdTimezone)) {
     return { error: 'householdTimezone must be a valid IANA timezone (e.g. America/New_York)' };
   }
 

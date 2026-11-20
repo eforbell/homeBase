@@ -508,7 +508,7 @@
     `;
   }
 
-  // The zones offered by name. Another one set in Home Base's environment is offered as itself, so saving
+  // The zones offered by name. Another one already saved (through the API) is offered as itself, so saving
   // Config keeps it rather than picking the first of these.
   const US_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu'];
 

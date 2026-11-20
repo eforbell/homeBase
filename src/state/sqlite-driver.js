@@ -136,7 +136,7 @@ if op == "init":
         conn.execute("ALTER TABLE homebase_config ADD COLUMN tailscale_managed_service_id TEXT")
     if "household_name" not in columns:
         conn.execute("ALTER TABLE homebase_config ADD COLUMN household_name TEXT")
-    # Saved by Config since it was offered, but never stored until this column: NULL keeps the environment's.
+    # Saved by Config since it was offered, but never stored until this column: NULL keeps the default.
     if "household_timezone" not in columns:
         conn.execute("ALTER TABLE homebase_config ADD COLUMN household_timezone TEXT")
     installation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(installations)")}

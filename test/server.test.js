@@ -621,6 +621,14 @@ test('homebase config endpoint returns defaults and persists validated updates',
     assert.equal((await post({ householdTimezone: 'America/Chicago' })).householdTimezone, 'America/Chicago');
     assert.equal((await post({ healthAlertsEnabled: false })).householdTimezone, 'America/Chicago');
     assert.equal((await (await fetch(`${server.url}/api/homebase/config`)).json()).householdTimezone, 'America/Chicago', 'after a reload');
+    // Stored, a zone the executor refuses (over 64 characters) or that doesn't exist would break installs.
+    for (const householdTimezone of [`America/${'x'.repeat(60)}`, 'America/Atlantis', 'Foo/Bar']) {
+      const refused = await fetch(`${server.url}/api/homebase/config`, {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie: await adminCookieFor(server.url) }, body: JSON.stringify({ householdTimezone }),
+      });
+      assert.equal(refused.status, 400, householdTimezone);
+    }
+    assert.equal((await post({ householdTimezone: 'Europe/London' })).householdTimezone, 'Europe/London', 'a real zone outside the US list');
     assert.equal((await post({ householdName: '  ' })).householdName, '');
     assert.equal((await (await fetch(`${server.url}/api/homebase/config`)).json()).householdName, '');
   } finally {
