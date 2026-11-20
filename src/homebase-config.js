@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/i;
 const ALLOWED_GIT_TRANSPORTS = new Set(['https', 'ssh', 'ssh-key']);
@@ -69,13 +71,25 @@ function validateAbsolutePath(value, fieldName) {
   return null;
 }
 
-function isKnownTimezone(zone) {
+// A zone apps can use: one Intl knows and, where the host has a zone database, a file in it with exactly
+// this name. TZ= and Python's zoneinfo read that file case-sensitively, and Intl alone accepts any case and
+// old aliases (US/Eastern) a host may not have. The pattern allows no dots, so the name stays inside it.
+function isKnownTimezone(zone, zoneinfo = '/usr/share/zoneinfo') {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: zone });
-    return true;
   } catch (_error) {
     return false;
   }
+  if (!fs.existsSync(zoneinfo)) return true;
+  let at = zoneinfo;
+  for (const part of zone.split('/')) {
+    let names;
+    try { names = fs.readdirSync(at); } catch (_error) { return false; }
+    // Exact names from the listing, even on a case-insensitive filesystem.
+    if (!names.includes(part)) return false;
+    at = path.join(at, part);
+  }
+  try { return fs.statSync(at).isFile(); } catch (_error) { return false; }
 }
 
 function validateHomeBaseConfigPatch(payload, currentConfig) {
