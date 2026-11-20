@@ -1154,6 +1154,7 @@ function createApp(config) {
         if (normalizedPath === '/admin') return servePublicPage(res, 'admin.html');
         if (normalizedPath === '/config') return servePublicPage(res, 'config.html');
         if (normalizedPath === '/network') return servePublicPage(res, 'network.html');
+        if (normalizedPath === '/join') return servePublicPage(res, 'join.html');
         if (/^\/apps\/[^/]+$/.test(normalizedPath)) return servePublicPage(res, 'app.html');
         if (/^\/jobs\/\d+$/.test(normalizedPath)) return servePublicPage(res, 'job.html');
       }

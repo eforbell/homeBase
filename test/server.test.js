@@ -220,7 +220,7 @@ test('control-plane routes serve their page shells and legacy /settings redirect
   });
 
   try {
-    for (const route of ['/status', '/admin', '/config', '/network']) {
+    for (const route of ['/status', '/admin', '/config', '/network', '/join']) {
       const res = await fetch(`${server.url}${route}`);
       assert.equal(res.status, 200);
       assert.match(res.headers.get('content-type') || '', /text\/html/);

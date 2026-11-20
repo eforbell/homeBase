@@ -38,6 +38,8 @@ const ROUTES = [
   ['GET', '/admin', 'public'],
   ['GET', '/config', 'public'],
   ['GET', '/network', 'public'],
+  // How a new person joins, with the household's join code: its address, which is no secret.
+  ['GET', '/join', 'public'],
   ['GET', '/sovereign-fonts.css', 'public'],
   ['GET', '/api/homebase/health', 'public'],
   ['GET', '/api/admin/status', 'public'],
