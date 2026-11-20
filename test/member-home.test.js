@@ -188,3 +188,20 @@ test('member home: locked administrator gets a launcher; lifecycle restrictions 
     assert.deepEqual(recovery.apps, []);
   }
 });
+
+test('member home: a first passkey waiting says so (never its code), until it is used or a passkey exists', async (t) => {
+  const household = await activeHousehold(t);
+  const { app, base, parent } = household;
+  const memberId = await admit(household);
+  const kid = browser(base, KID);
+  assert.equal('passkeyInvite' in (await kid.get('/api/home')).body, false, 'no grant, no invite');
+  const grant = (await parent.post(`/api/directory/members/${memberId}/grant`)).body;
+  const home = (await kid.get('/api/home')).body;
+  assert.deepEqual(home.passkeyInvite, { expiresAt: grant.expiresAt });
+  assert.ok(!JSON.stringify(home).includes(grant.code), 'the code is the administrator\'s to give');
+  assert.equal((await parent.get('/api/home')).body.passkeyInvite, undefined, 'the administrator\'s own home is unaffected');
+  const { createAuthenticator } = require('./support/authenticator');
+  assert.equal((await kid.enroll(createAuthenticator(), { label: 'Tablet', grant: grant.code })).status, 201);
+  assert.equal('passkeyInvite' in (await kid.get('/api/home')).body, false, 'used up');
+  assert.equal(app.directory.passkeyInvite('1002'), null);
+});

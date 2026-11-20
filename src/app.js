@@ -1019,7 +1019,9 @@ function createApp(config) {
       const apps = catalog.filter((app) => installations[app.id]).map((app) => ({
         id: app.id, name: app.name, icon: app.icon || '', url: installations[app.id].externalUrl,
       }));
-      return view('member', { name: member.name, login: member.login }, { canUnlockAdmin: administrator, apps });
+      // A first passkey waiting for them: the app offers to add it (the administrator gives them the code).
+      const invite = directory.passkeyInvite(identity.userId);
+      return view('member', { name: member.name, login: member.login }, { canUnlockAdmin: administrator, apps, ...(invite ? { passkeyInvite: invite } : {}) });
     } catch (error) {
       warn(`member home unavailable (${error.message})`);
       // Reader/database errors can contain host paths or other members' IDs. Never send them here.

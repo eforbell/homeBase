@@ -16,9 +16,9 @@ function member(overrides) {
 }
 
 // Loads members.js with getJson answering `directory` (or what the function `directory` gives, each read), and postJson recording what it was asked.
-function load(directory, { post = async () => ({ code: 'c0de-XYZ', expiresAt: soon() }) } = {}) {
+function load(directory, { post = async () => ({ code: 'c0de-XYZ', expiresAt: soon() }), qr = false } = {}) {
   const posted = [];
-  const window = { HB: { escapeHtml, getJson: async () => { const answer = typeof directory === 'function' ? await directory() : directory; if (answer instanceof Error) throw answer; return answer; }, postJson: async (url, body) => { posted.push([url, body]); return post(url, body); } } };
+  const window = { location: { hostname: 'smith-homebase.example-tailnet.ts.net' }, ...(qr ? { qrcode: require('../public/qrcode-generator.js') } : {}), HB: { escapeHtml, getJson: async () => { const answer = typeof directory === 'function' ? await directory() : directory; if (answer instanceof Error) throw answer; return answer; }, postJson: async (url, body) => { posted.push([url, body]); return post(url, body); } } };
   const document = { addEventListener(type, fn) { if (type === 'submit') document.submit = fn; } };
   // Timers that don't keep the test process alive: a code's expiry is minutes away.
   const timer = (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle; };
@@ -642,4 +642,35 @@ test('Remove posts the key, then shows the directory again; a refusal says why a
   assert.match(second.error.innerHTML, /hb-warn.*No such app instance/);
   assert.equal(second.button.disabled, false);
   assert.equal(node.innerHTML, drawn, 'a refused removal doesn\'t redraw the card');
+});
+
+test('the code is also a QR code for the Home Base app: sovereign-grant/1, this hostname and the code', async () => {
+  const { members } = load({ state: 'active', members: [member({ memberId: 'm_0a' })] }, { qr: true, post: async () => ({ code: 'oIyLcsPf5vbG94TsrgvH4g', expiresAt: soon() }) });
+  const node = fakeNode();
+  members.wire(node);
+  const button = grantButton('m_0a', 'Kid');
+  await node.click({ target: button });
+  const html = button.code.innerHTML;
+  assert.match(html, /<svg data-code-qr role="img"/);
+  // Drawn from exactly this text: the same encoder, the same modules.
+  const qr = require('../public/qrcode-generator.js')(0, 'M');
+  qr.addData('sovereign-grant/1\nsmith-homebase.example-tailnet.ts.net\noIyLcsPf5vbG94TsrgvH4g');
+  qr.make();
+  let modules = '';
+  for (let row = 0; row < qr.getModuleCount(); row += 1) {
+    for (let col = 0; col < qr.getModuleCount(); col += 1) if (qr.isDark(row, col)) modules += `M${col + 4} ${row + 4}h1v1h-1z`;
+  }
+  assert.ok(html.includes(`<path d="${modules}" fill="#000000"/>`));
+  assert.match(html, /<code data-code>oIyLcsPf5vbG94TsrgvH4g<\/code>/, 'and as text, for Safari or pasting');
+  assert.match(html, /In the Home Base app, they tap Add a passkey and scan this code/);
+});
+
+test('without the encoder the card still shows the code as text', async () => {
+  const { members } = load({ state: 'active', members: [member({ memberId: 'm_0a' })] });
+  const node = fakeNode();
+  members.wire(node);
+  const button = grantButton('m_0a', 'Kid');
+  await node.click({ target: button });
+  assert.doesNotMatch(button.code.innerHTML, /<svg/);
+  assert.match(button.code.innerHTML, /<code data-code>c0de-XYZ<\/code>/);
 });
