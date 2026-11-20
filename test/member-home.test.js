@@ -205,3 +205,23 @@ test('member home: a first passkey waiting says so (never its code), until it is
   assert.equal('passkeyInvite' in (await kid.get('/api/home')).body, false, 'used up');
   assert.equal(app.directory.passkeyInvite('1002'), null);
 });
+
+test('member home: no invite for a disabled member; a revoked passkey doesn\'t count', async (t) => {
+  const household = await activeHousehold(t);
+  const { app, base, parent } = household;
+  const memberId = await admit(household);
+  const kid = browser(base, KID);
+  const { createAuthenticator } = require('./support/authenticator');
+  const first = await parent.post(`/api/directory/members/${memberId}/grant`);
+  const enrolled = await kid.enroll(createAuthenticator(), { label: 'Tablet', grant: first.body.code });
+  assert.equal(enrolled.status, 201);
+  // Their only passkey revoked: no usable one, so a new grant is an invite again.
+  assert.equal((await parent.post(`/api/directory/credentials/${enrolled.body.credentialId}/revoke`)).status, 200);
+  const grant = (await parent.post(`/api/directory/members/${memberId}/grant`)).body;
+  assert.deepEqual((await kid.get('/api/home')).body.passkeyInvite, { expiresAt: grant.expiresAt });
+
+  // Disabled. (Expiry: identity-directory.test.js, with its own clock.)
+  assert.equal((await parent.post(`/api/directory/members/${memberId}`, { status: 'disabled' })).status, 200);
+  assert.equal(app.directory.passkeyInvite('1002'), null);
+  assert.equal((await kid.get('/api/home')).body.state, 'disabled');
+});

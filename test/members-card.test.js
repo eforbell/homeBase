@@ -674,3 +674,26 @@ test('without the encoder the card still shows the code as text', async () => {
   assert.doesNotMatch(button.code.innerHTML, /<svg/);
   assert.match(button.code.innerHTML, /<code data-code>c0de-XYZ<\/code>/);
 });
+
+test('the QR code goes with the code: when it expires, and when admin locks', async () => {
+  const expiring = load({ state: 'active', members: [member()] }, { qr: true, post: async () => ({ code: 'short-lived', expiresAt: past() }) });
+  const node = fakeNode();
+  expiring.members.wire(node);
+  const button = grantButton('m_0a', 'A Parent');
+  await node.click({ target: button });
+  await tick();
+  assert.match(button.code.innerHTML, /That code has expired/);
+  assert.doesNotMatch(button.code.innerHTML, /<svg|short-lived/);
+
+  const locking = load({ state: 'active', members: [member()] }, { qr: true });
+  const card = fakeNode();
+  locking.members.wire(card);
+  await locking.members.mount(card);
+  const issued = grantButton('m_0a', 'A Parent');
+  await card.click({ target: issued });
+  assert.match(issued.code.innerHTML, /<svg data-code-qr/);
+  card.innerHTML += issued.code.innerHTML; // the slot is inside the card in a page
+  locking.document.submit({ target: { closest: (selector) => (selector === 'form[data-action="admin-lock"]' ? {} : null) } });
+  assert.doesNotMatch(card.innerHTML, /<svg|c0de-XYZ/);
+  assert.match(card.innerHTML, /Unlock admin to see members/);
+});

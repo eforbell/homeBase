@@ -247,6 +247,26 @@ test('enrollment grants: active only, for a member with no credentials, single u
   assert.throws(() => directory.issueGrant(actor, founder.memberId), { code: 'HAS_CREDENTIALS' });
 });
 
+test('passkeyInvite: a live grant for an active member with no usable passkey, until it expires or is used', (t) => {
+  let clock = Date.parse('2026-10-29T12:00:00Z');
+  const context = fixture(t, { now: () => clock });
+  const directory = activeDirectory(context);
+  const actor = { userId: FOUNDER.userId };
+  directory.lookup(KID.userId, KID);
+  const kid = directory.addMember(actor, { userId: KID.userId, role: 'kid' });
+  assert.equal(directory.passkeyInvite(KID.userId), null, 'no grant');
+  const { code, expiresAt } = directory.issueGrant(actor, kid.member_id);
+  assert.deepEqual(directory.passkeyInvite(KID.userId), { expiresAt });
+  assert.ok(!JSON.stringify(directory.passkeyInvite(KID.userId)).includes(code));
+  clock += 15 * 60_000;
+  assert.equal(directory.passkeyInvite(KID.userId), null, 'expired');
+  directory.issueGrant(actor, kid.member_id);
+  directory.addCredential({ userId: KID.userId, credentialId: 'kid-1', kind: 'synced' });
+  assert.equal(directory.passkeyInvite(KID.userId), null, 'used: a passkey now');
+  assert.equal(directory.passkeyInvite(FOUNDER.userId), null, 'the administrator has passkeys');
+  assert.equal(directory.passkeyInvite('nobody'), null);
+});
+
 test('reset returns to setup: administrator credentials and sessions revoked, global epoch moved, new passphrase', (t) => {
   const context = fixture(t);
   const directory = activeDirectory(context);
