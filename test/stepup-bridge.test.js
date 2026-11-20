@@ -26,7 +26,7 @@ function element() {
 const buttonsIn = (node) => (node.listeners.click ? [node] : []).concat(...node.children.map(buttonsIn));
 
 // answer: what the member taps in each modal, by its button's text ('Use passkey', 'OK', 'Cancel', …).
-function load({ bridge = undefined, answer = (labels) => labels.find((label) => label !== 'Cancel'), respond, withPasskeys = false, hash = '' } = {}) {
+function load({ bridge = undefined, answer = (labels) => labels.find((label) => label !== 'Cancel'), respond, withPasskeys = false, hash = '', create = null } = {}) {
   const sent = [];
   const modals = [];
   const document = {
@@ -53,7 +53,7 @@ function load({ bridge = undefined, answer = (labels) => labels.find((label) => 
   };
   const window = { matchMedia: () => ({ matches: false }), location: { reload() {}, hash, pathname: '/admin', search: '' } };
   if (bridge) window.sovereign = bridge;
-  const credentials = { get: async () => { throw new Error('no passkey prompt in the page here'); }, create: async () => { throw new Error('no passkey prompt in the page here'); } };
+  const credentials = { get: async () => { throw new Error('no passkey prompt in the page here'); }, create: create || (async () => { throw new Error('no passkey prompt in the page here'); }) };
   const replaced = [];
   const history = { replaceState: (state, title, url) => { replaced.push(url); window.location.hash = ''; } };
   const context = vm.createContext({ window, document, history, navigator: { credentials }, fetch, Headers, console, atob, btoa, setTimeout });
@@ -325,4 +325,102 @@ test('a cancel from the app after the sheet had finished: its result is used, an
   assert.deepEqual(await Promise.all([first, second]), [null, null]);
   assert.deepEqual(bridge.ids, [ID], 'the first counted, so the second (hardware too) needed no sheet of its own');
   assert.deepEqual(order, ['handoff/begin', 'handoff/redeem']);
+});
+
+// A bridge whose sheets take a moment, recording how many were open at once.
+function slowBridge() {
+  const open = { now: 0, most: 0 };
+  const bridge = fakeBridge(async () => {
+    open.now += 1;
+    open.most = Math.max(open.most, open.now);
+    await tick();
+    await tick();
+    open.now -= 1;
+  });
+  return { bridge, open };
+}
+
+test('adding a passkey and a check at once: one sheet at a time, and both finish', async () => {
+  const { bridge, open } = slowBridge();
+  const ids = [ID, 'J'.repeat(42) + 'E'];
+  let begun = 0;
+  const redeemed = new Set();
+  const respond = (url, body) => {
+    if (url === '/_sovereign/auth/handoff/begin') return [200, { id: ids[begun++] }];
+    if (url === '/_sovereign/auth/handoff/redeem') {
+      redeemed.add(body.id);
+      return [200, body.id === ids[0] ? { ok: true, enrolled: { kind: 'synced', label: 'iPhone' } } : { ok: true }];
+    }
+    if (url === '/api/thing') return redeemed.has(ids[1]) ? [200, { ok: true }] : [401, STEP_UP];
+    return [404, {}];
+  };
+  const { helper } = load({ bridge, respond });
+  const [added, thing] = await Promise.all([helper.addPasskey({ label: 'iPhone', grant: 'the-code-1234' }), helper.fetch('/api/thing', { method: 'POST', body: '{}' })]);
+  assert.equal(added.label, 'iPhone');
+  assert.equal(thing.status, 200);
+  assert.equal(open.most, 1, 'never two sheets');
+  assert.deepEqual([...bridge.ids].sort(), ids, 'each its own handoff, in either order');
+});
+
+test('two passkeys added at once: one sheet at a time, each its own', async () => {
+  const { bridge, open } = slowBridge();
+  const ids = [ID, 'J'.repeat(42) + 'E'];
+  let begun = 0;
+  const respond = (url, body) => {
+    if (url === '/_sovereign/auth/handoff/begin') return [200, { id: ids[begun++] }];
+    if (url === '/_sovereign/auth/handoff/redeem') return [200, { ok: true, enrolled: { kind: 'synced', label: body.id === ID ? 'one' : 'two' } }];
+    return [404, {}];
+  };
+  const { helper } = load({ bridge, respond });
+  const added = await Promise.all([helper.addPasskey({ label: 'one' }), helper.addPasskey({ label: 'two' })]);
+  assert.deepEqual(added.map((entry) => entry.label).sort(), ['one', 'two']);
+  assert.equal(open.most, 1);
+});
+
+test('adding a passkey when the app lost the callback: the late redemption is the result', async () => {
+  const bridge = fakeBridge((id, n, confirmed) => { confirmed.add(id); return Promise.reject(new Error('cancelled')); });
+  const { passkeys, sent } = load({ bridge, withPasskeys: true, respond: enrollServer(bridge) });
+  const added = await passkeys.enroll({ label: 'iPhone', grant: 'the-code-1234' });
+  assert.equal(added.label, 'iPhone');
+  assert.deepEqual(sent.map((request) => request.url), ['/_sovereign/auth/handoff/begin', '/_sovereign/auth/handoff/redeem']);
+});
+
+test('an administrator passkey in the app: the hardware token from the app goes with the identical begin', async () => {
+  const bridge = fakeBridge();
+  const ids = [ID, 'J'.repeat(42) + 'E'];
+  const stepUp = { error: 'step_up_required', policy: 'manage-admin-credential', level: 'every-time', kind: 'hardware', target: 'enroll:m_01', digest: 'd'.repeat(43) };
+  let begun = 0;
+  const respond = (url, body, headers) => {
+    if (url === '/_sovereign/auth/handoff/begin' && body.purpose === 'enroll' && !headers.get('x-sovereign-action-token')) return [401, stepUp];
+    if (url === '/_sovereign/auth/handoff/begin') return [200, { id: ids[begun++] }];
+    if (url === '/_sovereign/auth/handoff/redeem') return [200, body.id === ID ? { ok: true, token: 'the-token' } : { ok: true, enrolled: { kind: 'hardware', label: 'Backup key' } }];
+    return [404, {}];
+  };
+  const { passkeys, sent, modals } = load({ bridge, withPasskeys: true, respond });
+  const added = await passkeys.enroll({ label: 'Backup key', hardware: true });
+  assert.equal(JSON.stringify(added), '{"ok":true,"kind":"hardware","label":"Backup key","askedForHardware":true}');
+  assert.equal(modals.length, 1);
+  assert.deepEqual(modals[0].buttons, ['Cancel', 'Use hardware key']);
+  assert.deepEqual(sent[1].body, { purpose: 'action', action: { policy: 'manage-admin-credential', target: 'enroll:m_01', digest: 'd'.repeat(43) } });
+  assert.deepEqual(sent[3].body, sent[0].body, 'the identical begin');
+  assert.equal(sent[3].token, 'the-token');
+});
+
+test('in a browser, adding a passkey runs in the page as before: no handoff', async () => {
+  const bytes = (text) => new TextEncoder().encode(text).buffer;
+  const create = async () => ({
+    id: 'cred', rawId: bytes('cred'), type: 'public-key',
+    response: { clientDataJSON: bytes('{}'), attestationObject: bytes('att'), getTransports: () => ['internal'] },
+    getClientExtensionResults: () => ({}),
+  });
+  const respond = (url) => {
+    if (url === '/_sovereign/auth/enroll/options') return [200, { options: { challenge: 'Y2hhbGxlbmdl', user: { id: 'dXNlcg', name: 'kid' }, rp: { id: 'example.ts.net' }, excludeCredentials: [] } }];
+    if (url === '/_sovereign/auth/enroll/finish') return [201, { ok: true, kind: 'synced', label: 'iPhone', askedForHardware: false }];
+    return [404, {}];
+  };
+  const { passkeys, sent } = load({ withPasskeys: true, respond, create });
+  const added = await passkeys.enroll({ label: 'iPhone', grant: 'the-code-1234' });
+  assert.equal(added.kind, 'synced');
+  assert.deepEqual(sent.map((request) => request.url), ['/_sovereign/auth/enroll/options', '/_sovereign/auth/enroll/finish']);
+  assert.equal(sent[1].body.grant, 'the-code-1234');
 });
