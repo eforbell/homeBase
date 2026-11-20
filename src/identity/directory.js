@@ -640,7 +640,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   function passkeyInvite(userId) {
     const data = load();
     const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active');
-    if (!member || credentialsOf(data, member.member_id).some(usable)) return null;
+    if (!member || credentialsOf(data, member.member_id).length) return null;
     const grant = data.grants.find((entry) => entry.member_id === member.member_id);
     return grant && Date.parse(grant.expires_at) > now() ? { expiresAt: grant.expires_at } : null;
   }

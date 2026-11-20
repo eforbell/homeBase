@@ -261,6 +261,10 @@ test('passkeyInvite: a live grant for an active member with no usable passkey, u
   clock += 15 * 60_000;
   assert.equal(directory.passkeyInvite(KID.userId), null, 'expired');
   directory.issueGrant(actor, kid.member_id);
+  directory.updateMember(actor, kid.member_id, { status: 'disabled' });
+  assert.equal(directory.passkeyInvite(KID.userId), null, 'disabled');
+  directory.updateMember(actor, kid.member_id, { status: 'active' });
+  directory.issueGrant(actor, kid.member_id);
   directory.addCredential({ userId: KID.userId, credentialId: 'kid-1', kind: 'synced' });
   assert.equal(directory.passkeyInvite(KID.userId), null, 'used: a passkey now');
   assert.equal(directory.passkeyInvite(FOUNDER.userId), null, 'the administrator has passkeys');
