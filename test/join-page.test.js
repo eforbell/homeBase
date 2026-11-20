@@ -42,7 +42,7 @@ test('the join page names the household and shows its address, as text and as th
   assert.match(page.root.innerHTML, /<h1 style="margin:0;">Join The &lt;Smiths&gt;<\/h1>/);
   assert.equal(page.document.title, 'Join The <Smiths> - Home Base');
   assert.match(page.root.innerHTML, /<code data-join-host>smith-homebase\.example\.ts\.net<\/code>/);
-  assert.match(page.root.innerHTML, /Scan code/);
+  assert.match(page.root.innerHTML, /<strong>Scan a join code<\/strong>/, 'the app\'s own button');
   assert.match(page.root.innerHTML, /<svg data-join-qr role="img"[^>]*><rect[^>]*\/><path d="M/, 'the QR code is drawn');
   assert.match(page.root.innerHTML, /<a class="hb-btn" href="\/">Open Home Base here<\/a>/);
 });
