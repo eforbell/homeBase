@@ -184,6 +184,7 @@
       healthAlertsWebhookUrl: form.elements.healthAlertsWebhookUrl.value.trim(),
       tailscaleManagedServiceId: form.elements.tailscaleManagedServiceId.value.trim(),
       householdTimezone: form.elements.householdTimezone.value.trim(),
+      householdName: form.elements.householdName.value.trim(),
     };
     result.textContent = 'Saving...';
     try {
@@ -526,6 +527,10 @@
           <h2 style="margin-top:0;">Home Base configuration</h2>
           <form class="hb-form-grid" data-action="config" data-cut-over="${cutOver ? 'true' : 'false'}">
             ${cutOver ? `<p class="hb-muted" style="margin:0;">This host uses per-service sockets (instance <strong>${window.HB.escapeHtml(config.ingress.instance)}</strong>), so its addresses are <code>${window.HB.escapeHtml(config.ingress.instance)}-home</code>, <code>-homebase</code> and one per sensitive app on this tailnet. Hostname, domain and the old service ID stay fixed until you roll back ingress on <a href="/network">Network</a>.</p>` : ''}
+            <label class="hb-label">Household name
+              <input class="hb-input" name="householdName" autocomplete="off" placeholder="${window.HB.escapeHtml(config.ingress?.instance || 'The Smiths')}" value="${window.HB.escapeHtml(config.householdName || '')}">
+              <span class="hb-muted" style="font-size:0.85rem;">The name the Home Base app shows for this household${config.ingress?.instance ? `. Empty, it shows the instance name, ${window.HB.escapeHtml(config.ingress.instance)}` : ''}. Anyone on your tailnet who opens Home Base can see it.</span>
+            </label>
             <label class="hb-label">Hostname${cutOver ? ' (not used for addresses after cutover)' : ''} <input class="hb-input" name="hostname" value="${window.HB.escapeHtml(config.hostname)}" required${lockedAttr}></label>
             <label class="hb-label">Domain${cutOver ? ' (the tailnet domain)' : ''} <input class="hb-input" name="domain" value="${window.HB.escapeHtml(config.domain)}" required${lockedAttr}></label>
             ${executorMode ? `

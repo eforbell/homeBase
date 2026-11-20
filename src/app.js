@@ -988,10 +988,11 @@ function createApp(config) {
   // A caller's landing view, never an administrator payload with fields hidden by the browser. Unknown
   // callers learn only their own onboarding state; ingress (not this GET) records candidate visits.
   async function describeHome(req, effectiveConfig) {
-    // household: the instance name (HOME_BASE_INSTANCE), a short name the app lists households by. It's a
-    // label, not a credential: any tailnet device that reaches Home Base sees it, as it sees every service's
-    // hostname (svc:<instance>-home) once ingress has cut over. Unset, it's left out.
-    const household = String(effectiveConfig.instance || '').trim();
+    // household: the name the app lists households by. The administrator's (Settings → Household name),
+    // else the instance name (HOME_BASE_INSTANCE). It's a label, not a credential: any tailnet device that
+    // reaches Home Base sees it, as it sees every service's hostname (svc:<instance>-home) once ingress has
+    // cut over. With neither, it's left out.
+    const household = String(effectiveConfig.householdName || '').trim() || String(effectiveConfig.instance || '').trim();
     const view = (state, caller = null, extra = {}) => ({ state, caller, canUnlockAdmin: false, apps: [], ...(household ? { household } : {}), ...extra });
     if (!directory) return view('legacy');
     try {
