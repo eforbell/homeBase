@@ -165,6 +165,7 @@
     return `
       <h3 style="margin:1.2rem 0 0.3rem;">Add a member</h3>
       <p class="hb-muted" style="margin:0 0 0.6rem;">${esc(how)}</p>
+      <p style="margin:0 0 0.6rem;"><a href="/join" target="_blank" rel="noopener" data-members-join>Show the join code</a> <span class="hb-muted">for the Home Base app on their phone</span></p>
       ${candidates.length ? `<ul class="hb-members">${candidates.map(candidateRow).join('')}</ul>` : '<p class="hb-muted" style="margin:0 0 0.6rem;">No one new has opened Home Base yet.</p>'}
       <div><button class="hb-btn" type="button" data-members-refresh>Check again</button><div data-members-refresh-error></div></div>`;
   }

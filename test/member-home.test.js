@@ -70,6 +70,10 @@ test('member home: an ingress-observed visitor becomes a member without any cred
 test('member home: the household name is the instance, in every state, and absent when unset', async (t) => {
   const household = await activeHousehold(t);
   assert.equal((await browser(household.base, KID).get('/api/home')).body.household, 'smith', 'waiting');
+  // The join page is for people Home Base doesn't know yet.
+  const joinPage = await fetch(`${household.base}/join`, { headers: { 'x-forwarded-for': '100.64.0.9', 'x-forwarded-host': HOMEBASE } });
+  assert.equal(joinPage.status, 200);
+  assert.match(await joinPage.text(), /<script src="\/join\.js">/);
   const stranger = (await browser(household.base, '100.64.0.9').get('/api/home')).body;
   assert.equal(stranger.state, 'unidentified');
   assert.equal(stranger.household, 'smith', 'unidentified');
