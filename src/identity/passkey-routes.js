@@ -33,6 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const { POLICY, appInstanceClientData, appInstanceReason, requestDigest, policyFor, verifyAttestation } = require('sovereign-auth');
 const { DirectoryError } = require('./directory');
+const { cleanLabel } = require('./passkeys');
 const { createHandoffRoutes, serveSheet } = require('./handoff-routes');
 
 const PREFIX = '/_sovereign/auth/';
@@ -203,10 +204,39 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
   const moved = (before, after) => !after || after.state !== before.state || after.globalEpoch !== before.globalEpoch || after.member.epoch !== before.epoch;
   const windowSeconds = (here) => (here.homeBase ? ADMIN_WINDOW_SECONDS : APP_WINDOW_SECONDS);
 
+  // The app's enroll handoff (handoff-routes.js; sovereignAuth docs/native-handoff.md, Part 3): begin decides
+  // as enroll/options does, from this request, and keeps what options and finish must find again. An
+  // administrator's hardware token is used up here, as enroll/options uses it up. Answers { stepUp },
+  // { refused: [status, code, error] } or { data } for the record.
+  async function enrollHandoffAuthority(req, here, standing, check, body) {
+    const authority = await enrollAuthority(req, here, standing, check, body.grant, false);
+    if (authority.stepUp) return { stepUp: authority.stepUp };
+    if (!authority.ok) return { refused: [authority.statusCode, authority.code, authority.error] };
+    const data = { via: authority.via, label: cleanLabel(body.label), hardware: body.hardware === true, expect: expectOf(standing) };
+    if (authority.via === 'grant') {
+      // Checked now, so a wrong code fails before the sheet; it's used up only when the registration verifies.
+      data.grantHash = directory.grantHash(standing.member.memberId, { code: String(body.grant).trim() });
+      if (!data.grantHash) return { refused: [403, 'INVALID_GRANT', 'That enrollment code is not valid; ask the administrator for a new one.'] };
+    }
+    if (authority.via === 'recent-check') {
+      // The check's own deadline, not the record's: a check 4 minutes old leaves 1 minute.
+      const policy = policyFor('manage-own-credential');
+      data.checkDeadline = (check.claims.auth_time + (policy.level === 'recent' ? POLICY.recent_seconds : policy.window_seconds)) * 1000;
+    }
+    if (authority.consume) {
+      directory.enrollmentHandleFor(standing.member.userId);
+      directory.credentialsFor(standing.member.userId);
+      const used = directory.consumeAction(authority.consume, { userId: standing.member.userId, ...expectOf(standing) });
+      if (used !== 'redeemed') return { refused: [409, USED[used][0], USED[used][1]] };
+      audit('passkey-enroll', standing.member.memberId, `hardware confirmed for the app · jti ${authority.consume.jti}`);
+    }
+    return { data };
+  }
+
   // The native handoff decides as check/options and check/finish do, with these.
   const handoffRoutes = nativeApp ? createHandoffRoutes({
     directory, passkeys, nativeApp, sendJson, audit, now,
-    shared: { actionRequest, ceremonyError, usedPasskey, expectOf, moved, windowSeconds, homeBaseApp: HOME_BASE_APP, refusal, describePlan },
+    shared: { actionRequest, ceremonyError, usedPasskey, expectOf, moved, windowSeconds, homeBaseApp: HOME_BASE_APP, refusal, stepUp, enrollHandoffAuthority, describePlan },
   }) : null;
 
   // What this caller may enroll with now: { ok, via, passphraseHash, consume } or { ok: false, statusCode,
@@ -303,7 +333,7 @@ function createPasskeyRoutes({ directory, passkeys, signingKey, binding, stateSt
 
       if (route === 'POST app/register') return registerApp(res, here, standing, body);
 
-      if (HANDOFF_ROUTES.includes(route) && await handoffRoutes.handle({ req, res, route, body, here, standing })) return true;
+      if (HANDOFF_ROUTES.includes(route) && await handoffRoutes.handle({ req, res, route, body, here, standing, check })) return true;
 
       if (route === 'POST enroll/options' || route === 'POST enroll/finish') {
         const finishing = route === 'POST enroll/finish';

@@ -1,18 +1,21 @@
-// The native handoff (sovereignAuth wire contract, section 13; docs/native-handoff.md): a passkey check or an
-// every-time action asked for by a page inside the household's iPhone app, whose web view can't run the
-// ceremony itself. The page begins a record, the app attests it with App Attest, a Safari sheet on the same
+// The native handoff (sovereignAuth wire contract, section 13; docs/native-handoff.md): a passkey check, an
+// every-time action or, on Home Base's hostname, adding a passkey (Part 3), asked for by a page inside the
+// household's iPhone app, whose web view can't run the ceremony itself. The page begins a record, the app attests it with App Attest, a Safari sheet on the same
 // phone runs the ceremony against it, and the page redeems the result:
 //
 //   handoff/begin    the page, after a 401 step_up_required: the same checks check/options makes, then a
-//                    pending record and its own __Host-sv_handoff_<tag> cookie
+//                    pending record and its own __Host-sv_handoff_<tag> cookie. To enroll: the decision
+//                    enroll/options makes (enrollHandoffAuthority), kept on the record
 //   handoff/attest   the app, natively: an App Attest assertion by a key registered to this member
 //   handoff/sheet    the sheet's page (GET, changes nothing), and its script
 //   handoff/options  the sheet, before its tap: the ceremony's options (the challenge binds the handoff id)
 //                    and a summary of what is being confirmed, written from the record
 //   handoff/finish   the sheet, after its tap: the ceremony verified, the cookie or action token minted and
-//                    kept on the record (no cookie is set in the sheet), and the app's callback to close it
+//                    kept on the record (no cookie is set in the sheet), and the app's callback to close it.
+//                    To enroll: the authority checked again and the credential stored, in one commit with
+//                    the app instance and the grant (directory.addCredential)
 //   handoff/redeem   the page, once the sheet closed: the record taken, the cookie set here or the token
-//                    returned, exactly as check/finish would have
+//                    returned, exactly as check/finish would have; for an enrollment, what was added
 //
 // sovereignAuth's createHandoff keeps the records and makes every check on them; this module runs the
 // ceremony and mints the result the way passkey-routes.js does for check/finish. Only in active Home Base,
@@ -20,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createHandoff } = require('sovereign-auth');
+const { DirectoryError } = require('./directory');
 
 const SHEET_SCRIPT = fs.readFileSync(path.join(__dirname, 'browser', 'handoff-sheet.js'));
 const SHEET_PAGE = `<!doctype html>
@@ -74,6 +78,30 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
     ? { purpose: 'action', kind: record.kind, audience: shared.homeBaseApp, action: { act: record.policy, tgt: record.action.target, dig: record.action.digest, handoff: record.id } }
     : { purpose: 'step-up', kind: record.kind, action: { handoff: record.id } });
 
+  // An enrollment's ceremony: the enroll challenge, bound as enroll/options binds it (the administrator's
+  // every-time authority and the epochs it saw), with the handoff id beside it.
+  const enrollContext = (record) => ({
+    ...(record.data.via === 'every-time' ? { authority: 'every-time', epoch: record.data.expect.epoch, globalEpoch: record.data.expect.globalEpoch } : {}),
+    handoff: record.id,
+  });
+  const enrolling = (record) => ({ label: record.data.label, hardware: record.data.hardware, context: enrollContext(record) });
+
+  // Whether an enrollment begin allowed may still go ahead, as the member stands now: null, or the refusal.
+  // Options and finish ask it; the credential's commit holds the app instance, the grant and the epochs again.
+  function enrollAllowed(record, standing) {
+    const no = (status, code, error) => ({ status, body: { error, code } });
+    const { data } = record;
+    const instance = directory.appInstance(record.keyId);
+    if (!instance || instance.userId !== standing.member.userId) return no(409, 'APP_INSTANCE_GONE', 'This phone\'s app was removed from Home Base; open the app again and start over.');
+    if (shared.moved(data.expect, standing)) return no(409, 'STALE', 'Home Base changed while this was in progress; start again.');
+    if (data.via === 'grant' && directory.grantHash(standing.member.memberId, { hash: data.grantHash }) === null) {
+      return no(403, 'INVALID_GRANT', 'That enrollment code is not valid; ask the administrator for a new one.');
+    }
+    if (data.via === 'recent-check' && !(now() < data.checkDeadline)) return no(409, 'RECENT_CHECK_EXPIRED', 'Your passkey check was more than 5 minutes ago; start again.');
+    if (data.via === 'every-time' && !standing.member.administrator) return no(403, 'NOT_AUTHORIZED', 'Only the administrator adds administrator passkeys.');
+    return null;
+  }
+
   // An action's target in words, the way its own prompt says it: Home Base's passkey changes, or a
   // privileged plan ("METHOD /path settings … installs …"), described as the plan's route describes it.
   function actionWords(record) {
@@ -90,6 +118,11 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
 
   // What the sheet shows, from the record (never from the URL).
   function summary(record, here, standing) {
+    if (record.purpose === 'enroll') {
+      const named = record.data.label ? ` named \u201c${record.data.label}\u201d` : '';
+      const what = record.data.via === 'every-time' ? `an administrator passkey${named}` : `a passkey${named} to your Home Base account`;
+      return `Add ${what}.${record.data.hardware ? ' Hardware attestation is asked for.' : ''}`;
+    }
     const key = record.kind === 'hardware' ? ' with your hardware key' : '';
     if (record.purpose === 'action') {
       const words = actionWords(record);
@@ -126,7 +159,7 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
   };
 
   // The POST steps, for a member of active Home Base (passkey-routes.js resolved standing).
-  async function handle({ req, res, route, body, here, standing }) {
+  async function handle({ req, res, route, body, here, standing, check }) {
     const target = standing.member.memberId;
     const member = { userId: standing.member.userId };
     const hostname = here.hostname;
@@ -135,9 +168,20 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
       return true;
     }
 
+    if (route === 'POST handoff/begin' && body.purpose === 'enroll') {
+      if (!here.homeBase) return shared.refusal(res, 400, 'INVALID', 'Passkeys are added on Home Base itself.');
+      const decided = await shared.enrollHandoffAuthority(req, here, standing, check, body);
+      if (decided.stepUp) return shared.stepUp(res, ...decided.stepUp);
+      if (decided.refused) return shared.refusal(res, ...decided.refused, 'passkey-enroll', target);
+      const started = await handoff.begin({ member, hostname, purpose: 'enroll', policy: 'enroll', kind: decided.data.hardware ? 'hardware' : 'any', data: decided.data });
+      res.setHeader('Set-Cookie', started.setCookie);
+      sendJson(res, 200, started.body);
+      return true;
+    }
+
     if (route === 'POST handoff/begin') {
       const purpose = body.purpose === 'action' || body.purpose === 'check' ? body.purpose : null;
-      if (!purpose) return shared.refusal(res, 400, 'INVALID', 'A handoff is for a check or an action.');
+      if (!purpose) return shared.refusal(res, 400, 'INVALID', 'A handoff is for a check, an action or adding a passkey.');
       const action = purpose === 'action' ? shared.actionRequest(body.action, standing) : null;
       const kind = body.kind === 'hardware' || action?.policy?.kind === 'hardware' ? 'hardware' : 'any';
       const request = { purpose, policy: action ? String(body.action?.policy) : 'step-up', kind, action: action && { target: body.action?.target, digest: body.action?.digest } };
@@ -167,8 +211,9 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
           hostname,
           body,
           issue: (record) => {
-            const refused = authorize(record, here, standing);
+            const refused = record.purpose === 'enroll' ? enrollAllowed(record, standing) : authorize(record, here, standing);
             if (refused) throw new Refused(refused);
+            if (record.purpose === 'enroll') return passkeys.enrollOptions({ site: here, standing, ...enrolling(record) });
             return passkeys.checkOptions({ site: here, standing, ...bound(record) });
           },
         });
@@ -178,7 +223,8 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
         return true;
       }
       if (!answer.ok) return send(res, answer);
-      sendJson(res, 200, { options: answer.options, summary: summary(answer.record, here, standing) });
+      // ceremony: what the sheet runs, navigator.credentials.get or .create.
+      sendJson(res, 200, { options: answer.options, summary: summary(answer.record, here, standing), ceremony: answer.record.purpose === 'enroll' ? 'create' : 'get' });
       return true;
     }
 
@@ -188,6 +234,7 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
         hostname,
         body,
         verify: async (record, assertion) => {
+          if (record.purpose === 'enroll') return enroll(record, assertion, here, standing);
           const what = record.purpose === 'action' ? 'passkey-action' : 'passkey-step-up';
           const refused = authorize(record, here, standing);
           if (refused) {
@@ -228,10 +275,33 @@ function createHandoffRoutes({ directory, passkeys, nativeApp, sendJson, audit, 
       }
       // The check's cookie lands in the page's cookie jar here, beside the handoff cookie being cleared.
       res.setHeader('Set-Cookie', answer.result.cookie ? [answer.result.cookie, answer.clearCookie] : [answer.clearCookie]);
-      sendJson(res, 200, answer.result.token ? { ok: true, token: answer.result.token } : { ok: true });
+      sendJson(res, 200, answer.result.token ? { ok: true, token: answer.result.token } : answer.result.enrolled ? { ok: true, enrolled: answer.result.enrolled } : { ok: true });
       return true;
     }
     return false;
+  }
+
+  // finish for an enrollment: the authority again, the registration verified, then the credential stored in
+  // one commit that also holds the attesting app instance, the epochs begin saw and, for a first passkey,
+  // that same grant, which it uses up. A refusal stores nothing, so the record goes back for another try.
+  async function enroll(record, response, here, standing) {
+    const target = standing.member.memberId;
+    const refuse = (refusal, why) => {
+      audit('passkey-enroll', target, 'refused', why);
+      return { ok: false, ...refusal };
+    };
+    const refused = enrollAllowed(record, standing);
+    if (refused) return refuse(refused, refused.body.code);
+    try {
+      const result = await passkeys.enrollFinish({ site: here, standing, ...enrolling(record), response });
+      if (!result.ok) return refuse({ status: 400, body: { error: shared.ceremonyError('The passkey', result.reason), code: 'CEREMONY_REFUSED' } }, result.reason);
+      const stored = directory.addCredential({ ...result.credential, expect: record.data.expect, appInstanceKeyId: record.keyId, grantHash: record.data.via === 'grant' ? record.data.grantHash : null });
+      audit('passkey-enroll', target, `enrolled ${stored.kind} in the app (${record.data.via}; key ${record.keyId.slice(0, 12)}…)`);
+      return { ok: true, result: { enrolled: { kind: stored.kind, label: stored.label } } };
+    } catch (error) {
+      if (!(error instanceof DirectoryError)) throw error;
+      return refuse({ status: error.statusCode, body: { error: error.message, code: error.code } }, error.code);
+    }
   }
 
   return { handle };

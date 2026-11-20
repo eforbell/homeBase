@@ -230,7 +230,8 @@ test('redeeming needs the web view\'s own cookie, and takes the record whatever 
 
 test('begin makes the checks check/options makes', async (t) => {
   const { app, base, parent } = await activeHousehold(t, nativeConfig());
-  assert.equal((await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll' })).body.code, 'INVALID');
+  assert.equal((await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'activate' })).body.code, 'INVALID');
+  assert.equal((await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll' })).body.code, 'HARDWARE_CHECK_REQUIRED', 'enroll/options\' decision: the administrator needs a hardware token');
   assert.equal((await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'action', action: { policy: 'no-such-thing', target: 'x', digest: 'd'.repeat(43) } })).body.code, 'INVALID');
   app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
   await parent.post('/api/directory/members', { userId: '1002', role: 'kid' });
@@ -253,6 +254,9 @@ test('setup: no handoff until Home Base is active', async (t) => {
   const refused = await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'check' });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.code, 'BOOTSTRAP_STATE');
+  const enrolling = await parent.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'Key' });
+  assert.equal(enrolling.status, 409, 'enrolling in setup stays in a browser, with the passphrase session');
+  assert.equal(enrolling.body.code, 'BOOTSTRAP_STATE');
 });
 
 test('every handoff result is audited with the app key that attested it', async (t) => {
@@ -342,4 +346,244 @@ test('an action\'s summary says what it does in words, never the raw target', as
   };
   assert.equal(await passkeyChange('enroll:m_01'), 'Confirm with your hardware key to add an administrator passkey.');
   assert.equal(await passkeyChange('revoke:abc'), 'Confirm with your hardware key to remove an administrator passkey.');
+});
+
+// Part 3: adding a passkey in the app. The sheet registers; Home Base stores the credential at finish, in one
+// commit with the attesting app instance and, for a first passkey, the grant; redeem only reports.
+const enrollIn = async (sheet, id, authenticator) => {
+  const options = await sheet.post('/_sovereign/auth/handoff/options', { id });
+  assert.equal(options.status, 200, JSON.stringify(options.body));
+  const finished = await sheet.post('/_sovereign/auth/handoff/finish', { id, assertion: authenticator.register(options.body.options, { origin: ORIGIN }) });
+  return { options, finished };
+};
+
+// A kid admitted, with a live grant and the app registered on their phone.
+async function invitedKid(t) {
+  const household = await activeHousehold(t, nativeConfig());
+  const { app, base, parent } = household;
+  app.directory.lookup('1002', { login: 'kid@example.com', name: 'Kid' });
+  const added = await parent.post('/api/directory/members', { userId: '1002', role: 'kid' });
+  const grant = async () => (await parent.post(`/api/directory/members/${added.body.memberId}/grant`)).body.code;
+  const code = await grant();
+  const instance = await registerApp(browser(base, KID));
+  return { ...household, memberId: added.body.memberId, code, grant, instance, kid: phone(base, KID, instance) };
+}
+
+test('a first passkey in the app: the grant\'s code at begin, the sheet registers, finish stores it, redeem reports', async (t) => {
+  const { app, root, code, memberId, instance, kid: { webView, attest, sheet } } = await invitedKid(t);
+  assert.ok(app.directory.grantHash(memberId, { code }), 'the grant is live before');
+  assert.equal((await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone' })).body.code, 'GRANT_REQUIRED');
+  assert.equal((await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: 'not-the-code' })).body.code, 'INVALID_GRANT', 'a wrong code fails before the sheet');
+  const begun = await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: code });
+  assert.equal(begun.status, 200, JSON.stringify(begun.body));
+  const { id } = begun.body;
+  assert.equal((await attest(id)).status, 200);
+
+  const inSheet = sheet();
+  const { options, finished } = await enrollIn(inSheet, id, createAuthenticator());
+  assert.equal(options.body.ceremony, 'create');
+  assert.equal(options.body.summary, 'Add a passkey named “iPhone” to your Home Base account.');
+  assert.equal(finished.status, 200, JSON.stringify(finished.body));
+  assert.deepEqual(finished.body, { return: RETURN });
+  assert.equal(inSheet.cookies.size, 0);
+
+  const redeemed = await webView.post('/_sovereign/auth/handoff/redeem', { id });
+  assert.deepEqual(redeemed.body, { ok: true, enrolled: { kind: 'synced', label: 'iPhone' } });
+  assert.equal(webView.cookies.has('__Host-sv_assurance'), false, 'adding a passkey is not a check');
+  const status = (await webView.get('/_sovereign/auth/status')).body;
+  assert.deepEqual(status.credentials.map((credential) => credential.label), ['iPhone']);
+  assert.equal(app.directory.grantHash(memberId, { code }), null, 'the grant is used up');
+
+  const { SqliteStateStore } = require('../src/state/sqlite-store');
+  const audit = new SqliteStateStore(require('path').join(root, 'state.sqlite3')).listAdminAudit(50);
+  assert.ok(audit.some((entry) => entry.action === 'enrollment-grant' && entry.outcome === 'used in the app'), JSON.stringify(audit.slice(0, 5)));
+  assert.ok(audit.some((entry) => entry.action === 'passkey-enroll' && entry.outcome.includes(`in the app (grant; key ${instance.keyId.slice(0, 12)}…)`)));
+});
+
+test('the enroll handoff\'s challenge is its own: Safari\'s enroll/finish can\'t use it', async (t) => {
+  const { code, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: code })).body;
+  await attest(id);
+  const options = await sheet().post('/_sovereign/auth/handoff/options', { id });
+  const response = createAuthenticator().register(options.body.options, { origin: ORIGIN });
+  const elsewhere = await webView.post('/_sovereign/auth/enroll/finish', { label: 'iPhone', grant: code, response });
+  assert.equal(elsewhere.status, 400, JSON.stringify(elsewhere.body));
+  assert.equal(elsewhere.body.code, 'CEREMONY_REFUSED');
+});
+
+test('a refused registration hands the record back; the sheet asks again and finishes', async (t) => {
+  const { code, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: code })).body;
+  await attest(id);
+  const inSheet = sheet();
+  const options = await inSheet.post('/_sovereign/auth/handoff/options', { id });
+  const wrong = await inSheet.post('/_sovereign/auth/handoff/finish', { id, assertion: createAuthenticator().register(options.body.options, { origin: 'https://elsewhere.example' }) });
+  assert.equal(wrong.status, 400, JSON.stringify(wrong.body));
+  assert.equal(wrong.body.code, 'CEREMONY_REFUSED');
+  const { finished } = await enrollIn(inSheet, id, createAuthenticator());
+  assert.equal(finished.status, 200, JSON.stringify(finished.body));
+});
+
+test('a grant reissued after begin stops the enrollment, at options, at finish, and in the commit itself', async (t) => {
+  const { app, grant, code, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const begin = async (presented) => {
+    const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: presented })).body;
+    await attest(id);
+    return id;
+  };
+  const atOptions = await begin(code);
+  const second = await grant();
+  const options = await sheet().post('/_sovereign/auth/handoff/options', { id: atOptions });
+  assert.equal(options.status, 403);
+  assert.equal(options.body.code, 'INVALID_GRANT');
+
+  const atFinish = await begin(second);
+  const inSheet = sheet();
+  const issued = await inSheet.post('/_sovereign/auth/handoff/options', { id: atFinish });
+  const third = await grant();
+  const finished = await inSheet.post('/_sovereign/auth/handoff/finish', { id: atFinish, assertion: createAuthenticator().register(issued.body.options, { origin: ORIGIN }) });
+  assert.equal(finished.status, 403, JSON.stringify(finished.body));
+  assert.equal(finished.body.code, 'INVALID_GRANT');
+
+  // A reissue between finish's own check and the commit: the commit holds the grant's hash by itself.
+  const inCommit = await begin(third);
+  const lastSheet = sheet();
+  const lastOptions = await lastSheet.post('/_sovereign/auth/handoff/options', { id: inCommit });
+  const live = app.directory.grantHash;
+  app.directory.grantHash = (memberId, presented) => (presented.hash ? presented.hash : live(memberId, presented));
+  await grant();
+  const committed = await lastSheet.post('/_sovereign/auth/handoff/finish', { id: inCommit, assertion: createAuthenticator().register(lastOptions.body.options, { origin: ORIGIN }) });
+  app.directory.grantHash = live;
+  assert.equal(committed.status, 403, JSON.stringify(committed.body));
+  assert.equal(committed.body.code, 'INVALID_GRANT');
+  assert.equal((await webView.get('/_sovereign/auth/status')).body.credentials.length, 0, 'nothing was stored');
+});
+
+test('one grant, two enroll records: only the first stores a passkey', async (t) => {
+  const { code, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const ids = [];
+  for (const label of ['iPhone', 'iPad']) {
+    const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label, grant: code })).body;
+    await attest(id);
+    ids.push(id);
+  }
+  const sheets = [sheet(), sheet()];
+  const options = await Promise.all(ids.map((id, at) => sheets[at].post('/_sovereign/auth/handoff/options', { id })));
+  const finished = await Promise.all(ids.map((id, at) => sheets[at].post('/_sovereign/auth/handoff/finish', { id, assertion: createAuthenticator().register(options[at].body.options, { origin: ORIGIN }) })));
+  assert.deepEqual(finished.map((answer) => answer.status).sort(), [200, 403], JSON.stringify(finished.map((answer) => answer.body)));
+  assert.equal(finished.find((answer) => answer.status === 403).body.code, 'INVALID_GRANT');
+  assert.equal((await webView.get('/_sovereign/auth/status')).body.credentials.length, 1);
+});
+
+test('two finishes of one administrator enrollment at once store one passkey', async (t) => {
+  const { base, parent, yubikey } = await activeHousehold(t, nativeConfig());
+  const instance = await registerApp(parent);
+  const { webView, attest, sheet } = phone(base, PARENT, instance);
+  const body = { purpose: 'enroll', label: 'Backup key' };
+  const first = await webView.post('/_sovereign/auth/handoff/begin', body);
+  const token = (await webView.actionToken(yubikey, first.body)).body.token;
+  const { id } = (await webView.post('/_sovereign/auth/handoff/begin', body, { 'x-sovereign-action-token': token })).body;
+  await attest(id);
+  const inSheet = sheet();
+  const options = await inSheet.post('/_sovereign/auth/handoff/options', { id });
+  const before = (await webView.get('/_sovereign/auth/status')).body.credentials.length;
+  const finished = await Promise.all([createAuthenticator(), createAuthenticator()].map((key) => inSheet.post('/_sovereign/auth/handoff/finish', { id, assertion: key.register(options.body.options, { origin: ORIGIN }) })));
+  assert.deepEqual(finished.map((answer) => answer.status).sort(), [200, 403], JSON.stringify(finished.map((answer) => answer.body)));
+  assert.equal((await webView.get('/_sovereign/auth/status')).body.credentials.length, before + 1);
+});
+
+test('an app instance removed mid-enrollment stops it, at options and in the commit', async (t) => {
+  const { app, code, memberId, instance, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const administrator = { userId: app.directory.standing('1001')?.member.userId || '1001' };
+  const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: code })).body;
+  await attest(id);
+  const inSheet = sheet();
+  const options = await inSheet.post('/_sovereign/auth/handoff/options', { id });
+  // finish's own check passes (as if the removal came a moment later); the commit refuses on its own.
+  const lookup = app.directory.appInstance;
+  const seen = lookup(instance.keyId);
+  app.directory.appInstance = (keyId) => (keyId === instance.keyId ? seen : lookup(keyId));
+  app.directory.revokeAppInstance(administrator, instance.keyId);
+  const finished = await inSheet.post('/_sovereign/auth/handoff/finish', { id, assertion: createAuthenticator().register(options.body.options, { origin: ORIGIN }) });
+  app.directory.appInstance = lookup;
+  assert.equal(finished.status, 409, JSON.stringify(finished.body));
+  assert.equal(finished.body.code, 'APP_INSTANCE_GONE');
+  assert.equal((await sheet().post('/_sovereign/auth/handoff/options', { id })).body.code, 'APP_INSTANCE_GONE', 'and options says so too');
+  assert.ok(app.directory.grantHash(memberId, { code }), 'the grant was never used');
+});
+
+test('another passkey after a recent check; the check\'s own 5 minutes bound the enrollment', async (t) => {
+  const { code, kid: { webView, attest, sheet } } = await invitedKid(t);
+  const first = createAuthenticator();
+  const { id } = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPhone', grant: code })).body;
+  await attest(id);
+  await enrollIn(sheet(), id, first);
+  await webView.post('/_sovereign/auth/handoff/redeem', { id });
+
+  const unchecked = await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPad' });
+  assert.equal(unchecked.status, 401);
+  assert.equal(unchecked.body.policy, 'manage-own-credential');
+  // The page satisfies it through a check handoff, then begins again.
+  const check = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'check' })).body.id;
+  await attest(check);
+  await confirmInSheet(sheet(), check, first, ORIGIN);
+  await webView.post('/_sovereign/auth/handoff/redeem', { id: check });
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now + 4.5 * 60_000);
+  const late = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPad' })).body.id;
+  await attest(late);
+  Date.now.mock.mockImplementation(() => now + 5.5 * 60_000);
+  const options = await sheet().post('/_sovereign/auth/handoff/options', { id: late });
+  assert.equal(options.status, 409, JSON.stringify(options.body));
+  assert.equal(options.body.code, 'RECENT_CHECK_EXPIRED');
+  // Past the deadline between options and finish: finish refuses on its own.
+  Date.now.mock.mockImplementation(() => now + 4.5 * 60_000);
+  const atFinish = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPad' })).body.id;
+  await attest(atFinish);
+  const finishSheet = sheet();
+  const issued = await finishSheet.post('/_sovereign/auth/handoff/options', { id: atFinish });
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  Date.now.mock.mockImplementation(() => now + 5.5 * 60_000);
+  const lateFinish = await finishSheet.post('/_sovereign/auth/handoff/finish', { id: atFinish, assertion: createAuthenticator().register(issued.body.options, { origin: ORIGIN }) });
+  assert.equal(lateFinish.status, 409, JSON.stringify(lateFinish.body));
+  assert.equal(lateFinish.body.code, 'RECENT_CHECK_EXPIRED');
+  Date.now.mock.restore();
+
+  const fresh = (await webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'iPad' })).body.id;
+  await attest(fresh);
+  const { options: summary, finished } = await enrollIn(sheet(), fresh, createAuthenticator());
+  assert.equal(summary.body.summary, 'Add a passkey named “iPad” to your Home Base account.');
+  assert.equal(finished.status, 200, JSON.stringify(finished.body));
+  assert.deepEqual((await webView.post('/_sovereign/auth/handoff/redeem', { id: fresh })).body.enrolled, { kind: 'synced', label: 'iPad' });
+});
+
+test('an administrator passkey: the hardware token is used up at begin, then the sheet registers', async (t) => {
+  const { base, parent, yubikey } = await activeHousehold(t, nativeConfig());
+  const instance = await registerApp(parent);
+  const { webView, attest, sheet } = phone(base, PARENT, instance);
+  const body = { purpose: 'enroll', label: 'Backup key', hardware: true };
+  const first = await webView.post('/_sovereign/auth/handoff/begin', body);
+  assert.equal(first.status, 401, JSON.stringify(first.body));
+  assert.equal(first.body.policy, 'manage-admin-credential');
+  assert.match(first.body.target, /^enroll:m_/);
+  const issued = await webView.actionToken(yubikey, first.body);
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  const token = { 'x-sovereign-action-token': issued.body.token };
+  const begun = await webView.post('/_sovereign/auth/handoff/begin', body, token);
+  assert.equal(begun.status, 200, JSON.stringify(begun.body));
+  assert.equal((await webView.post('/_sovereign/auth/handoff/begin', body, token)).body.code, 'REPLAYED', 'one token, one enrollment');
+  await attest(begun.body.id);
+  const { options, finished } = await enrollIn(sheet(), begun.body.id, createAuthenticator({ kind: 'hardware' }));
+  assert.equal(options.body.summary, 'Add an administrator passkey named “Backup key”. Hardware attestation is asked for.');
+  assert.equal(finished.status, 200, JSON.stringify(finished.body));
+  assert.deepEqual((await webView.post('/_sovereign/auth/handoff/redeem', { id: begun.body.id })).body.enrolled, { kind: 'hardware', label: 'Backup key' });
+});
+
+test('passkeys are added on Home Base only, and only in active Home Base', async (t) => {
+  const { base, parent } = await activeHousehold(t, nativeConfig());
+  const instance = await registerApp(parent);
+  const onPulse = phone(base, PARENT, instance, PULSE);
+  const there = await onPulse.webView.post('/_sovereign/auth/handoff/begin', { purpose: 'enroll', label: 'x' });
+  assert.equal(there.status, 400);
+  assert.equal(there.body.code, 'INVALID');
 });

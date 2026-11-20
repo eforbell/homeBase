@@ -320,13 +320,23 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   // authenticator proved: its key, flags and, for hardware, the root). In setup and recovery only the
   // administrator enrolls.
   // expect and expectPassphraseHash: what the enrollment's authorization saw (requireUnchanged).
-  function addCredential({ userId, credentialId, kind, label = '', publicKey = null, counter = 0, transports = [], aaguid = null, deviceType = null, backedUp = true, root = null, userHandle = null, expect = null, expectPassphraseHash = null }) {
+  // An enrollment through the app's handoff (sovereignAuth docs/native-handoff.md, Part 3) also holds, in the
+  // same commit: appInstanceKeyId, the app instance that attested it, still registered to this member (its
+  // removal doesn't move the epochs); and for a first passkey grantHash, the grant begin saw, still live,
+  // which this commit uses up (a grant reissued in between refuses it).
+  function addCredential({ userId, credentialId, kind, label = '', publicKey = null, counter = 0, transports = [], aaguid = null, deviceType = null, backedUp = true, root = null, userHandle = null, expect = null, expectPassphraseHash = null, appInstanceKeyId = null, grantHash = null }) {
     if (!KINDS.has(kind)) refuse(400, 'INVALID', `Unknown credential kind ${kind}.`);
     return change((data) => {
       const member = data.members.find((entry) => entry.user_id === userId && entry.status === 'active') || refuse(404, 'NOT_FOUND', 'No such member.');
       requireUnchanged(data, member, expect);
       if (data.household.state !== 'active' && !member.administrator) refuse(409, 'BOOTSTRAP_STATE', `Only the administrator enrolls while Home Base is in ${data.household.state}.`);
       if (data.credentials.some((credential) => credential.credential_id === credentialId)) refuse(409, 'CONFLICT', 'That credential is already enrolled.');
+      if (appInstanceKeyId !== null && !data.appInstances.some((row) => row.key_id === appInstanceKeyId && row.member_id === member.member_id)) {
+        refuse(409, 'APP_INSTANCE_GONE', 'This phone\'s app was removed from Home Base; open the app again and start over.');
+      }
+      if (grantHash !== null && liveGrantHash(data, member.member_id, { hash: grantHash }) === null) {
+        refuse(403, 'INVALID_GRANT', 'That enrollment code is not valid; ask the administrator for a new one.');
+      }
       // Keyless directory records can remain legacy, but every verified new enrollment is isolated.
       if (publicKey && userHandle === null) refuse(409, 'INVALID_ENROLLMENT_HANDLE', 'A verified enrollment needs an explicit isolated account handle.');
       if (userHandle !== null && (!validAccountHandle(userHandle) || userHandle !== member.webauthn_user_handle)) {
@@ -337,7 +347,14 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
         public_key: publicKey, counter: Number(counter) || 0, transports: JSON.stringify(transports || []), aaguid, device_type: deviceType, backed_up: backedUp === false ? 0 : 1, root, last_used_at: null,
       };
       return {
-        change: { credentials: [record], deleteGrants: [member.member_id], audit: [{ action: 'credential-enroll', target: member.member_id, outcome: kind }] },
+        change: {
+          credentials: [record],
+          deleteGrants: [member.member_id],
+          audit: [
+            ...(grantHash !== null ? [{ action: 'enrollment-grant', target: member.member_id, outcome: 'used in the app' }] : []),
+            { action: 'credential-enroll', target: member.member_id, outcome: kind },
+          ],
+        },
         value: record,
       };
     }, expectPassphraseHash ? { expectPassphraseHash } : {});
@@ -603,6 +620,21 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
     });
   }
 
+  // The live grant's code hash for a member, if the code (or its hash) is that grant's; else null. Read only.
+  function liveGrantHash(data, memberId, { code, hash }) {
+    const grant = data.grants.find((entry) => entry.member_id === memberId);
+    if (!grant || !(Date.parse(grant.expires_at) > now())) return null;
+    const presented = Buffer.from(typeof code === 'string' ? sha256(code) : String(hash ?? ''), 'hex');
+    const stored = Buffer.from(grant.code_hash, 'hex');
+    return presented.length === stored.length && crypto.timingSafeEqual(presented, stored) ? grant.code_hash : null;
+  }
+
+  // For the app's enroll handoff: begin checks the code without using it up and keeps its hash, and options
+  // and finish ask again whether that same grant is still live. { code } or { hash }; the hash or null.
+  function grantHash(memberId, presented) {
+    return liveGrantHash(load(), memberId, presented);
+  }
+
   // Used once by the passkey service before an enrollment ceremony (SID-005). True only for the first use.
   function consumeGrant(memberId, code) {
     try {
@@ -740,7 +772,7 @@ function createDirectory({ dbPath, catalog, household, snapshotFile = DEFAULT_SN
   }
 
   return {
-    activate, addCredential, addMember, advanceAppInstance, appInstance, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, enrollmentHandleFor, init, isAdministrator, issueGrant,
+    activate, addCredential, addMember, advanceAppInstance, appInstance, claim, consumeAction, consumeGrant, credentialsFor, demoteUnpinned, describe, enterRecovery, enrollmentHandleFor, grantHash, init, isAdministrator, issueGrant,
     lookup, candidateObserved, memberStatus, publish, recordAssertion, registerAppInstance, reset, revokeAppInstance, revokeCredential, revokeOwnCredential, standing, start, state, syncLogins, updateMember, snapshotFile: file,
   };
 }
