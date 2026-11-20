@@ -7,7 +7,7 @@ const vm = require('vm');
 
 const read = (name) => fs.readFileSync(path.join(__dirname, '..', 'public', name), 'utf8');
 
-async function renderJoin(home, { clipboard = null } = {}) {
+async function renderJoin(home, { clipboard = null, origin = 'https://smith-homebase.example.ts.net' } = {}) {
   const status = { textContent: '' };
   let click = null;
   const root = {
@@ -18,7 +18,7 @@ async function renderJoin(home, { clipboard = null } = {}) {
   const document = { title: '', getElementById: (id) => (id === 'app' ? root : null) };
   const written = [];
   const window = {
-    location: { origin: 'https://smith-homebase.example.ts.net', hostname: 'smith-homebase.example.ts.net' },
+    location: { origin, host: new URL(origin).host, hostname: new URL(origin).hostname },
     navigator: clipboard ? { clipboard: { writeText: async (text) => { written.push(text); } } } : {},
   };
   const context = vm.createContext({ window, document, console,
@@ -53,6 +53,13 @@ test('without a household name, or when /api/home fails, the page still works', 
     assert.match(page.root.innerHTML, /Join your household/);
     assert.match(page.root.innerHTML, /smith-homebase\.example\.ts\.net/);
   }
+});
+
+test('before the cutover, the address keeps Home Base\'s port', async () => {
+  const page = await renderJoin({ state: 'waiting' }, { clipboard: true, origin: 'https://homebase.example.ts.net:3080' });
+  assert.match(page.root.innerHTML, /<code data-join-host>homebase\.example\.ts\.net:3080<\/code>/);
+  await page.click();
+  assert.deepEqual(page.written, ['homebase.example.ts.net:3080']);
 });
 
 test('Copy address copies the host, and shows it where there is no clipboard', async () => {

@@ -7,7 +7,8 @@
   if (!root) return;
   const esc = (value) => window.HB.escapeHtml(value);
   const address = `${window.location.origin}/join`;
-  const host = window.location.hostname;
+  // With any port: before the ingress cutover Home Base is on :3080, and the app needs it too.
+  const host = window.location.host;
 
   function qrSvg(text) {
     if (typeof window.qrcode !== 'function') return '';
