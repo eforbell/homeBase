@@ -11,6 +11,7 @@
 // ceremony, and once the sheet closes the helper redeems the result here, the cookie or the token, and
 // retries as before. One handoff at a time per page: other step-ups wait for it, and a check's cookie then
 // serves them all. If the app can't do it on this phone, the helper says so instead of trying in the page.
+// On Home Base's own pages it also adds passkeys through the app (addPasskey; Part 3 of the handoff).
 (function sovereignStepUp() {
   const AUTH = '/_sovereign/auth/';
   const HEADER = 'X-Sovereign-Action-Token';
@@ -128,28 +129,69 @@
         ? { purpose: 'action', action: { policy: stepUp.policy, target: stepUp.target, digest: stepUp.digest } }
         : { purpose: 'check', kind: stepUp.kind };
       const { id } = await post('handoff/begin', request);
-      try {
-        await app.handoff(id);
-      } catch (error) {
-        // Cancelled, or not possible: the record is redeemed anyway, so its cookie goes now, and before the
-        // next handoff starts, so a late answer can't land on top of it. If the sheet had in fact finished
-        // (the app only lost the callback), that redemption is the result.
-        const late = await post('handoff/redeem', { id }).catch(() => null);
-        if (late) {
-          redeemed = true;
-          return everyTime ? late.token : null;
-        }
-        const reason = error && (error.message || error.code || error);
-        if (reason === 'unavailable') {
-          await notice('This check can\'t be done in the app on this phone. Open this page in Safari to continue.');
-          return false;
-        }
-        if (reason === 'cancelled') return false;
-        throw error instanceof Error ? error : new Error(String(reason || 'The app could not confirm this.'));
-      }
-      const answer = await post('handoff/redeem', { id });
+      const answer = await handOff(app, id, 'This check');
+      if (answer === false) return false;
       redeemed = true;
       return everyTime ? answer.token : null;
+    } finally {
+      settle(redeemed);
+      if (current === mine) current = null;
+    }
+  }
+
+  // A begun handoff through the app, then its redemption here: the redeem answer, or false if the member
+  // cancelled or the app can't do it on this phone. what names it in that notice ("This check").
+  async function handOff(app, id, what) {
+    try {
+      await app.handoff(id);
+    } catch (error) {
+      // Cancelled, or not possible: the record is redeemed anyway, so its cookie goes now, and before the
+      // next handoff starts, so a late answer can't land on top of it. If the sheet had in fact finished
+      // (the app only lost the callback), that redemption is the result.
+      const late = await post('handoff/redeem', { id }).catch(() => null);
+      if (late) return late;
+      const reason = error && (error.message || error.code || error);
+      if (reason === 'unavailable') {
+        await notice(`${what} can't be done in the app on this phone. Open this page in Safari to continue.`);
+        return false;
+      }
+      if (reason === 'cancelled') return false;
+      throw error instanceof Error ? error : new Error(String(reason || 'The app could not confirm this.'));
+    }
+    return post('handoff/redeem', { id });
+  }
+
+  // Adds a passkey through the app (Home Base's pages only): begin goes through fetch below, so a recent
+  // check or the administrator's hardware key is asked for first, through the app as well. Then the sheet
+  // registers the passkey and Home Base stores it. Resolves { kind, label }, or false if cancelled. grant is
+  // a first passkey's enrollment code. The page's tap was the gesture, so nothing more is asked here.
+  async function addPasskey({ label, hardware = false, grant } = {}) {
+    const app = bridge();
+    if (!app) throw new Error('Adding a passkey through the app needs the app.');
+    const body = JSON.stringify({ purpose: 'enroll', label, hardware: hardware === true, ...(grant ? { grant } : {}) });
+    const begun = await stepUpFetch(`${AUTH}handoff/begin`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    const started = await begun.json().catch(() => ({}));
+    if (!begun.ok) {
+      // A step-up the member cancelled: nothing to say.
+      if (started.error === 'step_up_required') return false;
+      throw new Error(started.message || started.error || `Request failed (${begun.status})`);
+    }
+    // One handoff at a time on this page.
+    while (current) {
+      const before = current;
+      await before.done;
+      if (current === before) current = null;
+    }
+    let settle;
+    current = { check: false, hardware: false, done: new Promise((resolve) => { settle = resolve; }) };
+    const mine = current;
+    let redeemed = false;
+    try {
+      const answer = await handOff(app, started.id, 'Adding a passkey');
+      if (answer === false) return false;
+      redeemed = true;
+      if (!answer.enrolled) throw new Error('The app finished, but no passkey was added. Try again.');
+      return answer.enrolled;
     } finally {
       settle(redeemed);
       if (current === mine) current = null;
@@ -195,5 +237,5 @@
     return send(token);
   }
 
-  window.SovereignStepUp = { fetch: stepUpFetch, satisfy, inApp: () => Boolean(bridge()) };
+  window.SovereignStepUp = { fetch: stepUpFetch, satisfy, addPasskey, inApp: () => Boolean(bridge()) };
 })();

@@ -63,7 +63,12 @@
   }
 
   async function enroll({ label, hardware, grant }) {
-    if (inApp()) throw new Error(IN_SAFARI);
+    if (inApp()) {
+      // The app's sheet registers it (the enroll handoff); the form's button was the tap.
+      const added = await window.SovereignStepUp.addPasskey({ label, hardware, grant });
+      if (added === false) throw new Error('No passkey added: it was cancelled.');
+      return { ok: true, kind: added.kind, label: added.label, askedForHardware: hardware === true };
+    }
     const { options } = await guardedPost(`${AUTH}enroll/options`, { label, hardware, grant });
     let response;
     try { response = await create(options); } catch (error) { throw ceremonyError(error); }
@@ -71,9 +76,21 @@
   }
 
   // Inside the household's iPhone app, whose web view can't run a passkey ceremony: the shared helper hands
-  // checks to the app (the native handoff). Registering a passkey and activation stay in a browser.
+  // checks and adding a passkey to the app (the native handoff). Setup and recovery stay in a browser:
+  // activating, and registering passkeys then, rest on the passphrase session.
   const inApp = () => Boolean(window.SovereignStepUp && window.SovereignStepUp.inApp && window.SovereignStepUp.inApp());
-  const IN_SAFARI = 'Open Home Base in Safari to do this: passkeys are registered, and Home Base is activated, in a browser.';
+  const IN_SAFARI = 'Open Home Base in Safari to do this: setup and recovery, and the passkeys registered then, run in a browser.';
+
+  // A first passkey's enrollment code, when the app opened this page with it: Admin#grant=<code> (the app
+  // scans it from the Members card). It leaves the address bar at once and waits for the form.
+  let presentedGrant = '';
+  {
+    const match = /^#grant=([A-Za-z0-9_-]{8,64})$/.exec(window.location.hash);
+    if (match) {
+      presentedGrant = match[1];
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }
 
   async function check({ purpose = 'step-up', kind } = {}) {
     if (inApp()) {
@@ -113,7 +130,7 @@
     if (status.state === 'active') {
       if (metadata) return metadata;
       if (admin && !status.administratorRuleMet) return 'Your passkeys no longer include two with an attested hardware key (an update can stop trusting a maker\'s keys). Enter recovery with the passphrase and register a new hardware key.';
-      if (!status.credentials.length) return 'You have no passkey yet: enter the enrollment code the administrator gave you, then register one.';
+      if (!status.credentials.length) return presentedGrant ? 'Your enrollment code is filled in: name this passkey, then register it.' : 'You have no passkey yet: enter the enrollment code the administrator gave you, then register one.';
       // The check button beside the status says the rest.
       return '';
     }
@@ -181,10 +198,10 @@
       ${status.credentials.some((credential) => credential.handleFormat === 'legacy-v1') ? '<p class="hb-muted">Working legacy credentials remain compatible. New registrations are isolated to this suite; do not re-enroll this key on an unpatched instance.</p>' : ''}
       <ul class="hb-stack" style="list-style:none;padding:0;margin:0 0 0.9rem;">${rows}</ul>
       <div class="hb-grid hb-grid-2">
-        <form class="hb-form-grid" data-passkey-action="enroll">
+        <form class="hb-form-grid" data-passkey-action="enroll" data-state="${esc(status.state)}">
           <label class="hb-label">Name for this passkey <input class="hb-input" name="label" maxlength="60" placeholder="e.g. iPhone, YubiKey 5C"></label>
           <label class="hb-label hb-check-row"><input type="checkbox" name="hardware"> It's a hardware security key (asks it to prove its maker)</label>
-          ${needsGrant ? '<label class="hb-label">Enrollment code <input class="hb-input" name="grant" autocomplete="one-time-code"></label>' : ''}
+          ${needsGrant ? `<label class="hb-label">Enrollment code <input class="hb-input" name="grant" autocomplete="one-time-code" value="${esc(presentedGrant)}"></label>` : ''}
           <button class="hb-btn" type="submit">Register a passkey</button>
           <p class="hb-muted" data-result style="margin:0;"></p>
         </form>
@@ -223,7 +240,8 @@
           result.textContent = done.dropped ? `Rotated to ${done.kid}; earlier keys dropped. Check in again.` : `Rotated to ${done.kid}.`;
           setTimeout(reload, 1500);
         } else if (action === 'enroll') {
-          const done = await enroll({ label: form.elements.label.value, hardware: form.elements.hardware.checked, grant: form.elements.grant ? form.elements.grant.value : undefined });
+          if (inApp() && form.dataset.state !== 'active') throw new Error(IN_SAFARI);
+          const done = await enroll({ label: form.elements.label.value, hardware: form.elements.hardware.checked, grant: form.elements.grant ? form.elements.grant.value.trim() : undefined });
           result.textContent = done.askedForHardware && done.kind !== 'hardware' ? `Registered, but as a ${KIND_LABELS[done.kind]}: it did not prove it is a hardware key.` : 'Registered.';
           setTimeout(reload, 1200);
         } else {
