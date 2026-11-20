@@ -308,9 +308,9 @@
         if (submit) submit.disabled = false;
         result.textContent = error.message;
         // Focused, the code can't be changed and there's no navigation: always a way back (a new code is
-        // scanned again from the app).
+        // scanned again from the app's launcher).
         if (form.dataset.focused === 'true') {
-          if (inApp()) result.textContent = `${error.message} To try again, tap Apps at the top and scan the code again.`;
+          if (inApp()) result.textContent = `${error.message} Tap Add passkey to try again, or Apps at the top to go back.`;
           else result.innerHTML = `${esc(error.message)} <a href="/">Back to Home Base</a>`;
         }
       }

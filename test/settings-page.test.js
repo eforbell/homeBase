@@ -77,3 +77,11 @@ test('a code that doesn\'t fit: the full Admin, as without one', async () => {
   assert.match(html, /data-passkeys/);
   assert.equal(passkeys.focused(), false);
 });
+
+test('a failure while focused shows the Admin error with the navigation back', async () => {
+  const passkeys = passkeysStub({ fits: true });
+  passkeys.mount = async () => { throw new Error('Request failed (500)'); };
+  const { html } = await renderPage('admin', {}, { passkeys });
+  assert.equal(passkeys.focused(), false);
+  assert.match(html, /Request failed \(500\)/);
+});

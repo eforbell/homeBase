@@ -521,7 +521,7 @@ test('focused: a refused code says so with a way back, and the button works agai
   await submitter(page.passkeys)(form);
   assert.equal(disabledWhileBegun, true, 'no second tap while it runs');
   assert.equal(button.disabled, false);
-  assert.equal(result.textContent, 'That enrollment code is not valid; ask the administrator for a new one. To try again, tap Apps at the top and scan the code again.');
+  assert.equal(result.textContent, 'That enrollment code is not valid; ask the administrator for a new one. Tap Add passkey to try again, or Apps at the top to go back.');
   assert.deepEqual(bridge.ids, [], 'no sheet');
 });
 
